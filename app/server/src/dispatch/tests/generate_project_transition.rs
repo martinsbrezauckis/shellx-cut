@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 const MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 struct EnvRestore {
@@ -167,6 +167,7 @@ async fn generate_prompt_insert_refuses_equal_revision_project_opened_during_ada
     let _python = TestAdapterPythonEnv::install();
     let root = tempfile::tempdir().unwrap();
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     let (_a_path, b_path) = open_a_with_same_revision(&state, root.path()).await;
     let plan = r#"{"schema":"shellx-cut/generate-plan/1","status":"completed","backend":{"provider":"fixture"},"plan":{"template_id":"builtin.lower-third.clean","params":{"name":"A"}},"warnings":[]}"#;
     let (adapter, started, release) = write_blocking_adapter(root.path(), "prompt", plan);
@@ -194,6 +195,7 @@ async fn generate_storyboard_insert_refuses_equal_revision_project_opened_during
     let _python = TestAdapterPythonEnv::install();
     let root = tempfile::tempdir().unwrap();
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     let (_a_path, b_path) = open_a_with_same_revision(&state, root.path()).await;
     let storyboard = r#"{"schema":"shellx-cut/generate-storyboard-result/1","status":"completed","backend":{"provider":"fixture"},"questions":[],"warnings":[],"storyboard":{"schema":"shellx-cut/generate-storyboard/1","storyboard_id":"from-a","mode":"quick_prompt","status":"valid","scenes":[{"scene_id":"one","index":1,"role":"title","source":"generate_template","template_id":"builtin.title-card.episode","range_ms":[0,1000],"params":{"title":"A"}},{"scene_id":"two","index":2,"role":"lower-third","source":"generate_template","template_id":"builtin.lower-third.clean","range_ms":[1000,2000],"params":{"name":"A"}}]}}"#;
     let (adapter, started, release) = write_blocking_adapter(root.path(), "storyboard", storyboard);
@@ -221,6 +223,7 @@ async fn generate_storyboard_insert_completes_nested_insert_while_project_is_pin
     let _python = TestAdapterPythonEnv::install();
     let root = tempfile::tempdir().unwrap();
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     let (_a_path, _b_path) = open_a_with_same_revision(&state, root.path()).await;
     let storyboard = r#"{"schema":"shellx-cut/generate-storyboard-result/1","status":"completed","backend":{"provider":"fixture"},"questions":[],"warnings":[],"storyboard":{"schema":"shellx-cut/generate-storyboard/1","storyboard_id":"pinned","mode":"quick_prompt","status":"valid","scenes":[{"scene_id":"one","index":1,"role":"callout","source":"generate_template","template_id":"builtin.callout.arrow-label","range_ms":[0,250],"params":{"label":"A","duration_ms":250}}]}}"#;
     let (adapter, started, release) = write_blocking_adapter(root.path(), "pinned", storyboard);

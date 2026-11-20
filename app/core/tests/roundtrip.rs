@@ -1891,3 +1891,5 @@ fn speed_ramp_replays_deterministically() {
         "cleared-ramp replay drift"
     );
 }
+
+cut_core::isolate_test_process!();

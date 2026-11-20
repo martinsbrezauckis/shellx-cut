@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type PortableB5RelinkReceipt, type ProjectEntry } from '../../lib/client'
 import { confirmAction, showMessage } from '../../lib/tauri'
+import { publishUserActionMessage } from '../../lib/userActionFeedback'
 import { Icon } from '../../icons'
 import ProjectContextMenu, { type ProjectContextMenuState } from './ProjectContextMenu'
 import PortableCopy from './PortableCopy'
@@ -52,6 +53,26 @@ function fmtAgo(ms: number): string {
   return `${Math.floor(day / 30)}mo ago`
 }
 
+/**
+ * Run a project change. When the engine refuses because it would cancel a
+ * running job someone asked for (`jobs_running`), say what would be cancelled and
+ * repeat the change only if the person agrees. Nothing is cancelled otherwise.
+ */
+async function changeProject(
+  run: (cancelRunningJobs: boolean) => Promise<{ ok: boolean; error?: { code?: string; message?: string; cause?: string; suggested_action?: string } | null; warnings?: Array<{ code: string; message: string }> }>,
+) {
+  let r = await run(false)
+  if (!r.ok && r.error?.code === 'jobs_running') {
+    const go = await confirmAction(
+      `${r.error.message}.\n\n${r.error.cause}\n\nCancel them and continue? The cancelled work is lost and must be started again.`,
+      { title: 'Work is still running', okLabel: 'Cancel it and continue', cancelLabel: 'Keep working here' },
+    )
+    if (!go) return { ok: false, error: r.error, warnings: [], cancelledByChoice: true }
+    r = await run(true)
+  }
+  return { ok: r.ok, error: r.error, warnings: r.warnings ?? [], cancelledByChoice: false }
+}
+
 function explainProjectError(
   error: { code?: string; message?: string; suggested_action?: string } | null | undefined,
   fallback: string,
@@ -89,8 +110,13 @@ export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt
       if (p.missing || busy) return
       setBusy(true)
       setErr(null)
-      const r = await callVerb('project.open', { path: p.path })
-      if (r.ok) onReopen()
+      const r = await changeProject((cancel) => callVerb('project.open', cancel ? { path: p.path, cancel_running_jobs: true } : { path: p.path }))
+      if (r.ok) {
+        onReopen()
+        // Something the open changed (a format larger than Cut makes was
+        // reduced): say it where the person sees it, not only to agents.
+        for (const warning of r.warnings ?? []) publishUserActionMessage(warning.message, { source: 'project.open', code: warning.code })
+      } else if (r.cancelledByChoice) setErr(null)
       else setErr(explainProjectError(r.error, 'Could not open the project'))
       setBusy(false)
     },
@@ -104,10 +130,12 @@ export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt
     setErr(null)
     // Omit technical format settings: the first video adopts its own geometry
     // and frame rate. Experts can deliberately change the timeline later.
-    const r = await callVerb('project.create', { name })
+    const r = await changeProject((cancel) => callVerb('project.create', cancel ? { name, cancel_running_jobs: true } : { name }))
     if (r.ok) {
       setNewName('')
       onReopen()
+    } else if (r.cancelledByChoice) {
+      setErr(null)
     } else {
       setErr(explainProjectError(r.error, 'Could not create the project'))
     }

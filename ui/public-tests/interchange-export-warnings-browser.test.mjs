@@ -28,8 +28,8 @@ test('mounted Export preserves every successful interchange warning at desktop a
       },
     }], server: { host: '127.0.0.1', port: 0 },
   })
-  await server.listen()
   t.after(() => server.close())
+  await server.listen()
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })

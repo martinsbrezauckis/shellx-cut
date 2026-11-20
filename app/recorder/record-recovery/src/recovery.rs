@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::contract::{owner_probe, OwnerProbe};
+use crate::contract::{owner_probe, OwnerProbe, UNAVAILABLE_IDENTITY};
 use crate::integrity::{quarantine, quarantine_path, verified_prefix, PrefixIssue};
 use crate::manifest::{read_manifest, ManifestOwner};
 use crate::{CaptureManifest, ManifestError, RecoveryReceipt, RecoveryState};
@@ -80,9 +80,20 @@ pub fn recover_interrupted(
 }
 
 pub fn owner_state(start: &crate::CaptureStart) -> OwnerState {
-    match owner_probe(start.owner_pid) {
-        OwnerProbe::Identity(identity) if identity == start.owner_identity => OwnerState::Alive,
-        OwnerProbe::Identity(_) => OwnerState::Ambiguous,
+    owner_state_from(owner_probe(start.owner_pid), &start.owner_identity)
+}
+
+/// The recorded identity is the process id plus its start time. A live process
+/// with the same id but a different start time is a later process that reused
+/// the id, so the recorded owner is gone. Only an owner whose identity could not
+/// be read when it started stays ambiguous.
+pub(crate) fn owner_state_from(probe: OwnerProbe, recorded_identity: &str) -> OwnerState {
+    match probe {
+        OwnerProbe::Identity(identity) if identity == recorded_identity => OwnerState::Alive,
+        OwnerProbe::Identity(_) if recorded_identity == UNAVAILABLE_IDENTITY => {
+            OwnerState::Ambiguous
+        }
+        OwnerProbe::Identity(_) => OwnerState::Dead,
         OwnerProbe::Dead => OwnerState::Dead,
         OwnerProbe::Ambiguous => OwnerState::Ambiguous,
     }

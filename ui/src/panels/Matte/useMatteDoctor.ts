@@ -25,6 +25,7 @@ export function useMatteDoctor(projectOrigin: string | null) {
     if (mountedRef.current) setReadState('probing')
     const current = () => currentScope(origin) && generationRef.current === generation
     try {
+      // Not shared with other readers: each project scope needs its own reply, and a stale one must not stand in for it.
       const reply = await callVerb('system.doctor', refresh ? { refresh: true } : {})
       if (!current()) return
       if (!reply.ok) {

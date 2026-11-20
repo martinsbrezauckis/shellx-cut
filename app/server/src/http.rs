@@ -82,6 +82,7 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
         .route("/verbs", get(get_verbs))
         .route("/agent", get(get_agent_info))
         .route("/agent-doc/*path", get(serve_agent_doc))
+        .route("/third-party-notices", get(serve_third_party_notices))
         .route("/frame", get(get_frame))
         // A disposable native rehearsal is playable only through an opaque,
         // process-local server capability.  The handler never accepts a path
@@ -155,6 +156,7 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
         // (CSP is a document-level policy) and meaningful on the SPA document.
         .layer(axum::middleware::from_fn(add_csp_header))
         .layer(axum::middleware::from_fn(add_document_cache_header))
+        .layer(axum::middleware::from_fn(add_project_media_cache_header))
         .layer(axum::middleware::from_fn(guard_local_origin))
 }
 
@@ -171,6 +173,36 @@ async fn add_document_cache_header(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/html"))
     {
+        res.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+    }
+    res
+}
+
+/// Project media is addressed by asset id (`/api/source/a1`, `/proxies/a1.mp4`,
+/// `/filmstrip/a1.jpg`) or by time (`/api/frame?at_ms=0`), and those names repeat
+/// between projects. A cached answer for one project must never be reused for
+/// another, so every project-bound media route is served `no-store`; the UI also
+/// scopes these URLs per project (ui/src/lib/mediaScope.ts).
+fn is_project_media_path(path: &str) -> bool {
+    path == "/api/frame"
+        || path == "/api/export-file"
+        || path.starts_with("/api/source/")
+        || path.starts_with("/api/export/")
+        || path.starts_with("/proxies/")
+        || path.starts_with("/frames/")
+        || path.starts_with("/filmstrip/")
+}
+
+async fn add_project_media_cache_header(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let media = is_project_media_path(req.uri().path());
+    let mut res = next.run(req).await;
+    if media {
         res.headers_mut().insert(
             axum::http::header::CACHE_CONTROL,
             axum::http::HeaderValue::from_static("no-store"),
@@ -368,6 +400,42 @@ mod tests {
         TestServer {
             base_url: format!("http://127.0.0.1:{port}"),
             handle,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn project_media_routes_are_never_cached() {
+        let server = spawn_test_server(build_router(AppState::new(), None)).await;
+        let base = server.base_url.clone();
+        let policies = tokio::task::spawn_blocking(move || {
+            [
+                "/api/frame?at_ms=0&v=op_0001",
+                "/api/source/a1",
+                "/proxies/a1.mp4",
+                "/frames/a1_0.jpg",
+                "/filmstrip/a1.jpg",
+                "/api/export/render_001.mp4",
+                "/api/export-file?path=x",
+            ]
+            .map(|path| {
+                let response = ureq::get(&format!("{base}{path}"))
+                    .config()
+                    .http_status_as_error(false)
+                    .build()
+                    .call()
+                    .unwrap();
+                let policy = response
+                    .headers()
+                    .get("cache-control")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                (path, policy)
+            })
+        })
+        .await
+        .unwrap();
+        for (path, policy) in policies {
+            assert_eq!(policy.as_deref(), Some("no-store"), "{path}");
         }
     }
 
@@ -1115,6 +1183,7 @@ mod tests {
         let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start(crate::output_paths::test_fixture::thread_start_hook())
             .enable_all()
             .build()
             .unwrap();
@@ -1221,6 +1290,7 @@ mod tests {
         let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start(crate::output_paths::test_fixture::thread_start_hook())
             .enable_all()
             .build()
             .unwrap();
@@ -1286,6 +1356,7 @@ mod tests {
         let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start(crate::output_paths::test_fixture::thread_start_hook())
             .enable_all()
             .build()
             .unwrap();
@@ -2270,8 +2341,12 @@ async fn get_agent_info(State(state): State<AppState>) -> Response {
     let addr = state.addr.read().await.clone();
     Json(serde_json::json!({
         "schema": "shellx-cut/agent-docs/2",
-        "product": "ShellX Cut",
+        "product": crate::httpc::PRODUCT_NAME,
         "version": env!("CARGO_PKG_VERSION"),
+        // The value this engine wrote into engine.addr at start: clients check it
+        // before they send a verb, so another program (or an older engine that
+        // reused the port) is not mistaken for this engine.
+        "instance": crate::httpc::instance_id(),
         "api": {
             "rest": "POST /api/verb/{name}",
             "verbs": "/api/verbs",
@@ -2334,8 +2409,9 @@ async fn get_agent_info(State(state): State<AppState>) -> Response {
 }
 
 /// GET /api/agent-doc/*path — serve only the packaged agent docs bundle. The
-/// root comes from SHELLX_CUT_AGENT_DOCS_DIR in desktop builds, with a dev-repo
-/// fallback for local `cutd serve`.
+/// root is SHELLX_CUT_AGENT_DOCS_DIR when set, else the package's own
+/// `agent-docs` found from the engine's executable, else (source builds only) the
+/// checkout.
 async fn serve_agent_doc(Path(path): Path<String>) -> Response {
     let Some(root) = agent_docs_root() else {
         return (
@@ -2381,17 +2457,7 @@ async fn serve_agent_doc(Path(path): Path<String>) -> Response {
 }
 
 fn agent_docs_root() -> Option<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os("SHELLX_CUT_AGENT_DOCS_DIR") {
-        if !p.is_empty() {
-            return Some(std::path::PathBuf::from(p));
-        }
-    }
-    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agent-docs");
-    if dev.join("skill/shellx-cut/SKILL.md").is_file() {
-        return Some(dev.components().collect());
-    }
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    Some(repo.components().collect())
+    crate::packaged_resources::agent_docs_root()
 }
 
 fn clean_agent_doc_path(path: &str) -> Option<std::path::PathBuf> {
@@ -2416,6 +2482,38 @@ fn clean_agent_doc_path(path: &str) -> Option<std::path::PathBuf> {
         }
     }
     Some(out)
+}
+
+/// GET /api/third-party-notices — the generated THIRD-PARTY-NOTICES.txt the installer ships next to NOTICE, as
+/// plain text (Settings > About shows it). 404 with a plain explanation when this engine has no packaged copy.
+async fn serve_third_party_notices() -> Response {
+    let Some(path) = crate::packaged_resources::third_party_notices() else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "THIRD-PARTY-NOTICES.txt is not bundled with this cutd build. Installed ShellX Cut packages carry it next to NOTICE; the same text is in the public repository.",
+        )
+            .into_response();
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            format!("could not read the bundled THIRD-PARTY-NOTICES.txt: {error}"),
+        )
+            .into_response(),
+    }
 }
 
 /// GET /api/frame?at_ms=N[&h=540][&compose=1] — composed-frame JPEG, raw bytes

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 const HNS_PER_SECOND: i128 = 10_000_000;
 const HNS_PER_MS: i128 = 10_000;
-// The observed PC4 static native bracket was 100 ns. One millisecond keeps
+// The observed desktop static native bracket was 100 ns. One millisecond keeps
 // origin uncertainty far below a 30 fps frame without depending on one
 // scheduler-interrupted pairing attempt.
 const MAX_BEST_BRACKET_HNS: i128 = HNS_PER_MS;

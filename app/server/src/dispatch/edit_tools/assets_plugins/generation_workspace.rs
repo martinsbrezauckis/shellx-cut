@@ -4,10 +4,25 @@ use cut_core::CutError;
 use std::path::{Path, PathBuf};
 
 pub(super) fn create(project: &Path, run_name: &str) -> Result<PathBuf, CutError> {
-    crate::output_paths::ensure_plain_project_relative_dir(
+    let runs = crate::output_paths::ensure_plain_project_relative_dir(
         project,
-        &Path::new("cache/gen/runs").join(run_name),
-    )
+        Path::new("cache/gen/runs"),
+    )?;
+    // The run folder is new for every run (item 140 sweep): its files are then
+    // written in place, so an existing folder of that name is never reused.
+    let run = runs.join(run_name);
+    std::fs::create_dir(&run).map_err(|e| {
+        CutError::new(
+            cut_core::error_codes::IO,
+            format!(
+                "generation run folder {} could not be created",
+                run.display()
+            ),
+            e.to_string(),
+        )
+        .with_suggested_action("retry the generation; a new run folder name is chosen each time")
+    })?;
+    Ok(run)
 }
 
 #[cfg(test)]
@@ -27,6 +42,22 @@ mod tests {
             assert_eq!(error.code, cut_core::error_codes::INVALID_ARGS);
             assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
         }
+    }
+
+    /// Item 140 sweep: a run folder that already exists (a received project
+    /// can carry one holding second names of outside files) is never reused.
+    #[test]
+    fn generation_workspace_never_reuses_an_existing_run_folder() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = project.path().join("outside.txt");
+        std::fs::write(&outside, "KEEP").unwrap();
+        let planted = project.path().join("cache/gen/runs/owned-run");
+        std::fs::create_dir_all(&planted).unwrap();
+        std::fs::hard_link(&outside, planted.join("prompt.txt")).unwrap();
+        let error = create(project.path(), "owned-run").unwrap_err();
+        assert_eq!(error.code, cut_core::error_codes::IO);
+        assert!(error.suggested_action.is_some());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "KEEP");
     }
 
     #[test]

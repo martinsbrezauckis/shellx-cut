@@ -338,3 +338,85 @@ fn stdout_observation_preserves_deadline_and_owned_tree_cleanup() {
     assert_eq!(error.message, "operation timed out");
     assert_gone(wait_for_pid(&pid_file));
 }
+
+#[test]
+fn a_missing_media_tool_is_reported_as_missing_with_a_way_forward() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for stem in ["ffmpeg", "ffprobe"] {
+        let mut command = Command::new(dir.path().join(stem));
+        command.arg("-version");
+        let error = run_bounded_command(&mut command, "probe media tool")
+            .expect_err("a program that does not exist cannot start");
+        assert_eq!(error.code, cut_core::error_codes::TOOL_MISSING, "{stem}");
+        assert_eq!(error.message, format!("{stem} is not installed"));
+        assert!(
+            error.suggested_action.is_some(),
+            "{stem} needs a way forward"
+        );
+    }
+}
+
+#[test]
+fn another_missing_program_keeps_the_generic_spawn_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut command = Command::new(dir.path().join("not-a-media-tool"));
+    let error = run_bounded_command(&mut command, "helper")
+        .expect_err("a program that does not exist cannot start");
+    assert_eq!(error.code, cut_core::error_codes::FFMPEG);
+    assert_eq!(error.message, "helper failed");
+}
+
+/// A command that prints a reason on stderr and exits with code 7 at once,
+/// without ever reading its stdin.
+fn exits_without_reading_stdin() -> Command {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("cmd");
+        command.args(["/c", "echo no-input-wanted 1>&2 & exit /b 7"]);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo no-input-wanted >&2; exit 7"]);
+        command
+    }
+}
+
+#[test]
+fn a_child_that_exits_before_reading_its_input_reports_its_own_status_and_stderr() {
+    // The largest allowed request: more than a pipe buffer, so the write cannot
+    // finish before the child is gone. Every run ends in a broken pipe.
+    let input = vec![b'x'; 1024 * 1024];
+    let mut command = exits_without_reading_stdin();
+    let output = run_owned_command_with_input(
+        &mut command,
+        &input,
+        &OwnedProcessControl::bounded(Duration::from_secs(10), || false),
+        "test stdin that nobody reads",
+        None,
+    )
+    .expect("a broken pipe must not replace the child's own exit status");
+    assert_eq!(output.status.code(), Some(7));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no-input-wanted"));
+}
+
+/// A suspended render child is not an exited one (macOS waitid reports a stop
+/// even when only exits are asked for).
+#[cfg(unix)]
+#[test]
+fn a_stopped_child_is_not_ready_to_reap() {
+    let mut command = Command::new("sleep");
+    command.arg("30");
+    let control = RenderProcessControl::bounded(Duration::from_secs(30), || false);
+    let mut child = ManagedChild::spawn(&mut command, control, "stop test").unwrap();
+    let pid = child.tree.group();
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        child.try_wait("stop test").unwrap(),
+        None,
+        "a stopped child is still running"
+    );
+    child.stop_and_reap("stop test").unwrap();
+}

@@ -25,7 +25,7 @@ pub struct Card {
 }
 
 impl Card {
-    fn new(id: &str, kind: &str, status: &str, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(id: &str, kind: &str, status: &str, detail: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             kind: kind.into(),
@@ -119,7 +119,7 @@ fn session_locked() -> Option<bool> {
 }
 
 /// The compiled screen-capture backend for this build (cfg + feature gated).
-fn screen_backend() -> (&'static str, &'static str) {
+pub(crate) fn screen_backend() -> (&'static str, &'static str) {
     if cfg!(all(windows, feature = "capture-windows")) {
         ("ok", "Windows Graphics Capture (WGC)")
     } else if cfg!(all(target_os = "macos", feature = "capture-macos")) {
@@ -198,7 +198,7 @@ fn input_backend() -> (&'static str, &'static str) {
 }
 
 /// Assemble cards around injected screen evidence so tests do not open capture.
-fn doctor_with_screen_card(screen_card: Card) -> Vec<Card> {
+pub(crate) fn doctor_with_screen_card(screen_card: Card) -> Vec<Card> {
     let mut cards = Vec::new();
 
     // ffmpeg (required for encode/decode).
@@ -253,6 +253,9 @@ fn doctor_with_screen_card(screen_card: Card) -> Vec<Card> {
     cards
 }
 
+/// Full recorder Doctor. On Windows and macOS its screen card comes from a
+/// short real capture, so call it only for an action the person asked for:
+/// Check, Test, or starting a recording.
 pub fn doctor() -> Vec<Card> {
     doctor_with_screen_card(screen_capture_card())
 }

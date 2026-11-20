@@ -15,6 +15,8 @@ static MIC_WARM_SEQ: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct WarmResult {
     pub live: bool,
     pub peak_dbfs: Option<i16>,
+    /// Why the microphone could not be opened, when the open itself failed.
+    pub problem: Option<crate::MicrophoneProblem>,
 }
 
 pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> WarmResult {
@@ -28,6 +30,7 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
         return WarmResult {
             live: false,
             peak_dbfs: None,
+            problem: None,
         };
     }
     if MIC_CAPTURE_ACTIVE.load(Ordering::Acquire) {
@@ -35,6 +38,7 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
         return WarmResult {
             live: false,
             peak_dbfs: None,
+            problem: None,
         };
     }
     drop(_admission);
@@ -54,11 +58,11 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
     let worker_peak = peak.clone();
     let handle = thread::spawn(move || {
         let device = input_device.ok_or_else(|| {
-            RecordError::new(
+            crate::mic_endpoint::explain_open_error(RecordError::new(
                 error_codes::CAPTURE,
                 "no input device",
                 "no microphone found",
-            )
+            ))
         })?;
         run_device(DeviceCaptureRequest {
             path: worker_tmp.to_string_lossy().into_owned(),
@@ -81,9 +85,12 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
         thread::sleep(remaining.min(Duration::from_millis(20)));
     }
     let live = ready.load(Ordering::Relaxed);
+    let mut problem = None;
     stop.store(true, Ordering::Relaxed);
     if wait_for_thread(&handle, MIC_JOIN_GRACE) {
-        let _ = handle.join();
+        if let Ok(Err(error)) = handle.join() {
+            problem = crate::MicrophoneProblem::from_error(&error);
+        }
         let _ = std::fs::remove_file(&tmp);
         MIC_WARM_ACTIVE.store(false, Ordering::Release);
     } else {
@@ -103,6 +110,7 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
         peak_dbfs: live
             .then(|| peak_dbfs(peak.load(Ordering::Relaxed)))
             .flatten(),
+        problem: if live { None } else { problem },
     }
 }
 

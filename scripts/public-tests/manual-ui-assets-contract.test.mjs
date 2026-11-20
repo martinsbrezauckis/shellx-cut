@@ -9,6 +9,7 @@
 //   --bin cutd --manifest-path app/Cargo.toml
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -17,7 +18,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { basename, dirname, join, resolve } from 'node:path'
-const root = resolve(new URL('../..', import.meta.url).pathname)
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const manual = resolve(root, 'docs/public/site/manual/cut/index.html')
 const editorAsset = resolve(root, 'docs/public/site/manual/assets/cut/cut-main-editor-current.png')
 const recordAsset = resolve(root, 'docs/public/site/manual/assets/cut/cut-recording-studio-current.png')

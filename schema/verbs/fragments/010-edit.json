@@ -5,7 +5,7 @@
     {
       "name": "edit.split",
       "domain": "edit",
-      "description": "Split the clip under the given timeline position on a track into two clips. at_ms is EDITORIAL time (the cumulative clip-duration sum) — after a crossfade shortens the realized timeline, render/playhead positions diverge from it.",
+      "description": "Split the clip under the given timeline position on a track into two clips. at_ms is EDITORIAL time (the cumulative clip-duration sum) — after a crossfade shortens the realized timeline, render/playhead positions diverge from it. EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from a clip edge is that edge, where the track is already cut, so nothing is split: the refusal names the edge (no piece shorter than a frame is left).",
       "args": {
         "type": "object",
         "required": [
@@ -59,7 +59,7 @@
     {
       "name": "edit.cut_to_beat",
       "domain": "edit",
-      "description": "Cut/align clips to MUSIC BEATS — a beat-synced montage where each clip change lands on a beat. BEAT SOURCE (v1): the beat:N markers audio.add_music{beat_markers:true} surfaces from the bed asset's perception BeatGrid (markers with label 'beat', at_ms = the beat's timeline position). No beat markers in scope → actionable error pointing at audio.add_music (transcript-onset / downbeat detection are documented future sources). every_n (default 1) uses every Nth beat (2 = every 2nd, 4 = every bar) for slower cutting; range_ms limits the span. mode 'split' (default): split the track (default the base video track) at each selected beat inside its content, so every cut lands on a beat (the montage skeleton to fill/reorder); beats on an existing cut (±epsilon) or in a gap are skipped — no slivers, idempotent. mode 'snap': ROLL each existing cut boundary to the nearest beat within max_snap_ms (trims the left clip's out-edge + right clip's in-edge by the same delta), locking an assembled sequence to the grid without crossing neighbours or shifting downstream timing; a roll lacking source headroom is skipped. v1 lowers to individual replay-safe edit.split/edit.trim ops (one per cut/edge, like edit.split_at_scenes).",
+      "description": "Cut/align clips to MUSIC BEATS — a beat-synced montage where each clip change lands on a beat. BEAT SOURCE (v1): the beat:N markers audio.add_music{beat_markers:true} surfaces from the bed asset's perception BeatGrid (markers with label 'beat', at_ms = the beat's timeline position). No beat markers in scope → actionable error pointing at audio.add_music (transcript-onset / downbeat detection are documented future sources). every_n (default 1) uses every Nth beat (2 = every 2nd, 4 = every bar) for slower cutting; range_ms limits the span. mode 'split' (default): split the track (default the base video track) at each selected beat inside its content, so every cut lands on a beat (the montage skeleton to fill/reorder); beats less than one frame from an existing cut or in a gap are skipped — no slivers, idempotent. mode 'snap': ROLL each existing cut boundary to the nearest beat within max_snap_ms (trims the left clip's out-edge + right clip's in-edge by the same delta), locking an assembled sequence to the grid without crossing neighbours or shifting downstream timing; a roll lacking source headroom is skipped. v1 lowers to individual replay-safe edit.split/edit.trim ops (one per cut/edge, like edit.split_at_scenes).",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -169,7 +169,7 @@
     {
       "name": "edit.split_at_scenes",
       "domain": "edit",
-      "description": "Split the base clip at the asset's detected SCENE boundaries (turns a multi-shot screen-demo/montage into editable shots). Scene cuts come from the perception 'scenes' instrument (source time), mapped to timeline via the clip carrying each; boundary/out-of-clip positions are skipped. min_shot_ms drops cuts that would make a shot shorter than that. One edit.split op per split.",
+      "description": "Split the base clip at the asset's detected SCENE boundaries (turns a multi-shot screen-demo/montage into editable shots). Scene cuts come from the perception 'scenes' instrument (source time), mapped to timeline via the clip carrying each; boundary/out-of-clip positions and scene cuts less than one frame from an existing cut are skipped. min_shot_ms drops cuts that would make a shot shorter than that. One edit.split op per split.",
       "args": {
         "type": "object",
         "required": [
@@ -258,7 +258,7 @@
     {
       "name": "edit.trim_edges",
       "domain": "edit",
-      "description": "Top-and-tail: remove leading + trailing DEAD AIR (before the first spoken word / after the last) while preserving internal pacing — unlike transcript.remove_silences which removes every silence. Anchors to SPEECH (word timings via the EDL), leaving keep_pad_ms of breath each side. The dedicated fix for the silence_at_edges render check. Silent footage = honest no-op.",
+      "description": "Top-and-tail: remove leading + trailing DEAD AIR (before the first spoken word / after the last) while preserving internal pacing — unlike transcript.remove_silences which removes every silence. Anchors to SPEECH (word timings via the EDL), leaving keep_pad_ms of breath each side. The dedicated fix for the silence_at_edges render check. Transcribed footage with no spoken words = ok with a nothing-found note (untranscribed_assets lists assets that had no transcript). With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "required": [],
@@ -297,7 +297,7 @@
     {
       "name": "edit.ripple_delete",
       "domain": "edit",
-      "description": "Remove a timeline range. One track, or ALL tracks when track is omitted (keeps AV in sync). ripple selects the NLE edit kind: ripple=true (DEFAULT, the older behavior — omitting it replays byte-identical) CLOSES the gap (extract: later content shifts left, captions/markers/duck-windows remap); ripple=false LEAVES a gap of equal length where the content was (LIFT: nothing downstream moves, captions/markers/duck-windows stay put — the 'remove this clip, keep everyone else's timing' edit).",
+      "description": "Remove a timeline range. One track, or ALL tracks when track is omitted (keeps AV in sync). ripple selects the NLE edit kind: ripple=true (DEFAULT, the older behavior — omitting it replays byte-identical) CLOSES the gap (extract: later content shifts left, captions/markers/duck-windows remap); ripple=false LEAVES a gap of equal length where the content was (LIFT: nothing downstream moves, captions/markers/duck-windows stay put — the 'remove this clip, keep everyone else's timing' edit). ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -362,7 +362,7 @@
     {
       "name": "edit.trim",
       "domain": "edit",
-      "description": "Adjust a clip's source in/out points (either or both); the timeline ripples to the new duration. linked defaults true for live calls: when the clip has one exact imported A/V counterpart (opposite kind, same asset/source range/timeline span), both clips trim atomically so video and audio stay aligned; linked:false deliberately trims one clip. Old logged trims without linked lowering replay with their historical one-clip behavior.",
+      "description": "Adjust a clip's source in/out points (either or both); the timeline ripples to the new duration. linked defaults true for live calls: when the clip has one exact imported A/V counterpart (opposite kind, same asset/source range/timeline span), both clips trim atomically so video and audio stay aligned; linked:false deliberately trims one clip. Old logged trims without linked lowering replay with their historical one-clip behavior. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -421,7 +421,7 @@
     {
       "name": "edit.move",
       "domain": "edit",
-      "description": "Move a clip to a (possibly different) track at a timeline position. Gap-fills the source slot (the source track does NOT ripple) and splices into the destination. linked defaults true for live calls: when the clip has one exact imported A/V counterpart (opposite kind, same asset/source range/timeline span), both clips move atomically and one undo restores both; linked:false deliberately moves one clip. ripple false (default) leaves unrelated tracks fixed; true opens an AV-sync gap in every OTHER video/audio track after both linked destinations are populated and remaps captions/markers/duck-windows. Old logged moves without linked lowering replay with their historical one-clip behavior.",
+      "description": "Move a clip to a (possibly different) track at a timeline position; its old slot becomes a gap. Two modes, named as in Premiere/Resolve/Final Cut/Avid: OVERWRITE (ripple false, default; a plain drag): the clip replaces what is under [at_ms, at_ms+duration), clips there are trimmed or removed, nothing after it moves on any track. INSERT (ripple true; Alt-drag): the clip splices in at at_ms and every other video/audio track opens the same time (captions/markers/duck-windows remapped). The op and result record placement \"overwrite\" or \"insert\". linked defaults true for live calls: when the clip has one exact imported A/V counterpart (opposite kind, same asset/source range/timeline span), both clips move atomically and one undo restores both; linked:false deliberately moves one clip. Old logged moves replay as recorded (no linked lowering: one clip; no placement: the historical splice). EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -444,7 +444,7 @@
           "ripple": {
             "type": "boolean",
             "default": false,
-            "description": "false (default) = move the selected clip and its exact linked counterpart without shifting unrelated tracks; true = also open time on every other media track and remap captions/markers/duck-windows."
+            "description": "false (default) = Overwrite: the clip and its linked counterpart replace what is under them, nothing else moves; true = Insert: splice in and push the rest of every media track right."
           },
           "linked": {
             "type": "boolean",
@@ -462,7 +462,7 @@
           }
         }
       },
-      "result": "{clip, track, at_ms, ripple, linked, linked_clip, linked_track, rippled_tracks} — final placement, resolved link/ripple modes, inferred counterpart (or null), and unrelated tracks that received the gap; one op appended",
+      "result": "{clip, track, at_ms, ripple, linked, linked_clip, linked_track, rippled_tracks, placement, removed_clips} — final placement, resolved link/ripple modes, inferred counterpart (or null), unrelated tracks that received the gap, placement overwrite|insert, and clips the overwrite replaced completely; one op appended",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -485,7 +485,7 @@
     {
       "name": "edit.insert",
       "domain": "edit",
-      "description": "Insert an asset as a new clip on a track at a timeline position; later clips on that track shift right. src_range_ms selects a sub-range of the asset (defaults to full duration). STILL IMAGES (probe kind=image) have no intrinsic duration: pass duration_ms instead (REQUIRED for images; video tracks only) — the render loops the still for the clip duration, conformed to project geometry. RIPPLE MATRIX (default chosen by TARGET track; explicit `ripple` always wins): BASE track target (the first video track with clips — the renderer's base-canvas rule — or the first audio track with clips; positional first of the kind when all are empty) → default ripple=TRUE: a gap of the inserted duration is spliced into every OTHER video/audio track at at_ms (razor-across-tracks; tracks ending at/before at_ms are untouched), caption ranges + duck gain-windows remap edge-wise, markers at/after at_ms shift right by the inserted duration — AV sync and overlay/caption/marker alignment preserved (mirror of ripple_delete's all-tracks form). OVERLAY/EXTRA track target (any later video track = PiP overlay; any later audio track = music/SFX bed) → default ripple=FALSE: overlays float above the base, nothing else moves. ripple=false on a base track is the deliberate overlay/replace opt-out (siblings + markers stay put, consistent with single-track ripple_delete). In BOTH modes the target track's own duck windows follow its shifted content. The RESOLVED ripple value is recorded explicitly on the op (ops are self-contained; ops logged before this flag replay as ripple=false).",
+      "description": "Insert an asset as a new clip on a track at a timeline position; later clips on that track shift right. src_range_ms selects a sub-range of the asset (defaults to full duration). STILL IMAGES (probe kind=image) have no intrinsic duration: pass duration_ms instead (REQUIRED for images; video tracks only) — the render loops the still for the clip duration, conformed to project geometry. RIPPLE MATRIX (default chosen by TARGET track; explicit `ripple` always wins): BASE track target (the first video track with clips — the renderer's base-canvas rule — or the first audio track with clips; positional first of the kind when all are empty) → default ripple=TRUE: a gap of the inserted duration is spliced into every OTHER video/audio track at at_ms (razor-across-tracks; tracks ending at/before at_ms are untouched), caption ranges + duck gain-windows remap edge-wise, markers at/after at_ms shift right by the inserted duration — AV sync and overlay/caption/marker alignment preserved (mirror of ripple_delete's all-tracks form). OVERLAY/EXTRA track target (any later video track = PiP overlay; any later audio track = music/SFX bed) → default ripple=FALSE: overlays float above the base, nothing else moves. ripple=false on a base track is the deliberate overlay/replace opt-out (siblings + markers stay put, consistent with single-track ripple_delete). In BOTH modes the target track's own duck windows follow its shifted content. The RESOLVED ripple value is recorded explicitly on the op (ops are self-contained; ops logged before this flag replay as ripple=false). EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { callVerb, type Project, type VerbResult } from '../../lib/client'
 import { Icon } from '../../icons'
+import { noTranscriptKind, noTranscriptSentence } from '../../lib/noTranscript'
 
 type ToolAction = 'trim_edges' | 'split_scenes' | 'mark_scenes'
 
@@ -29,7 +30,7 @@ function resultNumber(result: unknown, key: string): number {
 }
 
 function toolResultMessage(id: ToolAction, r: VerbResult<unknown>): string {
-  if (!r.ok) return `${id}: ${r.error?.message ?? r.error?.code ?? 'failed'}`
+  if (!r.ok) return noTranscriptKind(r.error) ? `Trim dead air: ${noTranscriptSentence(noTranscriptKind(r.error)!)}` : `${id}: ${r.error?.message ?? r.error?.code ?? 'failed'}`
   if (id === 'split_scenes') {
     const splits = resultNumber(r.result, 'splits')
     const sceneCuts = resultNumber(r.result, 'scene_cuts')

@@ -29,6 +29,27 @@ pub(super) fn spawn_verify_rerun_job(
         let artifact_receipt_path = prepared.receipt.output_path.clone();
         let receipt_duration = prepared.receipt.duration_ms;
         let receipt_profile = prepared.profile;
+        // Checks the render found not applicable (no sound, no picture) stay
+        // so, and loudness is re-measured against the render's own target, ONLY
+        // when this engine wrote that receipt. A receipt that came with the
+        // project (or was changed since) waives nothing and sets no target:
+        // every output check runs on the bytes.
+        let receipt_written_here = prepared.receipt_written_here;
+        let not_applicable: Vec<cut_core::CheckResult> = prepared
+            .receipt
+            .checks
+            .iter()
+            .filter(|check| receipt_written_here && cut_core::is_not_applicable(check))
+            .cloned()
+            .collect();
+        let loudness_target = prepared
+            .receipt
+            .checks
+            .iter()
+            .filter(|_| receipt_written_here)
+            .find(|check| check.name == cut_core::check_names::LUFS)
+            .and_then(|check| check.details.get("target_lufs"))
+            .and_then(serde_json::Value::as_f64);
         let result_receipt = verification_receipt.clone();
         let instrument_job_id = jid.clone();
         let result = run_blocking_cancellable("verify.rerun output checks", move |cancellation| {
@@ -85,12 +106,26 @@ pub(super) fn spawn_verify_rerun_job(
                     duration_ms: duration,
                     loudness: report.loudness.clone(),
                     output_report: Some(report),
+                    streams: Vec::new(),
                 };
                 let mut checks =
                     cut_perception::output_checks_with_profile(&facts, receipt_profile).into_vec();
+                for check in checks.iter_mut() {
+                    if let Some(na) = not_applicable.iter().find(|na| na.name == check.name) {
+                        *check = na.clone();
+                    } else if check.name == cut_core::check_names::LUFS {
+                        // Re-measure against the target the render was checked
+                        // against (normalize_loudness), not a fixed default.
+                        if let Some(target) = loudness_target {
+                            *check = cut_perception::checks::lufs(&facts, target, 2.0);
+                        }
+                    }
+                }
                 checks.push(duration_matches_receipt(duration, receipt_duration));
                 let pass = checks.iter().all(|check| check.pass);
+                let outcome = cut_core::check_outcome(&checks);
                 let result = json!({
+                    "outcome": outcome,
                     "render_id": artifact_render_id.clone(),
                     "source_receipt_id": artifact_render_id,
                     "verification_receipt": format!("receipts/{result_receipt}"),
@@ -108,6 +143,15 @@ pub(super) fn spawn_verify_rerun_job(
         .await;
 
         match result {
+            // A re-check whose checks fail is not a plain "done": it says so.
+            Ok(mut result) if result["pass"] == false => {
+                let summary = result["outcome"]["summary"]
+                    .as_str()
+                    .unwrap_or("The re-check found failing checks.")
+                    .to_string();
+                result["warnings"] = json!([summary]);
+                st.jobs.finish_with_warnings(&jid, result)
+            }
             Ok(result) => st.jobs.finish(&jid, result),
             Err(error) => st.jobs.fail(&jid, error),
         }

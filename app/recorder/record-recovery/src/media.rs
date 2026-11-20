@@ -29,11 +29,15 @@ struct ProbeStream {
     width: Option<u32>,
     height: Option<u32>,
     nb_read_frames: Option<String>,
+    nb_read_packets: Option<String>,
     avg_frame_rate: Option<String>,
     r_frame_rate: Option<String>,
 }
 
-/// Probe container duration, count all video frames, and decode its video stream.
+/// Probe container facts, then decode the video stream once, counting the
+/// decoded frames in that same pass. (Counting with `ffprobe -count_frames`
+/// was a second, single-threaded full decode: 3.6 s of the 5.3 s that a 15 s
+/// 1080p Windows checkpoint took to verify, while the recording waited.)
 /// Every helper uses CUT-JOB-02's owned tree and concurrently capped drains, so
 /// verbose output cannot hold pipes open or outlive this recovery operation.
 pub fn verify_media(ffmpeg: &str, ffprobe: &str, path: &Path) -> Result<MediaFacts, ManifestError> {
@@ -52,21 +56,15 @@ pub(crate) fn verify_checkpoint_media(
     path: &Path,
 ) -> Result<Option<MediaFacts>, ManifestError> {
     let mut probe = Command::new(ffprobe);
-    probe
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-count_frames",
-            "-show_entries",
-            "format=duration:stream=codec_type,codec_name,width,height,nb_read_frames,avg_frame_rate,r_frame_rate",
-            "-of",
-            "json",
-        ])
-        .arg(path);
+    probe.args([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate",
+        "-of",
+        "json",
+    ]);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut probe, path);
     let probe = bounded_output(&mut probe, "probe checkpoint media")?;
     let status = probe.status;
     let bytes = probe.stdout;
@@ -75,40 +73,38 @@ pub(crate) fn verify_checkpoint_media(
             "ffprobe verification was unavailable or did not produce bounded media facts".into(),
         ));
     }
-    let Some(media) = media_facts_from_ffprobe(&bytes)? else {
+    let mut decode = Command::new(ffmpeg);
+    decode.args(["-v", "error", "-nostats"]);
+    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut decode, path).map_err(|cause| {
+        ManifestError::Invalid(format!(
+            "cannot safely read checkpoint media: {cause}; use a readable checkpoint and retry recovery"
+        ))
+    })?;
+    decode
+        // Passthrough: every decoded frame is counted once, none duplicated
+        // or dropped to fit a rate.
+        .args(["-map", "0:v:0", "-fps_mode", "passthrough", "-f", "null"])
+        .args(["-progress", "pipe:1", "-"]);
+    let decoded = bounded_output(&mut decode, "decode checkpoint video")?;
+    if !decoded.status.success() {
+        return Ok(None);
+    }
+    let Some(frames) = last_progress_frame(&decoded.stdout) else {
+        return Ok(None);
+    };
+    let Some(media) = facts_from_ffprobe(&bytes, Some(frames))? else {
         return Ok(None);
     };
     let has_audio = media.has_audio;
-    let mut decode = Command::new(ffmpeg);
-    decode
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-i",
-        ])
-        .arg(path)
-        .args(["-map", "0:v:0", "-f", "null", "-"]);
-    if !bounded_status(&mut decode, "decode checkpoint video")?.success() {
-        return Ok(None);
-    }
     if has_audio {
         let mut audio = Command::new(ffmpeg);
-        audio
-            .args([
-                "-v",
-                "error",
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-format_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                "-i",
-            ])
-            .arg(path)
-            .args(["-map", "0:a:0", "-f", "null", "-"]);
+        audio.args(["-v", "error"]);
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut audio, path).map_err(|cause| {
+            ManifestError::Invalid(format!(
+                "cannot safely read checkpoint audio: {cause}; use a readable checkpoint and retry recovery"
+            ))
+        })?;
+        audio.args(["-map", "0:a:0", "-f", "null", "-"]);
         if !bounded_status(&mut audio, "decode checkpoint audio")?.success() {
             return Ok(None);
         }
@@ -116,7 +112,55 @@ pub(crate) fn verify_checkpoint_media(
     Ok(Some(media))
 }
 
+/// Container facts of a file this recorder has just written itself (a CFR
+/// stitch part or the concatenated take), counted from packets without a
+/// second full decode. Every H.264 packet here is one frame: these files come
+/// from one encoder run with no packet dropping. Checkpoints written by a
+/// native capture encoder still go through [`verify_media`].
+pub fn probe_own_output(ffprobe: &str, path: &Path) -> Result<MediaFacts, ManifestError> {
+    let mut probe = Command::new(ffprobe);
+    probe.args([
+        "-v",
+        "error",
+        "-count_packets",
+        "-show_entries",
+        "format=duration:stream=codec_type,codec_name,width,height,nb_read_packets,avg_frame_rate,r_frame_rate",
+        "-of",
+        "json",
+    ]);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut probe, path);
+    let probe = bounded_output(&mut probe, "probe written stitch media")?;
+    if !probe.status.success()
+        || u64::try_from(probe.stdout.len()).unwrap_or(u64::MAX) > MAX_PROBE_BYTES
+    {
+        return Err(ManifestError::Invalid(
+            "ffprobe could not read the stitched media it just wrote".into(),
+        ));
+    }
+    media_facts_from_ffprobe(&probe.stdout)?.ok_or_else(|| {
+        ManifestError::Invalid("the stitched media has no playable video stream".into())
+    })
+}
+
+/// The last `frame=` count that `ffmpeg -progress` reported.
+fn last_progress_frame(stdout: &[u8]) -> Option<u64> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("frame="))
+        .filter_map(|count| count.trim().parse::<u64>().ok())
+        .next_back()
+}
+
 fn media_facts_from_ffprobe(bytes: &[u8]) -> Result<Option<MediaFacts>, ManifestError> {
+    facts_from_ffprobe(bytes, None)
+}
+
+/// `decoded_frames` replaces the probe's own frame or packet count when the
+/// frames were counted by a decode.
+fn facts_from_ffprobe(
+    bytes: &[u8],
+    decoded_frames: Option<u64>,
+) -> Result<Option<MediaFacts>, ManifestError> {
     let probe: Probe = serde_json::from_slice(bytes)?;
     let Some(duration_ms) = probe
         .format
@@ -135,10 +179,14 @@ fn media_facts_from_ffprobe(bytes: &[u8]) -> Result<Option<MediaFacts>, Manifest
     else {
         return Ok(None);
     };
-    let Some(decoded_video_frames) = video
-        .nb_read_frames
-        .as_deref()
-        .and_then(|value| value.parse::<u64>().ok())
+    let Some(decoded_video_frames) = decoded_frames
+        .or_else(|| {
+            video
+                .nb_read_frames
+                .as_deref()
+                .or(video.nb_read_packets.as_deref())
+                .and_then(|value| value.parse::<u64>().ok())
+        })
         .filter(|frames| *frames > 0)
     else {
         return Ok(None);
@@ -175,6 +223,19 @@ pub(crate) fn bounded_status(
     context: &str,
 ) -> Result<ExitStatus, ManifestError> {
     Ok(bounded_output(command, context)?.status)
+}
+
+/// As [`bounded_status`], for a command whose work grows with the media it
+/// writes (a CFR stitch part): the caller derives the bound from that length.
+pub(crate) fn bounded_status_within(
+    command: &mut Command,
+    context: &str,
+    timeout: Duration,
+) -> Result<ExitStatus, ManifestError> {
+    let control = OwnedProcessControl::bounded(timeout.max(MEDIA_TIMEOUT), || false);
+    run_owned_command(command, &control, context)
+        .map(|output| output.status)
+        .map_err(|error| ManifestError::Invalid(format!("{context}: {error}")))
 }
 
 fn bounded_output(
@@ -233,6 +294,23 @@ mod tests {
         .unwrap();
         assert!(invalid.avg_frame_rate.is_none());
         assert!(invalid.r_frame_rate.is_none());
+    }
+
+    #[test]
+    fn the_decoded_frame_count_is_the_last_progress_report() {
+        let progress = b"frame=120\nfps=0.0\nprogress=continue\nframe=806\nfps=490\nprogress=end\n";
+        assert_eq!(last_progress_frame(progress), Some(806));
+        assert_eq!(last_progress_frame(b"progress=end\n"), None);
+        let probe = br#"{"format":{"duration":"14.583"},"streams":[{"codec_type":"video","codec_name":"hevc","width":1920,"height":1080,"avg_frame_rate":"30/1","r_frame_rate":"60/1"}]}"#;
+        assert_eq!(
+            facts_from_ffprobe(probe, Some(806))
+                .unwrap()
+                .unwrap()
+                .decoded_video_frames,
+            806
+        );
+        // Nothing decoded: not a playable checkpoint.
+        assert!(facts_from_ffprobe(probe, Some(0)).unwrap().is_none());
     }
 
     #[test]

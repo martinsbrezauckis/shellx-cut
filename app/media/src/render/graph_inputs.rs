@@ -22,6 +22,8 @@ pub(super) struct GraphInput {
     /// (pad/colorchannelmixer/transparent-filler) before a single hwupload into
     /// `overlay_cuda` (2b-ii). Software graph: always false (system-memory frames).
     pub(super) gpu_decode: bool,
+    /// Decoder thread cap for a very large source (item 82); None = automatic.
+    pub(super) decode_threads: Option<u32>,
 }
 
 /// Absolute path to a clip's baked matte alpha under the project cache. The
@@ -120,7 +122,9 @@ pub(super) fn bake_mask_png_atomic(
         super::ensure_plain_internal_child(project, cache)?;
         super::ensure_plain_internal_child(cache, parent)?;
     }
-    if super::plain_internal_file_exists(alpha_path)? {
+    // Item 155: reuse only an alpha this engine baked (cache_trust); a planted
+    // or copied one is baked again and replaced by the write below.
+    if super::plain_internal_file_exists(alpha_path)? && crate::cache_trust::trusted(alpha_path) {
         return Ok(());
     }
     let parent = alpha_path
@@ -134,8 +138,14 @@ pub(super) fn bake_mask_png_atomic(
     crate::mask::bake_mask_png(mask, w, h, &tmp)?;
     super::plain_internal_file_exists(alpha_path)?;
     match std::fs::rename(&tmp, alpha_path) {
-        Ok(()) => Ok(()),
-        Err(e) if super::plain_internal_file_exists(alpha_path)? => {
+        Ok(()) => {
+            crate::cache_trust::remember(alpha_path);
+            Ok(())
+        }
+        Err(e)
+            if super::plain_internal_file_exists(alpha_path)?
+                && crate::cache_trust::trusted(alpha_path) =>
+        {
             drop(e);
             Ok(())
         }
@@ -254,10 +264,13 @@ fn add_graph_asset_input(
     input_idx.insert(asset_id.to_string(), inputs.len());
     // gpu_decode defaults false (CPU decode); build_graph_gpu flips it on for
     // BASE-track inputs only (NVDEC). The software path leaves it false.
+    let decode_threads =
+        super::source_dims(asset).and_then(|(w, h)| super::resources::decoder_threads(w, h));
     inputs.push(GraphInput {
         path,
         image,
         gpu_decode: false,
+        decode_threads,
     });
     Ok(())
 }
@@ -333,6 +346,26 @@ pub(super) fn collect_graph_inputs(
             if input_idx.contains_key(&key) {
                 continue;
             }
+            if super::plain_internal_file_exists(&alpha_path)?
+                && !crate::cache_trust::trusted(&alpha_path)
+            {
+                // Item 155: an alpha this engine did not bake (planted, or the
+                // project was copied from another computer) is never used.
+                return Err(CutError::new(
+                    error_codes::NOT_FOUND,
+                    format!(
+                        "the matte for clip {} was not made on this computer: {}",
+                        seg.clip_id.as_deref().unwrap_or(asset_id),
+                        alpha_path.display()
+                    ),
+                    "a matte alpha is used only when this computer baked it; one that came with \
+                     the project could show a different cut-out than the edit says",
+                )
+                .with_suggested_action(
+                    "render with render.final (it bakes the matte again first), or re-apply \
+                     edit.matte on the clip; the matting tool must be installed",
+                ));
+            }
             if !super::plain_internal_file_exists(&alpha_path)? {
                 return Err(CutError::new(
                     error_codes::NOT_FOUND,
@@ -357,6 +390,7 @@ pub(super) fn collect_graph_inputs(
                 path: alpha_path,
                 image: false,
                 gpu_decode: false,
+                decode_threads: None,
             });
         }
         // Vector/freeform masks (edit.add_mask): each masked segment needs its baked
@@ -384,6 +418,7 @@ pub(super) fn collect_graph_inputs(
                 path: alpha_path,
                 image: true, // a single still PNG (looped at the input like other stills)
                 gpu_decode: false,
+                decode_threads: None,
             });
         }
         // Power windows (edit.grade_window): each window needs its baked shape-alpha PNG as a
@@ -408,6 +443,7 @@ pub(super) fn collect_graph_inputs(
                     path: alpha_path,
                     image: true, // a single still PNG (looped at the input like other stills)
                     gpu_decode: false,
+                    decode_threads: None,
                 });
             }
         }

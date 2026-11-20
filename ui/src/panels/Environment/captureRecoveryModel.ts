@@ -150,12 +150,14 @@ function decodeCapture(value: unknown): CaptureRecoveryItem {
     invalid('returned an owner-ambiguous or corrupt capture with a terminal receipt')
   }
   if (receipt) validateReceiptFacts(state as CaptureRecoveryState, checkpoints, receipt)
+  if (capture.recoverable !== undefined && typeof capture.recoverable !== 'boolean') invalid('returned a malformed recoverable flag')
   return {
     capture_id: captureId,
     state: state as CaptureRecoveryState,
     checkpoints,
     has_open_segment: hasOpenSegment,
     receipt,
+    ...(typeof capture.recoverable === 'boolean' ? { recoverable: capture.recoverable } : {}),
   }
 }
 

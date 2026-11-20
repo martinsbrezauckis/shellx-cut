@@ -774,7 +774,6 @@ async fn generate_insert_materialized(
     ))
 }
 
-const GENERATE_PROMPT_ADAPTER_REL: &str = "app/perception/py/generate_prompt_adapter.py";
 const GENERATE_PROMPT_TIMEOUT_MS_DEFAULT: u64 = 120_000;
 
 /// Resolved local CLI agent paths ({"claude": path|null, ...}) handed to the
@@ -808,34 +807,13 @@ fn generate_agent_paths(agent: &str) -> Result<Value, String> {
 }
 
 fn find_generate_prompt_adapter() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CUTD_GENERATE_PROMPT_ADAPTER") {
-        if !p.is_empty() {
-            let pb = PathBuf::from(&p);
-            return pb.is_file().then_some(pb);
-        }
-    }
-    let mut starts: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        starts.push(exe);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        starts.push(cwd);
-    }
-    for start in starts {
-        for dir in start.ancestors().take(6) {
-            let cand = dir.join(GENERATE_PROMPT_ADAPTER_REL);
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    // Installed layout: the shim ships in the perception sidecar payload
-    // (beside instruments.py) because that dir already travels with cutd on
-    // every platform — on macOS the bundle resources live under
-    // Contents/Resources, which the exe-ancestor walk above cannot reach.
-    let (_py, instruments) = cut_perception::sidecar_paths();
-    let cand = instruments.parent()?.join("generate_prompt_adapter.py");
-    cand.is_file().then_some(cand)
+    // The explicit override or the copy bundled beside the perception
+    // entrypoint; never the current folder or a folder above it, which may
+    // be a project from someone else.
+    crate::dispatch::adapter_location::configured_or_bundled_adapter(
+        "CUTD_GENERATE_PROMPT_ADAPTER",
+        "generate_prompt_adapter.py",
+    )
 }
 
 async fn run_generate_prompt_adapter(
@@ -853,7 +831,7 @@ async fn run_generate_prompt_adapter(
         return json!({
             "schema": "shellx-cut/generate-plan/1",
             "status": "not_run",
-            "reason": format!("generate prompt adapter not found ({GENERATE_PROMPT_ADAPTER_REL} near the cutd binary/cwd; override: CUTD_GENERATE_PROMPT_ADAPTER) - honest not_run, no Generate prompt backend"),
+            "reason": "generate prompt adapter not found (generate_prompt_adapter.py beside the installed perception files; override: CUTD_GENERATE_PROMPT_ADAPTER as an absolute path) - honest not_run, no Generate prompt backend",
             "plan": Value::Null,
             "warnings": [],
         });
@@ -1354,7 +1332,6 @@ pub(crate) async fn generate_from_prompt(
     )))
 }
 
-const GENERATE_STORYBOARD_ADAPTER_REL: &str = "app/perception/py/generate_storyboard_adapter.py";
 const GENERATE_STORYBOARD_TIMEOUT_MS_DEFAULT: u64 = 120_000;
 const GENERATE_STORYBOARD_SKILL_PATH: [&str; 2] = [
     "skill/shellx-cut/craft/generate-director-questioning.md",
@@ -1362,32 +1339,13 @@ const GENERATE_STORYBOARD_SKILL_PATH: [&str; 2] = [
 ];
 
 fn find_generate_storyboard_adapter() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CUTD_GENERATE_STORYBOARD_ADAPTER") {
-        if !p.is_empty() {
-            let pb = PathBuf::from(&p);
-            return pb.is_file().then_some(pb);
-        }
-    }
-    let mut starts: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        starts.push(exe);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        starts.push(cwd);
-    }
-    for start in starts {
-        for dir in start.ancestors().take(6) {
-            let cand = dir.join(GENERATE_STORYBOARD_ADAPTER_REL);
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    // Installed layout: ships beside instruments.py (see the prompt-adapter
-    // finder for why the sidecar payload is the cross-platform carrier).
-    let (_py, instruments) = cut_perception::sidecar_paths();
-    let cand = instruments.parent()?.join("generate_storyboard_adapter.py");
-    cand.is_file().then_some(cand)
+    // The explicit override or the copy bundled beside the perception
+    // entrypoint; never the current folder or a folder above it, which may
+    // be a project from someone else.
+    crate::dispatch::adapter_location::configured_or_bundled_adapter(
+        "CUTD_GENERATE_STORYBOARD_ADAPTER",
+        "generate_storyboard_adapter.py",
+    )
 }
 
 async fn run_generate_storyboard_adapter(
@@ -1405,7 +1363,7 @@ async fn run_generate_storyboard_adapter(
         return json!({
             "schema": "shellx-cut/generate-storyboard-result/1",
             "status": "not_run",
-            "reason": format!("generate storyboard adapter not found ({GENERATE_STORYBOARD_ADAPTER_REL} near the cutd binary/cwd; override: CUTD_GENERATE_STORYBOARD_ADAPTER) - honest not_run, no Generate storyboard backend"),
+            "reason": "generate storyboard adapter not found (generate_storyboard_adapter.py beside the installed perception files; override: CUTD_GENERATE_STORYBOARD_ADAPTER as an absolute path) - honest not_run, no Generate storyboard backend",
             "storyboard": Value::Null,
             "questions": [],
             "warnings": [],

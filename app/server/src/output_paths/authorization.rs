@@ -20,6 +20,10 @@ pub(crate) struct OutputAuthorization {
 
 impl OutputAuthorization {
     pub(crate) fn capture(project_dir: &Path) -> Result<Self, CutError> {
+        if let Some(chosen) = super::chosen_session_output_dir() {
+            // Queue admission is the moment to refuse a folder that is gone.
+            super::check_export_folder(&chosen)?;
+        }
         let default_dir = super::unscoped_session_output_dir()
             .map(|dir| dir.canonicalize())
             .transpose()?;

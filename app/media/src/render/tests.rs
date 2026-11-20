@@ -2,6 +2,11 @@ use super::input_paths::strip_verbatim_prefix;
 use super::*;
 use cut_core::{ColorConfig, ColorSpace, EdlSegment};
 
+/// The GPU gate as a yes/no (the gate itself names why it says no).
+fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) -> bool {
+    gpu_gate_refusal(project, edl, opts).is_none()
+}
+
 #[test]
 fn sha256_file_streams_expected_digest() {
     let dir = tempfile::tempdir().unwrap();
@@ -117,9 +122,14 @@ fn vidstab_trf_path_is_filtergraph_safe_on_windows() {
     );
     // The exact string ffmpeg receives: single-quoted, forward slashes, escaped
     // colon, NO raw backslash, NO verbatim prefix.
-    let esc = escape_filter_path(&strip_verbatim_prefix(Path::new(
-        r"\\?\C:\Users\U\stab\h.trf",
-    )));
+    // The Windows form is checked on every system (on Unix a backslash is part
+    // of a file name, so the native escaper keeps it).
+    let esc = crate::ffmpeg::escape::filter_path_for(
+        &strip_verbatim_prefix(Path::new(r"\\?\C:\Users\U\stab\h.trf"))
+            .display()
+            .to_string(),
+        crate::ffmpeg::escape::PathStyle::Windows,
+    );
     assert_eq!(esc, r"'C\:/Users/U/stab/h.trf'");
     assert!(!esc.contains(r"\\") && !esc.contains(r"?"));
 }
@@ -689,6 +699,7 @@ fn xfade_window_segment(timeline_in_ms: u64, xfade_in_ms: u64) -> EdlSegment {
         input_color_space: None,
         caption_text: None,
         style_ref: None,
+        window: None,
     }
 }
 
@@ -1676,6 +1687,34 @@ fn exact_probe_uses_lossless_conform_and_timestamp_normalizer() {
     assert_eq!(fps_filter_for_asset(&asset, 30.0, 1.0, true), "fps=30");
 }
 
+/// A variable-frame-rate source whose average equals the project rate (the HQ
+/// phone clip on its own 58.591 fps timeline) must not be renumbered as if its
+/// frames were evenly spaced: `fps=` places each frame by its timestamp.
+#[test]
+fn variable_frame_rate_source_never_takes_the_renumbering_shortcut() {
+    let asset = cut_core::Asset {
+        path: "/media/phone.mp4".into(),
+        hash: "sha256:00".into(),
+        probe: Some(serde_json::json!({
+            "kind": "video",
+            "width": 3840,
+            "height": 2160,
+            "fps": 58.591,
+            "nominal_fps": 60.0,
+            "variable_frame_rate": true,
+        })),
+        transcript: None,
+        perception: None,
+        proxy: None,
+        filmstrip: None,
+    };
+    assert_eq!(
+        fps_filter_for_asset(&asset, 58.591, 1.0, false),
+        "fps=58.591"
+    );
+    assert_eq!(fps_filter_for_asset(&asset, 60.0, 1.0, false), "fps=60");
+}
+
 /// fold_video crossfade: a flagged seam emits `xfade` with the right
 /// offset (acc end − overlap) and shortens the running duration by the
 /// overlap; an unflagged seam emits a pairwise `concat`. Returns the
@@ -2136,9 +2175,11 @@ fn hidden_base_video_preserves_overlay_layer_over_black() {
         "hidden base should render a black canvas:\n{}",
         g.filter
     );
+    // The overlay asset's probe states no frame rate, so its frame count is
+    // not known exactly and it is locked to its slot (frame_budget, row 194).
     assert!(
         g.filter
-            .contains("[v0][o1_s0]overlay=0:0:eof_action=pass[vo1];"),
+            .contains("[v0][o1_s0fb]overlay=0:0:eof_action=pass[vo1];"),
         "visible overlay must remain an overlay over the black base:\n{}",
         g.filter
     );
@@ -2875,6 +2916,24 @@ fn plan_scrub_frame_eligibility_and_mapping() {
     let plan2 = plan_scrub_frame(&p, &edl, project_dir, 5000).expect("c2 eligible");
     assert_eq!(plan2.src_pos_ms, 1000);
 
+    // A frozen or reversed clip → None: the plain source seek would show the
+    // wrong frame (a freeze holds src_in + at_ms, reverse runs from src_out).
+    for (freeze, reverse) in [
+        (Some(cut_core::ClipFreeze { at_ms: 500 }), false),
+        (None, true),
+    ] {
+        let mut p_held = p.clone();
+        if let Some(Clip::Media(c)) = p_held.track_mut("v1").unwrap().clips.first_mut() {
+            c.freeze = freeze.clone();
+            c.reverse = reverse;
+        }
+        let edl_held = cut_core::edl_from_project(&p_held);
+        assert!(
+            plan_scrub_frame(&p_held, &edl_held, project_dir, 2000).is_none(),
+            "frozen ({freeze:?}) or reversed ({reverse}) clip → composed fallback"
+        );
+    }
+
     // Out of range → None.
     assert!(
         plan_scrub_frame(&p, &edl, project_dir, 99_000).is_none(),
@@ -3006,6 +3065,23 @@ fn plan_scrub_frame_eligibility_and_mapping() {
         "crop does not change the seek position"
     );
 
+    // Item 99: a 4096x2160 source sits in its 960x540 proxy with bars above
+    // and below; the fast frame cuts them off and is fitted into the project
+    // frame like the composed one. A 16:9 source keeps the plain path.
+    assert_eq!(plan.proxy_crop, None, "16:9 source: no bars to cut");
+    assert_eq!(plan.frame, (1920, 1080));
+    let mut p_dci = p.clone();
+    p_dci.assets.get_mut("a1").unwrap().probe =
+        Some(serde_json::json!({"kind":"video","width":4096,"height":2160}));
+    p_dci.settings.width = 4096;
+    p_dci.settings.height = 2160;
+    let edl_dci = cut_core::edl_from_project(&p_dci);
+    let plan_dci = plan_scrub_frame(&p_dci, &edl_dci, project_dir, 2000).expect("eligible");
+    let [bx, by, bw, bh] = plan_dci.proxy_crop.expect("the proxy's bars are cut off");
+    assert_eq!((bx, bw), (0, 960));
+    assert!(by > 0 && bh < 540 && by + bh <= 540, "{by} {bh}");
+    assert_eq!(plan_dci.frame, (4096, 2160));
+
     // A cropped clip whose ASSET lacks a video probe → None: the mapping
     // needs source dims; without them we keep the composed fallback rather
     // than guess (correctness over speed for the rare unprobed case).
@@ -3111,4 +3187,19 @@ fn preset_registry_tiers() {
     let high = RenderPreset::named("high").unwrap();
     assert_eq!(arg_after(&high.video_args, "-crf"), Some("17"));
     assert_eq!(arg_after(&high.audio_args, "-b:a"), Some("256k"));
+}
+
+/// Item 95: a serial window gets the whole render budget. The old per-window
+/// model gave a software 4K window with a title 3,403,677,696 bytes, less than
+/// libx264 alone needs at 4K, and the kernel killed it twice in the HQ test.
+#[test]
+fn serial_window_gets_the_whole_render_budget() {
+    let gb = 1024u64 * 1024 * 1024;
+    let budget = Some((45 * gb, 60 * gb));
+    assert_eq!(window_mem_cap(1, budget), budget);
+    assert_eq!(
+        window_mem_cap(3, budget),
+        Some((15 * gb, 15 * gb + 512 * 1024 * 1024))
+    );
+    assert_eq!(window_mem_cap(1, None), None);
 }

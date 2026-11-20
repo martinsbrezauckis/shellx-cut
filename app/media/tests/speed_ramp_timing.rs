@@ -308,3 +308,5 @@ fn format_regrid_reopens_and_renders_on_the_new_frame_grid() {
     );
     assert_eq!(counted_video_frames(&output.path), expected_frames);
 }
+
+cut_core::isolate_test_process!();

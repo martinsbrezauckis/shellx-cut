@@ -1,3 +1,4 @@
+import { engineMediaUrl } from '../../lib/mediaUrl'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
   API_BASE,
@@ -196,7 +197,7 @@ export function RecordingRehearsal({
         <div className="rec-rehearsal__playback" data-cut-rec-rehearsal-playback>
           <video
             data-cut-rec-rehearsal-video
-            src={`${API_BASE}${state.take.playback_url}`}
+            src={engineMediaUrl(`${API_BASE}${state.take.playback_url}`)}
             controls
             autoPlay
             playsInline

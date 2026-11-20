@@ -176,6 +176,8 @@ fn attach_judge_to_receipt_rejects_receipt_outside_receipts_dir() {
         pass: false,
         judge: None,
         fix_actions: vec![],
+        encode: None,
+        outcome: None,
     };
     std::fs::write(&outside, serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
     let state = AppState::new();

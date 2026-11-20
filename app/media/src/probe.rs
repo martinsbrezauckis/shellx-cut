@@ -8,6 +8,12 @@ use cut_core::CutError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod rate;
+mod source;
+mod streams;
+pub use source::{empty_media_error, probe_source, unreadable_media_error, UNREADABLE_ACTION};
+pub use streams::{stream_extents, stream_extents_from_raw, StreamExtent};
+
 /// Asset kind classification: "video" | "audio" | "image". Image = a still
 /// (PNG/JPEG/…): it has geometry but NO intrinsic duration — clips of it get
 /// their duration from the edit (edit.insert duration_ms) and the renderer
@@ -52,6 +58,13 @@ pub struct MediaProbe {
     /// demuxer's nominal 25/1 is meaningless).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
+    /// Nominal video frame rate (ffprobe `r_frame_rate`), if video.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nominal_fps: Option<f64>,
+    /// True when the nominal and average rates disagree: the clip has a
+    /// variable frame rate (typical of phones). See `rate::timeline_rate`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub variable_frame_rate: bool,
     /// True if at least one audio stream exists.
     pub has_audio: bool,
     /// Audio sample rate, if audio.
@@ -130,19 +143,18 @@ fn normalize_ffprobe(raw: serde_json::Value, path: &Path) -> Result<MediaProbe, 
 
     // avg_frame_rate is a rational string like "30/1"; "0/0" means unknown.
     // Stills get None — their nominal rate is a demuxer artifact.
-    let fps = if is_image {
-        None
-    } else {
-        video
-            .and_then(|v| v["avg_frame_rate"].as_str())
-            .and_then(|r| {
-                let (num, den) = r.split_once('/')?;
-                let (num, den) = (num.parse::<f64>().ok()?, den.parse::<f64>().ok()?);
-                (den > 0.0 && num > 0.0)
-                    .then(|| num / den)
-                    .filter(|fps| fps.is_finite() && *fps > 0.0)
-            })
+    let rate_of = |key: &str| {
+        if is_image {
+            None
+        } else {
+            video
+                .and_then(|v| v[key].as_str())
+                .and_then(rate::parse_rate)
+        }
     };
+    let fps = rate_of("avg_frame_rate");
+    let nominal_fps = rate_of("r_frame_rate");
+    let variable_frame_rate = rate::is_variable(nominal_fps, fps);
 
     // "mov,mp4 / h264+aac" style summary for humans and receipts.
     let codecs: Vec<&str> = streams
@@ -165,6 +177,8 @@ fn normalize_ffprobe(raw: serde_json::Value, path: &Path) -> Result<MediaProbe, 
         width: probe_dimension(video, "width", path)?,
         height: probe_dimension(video, "height", path)?,
         fps,
+        nominal_fps,
+        variable_frame_rate,
         has_audio: audio.is_some(),
         audio_rate: audio
             .and_then(|a| a["sample_rate"].as_str())

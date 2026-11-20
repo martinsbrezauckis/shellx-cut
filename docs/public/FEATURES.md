@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,40 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.115 candidate
+## v0.6.116 candidate
 
-v0.6.114 remains the latest published release.
+v0.6.115 remains the latest published release.
+
+- The preview shows the finished picture when you pause, with titles, effects
+  and fades.
+- Exports match the timeline exactly: picture and sound stay in sync on
+  timelines with many cuts or mixed frame rates.
+- Closing or quitting during a recording saves the recording first; during an
+  export, ShellX Cut asks before stopping it.
+- A recording or export cut short by a crash or power loss is reported at the
+  next start; recordings come back with their sound and say how much was
+  recovered.
+- Stopping a screen recording is quicker, and a recording made while an export
+  runs is kept.
+- One export folder for all projects, remembered between sessions and shown in
+  the status bar.
+- FFmpeg can be downloaded from inside the app on Apple-silicon Macs too, and
+  every download shows its publisher, version, size and licence first.
+- When a feature needs a tool that is not installed, ShellX Cut says what is
+  missing and offers the download in Settings, including Microsoft's Visual C++
+  runtime for captions on Windows.
+- In the timeline, dragging a clip overwrites and Alt-dragging inserts, and the
+  timeline names which one you are doing.
+- An export that stops making progress ends with a clear message, and a render
+  queue tells you when some of its exports failed.
+- ShellX Cut opens in one window that fits your screen.
+- Fixed: playback looping or jumping back to 00:00 when the middle part of a
+  split clip is on a second video track (#2).
+- Many smaller fixes.
+
+## v0.6.115 published
+
+v0.6.115 remains the latest published release.
 
 - Linux Camera: Recording Studio gains a selectable camera source with explicit
   device readiness and capture status.
@@ -22,11 +53,11 @@ v0.6.114 remains the latest published release.
 - Windows and macOS window recordings preserve the native mouse cursor.
 - Finishing-recording messages stay clear of the top-bar buttons.
 
-Native installed qualification for v0.6.115 remains pending.
+The v0.6.115 release is published with native installed qualification recorded in the release evidence.
 
 ## v0.6.114 published
 
-v0.6.114 remains the latest published release.
+This section records the published v0.6.114 release.
 
 - Recording Studio keeps the shared **Edit | Record** switch in the editor
   header while giving capture a focused workspace. Capture readiness, source
@@ -74,7 +105,7 @@ inventory describes supported behavior; release qualification is recorded separa
 
 ## v0.6.113 published
 
-This section preserves v0.6.113 feature history; v0.6.114 is the latest published release.
+This section preserves v0.6.113 feature history.
 
 - Transcript is now a timeline-linked phrase and chapter list with exact
   start-end ranges and one shared time control for clips, captions, markers,
@@ -203,6 +234,9 @@ route to the same surface registry.
   project and places the media on its timeline. The first video adopts source
   geometry and frame rate when the new project still has its untouched default
   format; delivery aspect, output size, codec, and bitrate stay per-render.
+  Only files are imported by a drop: folders and files of an unsupported type are
+  named in a notice that says why they were left out (open the folder and drop the
+  files inside it).
 - Sequence Index: search clip and marker metadata across every active or inactive
   timeline from Find → Sequence, filter by sequence/result/track kind or live
   status (issues, offline, gaps, effects, hidden, locked, muted), then open the
@@ -226,16 +260,26 @@ route to the same surface registry.
   before committing either clip, so an invalid second leg leaves no partial
   picture, sound, or track. Moving or trimming either half also changes its exact
   counterpart atomically; deliberate split edits can opt out with `linked:false`.
+- Dragging a clip moves it in one of two modes, named as in Premiere Pro,
+  DaVinci Resolve, Final Cut and Avid. A plain drag is **Overwrite**: the clip
+  replaces what is under it and nothing else moves on any track. Hold Alt for
+  **Insert**: the clip goes in and pushes the rest of every track right. The
+  label next to the pointer names the mode while you drag; the old place stays
+  as a gap in both modes.
+- One frame is the smallest clip. An edit that would leave a clip shorter than
+  one frame is refused with the nearest value that works, and edit points less
+  than a frame from a clip edge snap to the edge. A sub-frame clip left by an
+  older version is drawn as an amber marker you can select and delete.
 - Ripple trims are available from the toolbar and default Q/W
   bindings: Q removes from the playhead to the selected clip's start, W removes
   from the playhead to its end, and the remaining linked picture and sound close
   the gap together instead of deleting the whole selected clip.
 - The timeline toolbar exposes Add Video Track and Add Audio Track. Empty
   user-created tracks remain available through unrelated edits and deletes.
-- Timeline placement follows NLE layer semantics: normal Insert and normal
-  drag/drop place media on the base story timeline with ripple; Alt-drag or
-  dropping on an existing overlay lane places video on top without rippling the
-  base.
+- Timeline placement follows NLE layer semantics: normal Insert and a normal
+  drop from Assets insert media on the base story timeline and push later clips
+  right; Alt-drag from Assets or dropping on an existing overlay lane places
+  video on top without moving the base.
 - Video layers use bottom-to-top compositing: the first
   non-empty video track is the stable base canvas, later video tracks render in
   track order above it, and an empty track does not steal the base role. A hidden
@@ -261,7 +305,8 @@ route to the same surface registry.
   survive trims, slips, and splits), word-level mute/unmute from the
   Transcript panel, and per-track mute/solo.
 - Audio pan/balance per track with center-neutral semantics, available in the
-  mixer and as a compact timeline-header shortcut.
+  mixer and as a compact timeline-header shortcut. A mono source plays on both
+  channels at its own level, as a stereo source at centre does.
 - The selected audio clip has a **Clip volume lane** over its waveform. Use
   **Add point** at the playhead or Ctrl/Cmd-click the curve, then drag named
   control points between their neighbours over a fixed −60…+12 dB display.
@@ -272,6 +317,14 @@ route to the same surface registry.
   interpolation editing. Automation saves are revision-protected: if another
   edit changes the project first, Cut reloads the current points instead of
   overwriting them.
+- The preview shows the finished picture when paused: COMPOSED is on by
+  default, so the paused frame is the exact composed frame with titles,
+  effects, fades and grades. While playing, the live preview draws what it can
+  and a note on the picture names anything that appears only when paused
+  ("Playback preview: fades appear when paused"). With COMPOSED off the preview
+  is live only and says what it leaves out; the choice is remembered. On Linux,
+  on a heavily loaded machine the picture can hold briefly at a cut while
+  playing; the paused frame and exports are exact.
 - Viewing aids: fullscreen preview (`f`), rule-of-thirds and title/action safe
   guides (`g`).
 - Keyboard remapping: a central keymap with a Settings editor
@@ -296,7 +349,9 @@ route to the same surface registry.
 ## Media And Library
 
 - Media import with probe, proxy, filmstrip, waveform, perception enrichment,
-  and first-import auto-placement on an empty timeline. Later imports wait in
+  and first-import auto-placement on an empty timeline (the first import
+  requested is placed, whatever order the files finish analysis in; each import
+  result says whether it was placed and why not). Later imports wait in
   Assets until the user clicks Insert or drags them into the timeline. Library
   media uses explicit Add to project or Insert at playhead actions.
 - Assets is media attached to the current project; Library is reusable media
@@ -330,6 +385,24 @@ route to the same surface registry.
   playback state, and large 4K/camera clips, with a one-click relink action,
   per-asset readiness badges, a "needs action" filter, and Advanced counts kept
   out of the default view.
+- Opening a project checks its proxies in the background (status bar
+  "Checking proxies"): proxies this computer made are used again, one it has no
+  record of (from an older version or another computer) is made again once, and
+  the ones its footage lacks are made; the preview plays the original media
+  meanwhile. After the update to v0.6.116 an existing project therefore makes
+  its proxies again once, at its first open, because the older proxies have no
+  such record; for that first open the preview shows the original media (or
+  "making proxy") for a while. On Linux the live preview may show a still frame
+  of a large original file until its proxy is ready; the paused frame and
+  exports are exact. Missing title movies are drawn again when they are needed.
+  The same open also reads each clip's media facts (kind, sound, size, frame
+  rate) again from its own file, and draws again every title movie and
+  timeline thumbnail strip this computer did not make for exactly its asset
+  and settings; a proxy counts only for the asset and source it was made for.
+  After the update the title movies, thumbnail strips and proxies of an
+  existing project are therefore made once more at its first open (a short
+  wait; nothing to do); facts of a missing or changed file count as unknown, so
+  a quality check is measured rather than skipped.
 - Proxy import controls are discoverable from Assets and command search so
   casual users can turn on smoother playback for future 4K/phone/camera imports.
 - Smart bins: saved per-project asset filters (kind, name text, unused,
@@ -415,7 +488,10 @@ route to the same surface registry.
   `media.diarize` after checking the configured Sortformer v2 Doctor card,
   binds the selected current-project asset, and polls the exact returned
   job/receipt before refreshing transcript speaker labels. Multicam switching
-  can use those labels with `mode:"speaker"`.
+  can use those labels with `mode:"speaker"`. One run accepts up to 2 hours of
+  audio; a longer asset, or one with no readable audio, is refused with a plain
+  reason (trim or split it, or choose an asset with speech audio), and the
+  service's reachability advice is given only for a real service failure.
 - Dubbing and translation: **Transcript Tools > Dub audio** checks the
   configured OmniVoice Doctor card, binds the selected asset and target
   language, then accepts only the matching track and receipt before refreshing
@@ -629,7 +705,19 @@ establish a tested editing workflow for the current release.
   project revision, capture inputs, edit plan, and output lease, or for failed
   receipt-bound output verification after revalidating the active project,
   immutable render receipt, and exact rendered bytes. It never generically
-  replays historical job arguments.
+  replays historical job arguments. A background job that fails and cannot be
+  retried, whoever started it (the person or an agent), stays visible in the
+  status bar with what failed, the plain reason and the suggested next step
+  until it is dismissed; the newest three are shown and older ones are counted.
+  Details opens Settings > Health & Recovery, which lists the full message.
+  Cancelled, replaced and restart-interrupted jobs are not shown as failures.
+  Rows reset when another project opens and can take up to 3 seconds to
+  appear; failures from before the window opened are listed in Health &
+  Recovery. A render queue in which some exports failed says so ("done, but 1
+  of 3 failed") and shows a status-bar row; when all failed, the queue itself
+  failed. A stopped recipe is a failed job with its report kept. For agents,
+  `outcome:"partial"` marks a job that ran to its end but did not fully
+  deliver.
 - Settings > Health & Recovery explains whether the disposable project cache
   matched or was rebuilt from durable history, whether a replay snapshot was
   accepted, and how many newer journal records still replay on reopen. It is a
@@ -670,15 +758,17 @@ establish a tested editing workflow for the current release.
 - `verify.judge` ships with its access-ladder adapter instead of requiring a
   hidden external script. It samples rendered frames for an optional visual
   review. Its accepted backend IDs remain Claude, Codex, Antigravity, and Grok,
-  while v0.6.114 admits only Claude with restricted Read capability (version
-  2.1.248 or later) plus a safe copied-frame workspace, or Grok with version
-  1.0.21 or later and its no-model-tools policy. Codex and Antigravity can be
-  detected but return honest `not_run` before review work until restricted
-  tool/file access is verified; this does not change their Agent Chat or
-  generation availability. Auto skips unready rungs in its configured order;
+  with Claude requiring version 2.1.248 or later, restricted Read capability,
+  and a safe copied-frame workspace, and Grok requiring version 1.0.21 or later
+  and its no-model-tools policy. Codex offers direct-frame review when Doctor confirms image/schema
+  and tool-free admission with `judge.codex.details.judge_ready:true`.
+  Installation alone is insufficient. Antigravity remains unready for render
+  judging and an explicit request returns `not_run` before review work; this
+  does not change Agent Chat or generation availability. Auto skips unready
+  rungs in its configured order;
   an attempted ready-rung infrastructure error may continue to the next ready
-  rung, while a named backend never falls back. Provider admission alone is not
-  a model-turn or native qualification claim.
+  rung, while a named backend never falls back. Doctor admission reports
+  readiness; a completed receipt records the actual review.
 - Project brand kits: Review → QC stores validated font, palette, caption
   position/size, and delivery-aspect constraints in the project operation log.
   Brand verification reads the saved kit by default, and social bundles enforce
@@ -693,6 +783,40 @@ establish a tested editing workflow for the current release.
   `cut.export.preflight`. The default banner names user-facing issues such as
   black ending, black/frozen footage, silent export, tiny clips, and black
   borders; raw pregate detail stays under Details.
+- The render receipt, the job result and the dry-run plan name the encoder
+  that ran (`encode`). When hardware encoding was asked for and software ran,
+  `encode.fallback_reason` says why in plain words. A frame larger than the
+  hardware encoder takes is named with that encoder's limit (H.264 hardware
+  encoders stop at 4096 px; HEVC is offered when it reaches the size), and a
+  hardware encoder that fails during the render makes Cut run the whole render
+  again in software. `render.bundle` and `render.reframe` receipts carry the
+  same record. When the experimental GPU render path was asked for, the record
+  says whether it ran and, if not, why.
+- Before a render starts, Cut estimates its memory and output size and compares
+  them with free memory and disk; the export preflight shows a shortfall with
+  its numbers. Software H.264 uses all of the computer's encoder threads when
+  the memory is there; only when it is not does the render use fewer threads
+  (as few as needed), and the progress message and the receipt say how many
+  and why. A render that cannot fit is refused with `out_of_memory` or
+  `not_enough_space` and the way out, and a render the system stops for memory
+  says so instead of a bare exit code. The estimate counts a clip used several
+  times once when its frames pass through unchanged, and a long render by its
+  largest window. Every clip of an export carries exactly the frames of its
+  place on the timeline (the timeline's frame grid, also across frame-rate
+  and speed changes), so the picture stays on the sound after any number of
+  cuts, a long render in parts is frame-identical to one pass, and
+  `render.frame` shows the frame the export has at that time. A render that stops working (no new output and almost no
+  processor use for 2 minutes) ends with `render_stalled`, naming the part of
+  the timeline and the clip, instead of staying "running". A long reversed
+  clip renders part by part, so it no longer needs memory for the whole clip
+  at once.
+- A mono source plays on both channels at its own level (in v0.6.115 it came
+  out 3 dB quieter per channel).
+- The Mixer's meter stems, the Preview monitor mix, Listen exports and the join
+  files of long renders live in a private, owner-only work folder of the app,
+  removed when the project closes or the engine stops, so `exports/` holds only
+  what you render. The segment windows of a long render are still cached in
+  the project's `.cache/` folder.
 - Review loop: clip-anchored comments can route their text and immutable target
   through Agent Chat with **Make changes**; Chat applies its normal direct,
   reversible edit receipt, and **Step back** remains the guarded recovery path.
@@ -773,6 +897,60 @@ establish a tested editing workflow for the current release.
   only when it is still live; a terminal capture is reported as stopped, and
   uncertain ownership is labelled unknown. Later polish failure does not
   imply a live capture.
+- **Closing or quitting during a recording** saves the take first, as Stop
+  would ("Saving your recording before ShellX Cut closes…"); Polished also adds
+  its clip. If the window does not answer within 6 seconds, the desktop shell
+  stops the recording itself, and an engine that is shut down finishes a
+  running recording first. If Cut ends without that chance (a crash, a forced
+  quit, a power cut), the next start names the recording, for example "ShellX
+  Cut closed while recording in “…”. What was saved can be added to the
+  timeline.", and offers **Add to timeline** for what was saved, with its sound,
+  or **Dismiss**, which keeps the files. Save points are written every 15
+  seconds, so the video after the last one is lost in such a stop; the notice
+  says how much can be recovered, for example "About 15 s of about 20 s can be
+  recovered; the last 5 s were not saved before the recording stopped." System
+  sound is saved about once a second and comes back too; if none was saved, the
+  message says so. Opening the project starts a visible "Preparing interrupted
+  recording" job instead of making you wait, and Add to timeline waits until it
+  has finished.
+  `screen_record.pending`, `screen_record.recover` and
+  `screen_record.pending_dismiss` are the same route for agents.
+- **Known limits of recording in this version.** A recording is saved in parts
+  of 15 seconds. On macOS, the picture of a moving screen holds for about half
+  a second where one part ends and the next begins; on Windows it holds for
+  about 2 seconds at the same points. The sound keeps recording through them.
+  On Windows, stopping a long recording of a moving screen can take several
+  seconds (about 11 seconds for a one-minute take) while Cut finishes the file.
+- **Closing or quitting during an export** asks first, as large editors do:
+  "An export is still running", naming the work, with **Keep working** (the
+  default; Esc and clicking outside keep working too) or **Quit and stop it**,
+  which cancels the export cleanly (its unfinished files are removed) and then
+  quits. A recording is saved first. On macOS the app menu's Quit, Cmd+Q, Quit
+  in the Dock and logging out ask the same way as closing the window. If Cut
+  ends without that chance (a crash, a forced quit, a power cut, Windows ending
+  the session), the next start says in the status bar which export was
+  interrupted and removes its unfinished files. A stop that arrives after the
+  finished file is written cannot undo it: that export ends done with its
+  receipt.
+- **If the engine stops by itself**, ShellX Cut says so in a dialog ("ShellX
+  Cut engine stopped") and offers **Restart the engine** or **Quit ShellX
+  Cut**. After a restart the window reloads and says which work was
+  interrupted; the project that was open is not reopened, so open it again.
+- **One window per user.** Opening ShellX Cut again brings the running window
+  forward instead of starting a second one, and the first window is sized to
+  fit the screen it opens on.
+- **Start and Stop say what happened.** The bar shows "Starting recording…"
+  until the first screen frame arrives and the timer counts from that frame. A
+  Stop before the first frame says that nothing was recorded and leaves nothing
+  to recover. A window that is no longer available is refused at Start; a
+  missing folder and a folder that cannot be written each have their own
+  message. A recording started outside this window (for example by an agent
+  through `screen_record.start`) is shown with the recording bar and Stop
+  (`screen_record.active`).
+- On macOS, opening Record or a project never starts a screen capture or the
+  screen-recording prompt: Record reads the last check (`screen_record.doctor`
+  `{mode:"status"}`), and the system prompt can appear only with an explicit
+  check or a recording start.
 - Capture frame rate keeps the 30 FPS default and offers one-click 24/25/30/50/60
   choices. Video quality → Advanced frame rate accepts a whole-number custom
   1–240 FPS value only after **Apply frame rate** or Enter; an invalid draft
@@ -789,14 +967,28 @@ establish a tested editing workflow for the current release.
   Advanced facts. Other recorder backends omit the control and refuse a direct
   request rather than silently changing or pretending to honor output quality.
 - **Test microphone** opens the selected input or System Default for a bounded sample
-  window, reports a real peak without inventing a silence floor, and keeps the
-  Start action unavailable until the test finishes. Where selection is supported,
+  window, reports a real peak without inventing a silence floor, and refuses
+  every recording start until the test finishes (the Record button, F9, the
+  global hotkey and `screen_record.start`): the window says "Finish the audio
+  test before recording." and an agent gets `conflict`. Where selection is supported,
   Cut keeps the resolved endpoint private and exposes only safe labels and
   expiring tokens; an unavailable saved selection refuses microphone-enabled
-  Start instead of falling back.
+  Start instead of falling back. When microphone audio is on, a problem
+  reported by the passive microphone readiness read refuses Start before
+  capture, with the same reason, message, and action shown by Doctor. This
+  readiness read does not open or test the microphone. Recording with
+  microphone audio off does not require a ready microphone.
 - **Timeline voiceover** is a compact control on each unlocked audio track. It
-  stays disabled unless the current Record Doctor explicitly admits native
-  capture; selecting a microphone, a playhead or In–Out range, and Record does
+  needs only the microphone and never checks screen capture. Opening it reads
+  the microphone choice and permission; if macOS has not asked yet, the first
+  Record voiceover shows the system microphone prompt, and denied access names
+  System Settings > Privacy & Security > Microphone. On Windows, opening it reads
+  the Windows microphone privacy switches (Settings > Privacy & security >
+  Microphone: Microphone access, Let apps access your microphone, Let desktop
+  apps access your microphone) and says which one is off, or that no microphone
+  was found; a take that fails after it started says why in its status.
+  The Record panel's microphone control shows the same message before a test.
+  Selecting a microphone, a playhead or In–Out range, and Record does
   not create a browser-capture fallback. After real readiness and a visible
   three-second count-in, the server issues a memory-only owner claim for the
   active Timeline tab and requires it for tick, Stop, Cancel, and correlated
@@ -882,8 +1074,9 @@ establish a tested editing workflow for the current release.
   the polished clip contains the baked camera bubble.
 - Crash-resilient recordings write independently finalized, verified checkpoint
   segments. Restart recovery can salvage a playable `recovered.mp4` prefix with a
-  receipt and explicit lost-tail bounds; it never promotes an open encoder MP4 or
-  represents salvage as a completed timeline project. Normal `source.mp4` stitching
+  receipt and explicit lost-tail bounds; it never promotes an open encoder MP4,
+  and salvage reaches the timeline only through Add to timeline
+  (`screen_record.recover`). Normal `source.mp4` stitching
   materializes measured encoder-restart gaps to preserve the event/mic/system-audio
   wall clock. `screen_record.recovery_status` is a read-only, project-scoped,
   paginated receipt view: it returns safe capture ids and loss state but never paths
@@ -932,8 +1125,15 @@ establish a tested editing workflow for the current release.
 - Agent/API project mutations accept durable request IDs and optimistic project
   revisions. Identical lost-response retries return the original operation IDs;
   changed payloads or stale revisions fail without duplicating edits.
-- The status bar shows the current export folder; click the export-folder chip
-  to open Settings at the folder setting.
+- One export folder for all projects: the folder chosen in the Export menu or
+  Settings is remembered across projects and restarts, and the status bar shows
+  it; click the export-folder chip to open Settings at the folder setting. If the
+  folder disappears or can no longer be written, the chip says "unavailable"
+  within about 10 seconds, and an export that would use it is refused before it
+  starts, naming the folder. On Linux and macOS a folder that everyone on the
+  computer can write to is refused ("export folder can be written by anyone on
+  this computer: <path>") unless its sticky bit is set; a folder only your group
+  can write to is fine.
 - Preview → Compare pauses playback and shows a locked side-by-side Before and
   Current pair at one playhead position. Both are exact composed frames: Current
   is the live durable revision and Before is the state before its latest
@@ -951,10 +1151,89 @@ establish a tested editing workflow for the current release.
   status, primary action, and advanced details for paths or diagnostics.
 - First-run setup leads with a plain three-step path: video tools first, add
   media next, and CLI agents only when Generate/chat workflows are needed.
-- When FFmpeg is confirmed missing, the Preview monitor shows a direct setup
-  notice that opens the Video processing card. On Windows/Linux x86_64, that card
-  offers a consented Install action for Cut's verified BtbN runtime; macOS directs
-  the user to a compatible local build or binary selection instead.
+- When FFmpeg is confirmed missing, the first start opens the "Welcome to
+  ShellX Cut" setup window, and the Preview monitor shows a direct setup
+  notice that opens the Video processing card. On Windows/Linux x86_64 and on
+  Apple silicon Macs that card offers Download, with the publisher, version,
+  size, licence (GNU GPL version 3) and source link shown beside it; choosing
+  Download is the consent. Windows and Linux x86_64 get FFmpeg 9.0.2 from
+  FFmpeg-Builds (a GPL 9.0 monthly build), pinned by exact files, sizes and
+  SHA-256; only its ffmpeg and ffprobe are unpacked and each is checked again.
+  If the publisher has removed that build, nothing is installed and the card
+  names the other ways (Windows: the publisher's page and Choose ffmpeg;
+  Linux: the distribution's package). Apple silicon gets Martin
+  Riedl's notarized FFmpeg 9.0.2, pinned by size and SHA-256 and accepted only
+  when its Apple Developer ID signature verifies; it cannot stabilize video,
+  which the card says. Homebrew's complete build stays offered as the other way
+  (and the only way on Intel Macs): numbered steps with Copy buttons, Check
+  again (no restart needed), and Choose ffmpeg for a build that has ffprobe
+  beside it.
+- On Windows, uninstalling always removes what ShellX Cut downloaded or made
+  (FFmpeg, the captions Python with its environment and models, the
+  background-removal files, its work folder, `engine.addr`, `tools-doctor.json`)
+  from its install and data folders, without following links. Ticking "Delete
+  the application data" also removes its settings, the recent-projects list,
+  the microphone choice, the export folder you chose and the notes about
+  interrupted work. Projects, the
+  Library, recordings, any uv or Python you installed yourself, and Microsoft's
+  Visual C++ runtime always stay. An update keeps the downloaded tools.
+- Stabilize, caption burn-in and color-managed export are refused up front,
+  with the missing library and how to get it, when no installed FFmpeg has the
+  filter they need; the edit or render does not start and fail later.
+- Verbs that need ffmpeg or ffprobe refuse up front with `tool_missing` and the
+  platform's way to get the tools when they are missing; nothing is imported
+  or registered. In the app the same refusal shows a notice with Open setup.
+- A file that is not a video, audio or image Cut can read (a renamed text file,
+  an empty file, a damaged download) never stays in Assets. An empty file or a
+  folder is refused at once; any other file is judged by the import job, which
+  fails with `unreadable_media`, names the file and what to do, and undoes the
+  import. The status bar shows the same sentence. Relink refuses such a file
+  the same way and keeps the old source.
+- The first video placed in a new project sets its size and frame rate. Frames
+  can be up to 8192 px on a side and 8192x4320 pixels in total (8K UHD and DCI
+  8K, including 8192x4096 camera footage); a larger clip keeps the project
+  format and the import says why. A project whose stored size is larger than
+  that still opens, at the largest size of the same shape within the limit,
+  and says so. A first video with an odd size gives the project the even size
+  just below it; an older project stored at an odd size opens unchanged and is
+  not exported until its size is changed (see below). A phone clip
+  with a variable frame rate gives the timeline its nominal rate (60 fps, not
+  its 58.59 fps average) and shows a "Variable frame rate" note in Assets.
+- A video file that is cut off part-way (a copy or download that stopped) can
+  still claim its full length. When its editing proxy is made, Cut compares
+  what really decodes with what the file claims; a short file gets a "File cut
+  off" badge in Assets with the readable length, and the same sentence in
+  `probe.decode_check.warning` for agents. A file damaged in the middle is
+  flagged when its proxy has fewer decoded frames than the source claims.
+  FFmpeg 6 can conceal corrupt pictures by repeating frames, so a damaged
+  clip may have no decode warning. Imports with proxies turned off are
+  not checked this way. A render that uses a source with a decode warning
+  carries a failing `sources_decodable` check naming the file, and the clip still fills its place
+  on the timeline: its last readable frame is held to the end.
+  `sources_decodable` cannot certify damage concealed by the decoder.
+- Every export is SDR (BT.709 unless `project.color` sets another output
+  space), processed in 8 bits. An HDR source (HLG or PQ,
+  usually 10-bit phone or camera footage) is tone-mapped to SDR and the file is
+  tagged BT.709, so it never claims to be HDR; the editing proxy is converted
+  the same way so the preview matches. The render plan, the receipt (Receipts
+  tab) and the job result say what happened to each source, including a
+  10-bit source exported in 8 bits. The conversion happens before grades and
+  effects, so a grade works on the SDR picture. An SD source tagged BT.601 is
+  converted to BT.709 the same way. The HDR conversion needs an ffmpeg with the
+  zscale filter (zimg); without one every export, preview, composed frame and
+  scope of a timeline with HDR clips is refused at once, naming the clips and
+  saying what to install. Keeping HDR in the export is not available yet.
+- A project from an older release with an odd frame size (for example
+  641x361) cannot be exported as video at that size (video needs an even width
+  and height). Cut says so when the project opens, with one button, "Change
+  project to 640x360"; an export started anyway is refused with the same
+  sentence and button, and nothing is rounded during the export. Stills
+  (Export frame) still work and are 640x360. The frame rate can still be
+  changed without touching the size.
+- The render receipt's `duration_matches_edl` check measures each stream of
+  the output on its own (video duration and frame count, each audio stream),
+  so a picture that stops early under full-length sound fails with a plain
+  reason instead of passing on the container length.
 - The Render/Export area also shows the same plain FFmpeg setup actions and
   guards video-like render/export choices before they fall through to raw
   engine errors.
@@ -971,7 +1250,8 @@ establish a tested editing workflow for the current release.
 ## Debug And Agent Surface
 
 - UI/debug verbs: `ui.state`, `ui.open`, `ui.screenshot`, `ui.playhead`,
-  `ui.select`, `ui.highlight` (dismissible close button/Escape), and
+  `ui.select`, `ui.highlight` (dismissible close button/Escape), `ui.preview`
+  (COMPOSED on or off), and
   `debug.screenshot`.
 - UI control is confirmed rather than optimistic: `ok:true` is returned only
   after the exact connected UI commits and exposes the requested state.
@@ -1008,6 +1288,6 @@ establish a tested editing workflow for the current release.
   corrupt state is visible in `plugins.list`; an explicit `plugins.enable`
   repairs only the named plugin and leaves other plugins disabled.
 - WebSocket events are `op_applied`, `job_progress`, `render_done`,
-  `receipt_ready`, `project_changed`, `ui_state`, and `doctor_updated`.
+  `receipt_ready`, `project_changed`, `ui_state`, `doctor_updated`, and `output_folder_changed`.
 - `FEATURE_SURFACE_CONTRACT.md` defines the public human, agent, debug, and
   documentation surfaces a supported capability may expose.

@@ -74,16 +74,22 @@ export function useInspectorColorControls({ project, sel }: InspectorColorContro
     clearColorNoteSoon()
   }
 
-  const reloadPresets = useCallback(async () => {
-    const r = await callVerb('grade.list', {})
-    if (!r.ok) return
-    const ps = ((r.result as { presets?: { name: string }[] } | undefined)?.presets ?? []).map((p) => ({ name: p.name }))
-    setPresets(ps)
-    setSelPreset((cur) => (cur && ps.some((p) => p.name === cur) ? cur : ps[0]?.name ?? ''))
+  const reloadPresets = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const r = await callVerb('grade.list', {}, signal)
+      if (signal?.aborted || !r.ok) return
+      const ps = ((r.result as { presets?: { name: string }[] } | undefined)?.presets ?? []).map((p) => ({ name: p.name }))
+      setPresets(ps)
+      setSelPreset((cur) => (cur && ps.some((p) => p.name === cur) ? cur : ps[0]?.name ?? ''))
+    } catch {
+      if (!signal?.aborted) setColorNote('Could not load saved looks')
+    }
   }, [])
 
   useEffect(() => {
-    void reloadPresets()
+    const controller = new AbortController()
+    void reloadPresets(controller.signal)
+    return () => controller.abort()
   }, [reloadPresets, project?.name])
 
   const saveLook = async () => {

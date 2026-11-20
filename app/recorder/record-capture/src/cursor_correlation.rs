@@ -3,7 +3,9 @@
 //! evdev reports button timing but only relative pointer deltas. PipeWire's
 //! `SPA_META_Cursor` reports a position in the PipeWire video's local pixels.
 //! This module validates that position against the negotiated frame and only
-//! promotes a click to `Exact` when its nearest sample is fresh enough.
+//! promotes a click to `Exact` when its preceding sample is fresh enough and
+//! complete evdev observation proves no later pointer motion. A separately
+//! labeled held position uses the same proof after the freshness window.
 
 use record_core::{
     ClickPositionQuality, ClickSample, CursorCoordinateSource, CursorCoordinateState,
@@ -11,9 +13,24 @@ use record_core::{
 };
 
 use crate::surface_coordinates::{self, CaptureSurface};
+use std::time::SystemTime;
+
+/// Fail-closed evidence from the same raw evdev readers that produced clicks.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EvdevEvidence {
+    pub complete: bool,
+    pub motion: Vec<ObservedMotion>,
+    pub button_times: Vec<SystemTime>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ObservedMotion {
+    pub observed_ms: u64,
+    pub kernel_time: SystemTime,
+}
 
 /// A click and metadata callback may arrive on different threads, but both stamp the
-/// same capture-start `Instant`. Beyond this distance we refuse to reuse a position.
+/// same capture-start `Instant`. Beyond this distance a stationary reuse is Held.
 pub(crate) const MAX_CURSOR_METADATA_AGE_MS: u64 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,6 +112,11 @@ impl FrameBounds {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipewireCursorCapture {
     pub metadata: Vec<CursorMetadataSample>,
+    /// Explicit producer invalidations (hidden ID 0 or invalid/outside point).
+    pub invalidations: Vec<u64>,
+    /// Each independent encoder/PipeWire stream interval; a held position never
+    /// crosses one of these boundaries even when the frame size is unchanged.
+    pub segments: Vec<CaptureSegment>,
     pub frame_width: u32,
     pub frame_height: u32,
     /// Shared capture-clock bounds measured from actual PipeWire frames.
@@ -103,58 +125,14 @@ pub struct PipewireCursorCapture {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SessionInputMode {
-    pub wayland: bool,
-    pub use_evdev: bool,
-    pub use_pipewire_metadata: bool,
+pub struct CaptureSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
 }
 
-pub(crate) fn session_input_mode() -> SessionInputMode {
-    session_input_mode_from(
-        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
-        std::env::var_os("WAYLAND_DISPLAY").is_some(),
-        std::env::var_os("DISPLAY").is_some(),
-        std::env::var("SHELLX_RECORD_INPUT").ok().as_deref(),
-        std::env::var("SHELLX_RECORD_WAYLAND_CAPTURE")
-            .ok()
-            .as_deref(),
-    )
-}
-
-pub(crate) fn session_input_mode_from(
-    session_type: Option<&str>,
-    wayland_display: bool,
-    _display: bool,
-    input_override: Option<&str>,
-    capture_override: Option<&str>,
-) -> SessionInputMode {
-    // A real GNOME Wayland desktop exports both WAYLAND_DISPLAY and DISPLAY for
-    // Xwayland clients.  Controller-launched applications do not necessarily
-    // inherit XDG_SESSION_TYPE, so treating `DISPLAY` as proof of an X11
-    // *session* incorrectly selects the GStreamer fallback and loses the
-    // PipeWire metadata path.  Prefer an explicit session type when present;
-    // otherwise the reachable Wayland socket is the reliable fallback.
-    let wayland = match session_type {
-        Some(value) if value.eq_ignore_ascii_case("wayland") => true,
-        Some(value) if value.eq_ignore_ascii_case("x11") => false,
-        _ => wayland_display,
-    };
-    let use_evdev = match input_override {
-        Some("evdev") => true,
-        Some("rdevin") => false,
-        _ => wayland,
-    };
-    let use_pipewire_metadata = match capture_override {
-        Some("gst") => false,
-        Some("pipewire") => true,
-        _ => wayland,
-    };
-    SessionInputMode {
-        wayland,
-        use_evdev,
-        use_pipewire_metadata,
-    }
-}
+#[cfg(test)]
+pub(crate) use crate::cursor_session_mode::session_input_mode_from;
+pub(crate) use crate::cursor_session_mode::{session_input_mode, SessionInputMode};
 
 pub(crate) struct CorrelationOutput {
     pub cursor: Vec<CursorSample>,
@@ -162,6 +140,8 @@ pub(crate) struct CorrelationOutput {
     pub status: CursorCorrelation,
 }
 
+// Keep each independently observed source explicit at this capture boundary.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn correlate_clicks(
     mode: SessionInputMode,
     clicks: &mut [ClickSample],
@@ -170,6 +150,7 @@ pub(crate) fn correlate_clicks(
     pipewire: Option<PipewireCursorCapture>,
     portal_geometry: Option<PortalCursorGeometry>,
     rdevin_frame_size: Option<(u32, u32)>,
+    evdev_evidence: Option<&EvdevEvidence>,
 ) -> CorrelationOutput {
     if !mode.use_evdev {
         let surface = portal_geometry.and_then(PortalCursorGeometry::capture_surface);
@@ -216,8 +197,8 @@ pub(crate) fn correlate_clicks(
     };
     let mut cursor: Vec<_> = pipewire
         .metadata
-        .into_iter()
-        .filter_map(|sample| frame_bounds.apply(sample))
+        .iter()
+        .filter_map(|sample| frame_bounds.apply(*sample))
         .collect();
     cursor.sort_unstable_by_key(|sample| sample.t_ms);
     if cursor.is_empty() {
@@ -230,13 +211,23 @@ pub(crate) fn correlate_clicks(
     }
 
     let mut exact = 0_u32;
+    let mut held = 0_u32;
     let mut approximate = 0_u32;
-    for click in clicks {
-        if let Some(sample) = nearest_fresh_sample(&cursor, click.t_ms) {
+    for (index, click) in clicks.iter_mut().enumerate() {
+        let valid =
+            validated_preceding_sample(&cursor, &pipewire, evdev_evidence, index, click.t_ms);
+        if let Some(sample) = valid
+            .filter(|sample| click.t_ms.saturating_sub(sample.t_ms) <= MAX_CURSOR_METADATA_AGE_MS)
+        {
             click.x = sample.x;
             click.y = sample.y;
             click.position_quality = ClickPositionQuality::Exact;
             exact = exact.saturating_add(1);
+        } else if let Some(sample) = valid {
+            click.x = sample.x;
+            click.y = sample.y;
+            click.position_quality = ClickPositionQuality::Held;
+            held = held.saturating_add(1);
         } else {
             // Retain the evdev location for a visible approximate marker, but the
             // engine filters it out of auto-zoom anchors through `position_quality`.
@@ -246,6 +237,8 @@ pub(crate) fn correlate_clicks(
     }
     let state = if approximate != 0 {
         CursorCoordinateState::Approximate
+    } else if held != 0 {
+        CursorCoordinateState::Held
     } else if exact != 0 {
         CursorCoordinateState::Exact
     } else {
@@ -253,8 +246,10 @@ pub(crate) fn correlate_clicks(
     };
     let detail = if approximate != 0 {
         Some(format!(
-            "{approximate} click position(s) had no PipeWire cursor sample within {MAX_CURSOR_METADATA_AGE_MS}ms and remain approximate"
+            "{approximate} click position(s) lacked a valid movement-free PipeWire position at the button transition and remain approximate"
         ))
+    } else if held != 0 {
+        Some(format!("{held} click position(s) reused validated stationary PipeWire cursor metadata within one capture segment"))
     } else if exact == 0 {
         Some("no button transitions carried cursor-coordinate evidence".to_string())
     } else {
@@ -267,6 +262,7 @@ pub(crate) fn correlate_clicks(
             source: CursorCoordinateSource::WaylandPipewireMetadata,
             state,
             exact_clicks: exact,
+            held_clicks: held,
             approximate_clicks: approximate,
             unavailable_clicks: 0,
             max_metadata_age_ms: Some(MAX_CURSOR_METADATA_AGE_MS),
@@ -293,6 +289,7 @@ fn approximate_output(
                 CursorCoordinateState::Approximate
             },
             exact_clicks: 0,
+            held_clicks: 0,
             approximate_clicks: u32::try_from(clicks.len()).unwrap_or(u32::MAX),
             unavailable_clicks: 0,
             max_metadata_age_ms: Some(MAX_CURSOR_METADATA_AGE_MS),
@@ -307,10 +304,41 @@ fn mark_clicks(clicks: &mut [ClickSample], quality: ClickPositionQuality) {
     }
 }
 
-fn nearest_fresh_sample(samples: &[CursorSample], click_t_ms: u64) -> Option<CursorSample> {
-    samples
+fn invalidated_between(invalidations: &[u64], sample_ms: u64, click_ms: u64) -> bool {
+    let (low, high) = if sample_ms <= click_ms {
+        (sample_ms, click_ms)
+    } else {
+        (click_ms, sample_ms)
+    };
+    // Millisecond timestamps cannot order an invalidation and a valid sample
+    // within one tick. Treat that tie as uncertain rather than reviving it.
+    invalidations.iter().any(|&t| t >= low && t <= high)
+}
+
+fn validated_preceding_sample(
+    cursor: &[CursorSample],
+    pipewire: &PipewireCursorCapture,
+    evidence: Option<&EvdevEvidence>,
+    button_index: usize,
+    click_ms: u64,
+) -> Option<CursorSample> {
+    let evidence = evidence.filter(|evidence| evidence.complete)?;
+    let button_time = *evidence.button_times.get(button_index)?;
+    let segment = pipewire
+        .segments
         .iter()
-        .min_by_key(|sample| (sample.t_ms.abs_diff(click_t_ms), sample.t_ms))
-        .copied()
-        .filter(|sample| sample.t_ms.abs_diff(click_t_ms) <= MAX_CURSOR_METADATA_AGE_MS)
+        .find(|segment| segment.start_ms <= click_ms && click_ms < segment.end_ms)?;
+    let sample = cursor
+        .iter()
+        .rev()
+        .find(|sample| segment.start_ms <= sample.t_ms && sample.t_ms <= click_ms)?;
+    if invalidated_between(&pipewire.invalidations, sample.t_ms, click_ms)
+        || evidence
+            .motion
+            .iter()
+            .any(|motion| motion.observed_ms >= sample.t_ms && motion.kernel_time <= button_time)
+    {
+        return None;
+    }
+    Some(*sample)
 }

@@ -20,7 +20,7 @@ struct Args {
 /// `edit.insert_linked` is deliberately a different verb from `edit.insert`:
 /// optional second-leg arguments on that single-track surface would leave it
 /// unclear whether a caller asked for atomic A/V or a video-only insertion.
-pub(in crate::dispatch) async fn edit_insert_linked(
+pub(in crate::dispatch) async fn edit_insert_linked_at(
     state: &AppState,
     args: Value,
     actor: Actor,

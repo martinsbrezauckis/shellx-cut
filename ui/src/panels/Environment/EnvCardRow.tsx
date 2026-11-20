@@ -2,17 +2,25 @@ import { useState } from 'react'
 import { callVerb } from '../../lib/client'
 import {
   cardLabel,
+  ffmpegDownloadOffer,
+  ffmpegSetupGuide,
   fetchTool,
   hasFetchAction,
   hasMatteSetupAction,
   hasSetupAction,
+  needsManualFfmpegSetup,
   premiumMatteAvailability,
   environmentCardStatus,
   setupMatte,
   setupPerception,
+  unavailableFeatures,
   type DoctorCard,
 } from '../../lib/doctor'
 import { pickFfmpeg } from '../../lib/tauri'
+import { encoderSizeRows, softwareExportHint } from './gpuHint'
+import FfmpegSetupGuide, { FfmpegDownloadConsent } from './FfmpegSetupGuide'
+import NeededFor from './NeededFor'
+import type { RequirementTool } from '../../lib/doctor'
 import { ServiceRuntimeActions, ServiceRuntimeDetail } from './ServiceRuntime'
 import { SttModelControl } from './SttModelControl'
 import { useEnvironmentSetupJob } from './useEnvironmentSetupJob'
@@ -20,6 +28,9 @@ import { useEnvironmentSetupJob } from './useEnvironmentSetupJob'
 /** Status -> display token (label + color class). Fixed family semantics. */
 function statusChip(card: DoctorCard): { label: string; cls: string } {
   const status = environmentCardStatus(card)
+  if (card.id === 'gpu-encode' && card.details?.ffmpeg_missing === true) {
+    return { label: 'Needs setup', cls: 'env-st--missing' }
+  }
   if (card.id === 'gpu-encode') {
     return status === 'ok' && card.details?.hardware_available === true
       ? { label: 'Ready', cls: 'env-st--ok' }
@@ -46,6 +57,7 @@ function statusChip(card: DoctorCard): { label: string; cls: string } {
 }
 
 function compactFact(card: DoctorCard): string | null {
+  if (card.id === 'gpu-encode' && card.details?.ffmpeg_missing === true) return null
   if (card.id === 'gpu-encode') {
     return card.details?.hardware_available === true ? 'GPU acceleration' : 'Software export'
   }
@@ -76,14 +88,27 @@ function compactHint(card: DoctorCard): string | null {
       return 'Could not verify render-review admission. Re-scan to check again; Agent Chat is checked separately.'
     }
   }
+  if (card.id === 'gpu-encode' && card.details?.ffmpeg_missing === true) {
+    return card.hint || 'Exports need video processing first.'
+  }
   if (card.id === 'gpu-encode') {
     if (status === 'ok' && card.details?.hardware_available === true) return null
     if (card.details?.hardware_available === true) return 'Re-scan or choose a working video tool if faster exports are not available.'
-    return 'Software export works. Add GPU support only if you need faster renders.'
+    return softwareExportHint(card.details)
   }
   if (status === 'ok' || status === 'unknown') return null
+  if (card.id === 'ffmpeg' && status === 'degraded' && unavailableFeatures(card).length > 0) {
+    return `Works for editing and export. Not available with this build: ${unavailableFeatures(card).join(', ')}.`
+  }
+  if (card.id === 'ffmpeg' && needsManualFfmpegSetup(card)) {
+    return ffmpegDownloadOffer(card)
+      ? 'Needed to import, preview, and export. Download it, or use another way below.'
+      : 'Needed to import, preview, and export. Follow these steps, then click Check again.'
+  }
   if (card.id === 'ffmpeg') return 'Install video processing so imports, previews, and exports work.'
+  if (card.id === 'ffprobe') return 'Comes with video processing. Set that up and this follows.'
   if (card.id === 'perception') return 'Install captions when you need transcripts, word edits, silence cleanup, or search.'
+  if (card.id === 'vc-runtime') return 'Captions on Windows need it first. Install gets it from Microsoft; Windows asks for administrator permission.'
   if (card.id === 'matte') return 'Install the standard cutout model for on-device background removal.'
   if (status === 'degraded') return 'Re-scan or set this up again if the feature does not work.'
   return 'Set this up only if you need this feature.'
@@ -105,9 +130,19 @@ function advancedRows(card: DoctorCard): Array<[string, string]> {
     if (card.details?.python != null) rows.push(['Runtime', String(card.details.python)])
     if (card.details?.stt_model != null) rows.push(['Model', String(card.details.stt_model)])
   }
+  // Why this build is the one in use (details.selection, set by the engine).
+  const why = card.id === 'ffmpeg' ? (card.details?.selection as { text?: unknown } | undefined)?.text : undefined
+  if (typeof why === 'string') rows.push(['Why this ffmpeg', why])
+  if (card.id === 'vc-runtime') {
+    if (Array.isArray(card.details?.needed_by)) rows.push(['Needed by', card.details.needed_by.join(', ')])
+    if (typeof card.details?.official_page === 'string') rows.push(['From Microsoft', card.details.official_page])
+    rows.push(['Uninstalling ShellX Cut', 'keeps it (it belongs to Windows)'])
+  }
   if (card.id === 'gpu-encode') {
     if (card.details?.override_setting != null) rows.push(['Selected ffmpeg', String(card.details.override_setting)])
     if (card.details?.resolved != null) rows.push(['Resolved ffmpeg', String(card.details.resolved)])
+    if (typeof card.details?.hardware_detail === 'string') rows.push(['ffmpeg said', card.details.hardware_detail])
+    rows.push(...encoderSizeRows(card.details))
   }
   if (card.hint) rows.push(['Diagnostic hint', card.hint])
   return rows
@@ -135,11 +170,14 @@ export default function EnvCardRow({
   os,
   arch,
   onChanged,
+  requirements = [],
 }: {
   card: DoctorCard
   os: string
   arch: string
   onChanged: () => void
+  /** Registry entries this card reports, for its "Needed for" line. */
+  requirements?: RequirementTool[]
 }) {
   const { title, role } = cardLabel(card)
   const presentationStatus = environmentCardStatus(card)
@@ -151,6 +189,7 @@ export default function EnvCardRow({
   const [ffBusy, setFfBusy] = useState(false)
   const [ffNote, setFfNote] = useState<string | null>(null)
   const [serviceSetupOpen, setServiceSetupOpen] = useState(false)
+  const offer = hasFetchAction(card, os, arch) ? ffmpegDownloadOffer(card) : null
   const fact = compactFact(card)
   const hint = compactHint(card)
   const details = advancedRows(card)
@@ -175,7 +214,8 @@ export default function EnvCardRow({
     if (p) await setFfmpeg(p)
   }
 
-  const onDownload = () => void runJob(() => fetchTool('ffmpeg'), 'could not start the download')
+  const onDownload = () =>
+    void runJob(() => fetchTool(card.id === 'vc-runtime' ? 'vc-runtime' : 'ffmpeg'), 'could not start the download')
   const onSetupPerception = () =>
     void runJob(() => setupPerception(), 'could not start captions install')
   const onSetupMatte = () =>
@@ -215,9 +255,13 @@ export default function EnvCardRow({
             className="env-btn env-btn--primary env-btn--sm"
             data-cut-env-download={card.id}
             onClick={onDownload}
-            title="Install verified video-processing tools"
+            title={
+              card.id === 'vc-runtime'
+                ? "Download Microsoft's installer from Microsoft and run it (Windows asks for administrator permission)"
+                : offer ? `Download FFmpeg from ${offer.publisher}` : 'Download verified video-processing tools'
+            }
           >
-            Install
+            {card.id === 'vc-runtime' ? 'Install' : 'Download'}
           </button>
         )}
         {!job.busy && hasSetupAction(card) && (
@@ -267,6 +311,8 @@ export default function EnvCardRow({
         onChanged={onChanged}
       />
 
+      <NeededFor cardId={card.id} tools={requirements} />
+
       {hint || job.busy || job.err || details.length > 0 ? (
         <div className="env-row-detail">
           {hint && !job.busy && !job.err && (
@@ -286,6 +332,18 @@ export default function EnvCardRow({
           <AdvancedDetails card={card} rows={details} />
         </div>
       ) : null}
+
+      {offer && !job.busy && <FfmpegDownloadConsent offer={offer} />}
+      {card.id === 'vc-runtime' && hasFetchAction(card, os, arch) && !job.busy && typeof card.details?.about === 'string' && (
+        <div className="env-row-detail env-ff" data-cut-env-vc-runtime-about>
+          <div className="env-ff-note">{card.details.about}</div>
+        </div>
+      )}
+
+      {needsManualFfmpegSetup(card) && (() => {
+        const guide = ffmpegSetupGuide(card)
+        return guide ? <FfmpegSetupGuide guide={guide} onChanged={onChanged} otherWays={!!offer} /> : null
+      })()}
 
       <SttModelControl card={card} onChanged={onChanged} />
 

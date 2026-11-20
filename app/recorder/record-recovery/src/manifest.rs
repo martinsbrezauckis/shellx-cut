@@ -56,28 +56,26 @@ pub fn is_plain_regular_file(path: &Path) -> Result<bool, ManifestError> {
         && !is_reparse(&metadata))
 }
 
+/// A directory that does not name another entry. On Windows only a reparse
+/// point whose tag is a name surrogate (symbolic link, junction/mount point)
+/// redirects a folder; the standard library reads that tag for
+/// `symlink_metadata` (failing when it cannot) and reports exactly those as
+/// symlinks. Other reparse points on a folder, such as a cloud-files
+/// placeholder kept by a sync client, are the folder itself.
 pub fn is_plain_dir(path: &Path) -> Result<bool, ManifestError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(source) => return Err(io(path, source)),
     };
-    Ok(metadata.file_type().is_dir()
-        && !metadata.file_type().is_symlink()
-        && !is_reparse(&metadata))
+    Ok(metadata.file_type().is_dir() && !metadata.file_type().is_symlink())
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry, and the standard library reports exactly those as symlinks; cloud
+/// placeholders and other reparse points are the file or folder itself.
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    metadata.file_type().is_symlink()
 }
 /// Exclusive writer for one capture. The server creates it before a backend starts;
 /// a backend re-opens it to append only its own completed checkpoint records.
@@ -224,7 +222,15 @@ fn open_append_nofollow(path: &Path) -> Result<File, ManifestError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    options.open(path).map_err(|source| io(path, source))
+    let file = options.open(path).map_err(|source| io(path, source))?;
+    // A second name (hard link) of another file is never appended to.
+    if !crate::has_single_name(&file).map_err(|source| io(path, source))? {
+        return Err(ManifestError::Invalid(
+            "the capture manifest is a second name (hard link) of another file, so nothing is              written to it; copy the project folder to a new place and open the copy"
+                .into(),
+        ));
+    }
+    Ok(file)
 }
 pub fn read_manifest(root: &Path) -> Result<CaptureManifest, ManifestError> {
     crate::journal::read(root)

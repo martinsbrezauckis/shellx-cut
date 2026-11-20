@@ -142,18 +142,11 @@ fn open_artifact_nofollow(path: &Path) -> Result<fs::File, CutError> {
         .map_err(|_| io_error("open a recovered voiceover artifact without following links"))
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 pub(super) fn reject_existing_wav(path: &Path) -> Result<(), CutError> {

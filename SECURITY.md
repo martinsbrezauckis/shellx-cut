@@ -1,7 +1,7 @@
 # Security policy
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
-This policy covers the v0.6.115 candidate source and the latest published v0.6.114 release.
+<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
+This policy covers the v0.6.116 candidate source and the latest published v0.6.115 release.
 
 ## Supported versions
 
@@ -61,6 +61,10 @@ local deployment contract, not an omitted same-user security feature.
 - Projects, media, captions, transcripts, Motion packages, plugin responses,
   and agent messages are untrusted inputs. Keep backups of irreplaceable
   source media and review imported projects and generated edits before export.
+- Tool setup the person asks for downloads only that tool (FFmpeg from its
+  publisher, the captions environment and its speech model, and on Windows
+  Microsoft's Visual C++ installer from Microsoft, which runs only after
+  Windows confirms Microsoft's signature).
 - Optional providers, subscription CLI agents, stock-media searches, dubbing,
   and update checks (automatic at launch and every 6 hours unless turned off,
   or manual from Settings > About) can make network requests. The normal edit

@@ -110,10 +110,10 @@ fn open_local(path: &Path) -> Result<File, ()> {
         .ok_or(())
 }
 
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry; the standard library reports exactly those as symlinks.
 fn is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0
-        != 0
+    metadata.file_type().is_symlink()
 }
 
 fn same_open_file(left: &File, right: &File) -> Result<bool, ()> {

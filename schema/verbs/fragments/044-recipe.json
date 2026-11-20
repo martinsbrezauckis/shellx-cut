@@ -101,7 +101,7 @@
           }
         }
       },
-      "result": "{job_id, checkpoint, recipe, stages} — the clean report lands in the job result (jobs.status): {summary_line, recipe, status: completed|failed|gate_failed, policy, stages_run, stage_results:[{id, verb, ok, op_ids, job_id?, job_result?, gate?:{pass, checks:[{name,pass,found,evidence}], state:[{fact,op,value,measured,pass}]}}], changed:DiffSummary, checkpoint, receipt_ids, restore_hint}. policy:dry_run returns the resolved plan directly (no job).",
+      "result": "{job_id, checkpoint, recipe, stages} — the clean report lands in the job result (jobs.status): {summary_line, recipe, status: completed|completed_with_warnings|failed|gate_failed, policy, stages_run, stage_results:[{id, verb, ok, op_ids, job_id?, job_result?, gate?:{pass, checks:[{name,pass,found,evidence}], state:[{fact,op,value,measured,pass}]}}], changed:DiffSummary, checkpoint, receipt_ids, restore_hint}. policy:dry_run returns the resolved plan directly (no job). A recipe that stopped (a failed verb or gate) is a FAILED job whose report stays in its result; completed_with_warnings ends done with warnings.",
       "result_schema": {
         "type": "object",
         "required": [

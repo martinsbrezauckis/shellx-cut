@@ -25,6 +25,12 @@ export function useRecordingPause(initialEnabled = false) {
     return () => lifetime.unmount()
   }, [])
 
+  // A project change invalidates the old Doctor result while a new one is
+  // pending. Keep the user's setup choice until that result is known.
+  const resetDoctorCapability = useCallback(() => {
+    setCapability(NO_RECORDING_PAUSE_CAPABILITY)
+  }, [])
+
   const setDoctorCapability = useCallback((value: unknown) => {
     const next = recordingPauseCapability(value)
     setCapability(next)
@@ -121,6 +127,7 @@ export function useRecordingPause(initialEnabled = false) {
     activeEnabled,
     state,
     message,
+    resetDoctorCapability,
     setDoctorCapability,
     setPauseEnabled,
     acknowledgeStart,

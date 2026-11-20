@@ -34,8 +34,9 @@
 //   • vertical drag-move = cross-track edit.move, but ONLY onto a same-KIND
 //     track (the engine refuses mismatched kinds; we disable the drop and
 //     keep the source track rather than send a verb that would error);
-//   • a ripple-vs-lift readout reflects the real edit.move ripple flag; normal
-//     drags move an exact linked A/V pair while Alt also opens time elsewhere;
+//   • the drag readout names the move mode that will be sent: a plain drag is
+//     Overwrite (edit.move ripple:false), Alt-drag is Insert (ripple:true);
+//     both move an exact linked A/V pair;
 //   • a live duration tooltip during trim, the snapped width readable as the
 //     gesture commits to edit.trim;
 //   • click-mode razor on the B key (NLE-canonical blade) + the toolbar toggle:
@@ -49,6 +50,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { matchesAction } from '../../lib/keymap'
 import { shouldIgnoreGlobalShortcut } from '../../lib/dom'
 import { callVerb, type Marker, type Project } from '../../lib/client'
+import { scopeMediaUrl } from '../../lib/mediaScope'
 import type { MarkerColor } from '../../lib/clientModel'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import { cycleTimeDisplay, useTimeDisplay } from '../../lib/timedisplay'
@@ -83,7 +85,7 @@ import {
   trackRows,
   trackSeams,
   type LaidItem,
-  type RippleMode,
+  MOVE_MODE_HINT,
   type Seam,
   type TrackRow,
 } from './layout'
@@ -175,7 +177,7 @@ interface Gesture {
   lastClientX: number
   lastClientY: number
   shift: boolean
-  /** Alt held this move — cross-track move ripple modifier. */
+  /** Alt held this move — the Insert move modifier (edit.move ripple:true). */
   alt: boolean
 }
 
@@ -219,13 +221,13 @@ export default function Timeline(props: TimelineProps) {
   // at the cursor time via edit.split (alongside the S key).
   const [razorMode, setRazorMode] = useState(false)
   // The TRIM TOOL mode (FCP T / Resolve trim-mode convention) — a tool
-  // state, NOT a drag modifier, because Alt (ripple-move) and Ctrl/Cmd
+  // state, NOT a drag modifier, because Alt (Insert move) and Ctrl/Cmd
   // (toggle-select) are TAKEN on clip drags. `t` cycles select→slip→slide→
   // roll; Escape returns to select. In slip/slide the clip BODY drag slips/
   // slides; in roll the EDGE drag rolls the shared cut.
   const [trimTool, setTrimTool] = useState<'select' | 'slip' | 'slide' | 'roll'>('select')
   // Live readout during a gesture — trim duration tooltip, drag target /
-  // ripple-vs-lift hint. Positioned at the cursor; pointer-events none.
+  // overwrite/insert move-mode hint. Positioned at the cursor; pointer-events none.
   const [hud, setHud] = useState<TimelineGestureHudState | null>(null)
   // Which track row the cursor is over during a move (drop highlight) and
   // whether the engine would accept the drop (same-kind only).
@@ -274,7 +276,8 @@ export default function Timeline(props: TimelineProps) {
     for (const [id, a] of Object.entries(project?.assets ?? {})) {
       // Any asset with a strip: video (sliced by duration) OR image (a single
       // thumbnail tiled; assetDurMs unused → 0). durMs guards only video slicing.
-      if (a.filmstrip) m.set(id, { url: `/${a.filmstrip}`, assetDurMs: (a.probe as { duration_ms?: number } | undefined)?.duration_ms ?? 0 })
+      const stripUrl = a.filmstrip ? scopeMediaUrl(`/${a.filmstrip}`) : ''
+      if (stripUrl) m.set(id, { url: stripUrl, assetDurMs: (a.probe as { duration_ms?: number } | undefined)?.duration_ms ?? 0 })
     }
     return m
   }, [project])
@@ -308,8 +311,8 @@ export default function Timeline(props: TimelineProps) {
   // the tc chip; click the chip to cycle. Receipt rationales stay raw-ms.
   const timeMode = useTimeDisplay()
   const minZoom = minZoomFor(durationMs, viewW - RAIL_W)
-  // Track-row geometry for vertical drag-move drop resolution + the
-  // ripple-vs-lift feedback (base of a kind = ripple, overlay/extra = lift).
+  // Track-row geometry for vertical drag-move drop resolution (same-kind,
+  // unlocked rows only).
   const rows = useMemo(() => trackRows(project), [project])
 
   const contentW = Math.max(msToPx(durationMs, zoom) + 240, viewW - RAIL_W)
@@ -642,25 +645,25 @@ export default function Timeline(props: TimelineProps) {
       }
       setDropTrackId(row?.id ?? null)
       setDropInvalid(invalid)
-      // edit.move takes a REAL ripple flag. The cursor HUD
-      // shows the mode that WILL be sent: hold Alt to force an AV-sync ripple
-      // at the destination (siblings + captions/markers/duck-windows shift),
-      // default = linked float (the exact A/V pair moves; unrelated tracks stay
-      // fixed). We surface the resolved value, not a feedback-only prediction.
+      // The cursor HUD names the mode that WILL be sent, in the standard
+      // editors' words: a plain drag is Overwrite (edit.move ripple:false: the
+      // clip replaces what is under it, nothing else moves); holding Alt is
+      // Insert (ripple:true: the rest of every track moves right). The engine
+      // may still move a point within one frame of a clip edge onto that edge
+      // and reports it in the result's `snapped`; the HUD shows the drop time.
       const rippleOn = g.alt
       const delta = snapped.ms - it.startMs
       const secs = (delta / 1000).toFixed(2)
       const signed = `${delta >= 0 ? '+' : '−'}${Math.abs(Number(secs)).toFixed(2)}s`
-      const modeWord: RippleMode = rippleOn ? 'ripple' : 'lift'
+      const modeHint = MOVE_MODE_HINT[rippleOn ? 'insert' : 'overwrite']
+      const where = trackChanged ? `→ ${destTrack}` : `on ${destTrack}`
       setHud({
         x: g.lastClientX,
         y: g.lastClientY,
         label: signed,
         sub: invalid
           ? invalidReason
-          : trackChanged
-            ? `→ ${destTrack} · ${modeWord}${rippleOn ? '' : ' · ⌥ ripple'}`
-            : `on ${destTrack} · ${modeWord}${rippleOn ? '' : ' · ⌥ ripple'}`,
+          : `${where} · ${modeHint}${rippleOn ? '' : ' · Alt: Insert'}`,
         tone: invalid ? 'warn' : 'info',
       })
       setGhost({ trackId: destTrack, srcTrackId: it.trackId, startMs: snapped.ms, durMs: it.durMs, pending: false })
@@ -690,7 +693,7 @@ export default function Timeline(props: TimelineProps) {
     g.lastClientX = e.clientX
     g.lastClientY = e.clientY
     g.shift = e.shiftKey // Shift releases the magnet per-mousemove
-    g.alt = e.altKey // Alt is the cross-track move ripple modifier
+    g.alt = e.altKey // Alt is the Insert move modifier (else Overwrite)
     if (!g.dragging) {
       const dx = Math.abs(e.clientX - g.startX)
       const dy = Math.abs(e.clientY - g.startY)
@@ -708,7 +711,7 @@ export default function Timeline(props: TimelineProps) {
     const g = gestureRef.current
     if (!g) return
     const c = cfg.current
-    // Alt at mouseup (or held through the drag) decides the move ripple flag.
+    // Alt at mouseup (or held through the drag) decides Insert vs Overwrite.
     altAtUpRef.current = g.alt || e.altKey
     const wasDrag = g.dragging && g.mode !== 'scrub' && g.mode !== 'lane-seek'
     lastGestureWasDrag.current = wasDrag
@@ -810,14 +813,14 @@ export default function Timeline(props: TimelineProps) {
               setGhost(null) // no-op / blocked drop = zero ops
             } else {
               setGhost((gh) => (gh ? { ...gh, pending: true } : gh))
-              // edit.move takes a REAL ripple flag. Alt held at
-              // drop = ripple:true (AV-sync; siblings + captions/markers/duck-
-              // windows shift); default = linked float (the pair moves while
-              // unrelated tracks stay fixed). We pass both resolved flags.
+              // Alt held at drop = Insert (ripple:true: the rest of every track
+              // moves right, captions/markers/duck-windows follow); a plain
+              // drop = Overwrite (ripple:false: the linked pair replaces what is
+              // under it, nothing else moves). We pass both resolved flags.
               const ripple = altAtUpRef.current
-              // edit.move splices at EDITORIAL time on the destination track
-              // (app/core/src/edit.rs splice_into_track walks the cumulative
-              // cursor); the ghost's startMs is the LAID drop position, so
+              // edit.move places at EDITORIAL time on the destination track
+              // (Overwrite or, with Alt, Insert; both walk the cumulative
+              // editorial cursor); the ghost's startMs is the LAID drop position, so
               // convert through the destination track's laid→editorial map.
               // (The engine gap-fills the source slot first, so the dest
               // track's editorial layout is unchanged by the removal.)
@@ -828,7 +831,7 @@ export default function Timeline(props: TimelineProps) {
                 at_ms: Math.round(laidToEditorialMs(destItems, final.startMs)),
                 ripple,
                 linked: true,
-                rationale: dragRationale(it.id, final.startMs - it.startMs, final.trackId, trackChanged, ripple ? 'ripple' : 'lift'),
+                rationale: dragRationale(it.id, final.startMs - it.startMs, final.trackId, trackChanged, ripple ? 'insert' : 'overwrite'),
               }).then((result) => {
                 if (showVerbFailure(result, 'Could not move the linked clip.')) setGhost(null)
               }).catch(() => {
@@ -1589,6 +1592,7 @@ export default function Timeline(props: TimelineProps) {
                 baseVideoId={baseVideoId}
                 contentW={contentW}
                 zoom={zoom}
+                fps={fps}
                 selectedClipIds={selectedClipIds}
                 draggingClipId={draggingClipId}
                 filmstrips={filmstrips}

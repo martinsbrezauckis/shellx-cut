@@ -29,7 +29,8 @@ pub(super) fn filter(
         return Ok(String::new());
     }
     super::require_plain_internal_dir(parent)?;
-    if !super::plain_internal_file_exists(&trf)? {
+    // Item 155: only motion data this engine detected (prepare records it).
+    if !super::plain_internal_file_exists(&trf)? || !crate::cache_trust::trusted(&trf) {
         return Ok(String::new());
     }
     let smoothing = st.smoothing.clamp(1.0, 100.0).round() as u64;
@@ -89,7 +90,11 @@ pub(super) fn prepare(project: &Project, edl: &Edl, project_dir: &Path) -> Resul
         let trf = trf_path(project_dir, &asset.hash, src_in, src_out);
         let parent = trf.parent().expect("stabilization path has a parent");
         super::ensure_plain_internal_child(project_dir, parent)?;
-        if super::plain_internal_file_exists(&trf)? || !done.insert(trf.clone()) {
+        // Item 155: a .trf this engine did not detect (planted, or copied from
+        // another computer) is detected again and replaced by the write below.
+        let reusable =
+            super::plain_internal_file_exists(&trf)? && crate::cache_trust::trusted(&trf);
+        if reusable || !done.insert(trf.clone()) {
             continue;
         }
         let staging = tempfile::Builder::new()
@@ -115,6 +120,7 @@ pub(super) fn prepare(project: &Project, edl: &Edl, project_dir: &Path) -> Resul
         super::plain_internal_file_exists(&staged_trf)?;
         super::plain_internal_file_exists(&trf)?;
         std::fs::rename(&staged_trf, &trf)?;
+        crate::cache_trust::remember(&trf);
     }
     Ok(())
 }

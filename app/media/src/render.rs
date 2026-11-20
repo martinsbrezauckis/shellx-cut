@@ -54,41 +54,51 @@ pub(crate) fn ensure_plain_internal_child(parent: &Path, child: &Path) -> Result
     require_plain_internal_dir(child)
 }
 
+/// An internal file is reused only as an ordinary file with one name (no
+/// link, junction or hard link); see `crate::internal_files` (item 140).
 pub(crate) fn plain_internal_file_exists(path: &Path) -> Result<bool, CutError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_file() && !is_reparse_point(&meta) => Ok(true),
-        Ok(_) => Err(CutError::new(
-            error_codes::IO,
-            format!("unsafe media cache file: {}", path.display()),
-            "internal output files must be plain regular files",
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e.into()),
-    }
+    crate::internal_files::plain_cache_file_exists(path)
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names
+/// another entry; cloud placeholders and other reparse points do not.
 fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    meta.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(meta)
 }
 
 /// Progress callback: fraction 0.0..=1.0, called from the render thread.
 /// Boxed dyn so the server can forward into its WS event bus.
 pub type ProgressFn = Box<dyn Fn(f32) + Send + Sync>;
 
+mod draft_preview;
+mod frame_budget;
+mod frame_window;
+mod gpu_chain;
+mod gpu_choice;
+mod gpu_vram;
 mod graph_inputs;
 mod input_paths;
 mod matte;
+pub mod odd_size;
 mod options;
+mod published;
 mod ramp_timing;
+pub mod resources;
+mod reverse_memory;
+mod window_part;
+pub use draft_preview::render_draft;
+pub use gpu_choice::{gpu_render_refusal, gpu_render_requested};
+pub use reverse_memory::{reverse_part_bytes, reverse_refusal};
+mod segment_trust;
+mod source_facts;
+pub use source_facts::{measured_for_reverse, measured_reverse_part_bytes};
+pub mod source_color;
+pub mod source_prep;
 mod stabilization;
+pub mod tone_map_support;
+#[cfg(test)]
+use gpu_vram::gpu_vram_estimate_bytes;
+use gpu_vram::gpu_vram_fits;
 #[cfg(test)]
 use graph_inputs::bake_mask_png_atomic;
 use graph_inputs::{
@@ -224,9 +234,19 @@ fn fps_filter_for_asset(
     frozen: bool,
 ) -> String {
     let fps = fps_str(project_fps);
-    let same_fps = source_fps(asset)
-        .map(|src| (src - project_fps).abs() < 0.01)
+    // A variable-frame-rate source never takes the renumbering shortcut: its
+    // frames are not evenly spaced, so `setpts=N/(fps*TB)` would move them off
+    // their real times. `fps=` places each frame by its timestamp.
+    let variable = asset
+        .probe
+        .as_ref()
+        .and_then(|p| p.get("variable_frame_rate"))
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let same_fps = !variable
+        && source_fps(asset)
+            .map(|src| (src - project_fps).abs() < 0.01)
+            .unwrap_or(false);
     if same_fps && !frozen && (speed - 1.0).abs() < 1e-6 {
         format!("settb=expr=1/{fps},setpts=N/({fps}*TB)")
     } else {
@@ -353,6 +373,15 @@ fn colorspace_filter(
         s.push_str(&zscale_hop(working, output));
     }
     s
+}
+
+/// True when a clip tagged `input` in a project with `color` needs a `zscale`
+/// conversion (libzimg) at render — the same rule [`colorspace_filter`] follows.
+pub fn needs_color_conversion(
+    input: Option<&cut_core::ColorSpace>,
+    color: &cut_core::ColorConfig,
+) -> bool {
+    !colorspace_filter(input, color).is_empty()
 }
 
 /// Output-stream color TAGGING flags for the final encode (`-colorspace`/
@@ -1886,6 +1915,14 @@ fn build_graph(
                             seg_dur,
                             s.fps,
                         );
+                        // Row 194: a window part keeps the whole clip's frames.
+                        let (trim_in, trim_out, vsetpts, vfps) = window_part::apply(
+                            project,
+                            seg,
+                            s.fps,
+                            (trim_in, trim_out, vsetpts),
+                            vfps,
+                        );
                         // Reverse playback (edit.reverse): emitted right after the PTS
                         // reset (source space, before crop/conform) so the clip plays
                         // backward; ffmpeg `reverse` buffers the whole clip in RAM (the
@@ -1911,7 +1948,18 @@ fn build_graph(
                         // clip INPUT → WORKING → OUTPUT space as the FINAL per-clip pixel
                         // stage. "" when default (rec709 all round, no input tag) → the
                         // chain is byte-identical to a pre-color-management render.
-                        let vcolor = colorspace_filter(seg.input_color_space.as_ref(), &s.color);
+                        // An HDR source is tone-mapped to SDR BT.709 first (source_color).
+                        // PREP: an HDR or BT.601 source becomes BT.709 right after the
+                        // conform, before animation/grade/effects (source_prep).
+                        let vprep = source_prep::clip_source_prep(
+                            project.assets.get(asset),
+                            seg.input_color_space.as_ref(),
+                        );
+                        let vcolor = source_color::clip_color_chain(
+                            project.assets.get(asset),
+                            seg.input_color_space.as_ref(),
+                            &s.color,
+                        );
                         // Visual effects (edit.effect): after grade. overlay=false on the
                         // base (chroma key is skipped — nothing below the base to reveal).
                         let veffects = effect_filter(&seg.effects, false);
@@ -2032,7 +2080,7 @@ fn build_graph(
                             writeln!(
                             f,
                             "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                             {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuv420p[{pre}];",
+                             {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuv420p[{pre}];",
                             idx = input_idx[asset],
                         )
                         .unwrap();
@@ -2100,7 +2148,7 @@ fn build_graph(
                             writeln!(
                             f,
                             "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                             {conform}{vanim}{vgrade}{veffects}{vtransform}{foreground_opacity}{vcolor},{vfps},format=yuv420p{foreground_fade}{foreground_lock}[{matte_foreground}];",
+                             {conform}{vprep}{vanim}{vgrade}{veffects}{vtransform}{foreground_opacity}{vcolor},{vfps},format=yuv420p{foreground_fade}{foreground_lock}[{matte_foreground}];",
                             idx = input_idx[asset],
                         )
                         .unwrap();
@@ -2179,6 +2227,11 @@ fn build_graph(
                 });
             }
         }
+    }
+    // Row 194: each base stream carries exactly its slot's frames (frame_budget).
+    if let Some(plan) = video_tracks.first() {
+        let spans = frame_budget::base_spans(project, edl, plan.id, plan.visible, s.fps);
+        frame_budget::lock_base(&mut f, &mut vsegs, &spans, s.fps);
     }
     // True when ANY base-track seam crossfades — only THEN do we switch to the
     // pairwise seam fold. With no crossfade we keep the ORIGINAL single N-way
@@ -2324,6 +2377,8 @@ fn build_graph(
             let vfps = asset_meta
                 .map(|a| fps_filter_for_asset(a, s.fps, seg.speed, seg.freeze.is_some()))
                 .unwrap_or_else(|| format!("fps={fps}"));
+            let (trim_in, trim_out, vsetpts, vfps) =
+                window_part::apply(project, seg, s.fps, (trim_in, trim_out, vsetpts), vfps);
             let vlock = ramp_timing::video_suffix(project, seg);
             // Reverse playback (edit.reverse) applies to overlays too; freeze wins.
             let vreverse = if seg.reverse && seg.freeze.is_none() {
@@ -2342,7 +2397,12 @@ fn build_graph(
             // the final per-clip pixel stage (input → working → output). "" when
             // default → byte-identical. (On the matte path it tags the FOREGROUND
             // copy only; the gray alpha matte skips all color stages.)
-            let vcolor = colorspace_filter(seg.input_color_space.as_ref(), &s.color);
+            let vprep = source_prep::clip_source_prep(asset_meta, seg.input_color_space.as_ref());
+            let vcolor = source_color::clip_color_chain(
+                asset_meta,
+                seg.input_color_space.as_ref(),
+                &s.color,
+            );
             // Visual effects (edit.effect): overlay=true so chroma key keys the
             // background to transparent BEFORE format=yuva420p (revealing the
             // layer below); placed after conform/grade, before the PiP transform.
@@ -2404,7 +2464,7 @@ fn build_graph(
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
                      [{am}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
                      {conform}{vanim},{vfps},format=gray[{amatte}];",
                     idx = input_idx[asset.as_str()],
@@ -2472,7 +2532,7 @@ fn build_graph(
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
                      [{am}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
                      {conform}{vanim},{vfps},format=gray[{amatte}];\n\
                      [{fgpre}][{amatte}]alphamerge{vopac}{place}{vfade}[{label}];",
@@ -2504,7 +2564,7 @@ fn build_graph(
                 let canvas = format!("o{ti}_cv{}", olabels.len());
                 let input_chain = format!(
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p",
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p",
                     idx = input_idx[asset.as_str()],
                 );
                 f.push_str(&animated_overlay_canvas_block(
@@ -2529,7 +2589,7 @@ fn build_graph(
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p{vopac}{place}{vfade}{vlock}[{label}];",
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p{vopac}{place}{vfade}{vlock}[{label}];",
                     idx = input_idx[asset.as_str()],
                 )
                 .unwrap();
@@ -2538,6 +2598,8 @@ fn build_graph(
             cursor = seg.timeline_out_ms;
         }
         filler(cursor, edl.duration_ms, &mut f, &mut olabels);
+        let spans = frame_budget::overlay_spans(project, edl, track_id, s.fps);
+        frame_budget::lock_track(&mut f, &mut olabels, &spans, s.fps);
         if olabels.is_empty() {
             continue; // track listed but contributed nothing visible
         }
@@ -2712,9 +2774,10 @@ fn build_graph(
                     // gain (a muted word stays silent whatever the gain) and BEFORE
                     // the fade. Empty when the clip has none → byte-identical.
                     let amute = mute_gate_filter(seg);
+                    let amono = options::mono_to_both_channels(project.assets.get(asset)); // item 87
                     writeln!(
                         f,
-                        "[{idx}:a]atrim=start={in_s}:end={out_s},asetpts=PTS-STARTPTS,{areverse}{aspeed}\
+                        "[{idx}:a]atrim=start={in_s}:end={out_s},asetpts=PTS-STARTPTS,{areverse}{aspeed}{amono}\
                          aformat=sample_fmts=fltp:sample_rates={rate}:channel_layouts=stereo{adenoise}{aeq}{gain}{amute}{afade}{alock}[{label}];",
                         idx = input_idx[asset],
                         in_s = secs(src_in),
@@ -2886,6 +2949,9 @@ fn graph_args(graph: &Graph, map_video: &str, map_audio: Option<&str>) -> Vec<St
             args.push("-loop".into());
             args.push("1".into());
         }
+        if let Some(n) = input.decode_threads {
+            args.extend(["-threads".into(), n.to_string()]); // item 82: 8K decoder memory
+        }
         args.push("-i".into());
         args.push(input.path.display().to_string());
     }
@@ -2927,7 +2993,7 @@ fn sha256_file(path: &Path) -> Result<String, CutError> {
 //
 // The decision + capability probe + the CUDA graph are all wired: the gate
 // ([`render_target`]) ANDs opt-in + the CUDA probe + a v1-scope timeline
-// ([`timeline_is_gpu_friendly`]) + a VRAM-fitting estimate ([`gpu_vram_fits`]),
+// ([`gpu_gate_refusal`]) + a VRAM-fitting estimate ([`gpu_vram_fits`]),
 // and [`build_graph_gpu`] emits the CUDA graph (base track NVDEC→scale_cuda→concat→
 // nvenc + overlay_cuda PiP; audio stays software). The default path is byte-
 // identical to a pre-fast-track render (untouched below).
@@ -2970,17 +3036,17 @@ fn gpu_opt_in() -> bool {
 /// → false (software). A false negative (software when GPU would have worked) just
 /// forgoes speed; a false positive (GPU on a timeline it can't render) corrupts the
 /// output. Audio is always a software single-pass, so it never affects this gate.
-fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) -> bool {
+fn gpu_gate_refusal(project: &Project, edl: &Edl, opts: &RenderOptions) -> Option<&'static str> {
     // Color management (project.color working/output ≠ rec709) is a CPU `zscale`
     // conversion the v1 CUDA graph does not emit → software path (which also keeps
     // the conversion bit-exact). A non-default project.color forces software.
     if !project.settings.color.is_default() {
-        return false;
+        return Some("the project uses colour management other than BT.709");
     }
     // An adjustment layer (edit.adjustment) is a CPU-only gated composite pass
     // (split + grade/effects + timed overlay) → software path, like edit.effect.
     if !edl.adjustments.is_empty() {
-        return false;
+        return Some("the timeline has an adjustment layer");
     }
     // No caption track or alpha title-overlay track with content (both CPU-only
     // in v1: ASS burn-in and per-pixel-alpha titles).
@@ -2989,16 +3055,16 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
             continue;
         }
         if t.kind == TrackKind::Caption && t.visible {
-            return false;
+            return Some("the timeline has captions");
         }
         // title.add places alpha overlays on a video track id-prefixed "title".
         if t.kind == TrackKind::Video && t.visible && t.id.starts_with("title") {
-            return false;
+            return Some("the timeline has a title");
         }
         // A layer blend mode (edit.blend) uses the masked-blend recipe (split +
         // blend + alphamerge), which overlay_cuda can't express → software.
         if t.visible && t.blend_mode.is_some() {
-            return false;
+            return Some("a track uses a blend mode");
         }
     }
     // No per-segment op without a CUDA filter. (speed = setpts, a timestamp-only
@@ -3008,6 +3074,10 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
         if seg.grade.is_some()
             || !seg.grade_stack.is_empty() // edit.grade_stack — N CPU eq layers, software path
             || seg.input_color_space.is_some() // edit.color_space — CPU zscale convert
+            || seg
+                .asset
+                .as_deref()
+                .is_some_and(|a| source_prep::needs_source_prep(project.assets.get(a))) // HDR tone map / BT.601 matrix — CPU filters
             || seg.matte.is_some() // baked-alpha composite (alphamerge) — software path
             || seg.mask.is_some() // edit.add_mask region composite — software path
             || !seg.grade_windows.is_empty() // edit.grade_window region grade composite — software path
@@ -3021,7 +3091,7 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
             || !seg.keyframes.is_empty()
             || seg.stabilize.is_some()
         {
-            return false;
+            return Some("a clip has a grade, colour conversion, matte, mask, fade, crop, crossfade, effect, reverse, freeze, animation, keyframes or stabilization");
         }
     }
     // Only one video track is currently safe. On FFmpeg 6.1, overlay_cuda drops
@@ -3031,10 +3101,10 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
     // until a CUDA crop path is available and live parity is proven.
     let video_tracks = planned_video_tracks(project);
     let Some(base_plan) = video_tracks.first() else {
-        return false;
+        return Some("the timeline has no video track");
     };
     if video_tracks.len() != 1 {
-        return false;
+        return Some("the timeline has more than one video track");
     }
     let base_id = base_plan.id;
     // The CUDA graph currently conforms the base frame but does not apply
@@ -3051,7 +3121,7 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
             })
         })
     {
-        return false;
+        return Some("the base clip is moved, scaled or made transparent");
     }
     // Conform on the BASE is scale_cuda=W:H (exact), faithful ONLY when the source
     // aspect matches the output's; a mismatch would distort (letterbox/crop have no
@@ -3060,7 +3130,7 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
     // which handles any source aspect, so they are NOT aspect-constrained.)
     let (ow, oh) = opts.output_geometry(project, edl);
     if ow == 0 || oh == 0 {
-        return false;
+        return Some("the output size is unknown");
     }
     if base_plan.visible {
         for seg in edl
@@ -3068,7 +3138,7 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
             .filter(|s| s.asset.is_some() && s.track_kind == TrackKind::Video)
         {
             let Some(asset) = project.assets.get(seg.asset.as_deref().unwrap()) else {
-                return false;
+                return Some("a clip's source file is not in the project");
             };
             let (Some(w), Some(h)) = (
                 asset
@@ -3082,120 +3152,24 @@ fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) 
                     .and_then(|p| p.get("height"))
                     .and_then(|v| v.as_u64()),
             ) else {
-                return false; // unknown source geometry — can't guarantee a faithful resize
+                return Some("a clip's picture size is unknown"); // unknown source geometry — can't guarantee a faithful resize
             };
             if w == 0 || h == 0 {
-                return false;
+                return Some("a clip's picture size is unknown");
             }
             // aspect match within ~1% (cross-multiply to avoid float division).
             let diff = (ow as i64 * h as i64 - oh as i64 * w as i64).unsigned_abs();
             if diff as f64 > 0.01 * (oh as f64) * (w as f64) {
-                return false;
+                return Some("a clip's picture shape differs from the output's");
             }
         }
     }
-    true
-}
-
-// === GPU VRAM bound ============================================================
-//
-// GPU frames live in VRAM, which has NO cgroup backstop (the render_command cgroup
-// caps system RAM only) — NVDEC/NVENC fail HARD on a VRAM OOM. The GPU graph is
-// single-pass (not windowed), so the bound is a per-render PEAK estimate compared
-// to the device's VRAM ([`crate::hwencode::cuda_total_vram_bytes`]); over budget →
-// fall back to software (never wedge the GPU). The estimate is a deliberate
-// OVER-estimate: a false "fits" must never OOM the GPU, while a false "too big"
-// only forgoes the fast path.
-
-/// Bytes per pixel for a VRAM frame estimate. yuva420p is 4 planes; NV12 is 1.5,
-/// but 4 keeps generous headroom (driver overhead, alignment, intermediate
-/// surfaces) so the estimate over-counts rather than under-counts.
-const VRAM_BYTES_PER_PX: u64 = 4;
-/// NVDEC decode-surface pool per hardware-decoded BASE input (DPB + extra
-/// surfaces). 4K HEVC can need ~16–20; 24 over-estimates safely.
-const VRAM_DECODE_POOL_FRAMES: u64 = 24;
-/// In-flight CUDA surfaces an overlay track adds (its hwupload'd full-frame
-/// yuva420p stream + the overlay_cuda working set).
-const VRAM_OVERLAY_FRAMES: u64 = 4;
-/// NVENC working set (DPB + lookahead), in OUTPUT frames.
-const VRAM_NVENC_FRAMES: u64 = 16;
-
-/// Estimated PEAK VRAM (bytes) the GPU graph holds for this timeline: NVDEC pools
-/// for the distinct base-track inputs (sized at SOURCE geometry — the pool holds
-/// source-resolution frames before scale_cuda conforms them) + one full
-/// output-frame surface set per overlay track + the NVENC working set. Used by the
-/// render gate to fall back to software before a VRAM OOM. Over-estimates by
-/// design (see the module note above).
-fn gpu_vram_estimate_bytes(project: &Project, edl: &Edl, opts: &RenderOptions) -> u64 {
-    let (ow, oh) = opts.output_geometry(project, edl);
-    let out_frame = (ow as u64) * (oh as u64) * VRAM_BYTES_PER_PX;
-
-    // Base canvas = the FIRST video track with clips (NVDEC-decoded; stays on GPU).
-    let video_tracks = planned_video_tracks(project);
-    let base_plan = video_tracks.first().copied();
-    let base_id = base_plan.map(|p| p.id);
-
-    // Decode pools: one per DISTINCT base-track NVDEC input, at source geometry.
-    let mut decode = 0u64;
-    if let Some(bid) = base_id.filter(|_| base_plan.is_some_and(|p| p.visible)) {
-        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-        for seg in edl
-            .track_segments(bid)
-            .filter(|s| s.track_kind == TrackKind::Video)
-        {
-            let Some(asset_id) = seg.asset.as_deref() else {
-                continue;
-            };
-            if !seen.insert(asset_id) {
-                continue;
-            }
-            let (sw, sh) = project
-                .assets
-                .get(asset_id)
-                .and_then(|a| a.probe.as_ref())
-                .and_then(|p| Some((p.get("width")?.as_u64()?, p.get("height")?.as_u64()?)))
-                .filter(|(w, h)| *w > 0 && *h > 0)
-                .unwrap_or((ow as u64, oh as u64));
-            decode += VRAM_DECODE_POOL_FRAMES * sw * sh * VRAM_BYTES_PER_PX;
-        }
-    }
-
-    // Overlay tracks = every video track with clips BEYOND the base; each is a
-    // CPU-built full-frame yuva420p stream hwupload'd into overlay_cuda.
-    let overlay_tracks = video_tracks.len().saturating_sub(1) as u64;
-    let overlays = overlay_tracks * VRAM_OVERLAY_FRAMES * out_frame;
-
-    decode + overlays + VRAM_NVENC_FRAMES * out_frame
-}
-
-/// VRAM budget (bytes) for a GPU render. `SHELLX_CUT_GPU_VRAM_BUDGET_MB` overrides
-/// (tests + a manual hard cap); else 85% of the probed device VRAM (headroom for
-/// the driver/display + fragmentation); else a conservative 4 GiB when the device
-/// size can't be read (no nvidia-smi) — so a small GPU is never assumed huge.
-fn gpu_vram_budget_bytes() -> u64 {
-    if let Some(mb) = std::env::var("SHELLX_CUT_GPU_VRAM_BUDGET_MB")
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .filter(|n| *n > 0)
-    {
-        return mb * 1024 * 1024;
-    }
-    match crate::hwencode::cuda_total_vram_bytes() {
-        Some(total) => total * 85 / 100,
-        None => 4 * 1024 * 1024 * 1024,
-    }
-}
-
-/// True when the GPU graph's estimated peak VRAM fits the budget. The render gate
-/// ANDs this in so a heavy timeline (many 4K overlay layers / a small GPU) falls
-/// back to software instead of OOMing the GPU.
-fn gpu_vram_fits(project: &Project, edl: &Edl, opts: &RenderOptions) -> bool {
-    gpu_vram_estimate_bytes(project, edl, opts) <= gpu_vram_budget_bytes()
+    None
 }
 
 /// The render-backend gate. GPU is chosen ONLY when ALL hold: the user opted
 /// in, the CUDA filter chain passes its runtime probe, the timeline is
-/// within the v1 GPU scope ([`timeline_is_gpu_friendly`]), AND the GPU graph's
+/// within the v1 GPU scope ([`gpu_gate_refusal`]), AND the GPU graph's
 /// estimated peak VRAM fits the device budget ([`gpu_vram_fits`]). Otherwise the
 /// software default — so opt-in never breaks a grade/caption/xfade render or OOMs
 /// the GPU, it just forgoes the fast path.
@@ -3206,7 +3180,7 @@ fn gpu_vram_fits(project: &Project, edl: &Edl, opts: &RenderOptions) -> bool {
 fn render_target(project: &Project, edl: &Edl, opts: &RenderOptions) -> GraphTarget {
     if gpu_opt_in()
         && crate::hwencode::gpu_filters_available()
-        && timeline_is_gpu_friendly(project, edl, opts)
+        && gpu_gate_refusal(project, edl, opts).is_none()
         && gpu_vram_fits(project, edl, opts)
     {
         GraphTarget::Cuda
@@ -3216,7 +3190,7 @@ fn render_target(project: &Project, edl: &Edl, opts: &RenderOptions) -> GraphTar
 }
 
 /// Build the GPU fast-track filtergraph for a v1-scope timeline (the gate
-/// [`timeline_is_gpu_friendly`] guarantees: one base video track, no overlays /
+/// [`gpu_gate_refusal`] guarantees: one base video track, no overlays /
 /// captions / grade / fade / crop / xfade, opaque, matching source aspect).
 ///
 /// Inputs are NVDEC-decoded to CUDA frames (`graph.gpu = true` → `graph_args`
@@ -3284,23 +3258,20 @@ fn build_graph_gpu(
                 match (&seg.asset, seg.src_in_ms, seg.src_out_ms) {
                     (Some(asset), Some(src_in), Some(src_out)) => {
                         // NVDEC frames -> trim -> retime -> scale_cuda to exact WxH ->
-                        // `fps` normalize to the project rate. The fps filter is
-                        // PTS-based (drops/dups whole frames; no pixel access), so it
-                        // runs on CUDA hwframes — verified NVDEC->scale_cuda->fps->nvenc.
-                        // REQUIRED: without it a source whose fps != the project fps
-                        // (e.g. a 60fps clip in a 30fps project) passes straight through
-                        // at the SOURCE rate — wrong framerate/duration AND a frame-count
-                        // mismatch with the project-rate black-gap frames at concat. This
-                        // mirrors the software base chain (`,fps={fps}`); the gate checks
-                        // aspect, not fps, so the graph itself must conform the rate.
-                        let vsetpts = video_setpts(seg.speed);
+                        // the project rate. The rate filters only move timestamps or
+                        // clone frames, so they run on CUDA hwframes. Same timing as
+                        // the software base chain (row 194: gpu_chain).
+                        let t = gpu_chain::timing(project, seg, s.fps, src_in, src_out);
                         writeln!(
                             f,
-                            "[{idx}:v]trim=start={in_s}:end={out_s},{vsetpts},\
-                         scale_cuda={w}:{h}:format=yuv420p,fps={fps}[{label}];",
+                            "[{idx}:v]trim=start={}:end={},{}{},\
+                         scale_cuda={w}:{h}:format=yuv420p,{}[{label}];",
+                            t.trim_in,
+                            t.trim_out,
+                            t.setpts,
+                            t.freeze,
+                            t.rate,
                             idx = input_idx[asset.as_str()],
-                            in_s = secs(src_in),
-                            out_s = secs(src_out),
                         )
                         .unwrap();
                     }
@@ -3335,6 +3306,8 @@ fn build_graph_gpu(
                 vsegs.push(label);
             }
         }
+        let spans = frame_budget::base_spans(project, edl, track_id, track_plan.visible, s.fps);
+        frame_budget::lock_track(&mut f, &mut vsegs, &spans, s.fps);
     }
 
     let mut video_out = if vsegs.is_empty() {
@@ -3428,14 +3401,13 @@ fn build_graph_gpu(
             // Speed/freeze on a GPU-path overlay (CPU-built) — kept identical to the
             // software overlay (the gate routes any reversed/frozen timeline to
             // software, so this is forward-compat today, like effects above).
-            let (trim_in, trim_out, vsetpts, vfreeze) = freeze_chain(
-                seg.freeze.as_ref(),
-                seg.speed,
-                src_in,
-                src_out,
-                seg.timeline_out_ms - seg.timeline_in_ms,
-                s.fps,
-            );
+            let gpu_chain::Timing {
+                trim_in,
+                trim_out,
+                setpts: vsetpts,
+                freeze: vfreeze,
+                rate,
+            } = gpu_chain::timing(project, seg, s.fps, src_in, src_out);
             let vreverse = if seg.reverse && seg.freeze.is_none() {
                 ",reverse"
             } else {
@@ -3456,7 +3428,7 @@ fn build_graph_gpu(
             writeln!(
                 f,
                 "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vreverse}{vfreeze}{vcrop},\
-                 {conform}{vanim}{vgrade}{veffects},fps={fps},format=yuva420p{vopac}{place}{vfade}[{label}];",
+                 {conform}{vanim}{vgrade}{veffects},{rate},format=yuva420p{vopac}{place}{vfade}[{label}];",
                 idx = input_idx[asset.as_str()],
             )
             .unwrap();
@@ -3464,6 +3436,8 @@ fn build_graph_gpu(
             cursor = seg.timeline_out_ms;
         }
         filler(cursor, edl.duration_ms, &mut f, &mut olabels);
+        let spans = frame_budget::overlay_spans(project, edl, track_id, s.fps);
+        frame_budget::lock_track(&mut f, &mut olabels, &spans, s.fps);
         if olabels.is_empty() {
             continue; // track listed but contributed nothing visible
         }
@@ -3573,7 +3547,7 @@ fn render_gpu(
         height: non_default.then_some(gh),
         fit: non_default.then(|| opts.fit.as_str().to_string()),
         hash: sha256_file(out)?,
-        duration_ms: crate::probe::probe(out)?.duration_ms.ok_or_else(|| {
+        duration_ms: published::probe(out)?.duration_ms.ok_or_else(|| {
             CutError::new(
                 error_codes::FFMPEG,
                 "GPU render output has no measurable duration",
@@ -3600,6 +3574,10 @@ pub fn render_final(
     opts: RenderOptions,
     on_progress: Option<ProgressFn>,
 ) -> Result<RenderOutput, CutError> {
+    let measured = source_facts::measured_for_reverse(project, fence.project_dir()); // reversed clips
+    let project = measured.as_ref().unwrap_or(project);
+    tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
+    odd_size::require_even_output(project, &opts)?; // odd project: refuse, never round quietly
     let out = fence.fence_output_path(out_path)?; // the output-fencing contract — before any work
                                                   // Clear only an abandoned empty result before graph preparation. This also
                                                   // covers segmented renders that fail before their final mux reaches the
@@ -3649,6 +3627,7 @@ pub fn render_final(
 
     let mut args = graph_args(&graph, &graph.video_out, graph.audio_out.as_deref());
     args.extend(preset.video_args.iter().cloned());
+    args.extend(resources::encoder_thread_args(&preset.video_args, gw, gh));
     // Output color tagging (project.color output ≠ rec709): make the delivered file's
     // color space explicit in the container. Empty (no flags) on the default rec709
     // output, so a default render stays byte-identical.
@@ -3661,7 +3640,8 @@ pub fn render_final(
 
     // Progress streamed via -progress pipe:1; no-op closure when not wanted.
     let cb: ProgressFn = on_progress.unwrap_or_else(|| Box::new(|_| {}));
-    run_progress_atomic(&args, &out, edl.duration_ms, cb.as_ref())?;
+    run_progress_atomic(&args, &out, edl.duration_ms, cb.as_ref())
+        .map_err(|e| reverse_memory::stall_context(project, edl, 0, e))?;
 
     // Record geometry/fit only when NON-default — a default render
     // (contain + project geometry) leaves these None so its receipt stays
@@ -3676,7 +3656,7 @@ pub fn render_final(
         hash: sha256_file(&out)?,
         // A rendered mp4 always has a measurable duration; None would mean a
         // broken encode — surface it, never report 0 as fact.
-        duration_ms: crate::probe::probe(&out)?.duration_ms.ok_or_else(|| {
+        duration_ms: published::probe(&out)?.duration_ms.ok_or_else(|| {
             CutError::new(
                 error_codes::FFMPEG,
                 "render output has no measurable duration",
@@ -3757,7 +3737,9 @@ fn should_segment(project: &Project, edl: &Edl, gw: u32, gh: u32) -> bool {
     }
     let overlays = overlay_track_count(project);
     let win_ms = render_window_ms(gw, gh, overlays);
-    (overlays >= 1 && edl.duration_ms > win_ms) || edl.duration_ms > 600_000
+    (overlays >= 1 && edl.duration_ms > win_ms)
+        || edl.duration_ms > 600_000
+        || reverse_memory::single_pass_too_big(project, edl) // item 170
 }
 
 /// Plan contiguous render windows over `[0, duration)`: ~`target_ms` each,
@@ -3869,6 +3851,7 @@ fn render_window_video(
     preset: &RenderPreset,
     opts: RenderOptions,
     caps: WindowCaps,
+    w0: u64,
     on_progress: &dyn Fn(f32),
 ) -> Result<(), CutError> {
     // with_captions=true (from the EDL), with_audio=false (audio is single-pass),
@@ -3879,6 +3862,8 @@ fn render_window_video(
     let graph = build_graph(project, wedl, project_dir, true, false, true, opts, None)?;
     let mut args = graph_args(&graph, &graph.video_out, None);
     args.extend(preset.video_args.iter().cloned());
+    let (ww, wh) = opts.output_geometry(project, wedl);
+    args.extend(resources::encoder_thread_args(&preset.video_args, ww, wh));
     // Tag each segmented-render window with the project output color space so the
     // concat (stream-copy) carries it into the final file. Empty on default rec709.
     args.extend(output_color_args(&project.settings.color));
@@ -3894,14 +3879,8 @@ fn render_window_video(
     args.push(staged.display().to_string());
     // Per-window cgroup cap + thread share so N windows run concurrently without
     // collectively exceeding the RAM budget. See plan_seg_resources.
-    crate::ffmpeg::run_render_window(
-        &args,
-        wedl.duration_ms,
-        on_progress,
-        caps.high,
-        caps.max,
-        caps.threads,
-    )?;
+    crate::ffmpeg::run_render_window(&args, wedl.duration_ms, on_progress, caps.mem, caps.threads)
+        .map_err(|e| reverse_memory::stall_context(project, wedl, w0, e))?;
     plain_internal_file_exists(&staged)?;
     plain_internal_file_exists(seg_path)?;
     std::fs::rename(&staged, seg_path)?;
@@ -3911,8 +3890,8 @@ fn render_window_video(
 /// Per-window governance caps for a parallel segmented render.
 #[derive(Clone, Copy)]
 struct WindowCaps {
-    high: u64,
-    max: u64,
+    /// cgroup (MemoryHigh, MemoryMax); None = the single-render default.
+    mem: Option<(u64, u64)>,
     threads: u32,
 }
 
@@ -3978,16 +3957,29 @@ fn plan_seg_resources(
         1 // DEFAULT: serial — the bounded render. Parallelism is opt-in (see doc).
     };
 
-    // Per-window cgroup cap = the budget share with headroom over the estimate so
-    // an accurate window does NOT throttle; a mis-estimate spills (safe). Floor at
-    // 512 MB. N windows each ≤ high ⇒ collective ≤ N×high ≈ the budget.
-    let one_mb = 1024 * 1024;
-    let high = ((per_window_mb * 1.3) as u64)
-        .saturating_mul(one_mb)
-        .max(512 * one_mb);
-    let max = high + 512 * one_mb;
     let threads = (cores / parallelism).max(1) as u32;
-    Ok((parallelism, WindowCaps { high, max, threads }))
+    Ok((
+        parallelism,
+        WindowCaps {
+            mem: window_mem_cap(parallelism, crate::ffmpeg::render_mem_budget()),
+            threads,
+        },
+    ))
+}
+
+/// Item 95: the cgroup cap of one window. A single window (the default serial
+/// render) gets the whole render budget, as a single-pass render does; the old
+/// per-window model had no encoder term and gave a software 4K window 3.4 GB,
+/// less than libx264 alone needs, so the kernel killed it. N parallel windows
+/// share the budget equally (never under 512 MB).
+fn window_mem_cap(parallelism: usize, budget: Option<(u64, u64)>) -> Option<(u64, u64)> {
+    let (high, _) = budget?;
+    if parallelism <= 1 {
+        return budget;
+    }
+    let one_mb = 1024 * 1024;
+    let share = (high / parallelism as u64).max(512 * one_mb);
+    Some((share, share + 512 * one_mb))
 }
 
 /// Render a long composition in time-windows so peak memory is bounded by the
@@ -4030,7 +4022,7 @@ pub fn render_segmented(
     // --- 1. video windows (governed, content-hash cached, rendered in PARALLEL)
     let overlays = overlay_track_count(project);
     let win_ms = render_window_ms(gw, gh, overlays);
-    let windows = plan_windows(edl, win_ms, fps);
+    let windows = reverse_memory::split_windows(project, edl, plan_windows(edl, win_ms, fps), fps);
     let (parallelism, caps) = plan_seg_resources(win_ms, gw, gh, overlays)?;
     let video_weight = 0.9_f32; // reserve 0.9..1.0 for the audio/mux pass
 
@@ -4044,11 +4036,18 @@ pub fn render_segmented(
             work.join(format!("{key}.mp4"))
         })
         .collect();
+    // The concat list is built before any window is rendered, so a project
+    // folder whose name cannot be written into it is refused at once.
+    let mut list = String::new();
+    for p in &seg_files {
+        writeln!(list, "{}", owned_concat_file_lines(p)?).unwrap();
+    }
     for path in &seg_files {
         plain_internal_file_exists(path)?;
     }
+    // Item 139: reuse only windows this engine encoded (segment_trust).
     let todo: Vec<usize> = (0..windows.len())
-        .filter(|&i| !seg_files[i].exists())
+        .filter(|&i| !seg_files[i].exists() || !segment_trust::trusted(&seg_files[i]))
         .collect();
 
     // Fan out independent capped windows; collect the first error after all scoped workers stop.
@@ -4065,13 +4064,15 @@ pub fn render_segmented(
                 use std::sync::atomic::Ordering::SeqCst;
                 loop {
                     let k = next.fetch_add(1, SeqCst);
-                    if k >= todo.len() {
+                    // After a failed window the render has failed: start no other
+                    // (a stalled window otherwise cost the stall time once per window).
+                    if k >= todo.len() || !errors.lock().unwrap().is_empty() {
                         break;
                     }
                     let i = todo[k];
                     let (w0, w1) = windows[i];
                     let wedl = edl.window(w0, w1);
-                    if let Err(e) = render_window_video(
+                    match render_window_video(
                         project,
                         &wedl,
                         project_dir,
@@ -4079,9 +4080,17 @@ pub fn render_segmented(
                         preset,
                         win_opts,
                         caps,
-                        &|_| {},
+                        w0,
+                        // A serial render shows progress inside each window too.
+                        &|p| {
+                            if parallelism == 1 {
+                                cb((done.load(SeqCst) as f32 + p) / total_todo as f32
+                                    * video_weight)
+                            }
+                        },
                     ) {
-                        errors.lock().unwrap().push(e);
+                        Ok(()) => segment_trust::remember(&seg_files[i]),
+                        Err(e) => errors.lock().unwrap().push(e),
                     }
                     let d = done.fetch_add(1, SeqCst) + 1;
                     cb((d as f32 / total_todo as f32) * video_weight);
@@ -4094,15 +4103,17 @@ pub fn render_segmented(
     }
 
     // --- 2. concat the windowed video (stream-copy) ------------------------
-    let list_path = work.join("concat.txt");
-    let mut list = String::new();
-    for p in &seg_files {
-        writeln!(list, "{}", owned_concat_file_lines(p)).unwrap();
-    }
-    plain_internal_file_exists(&list_path)?;
-    std::fs::write(&list_path, &list)?;
-    let video_only = work.join("video.mp4");
-    plain_internal_file_exists(&video_only)?;
+    // Item 98: the list and the joined video are this render's own files, in
+    // the engine's private folder (never the project), under fresh names, and
+    // removed when the render ends in any way. (The list text was built, and
+    // its paths checked, before any encoding.)
+    let private = crate::private_work::session_dir()?;
+    let list_path = crate::internal_files::private_list_file(".cut-join-", ".txt", &list)?;
+    let video_only = tempfile::Builder::new()
+        .prefix(".cut-join-")
+        .suffix(".mp4")
+        .tempfile_in(&private)?
+        .into_temp_path();
     let mut cargs: Vec<String> = vec![
         "-f".into(),
         "concat".into(),
@@ -4175,7 +4186,7 @@ pub fn render_segmented(
         height: non_default.then_some(gh2),
         fit: non_default.then(|| opts.fit.as_str().to_string()),
         hash: sha256_file(out)?,
-        duration_ms: crate::probe::probe(out)?.duration_ms.ok_or_else(|| {
+        duration_ms: published::probe(out)?.duration_ms.ok_or_else(|| {
             CutError::new(
                 error_codes::FFMPEG,
                 "segmented render output has no measurable duration",
@@ -4281,7 +4292,7 @@ pub fn reframe_video(
         height: Some(out_h),
         fit: Some(format!("reframe:{aspect_w}:{aspect_h}")),
         hash: sha256_file(out_path)?,
-        duration_ms: crate::probe::probe(out_path)?.duration_ms.ok_or_else(|| {
+        duration_ms: published::probe(out_path)?.duration_ms.ok_or_else(|| {
             CutError::new(
                 error_codes::FFMPEG,
                 "reframe output has no measurable duration",
@@ -4373,7 +4384,7 @@ pub fn render_audio(
         height: None,
         fit: None,
         hash: sha256_file(&out)?,
-        duration_ms: crate::probe::probe(&out)?
+        duration_ms: published::probe(&out)?
             .duration_ms
             .unwrap_or(edl.duration_ms),
         path: out,
@@ -4392,6 +4403,10 @@ pub fn render_preview(
     duration_ms: u64,
     out_dir: &Path,
 ) -> Result<PathBuf, CutError> {
+    let measured = source_facts::measured_for_reverse(project, project_dir); // reversed clips
+    let project = measured.as_ref().unwrap_or(project);
+    tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
+    odd_size::require_even_output(project, &RenderOptions::default())?; // odd project: refuse
     if at_ms >= edl.duration_ms {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -4495,6 +4510,9 @@ pub struct ScrubPlan {
     /// for yuv420 — so the cropped clip scrubs the SAME framing the final render
     /// shows, without the slow composed path. None = no crop on this segment.
     pub proxy_crop: Option<[u32; 4]>,
+    /// Project frame (w, h): the fast frame is fitted into this aspect as the
+    /// composed frame is (item 99), instead of keeping the proxy's 16:9 box.
+    pub frame: (u32, u32),
 }
 
 /// Decide whether `at_ms` can be served by the FAST scrub path,
@@ -4532,10 +4550,15 @@ pub fn plan_scrub_frame(
     if !base_visible {
         return None;
     }
-    // The base-track media segment covering at_ms (half-open [in, out)).
-    let seg = edl
-        .track_segments(base)
-        .find(|s| s.asset.is_some() && s.timeline_in_ms <= at_ms && at_ms < s.timeline_out_ms)?;
+    // The base-track media segment holding the export frame at at_ms (row 194:
+    // the frame grid decides, not the millisecond).
+    let fps = project.settings.fps;
+    let k = frame_window::frame_index(at_ms, fps, edl.duration_ms);
+    let seg = edl.track_segments(base).find(|s| {
+        s.asset.is_some()
+            && frame_budget::frame_at(s.timeline_in_ms, fps) <= k
+            && k < frame_budget::frame_at(s.timeline_out_ms, fps)
+    })?;
     let asset_id = seg.asset.as_deref()?;
     let src_in = seg.src_in_ms?;
     // A caption burned in at this time → fall back (scrub-fast omits captions).
@@ -4567,11 +4590,15 @@ pub fn plan_scrub_frame(
     // fell back above. Correctness over speed (same philosophy as the crop case).
     // ...and a retimed clip: the proxy is NOT retimed, so the fast path's
     // src_pos (below) would seek the wrong source moment at non-1.0 speed.
+    // The same holds for a frozen clip (it shows src_in + at_ms for its whole
+    // slot) and a reversed one (it runs back from src_out).
     if seg.grade.is_some()
         || !seg.grade_stack.is_empty() // a layered grade stack changes pixels too
         || !seg.grade_windows.is_empty() // a power window changes a REGION's pixels too
         || seg.fade.is_some()
         || (seg.speed - 1.0).abs() > 1e-6
+        || seg.freeze.is_some()
+        || seg.reverse
     {
         return None;
     }
@@ -4593,18 +4620,25 @@ pub fn plan_scrub_frame(
     // source dimensions (from the asset probe). If those are unavailable we keep
     // the composed fallback — correctness over speed for the rare unprobed case.
     let proxy_crop = match seg.crop.as_ref() {
-        None => None,
+        // Item 99: the proxy pads a non-16:9 source into 960x540; cut the bars
+        // off so the frame shows the picture, not the proxy's letterbox.
+        None => source_dims(asset).and_then(options::proxy_picture_rect),
         Some(c) => {
             let (sw, sh) = source_dims(asset)?; // None → composed fallback
             Some(map_crop_to_proxy(c, sw, sh)?) // out-of-bounds → composed fallback
         }
     };
-    // Source position = clip's src_in + how far at_ms is into the segment.
-    let src_pos_ms = src_in + (at_ms - seg.timeline_in_ms);
+    // Source position of the source frame the export shows there.
+    let src_pos_ms = frame_window::fast_source_ms(asset, seg, k, at_ms, fps)?;
+    debug_assert!(src_pos_ms + 1 >= src_in);
     Some(ScrubPlan {
         proxy_path,
         src_pos_ms,
         proxy_crop,
+        frame: (
+            project.settings.width.max(1),
+            project.settings.height.max(1),
+        ),
     })
 }
 
@@ -4698,9 +4732,14 @@ pub fn extract_scrub_frame(plan: &ScrubPlan, h: u32) -> Result<Vec<u8>, CutError
     // UNCROPPED clip the filter is just the scale (the common, byte-identical
     // path). Transform/overlay/caption cases never reach here — plan_scrub_frame
     // returns None for those, keeping the composed fallback.
+    // Fit into the project's frame aspect like the composed path (contain).
+    let w = ((u64::from(h) * u64::from(plan.frame.0) / u64::from(plan.frame.1)) as u32 + 1) & !1;
+    let fit = format!(
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+    );
     let vf = match plan.proxy_crop {
-        Some([x, y, cw, ch]) => format!("crop={cw}:{ch}:{x}:{y},scale=-2:{h}"),
-        None => format!("scale=-2:{h}"),
+        Some([x, y, cw, ch]) => format!("crop={cw}:{ch}:{x}:{y},{fit}"),
+        None => fit,
     };
     let args: Vec<String> = vec![
         "-ss".into(),
@@ -4717,6 +4756,8 @@ pub fn extract_scrub_frame(plan: &ScrubPlan, h: u32) -> Result<Vec<u8>, CutError
         "3".into(),
         "-f".into(),
         "image2".into(),
+        "-update".into(),
+        "1".into(),
         out.display().to_string(),
     ];
     run_ffmpeg(&args)?;
@@ -4747,6 +4788,10 @@ pub fn render_range(
     opts: RenderOptions,
     on_progress: Option<ProgressFn>,
 ) -> Result<RenderOutput, CutError> {
+    let measured = source_facts::measured_for_reverse(project, fence.project_dir()); // reversed clips
+    let project = measured.as_ref().unwrap_or(project);
+    tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
+    odd_size::require_even_output(project, &opts)?; // odd project: refuse, never round quietly
     let out = fence.fence_output_path(out_path)?; // the output-fencing contract — before any work
     let in_ms = range_ms[0];
     let out_ms = range_ms[1].min(edl.duration_ms);
@@ -4776,9 +4821,15 @@ pub fn render_range(
     // Trim the composed video (+ audio) to the window, resetting PTS so the
     // output starts at 0.
     let v = graph.video_out.clone();
+    // Row 194: the range's frames on the timeline grid, as the full export has them.
+    let fps = project.settings.fps;
+    let (f0, f1) = (
+        frame_budget::frame_at(in_ms, fps),
+        frame_budget::frame_at(out_ms, fps),
+    );
     write!(
         graph.filter,
-        "[{v}]trim=start={in_s}:end={out_s},setpts=PTS-STARTPTS[vrange];"
+        "[{v}]trim=start_frame={f0}:end_frame={f1},setpts=PTS-STARTPTS[vrange];"
     )
     .unwrap();
     let a_map = if let Some(a) = graph.audio_out.clone() {
@@ -4793,6 +4844,8 @@ pub fn render_range(
     };
     let mut args = graph_args(&graph, "vrange", a_map.as_deref());
     args.extend(preset.video_args.iter().cloned());
+    let (rw, rh) = opts.output_geometry(project, edl);
+    args.extend(resources::encoder_thread_args(&preset.video_args, rw, rh)); // item 82
     if a_map.is_some() {
         args.extend(preset.audio_args.iter().cloned());
     }
@@ -4808,7 +4861,7 @@ pub fn render_range(
         height: non_default.then_some(gh),
         fit: non_default.then(|| opts.fit.as_str().to_string()),
         hash: sha256_file(&out)?,
-        duration_ms: crate::probe::probe(&out)?
+        duration_ms: published::probe(&out)?
             .duration_ms
             .unwrap_or(out_ms - in_ms),
         path: out,
@@ -4837,6 +4890,8 @@ pub fn black_frame_jpeg(width: u32, height: u32) -> Result<Vec<u8>, CutError> {
         "7".into(),
         "-f".into(),
         "image2".into(),
+        "-update".into(),
+        "1".into(),
         out.display().to_string(),
     ];
     run_ffmpeg(&args)?;
@@ -4850,6 +4905,9 @@ pub fn extract_frame(
     at_ms: u64,
     preview_height: Option<u32>,
 ) -> Result<Vec<u8>, CutError> {
+    let measured = source_facts::measured_for_reverse(project, project_dir); // reversed clips
+    let project = measured.as_ref().unwrap_or(project);
+    tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
     if at_ms >= edl.duration_ms {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -4873,16 +4931,11 @@ pub fn extract_frame(
         render_window_ms(fgw, fgh, overlay_track_count(project)),
         project.settings.fps,
     );
-    let (w0, w1) = windows
-        .iter()
-        .find(|(a, b)| at_ms >= *a && at_ms < *b)
-        .copied()
-        .unwrap_or((0, edl.duration_ms));
-    let windowed = ((w0, w1) != (0, edl.duration_ms)).then(|| (edl.window(w0, w1), w0));
-    let (render_edl, frame_at) = match &windowed {
-        Some((wedl, w0)) => (wedl, at_ms - w0),
-        None => (edl, at_ms),
-    };
+    let windows = reverse_memory::split_windows(project, edl, windows, project.settings.fps);
+    let ((w0, w1), frame_index) =
+        frame_window::frame_window(&windows, at_ms, project.settings.fps, edl.duration_ms);
+    let windowed = ((w0, w1) != (0, edl.duration_ms)).then(|| edl.window(w0, w1));
+    let render_edl = windowed.as_ref().unwrap_or(edl);
 
     // Frame extraction uses default framing (project geometry) — render.frame
     // is the agent's eyes at the composition geometry, independent of the
@@ -4901,8 +4954,7 @@ pub fn extract_frame(
     let v = graph.video_out.clone();
     write!(
         graph.filter,
-        "[{v}]trim=start={s},setpts=PTS-STARTPTS[vframe];",
-        s = secs(frame_at)
+        "[{v}]trim=start_frame={frame_index},setpts=PTS-STARTPTS[vframe];"
     )
     .unwrap();
 
@@ -4919,6 +4971,8 @@ pub fn extract_frame(
             "2",
             "-f",
             "image2",
+            "-update",
+            "1",
         ]
         .iter()
         .map(|s| s.to_string()),
@@ -4931,5 +4985,7 @@ pub fn extract_frame(
 
 #[cfg(test)]
 mod audio_extent_tests;
+#[cfg(test)]
+mod cache_trust_tests;
 #[cfg(test)]
 mod tests;

@@ -107,7 +107,7 @@ fn bind_portal_remote_to_child(command: &mut tokio::process::Command, remote_fd:
     }
 }
 
-fn command_args(node: u32, remote_fd: RawFd, segment_path: &str) -> Vec<String> {
+pub(crate) fn command_args(node: u32, remote_fd: RawFd, segment_path: &str) -> Vec<String> {
     vec![
         "pipewiresrc".into(),
         format!("path={node}"),

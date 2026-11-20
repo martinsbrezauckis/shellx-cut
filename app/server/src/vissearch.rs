@@ -73,17 +73,11 @@ fn plain_regular(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 mod runtime;
@@ -636,5 +630,40 @@ mod tests {
             load_index_checked(dir.path(), "a1").unwrap().frames.len(),
             2
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod reparse_tests {
+    use super::read_bounded_file;
+
+    /// A compressed (WOF) file carries a reparse point that is not a name
+    /// surrogate. It is the file itself and is read with its real content.
+    #[test]
+    #[ignore = "requires an NTFS volume and compact.exe with /EXE (Windows 10 or later)"]
+    fn windows_compressed_file_is_read_as_an_ordinary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("index.json");
+        let content = "{\"word\":\"compressible\"} ".repeat(8192).into_bytes();
+        std::fs::write(&path, &content).unwrap();
+        let status = std::process::Command::new("compact.exe")
+            .args(["/C", "/EXE:XPRESS4K"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "compact.exe /EXE failed: {status}");
+        let bytes = read_bounded_file(&path, 4 * 1024 * 1024).unwrap();
+        assert_eq!(bytes, content);
+    }
+
+    #[test]
+    #[ignore = "requires Windows symbolic-link privilege or Developer Mode"]
+    fn windows_symlink_file_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside.json");
+        std::fs::write(&outside, b"{}").unwrap();
+        let link = temp.path().join("index.json");
+        std::os::windows::fs::symlink_file(&outside, &link).unwrap();
+        assert!(read_bounded_file(&link, 1024).is_err());
     }
 }

@@ -10,7 +10,6 @@ Missing CLI/auth produces not_run; attempted failures produce error.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -26,6 +25,7 @@ sys.path.insert(0, _JUDGE_DIR)
 _PY_ROOT = os.path.dirname(_JUDGE_DIR)
 sys.path.insert(0, _PY_ROOT)
 import judge  # noqa: E402
+import judge_files  # noqa: E402
 from diagnostics import failed_preflight_reason, process_failure_detail  # noqa: E402
 import restricted_claude  # noqa: E402
 import provider_child_launch  # noqa: E402
@@ -53,39 +53,8 @@ _SIDECAR_DIR = os.path.dirname(_JUDGE_DIR)
 
 
 def sha256_file(path: str) -> str:
-    """Content hash in the receipts convention: 'sha256:<hex>'."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return f"sha256:{h.hexdigest()}"
-
-
-def find_receipt_perception(render: str, render_hash: str) -> str | None:
-    """Search the cutproj receipts pattern for THIS render's perception.
-
-    cutd writes renders to <proj>/exports/ and their perception to
-    <proj>/receipts/<render_id>.output.perception.json with asset_hash =
-    sha256 of the output file — matching by hash is exact, not name-based.
-    Searched: the render's dir, ./receipts, ../receipts.
-    """
-    rdir = os.path.dirname(os.path.abspath(render))
-    candidates_dirs = [rdir, os.path.join(rdir, "receipts"),
-                       os.path.join(os.path.dirname(rdir), "receipts")]
-    for d in candidates_dirs:
-        if not os.path.isdir(d):
-            continue
-        for name in sorted(os.listdir(d)):
-            if not name.endswith(".perception.json"):
-                continue
-            path = os.path.join(d, name)
-            try:
-                p = judge.load_perception(path)
-            except (ValueError, OSError, json.JSONDecodeError):
-                continue  # not a valid perception report — skip, keep looking
-            if p.get("asset_hash") == render_hash:
-                return path
-    return None
+    """Content hash in the receipts convention (the engine's full or sampled form)."""
+    return judge_files.content_hash(path)
 
 
 def generate_render_perception(render: str, render_hash: str,
@@ -118,29 +87,34 @@ def resolve_perception(render: str, explicit: str | None,
                        bundle: str) -> tuple[dict, dict, list[str]]:
     """Returns (perception, source_meta, warnings) for the judge bundle.
 
-    Order: explicit --perception > receipts match by content hash > generate
-    via sidecar. The source is RECORDED in the envelope so a reviewer can see
-    which facts the judge reasoned from (provenance, judge honesty rules).
+    Order: explicit --perception > generate via sidecar. The source is RECORDED
+    in the envelope so a reviewer can see which facts the judge reasoned from
+    (provenance, judge honesty rules). Analysis files lying in the project are
+    not searched for: a file's own asset_hash cannot prove which video it
+    describes (a project from someone else can write any value), and the
+    engine passes --perception only for an analysis it made itself.
+
+    Every report is read only as an ordinary file and must describe this exact
+    render: an explicit report that is a link, is shared with another path, or
+    carries another video's content hash raises RefusedProjectFile before any
+    of its facts can reach a prompt.
     """
     warnings: list[str] = []
     render_hash = sha256_file(render)
     if explicit:
         perception = judge.load_perception(explicit)
+        if perception.get("asset_hash") != render_hash:
+            raise judge_files.RefusedProjectFile(
+                f"the analysis file {explicit} describes a different video than "
+                f"the render {render} (content hash does not match), so its facts "
+                "and transcript were not used")
         meta = {"mode": "explicit", "path": os.path.abspath(explicit),
-                "render_hash": render_hash,
-                "hash_match": perception.get("asset_hash") == render_hash}
-        if not meta["hash_match"]:
-            warnings.append(
-                "explicit --perception asset_hash does not match the render's "
-                "content hash — verify these facts describe THIS render "
-                "(timestamp sanity check still applies)")
+                "render_hash": render_hash, "hash_match": True}
         return perception, meta, warnings
-    found = find_receipt_perception(render, render_hash)
-    if found:
-        return judge.load_perception(found), {
-            "mode": "receipts", "path": os.path.abspath(found),
-            "render_hash": render_hash, "hash_match": True}, warnings
-    out_path = os.path.join(bundle, "render.perception.json")
+    # A fresh folder keeps the generated report away from anything already
+    # in the bundle (the analysis tool writes its output path directly).
+    out_path = os.path.join(tempfile.mkdtemp(prefix="perception_", dir=bundle),
+                            "render.perception.json")
     generate_render_perception(render, render_hash, out_path)
     return judge.load_perception(out_path), {
         "mode": "generated", "path": os.path.abspath(out_path),
@@ -610,8 +584,7 @@ def main() -> int:
     ap.add_argument("--render")
     ap.add_argument("--perception",
                     help="instrument facts for THE RENDER (default: "
-                         "auto-resolve by content hash from the receipts "
-                         "dir, else generate via the app/perception sidecar)")
+                         "generate via the app/perception sidecar)")
     ap.add_argument("--intent", default="(no edit intent provided)")
     ap.add_argument("--provider", default=DEFAULT_PROVIDER,
                     choices=["claude"],
@@ -642,6 +615,12 @@ def main() -> int:
     except ValueError as error:
         print(f"invalid admitted Claude provider handoff: {error}", file=sys.stderr)
         return 2
+    if args.command == "review" and args.out:
+        try:
+            judge_files.require_replaceable(args.out, "review result")
+        except judge_files.RefusedProjectFile as error:
+            print(f"review refused: {error}", file=sys.stderr)
+            return 2
     if args.provider_child_stdin and launch is None:
         print("admitted Claude provider handoff is missing Claude", file=sys.stderr)
         return 2
@@ -679,8 +658,10 @@ def main() -> int:
             shutil.rmtree(owned, ignore_errors=True)
         return 2
 
-    if os.path.lexists(staging_bundle) and os.path.islink(staging_bundle):
-        return abort_staging("--bundle-dir must not be a symlink")
+    try:
+        judge_files.require_plain_directory(staging_bundle, "--bundle-dir")
+    except judge_files.RefusedProjectFile as error:
+        return abort_staging(f"review refused: {error}")
     os.makedirs(staging_bundle, exist_ok=True)
 
     # Perception facts for THE RENDER (the coordinate-space guard): resolve, then refuse any
@@ -688,6 +669,8 @@ def main() -> int:
     try:
         perception, perception_source, warnings = resolve_perception(
             args.render, args.perception, staging_bundle)
+    except judge_files.RefusedProjectFile as e:
+        return abort_staging(f"review refused: {e}")
     except (ValueError, RuntimeError, OSError) as e:
         return abort_staging(f"perception resolution failed: {e}")
     try:
@@ -722,8 +705,10 @@ def main() -> int:
             "glitches between samples are unobservable at this rate")
 
     frames_dir = os.path.join(staging_bundle, "frames")
-    if os.path.lexists(frames_dir) and os.path.islink(frames_dir):
-        return abort_staging("bundle frames directory must not be a symlink")
+    try:
+        judge_files.require_plain_directory(frames_dir, "bundle frames directory")
+    except judge_files.RefusedProjectFile as error:
+        return abort_staging(f"review refused: {error}")
     try:
         frames = judge.extract_frames(
             args.render, frames_dir, fps_eff,
@@ -888,7 +873,7 @@ def main() -> int:
         "review_raw": review_raw,     # pre-filter, for audit
         "post_filter": pf_report,
         # Provenance of the instrument facts the judge reasoned from
-        # (the coordinate-space guard): explicit | receipts (hash-matched) | generated.
+        # (the coordinate-space guard): explicit | generated.
         "perception_source": perception_source,
         "warnings": warnings,
         "cli": cli_meta,
@@ -903,8 +888,7 @@ def main() -> int:
     }
     text = json.dumps(envelope, indent=2)
     if args.out:
-        with open(args.out, "w") as f:
-            f.write(text + "\n")
+        judge_files.write_text_replacing(args.out, text + "\n", "review result")
     print(text)
     kept_bundles = ({os.path.abspath(staging_bundle), os.path.abspath(bundle)}
                     if args.keep_bundle else set())

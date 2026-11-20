@@ -22,6 +22,7 @@ async fn assets_fetch_pins_project_until_import_job_admission_then_project_open_
     std::fs::write(&source, ONE_BY_ONE_PNG).unwrap();
 
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     create_project(&state, "a", &a_path).await;
     create_project(&state, "b", &b_path).await;
     let reopened_a = dispatch(

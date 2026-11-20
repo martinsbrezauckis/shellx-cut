@@ -12,41 +12,57 @@
 //! Each module documents its own responsibility in its rustdoc header, so adding,
 //! removing, or changing a module's visibility updates this map at the source.
 
+pub mod test_isolation;
+crate::isolate_test_process!();
+
 pub mod auto_zoom;
 pub mod beatsync;
+pub mod check_outcome;
 pub mod detach;
 pub mod diff;
 pub mod edit;
 pub mod edl;
 pub mod error;
+pub mod frame_size;
 mod journal;
 pub mod matte_cache;
+pub mod move_placement;
 pub mod multicam;
 mod mutation_request;
 pub mod ops;
 pub mod overwrite_edit;
+pub mod probe_facts;
 pub mod rebase;
 pub mod receipt;
+pub mod reparse;
 mod speed_ramp_timing;
 pub mod split_edit;
 pub mod store;
+pub mod subframe;
 pub mod trim_edit;
 pub mod types;
 pub mod verb_contract;
 
 // Re-export the shared contract types at crate root (build-contract: parallel
 // agents import `cut_core::{Project, OpRecord, Receipt types, VerbResult, ...}`).
+pub use check_outcome::{
+    check_outcome, is_not_applicable, not_applicable_check, CheckOutcome, CheckProblem,
+    NOT_APPLICABLE,
+};
 pub use detach::{find_safe_detach_audio_track, plan_detach_audio, DetachPlan, DetachReject};
 pub use diff::{diff, DiffSummary, TrackTouch};
 pub use edit::{FadeTarget, GainTarget};
-pub use edl::{edl_from_project, Edl, EdlAdjustment, EdlSegment};
-pub use error::{codes as error_codes, CutError, VerbResult, VerbWarning};
+pub use edl::{edl_from_project, Edl, EdlAdjustment, EdlSegment, WindowPlace};
+pub use error::{codes as error_codes, CutError, MissingRequirement, VerbResult, VerbWarning};
 pub use mutation_request::MutationRequest;
 pub use ops::{Actor, ActorKind, InverseOp, JournalRecovery, OpEffect, OpLog, OpRecord, OpStatus};
 pub use rebase::{
     can_rebase_out, op_inputs, op_outputs, rebase_blockers, Dependent, IdSet, PinnedIds,
 };
-pub use receipt::{check_names, fix_action, CheckResult, FixAction, FixTarget, RenderReceipt};
+pub use receipt::{
+    check_names, fix_action, CheckResult, ColorReport, EncodeReport, FixAction, FixTarget,
+    RenderReceipt, SourceColorReport,
+};
 pub use speed_ramp_timing::{
     timeline_duration_ms_for_frames, timeline_frame_count, timeline_sample_count_for_frames,
 };

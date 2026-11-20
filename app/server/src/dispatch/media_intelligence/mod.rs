@@ -21,6 +21,8 @@ use search::{search_value, SearchArgs};
 use status::status_value;
 
 #[cfg(test)]
+mod planted_report_tests;
+#[cfg(test)]
 mod tests;
 
 #[derive(Debug, serde::Deserialize)]
@@ -147,16 +149,38 @@ pub(super) async fn media_intelligence_rebuild(
         for entry in &index.entries {
             *coverage.entry(entry.kind.clone()).or_default() += 1;
         }
-        state.jobs.finish(
-            &job.job_id,
-            json!({
-                "schema": index.schema,
-                "index_id": index.index_id,
-                "entry_count": index.entries.len(),
-                "assets": index.bindings.len(),
-                "coverage": coverage,
-            }),
-        );
+        // A bound receipt that could not be read leaves its kind out of the
+        // asset's coverage (build.rs); say so instead of a plain "done".
+        let mut warnings: Vec<String> = Vec::new();
+        for binding in &index.bindings {
+            let covered = index.coverage.get(&binding.asset_id);
+            let has = |kind: &str| covered.is_some_and(|kinds| kinds.iter().any(|k| k == kind));
+            for (kind, bound) in [
+                ("transcript", binding.transcript_sha256.is_some()),
+                ("scene", binding.perception_sha256.is_some()),
+                ("beat", binding.perception_sha256.is_some()),
+            ] {
+                if bound && index.selected_kinds.iter().any(|k| k == kind) && !has(kind) {
+                    warnings.push(format!(
+                        "{}: the {kind} evidence could not be read, so it is not searchable; run the analysis for this asset again",
+                        binding.asset_id
+                    ));
+                }
+            }
+        }
+        let result = json!({
+            "schema": index.schema,
+            "index_id": index.index_id,
+            "entry_count": index.entries.len(),
+            "assets": index.bindings.len(),
+            "coverage": coverage,
+            "warnings": warnings,
+        });
+        if warnings.is_empty() {
+            state.jobs.finish(&job.job_id, result);
+        } else {
+            state.jobs.finish_with_warnings(&job.job_id, result);
+        }
     });
     Ok(VerbResult::ok(json!({"job_id": job_id})))
 }

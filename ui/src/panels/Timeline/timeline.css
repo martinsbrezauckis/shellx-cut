@@ -496,9 +496,12 @@
 }
 .tl-voiceover__trigger:hover, .tl-voiceover__trigger:focus-visible { color: var(--ink); border-color: var(--hairline-2); outline: none; }
 .tl-voiceover__trigger--active { color: var(--red, #f8716a); border-color: color-mix(in srgb, var(--red, #f8716a) 55%, transparent); background: color-mix(in srgb, var(--red, #f8716a) 12%, transparent); }
+/* Portalled to the body so the track rail and timeline cannot clip it. The
+   component flips above the trigger when needed and clamps into the window. */
 .tl-voiceover__popover {
-  position: absolute; top: calc(100% + 5px); left: -77px; z-index: var(--z-dropdown);
-  display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; width: min(270px, calc(100vw - 20px));
+  position: fixed; z-index: var(--z-dropdown);
+  max-height: calc(100vh - 16px); overflow-y: auto;
+  display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; width: min(270px, calc(100vw - 16px));
   box-sizing: border-box; padding: 9px; border: 1px solid var(--hairline-2);
   border-radius: 7px; background: var(--surface-2); box-shadow: var(--shadow-dropdown);
   color: var(--ink-2); font: var(--fs-ui-xs) var(--sans); text-align: left;
@@ -522,7 +525,6 @@
 .tl-voiceover__status { grid-column: 1 / -1; color: var(--ink-3); line-height: 1.35; }
 .tl-voiceover__status--error { color: var(--red, #f8716a); }
 @media (max-width: 640px) {
-  .tl-voiceover__popover { left: -152px; width: min(270px, calc(100vw - 12px)); }
   .tl-voiceover__range { white-space: normal; }
 }
 /* Editable gain readout — a borderless input that reads like the static
@@ -568,6 +570,21 @@
 .tl-clip--selected {
   border-color: var(--cut); box-shadow: inset 0 0 0 1px var(--cut);
   background: var(--cut-dim);
+}
+/* A clip shorter than one frame (older projects): a visible, selectable
+   marker centred on its start instead of an invisible hair line. */
+.tl-clip--subframe {
+  width: 14px; padding: 0; margin-left: -7px; justify-content: center;
+  /* above the seam handles (z 5) at its own cuts, so it can be hovered and clicked */
+  z-index: 6;
+  background: repeating-linear-gradient(135deg, var(--amber) 0 3px, var(--surface-2) 3px 6px);
+  border: 1px solid var(--amber);
+}
+.tl-clip--subframe::before { display: none; }
+.tl-clip--subframe.tl-clip--selected { border-color: var(--cut); box-shadow: 0 0 0 2px var(--cut); }
+.tl-clip-subframe-mark {
+  font: 700 11px/1 var(--font-mono, monospace); color: var(--ink-1, #fff);
+  background: var(--surface-1, #000); border-radius: 2px; padding: 1px 2px; pointer-events: none;
 }
 .tl-clip--dragging {
   opacity: .85;

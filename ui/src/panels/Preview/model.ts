@@ -1,4 +1,5 @@
 import { sourceUrl, type Project } from '../../lib/client'
+import { scopeMediaUrl } from '../../lib/mediaScope'
 import { baseVideoTrackId } from '../../lib/layerStack'
 import { sourceMsAtTimelinePosition } from '../../lib/mediaTime'
 import { layoutTrack } from '../Timeline/layout'
@@ -21,7 +22,13 @@ export type ActiveVideo = {
   durMs: number
   speed: number
   reverse: boolean
+  freezeAtMs?: number
   trackId: string
+}
+
+/** Frozen and reverse video are driven by the timeline seek clock. */
+export function canPlayPreviewVideo(rate: number, reverse: boolean, freezeAtMs?: number): boolean {
+  return rate === 1 && !reverse && freezeAtMs == null
 }
 
 type VideoFrameCallback = (now: number, meta: { mediaTime: number }) => void
@@ -88,9 +95,11 @@ export function activeVideo(project: Project | null, atMs: number, failed: Set<s
       const srcOutMs = it.srcOutMs ?? srcInMs + it.durMs
       const speed = it.speed && it.speed > 0 ? it.speed : 1
       const reverse = !!it.reverse
-      const srcMs = sourceMsAtTimelinePosition({ startMs: it.startMs, srcInMs, srcOutMs, speed, reverse }, atMs)
-      const placement = { clipId: it.id, startMs: it.startMs, srcInMs, srcOutMs, durMs: it.durMs, speed, reverse, trackId: track.id }
-      if (asset?.proxy) return { src: asset.proxy, srcMs, kind: 'proxy', assetId: it.asset, ...placement }
+      const srcMs = sourceMsAtTimelinePosition({ startMs: it.startMs, srcInMs, srcOutMs, speed, reverse, freezeAtMs: it.freezeAtMs }, atMs)
+      const placement = { clipId: it.id, startMs: it.startMs, srcInMs, srcOutMs, durMs: it.durMs, speed, reverse, freezeAtMs: it.freezeAtMs, trackId: track.id }
+      // A proxy address the media-address guard refuses ('') plays the source.
+      const proxied = asset?.proxy ? scopeMediaUrl(asset.proxy) : ''
+      if (proxied) return { src: proxied, srcMs, kind: 'proxy', assetId: it.asset, ...placement }
       if (asset && !failed.has(it.asset)) return { src: sourceUrl(it.asset), srcMs, kind: 'source', assetId: it.asset, ...placement }
       return null
     }

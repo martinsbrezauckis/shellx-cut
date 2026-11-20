@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -25,6 +26,13 @@ const LADDER = join(JUDGE, "adapters", "ladder_judge.py");
 const VALIDATION = join(ROOT, "scripts", "public-tests", "judge-adapter-validation.py");
 const RESTRICTED_VALIDATION = join(ROOT, "scripts", "public-tests", "restricted-claude-adapter-validation.py");
 const RESTRICTED_WINDOWS_VALIDATION = join(ROOT, "scripts", "public-tests", "restricted-claude-windows-validation.py");
+const PROJECT_FILES_VALIDATION = join(ROOT, "scripts", "public-tests", "judge-project-files-validation.py");
+const ANCESTOR_LINKS_VALIDATION = join(ROOT, "scripts", "public-tests", "judge-ancestor-links-validation.py");
+const REPARSE_RULE_VALIDATION = join(ROOT, "scripts", "public-tests", "perception-reparse-rule-validation.py");
+const CURRENT_FOLDER_VALIDATION = join(ROOT, "scripts", "public-tests", "perception-current-folder-validation.py");
+for (const required of ["adapters/codex_judge_policy.py", "adapters/codex_judge_runtime.py"]) {
+  assert.ok(JUDGE_RESOURCE_FILES.includes(required), `Codex judge dependency missing from package allowlist: ${required}`);
+}
 for (const relative of JUDGE_RESOURCE_FILES) {
   assert.equal(
     existsSync(join(JUDGE, relative)),
@@ -59,7 +67,7 @@ if (pythonProbe.status !== 0 || !pythonProbe.stdout.trim()) {
 }
 const python = pythonProbe.stdout.trim();
 
-for (const validationPath of [VALIDATION, RESTRICTED_VALIDATION, RESTRICTED_WINDOWS_VALIDATION]) {
+for (const validationPath of [VALIDATION, RESTRICTED_VALIDATION, RESTRICTED_WINDOWS_VALIDATION, PROJECT_FILES_VALIDATION, ANCESTOR_LINKS_VALIDATION, REPARSE_RULE_VALIDATION, CURRENT_FOLDER_VALIDATION]) {
   const validation = spawnSync(python, [validationPath], {
     cwd: ROOT,
     encoding: "utf8",
@@ -128,9 +136,12 @@ if (process.platform !== "win32") {
         { encoding: "utf8" },
       );
       assert.equal(generated.status, 0, generated.stderr);
+      // The adapter uses an analysis file only when it records this render's
+      // content hash (the engine's "sha256:<hex>" form for files this size).
       writeFileSync(perception, JSON.stringify({
         schema: "shellx-cut/perception/1",
         asset_id: "render",
+        asset_hash: `sha256:${createHash("sha256").update(readFileSync(render)).digest("hex")}`,
         scenes: [],
         silences: [],
       }));

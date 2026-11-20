@@ -21,7 +21,8 @@ pub(super) async fn prepare_verify_rerun(
             .unwrap_or_else(|| "op_000000".into());
         (store.dir.clone(), receipts, project_revision)
     };
-    let (receipt_path, receipt) = selected_render_receipt_with_path(&receipts, render_id)?;
+    let (receipt_path, receipt, receipt_written_here) =
+        selected_render_receipt_with_path(&receipts, render_id)?;
     let output = rerun_output::fenced_output_for_receipt(&project_dir, &receipt.output_path, None)?;
     let expected_hash = receipt.output_hash.clone();
     let profile = profile_from_receipt(&receipt)?;
@@ -39,6 +40,7 @@ pub(super) async fn prepare_verify_rerun(
         receipts,
         receipt_path,
         receipt,
+        receipt_written_here,
         output,
         profile,
         project_revision,

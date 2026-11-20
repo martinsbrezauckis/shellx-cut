@@ -7,6 +7,13 @@ export interface MediaReadinessProbe {
   height?: number
   fps?: number
   has_audio?: boolean
+  /** Set by the proxy job: how much of the source really decodes. `warning`
+   *  is a plain sentence when the file is cut off or damaged. */
+  decode_check?: { warning?: string }
+  /** Nominal rate (ffprobe r_frame_rate) and whether it differs from the
+   *  average: a variable-frame-rate clip, as phones record. */
+  nominal_fps?: number
+  variable_frame_rate?: boolean
 }
 
 export interface MediaReadinessAsset {
@@ -92,8 +99,30 @@ export interface MediaHealthSummary {
 
 const s = (count: number) => (count === 1 ? '' : 's')
 
+/** What an asset is, for the labels a person reads:
+ *  - `footage`: video that plays from an editing proxy, or from its original file
+ *    until one is made (Proxy ready / Source playback / 4K source);
+ *  - `title`: a title or shape movie Cut draws (`titles/title_*.mov`); it plays as
+ *    drawn and never has a proxy;
+ *  - `generated`: a clip made by a generator (`assets/generated/`); a video one
+ *    plays like footage;
+ *  - `image`, `audio`: stills and sound; no proxy is needed. */
+export type AssetMediaKind = 'footage' | 'title' | 'generated' | 'image' | 'audio'
+
+const DRAWN_TITLE = /[\\/]titles[\\/]title_[^\\/]+\.mov$/i
+const GENERATED = /[\\/]assets[\\/]generated[\\/]/i
+
+export function assetMediaKind(asset: Pick<MediaReadinessAsset, 'path' | 'probe'>): AssetMediaKind {
+  const kind = asset.probe.kind ?? 'video'
+  if (kind === 'image') return 'image'
+  if (kind === 'audio') return 'audio'
+  if (DRAWN_TITLE.test(asset.path)) return 'title'
+  return GENERATED.test(asset.path) ? 'generated' : 'footage'
+}
+
+/** Video that plays from a proxy (footage and generated clips; never a title). */
 export function isVideoAsset(asset: MediaReadinessAsset): boolean {
-  return (asset.probe.kind ?? 'video') === 'video'
+  return (asset.probe.kind ?? 'video') === 'video' && assetMediaKind(asset) !== 'title'
 }
 
 export function isLargeSourcePlayback(asset: MediaReadinessAsset): boolean {
@@ -128,8 +157,58 @@ export function mediaCapabilitiesFromDoctor(
   }
 }
 
+/** The engine's warning that only part of the file can be read, if any. */
+export function decodeWarning(asset: Pick<MediaReadinessAsset, 'probe'>): string | null {
+  const warning = asset.probe.decode_check?.warning
+  return typeof warning === 'string' && warning.trim() ? warning.trim() : null
+}
+
+/** A short neutral badge for a variable-frame-rate clip, or null. */
+export function variableRateBadge(asset: Pick<MediaReadinessAsset, 'probe'>): ReadinessBadge | null {
+  if (asset.probe.variable_frame_rate !== true) return null
+  const avg = asset.probe.fps
+  const nominal = asset.probe.nominal_fps
+  const rates = avg && nominal
+    ? ` (${avg.toFixed(2)} fps on average, ${Number(nominal.toFixed(2))} fps nominal)`
+    : ''
+  return {
+    label: 'Variable frame rate',
+    tone: 'neutral',
+    title: `This clip has a variable frame rate${rates}, as phones record. Exports place each frame at its real time.`,
+  }
+}
+
 export function assetReadiness(asset: MediaReadinessAsset): AssetReadiness {
+  const base = sourceReadiness(asset)
+  const vfr = asset.offline ? null : variableRateBadge(asset)
+  const readiness = vfr ? { ...base, badges: [...base.badges, vfr] } : base
+  const warning = asset.offline ? null : decodeWarning(asset)
+  if (!warning) return readiness
+  // A cut-off file still edits, but the person must know before exporting.
+  return {
+    ...readiness,
+    hint: warning,
+    needsAction: true,
+    badges: [{ label: 'File cut off', tone: 'bad', title: warning }, ...readiness.badges],
+  }
+}
+
+function sourceReadiness(asset: MediaReadinessAsset): AssetReadiness {
   const kind = asset.probe.kind ?? 'video'
+  if (assetMediaKind(asset) === 'title') {
+    // A title is never relinked: Cut draws its movie again from its settings.
+    const hint = asset.offline
+      ? 'Its picture file is missing; Cut draws it again from the title\'s settings before the next exact frame or render.'
+      : 'A title Cut draws. It plays as drawn and needs no proxy; if its file goes missing, Cut draws it again.'
+    return {
+      level: 'ready',
+      label: 'Title',
+      hint,
+      needsAction: false,
+      badges: [{ label: 'Title', tone: 'neutral', title: hint }],
+    }
+  }
+
   if (asset.offline) {
     return {
       level: 'missing',
@@ -170,12 +249,13 @@ export function assetReadiness(asset: MediaReadinessAsset): AssetReadiness {
     }
   }
 
+  const what = kind === 'image' ? 'A still image' : kind === 'audio' ? 'Sound only' : 'This asset'
   return {
     level: 'ready',
     label: 'Ready',
-    hint: 'This asset is available for editing.',
+    hint: `${what}: ready for editing. No proxy is needed.`,
     needsAction: false,
-    badges: [{ label: 'Ready', tone: 'good', title: 'This asset is available for editing.' }],
+    badges: [{ label: 'Ready', tone: 'good', title: `${what}: ready for editing. No proxy is needed.` }],
   }
 }
 
@@ -190,7 +270,7 @@ export function summarizeMediaReadiness(
 ): MediaHealthSummary {
   const total = assets.length
   const videos = assets.filter(isVideoAsset)
-  const offlineRows = assets.filter((asset) => asset.offline)
+  const offlineRows = assets.filter((asset) => asset.offline && assetMediaKind(asset) !== 'title')
   const availableVideos = videos.filter((asset) => !asset.offline)
   const sourceOnlyRows = availableVideos.filter((asset) => !asset.proxy)
   const heavySourceRows = sourceOnlyRows.filter(isLargeSourcePlayback)
@@ -199,7 +279,8 @@ export function summarizeMediaReadiness(
   const usedOffline = offlineRows.filter((asset) => asset.used > 0).length
   const needsAction = assets.filter((asset) => assetReadiness(asset).needsAction).length
   const available = total - offlineRows.length
-  const analysisRows = assets.filter((asset) => (asset.probe.kind ?? 'video') !== 'image' && !asset.offline)
+  // A title has no speech or picture to analyse: it is not counted as waiting for analysis.
+  const analysisRows = assets.filter((asset) => (asset.probe.kind ?? 'video') !== 'image' && assetMediaKind(asset) !== 'title' && !asset.offline)
   const speechReady = analysisRows.filter((asset) => !!asset.transcript).length
   const perceptionReady = analysisRows.filter((asset) => !!asset.perception).length
   const analysisDimension = (

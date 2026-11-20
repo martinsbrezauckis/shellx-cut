@@ -41,8 +41,8 @@ test('recording delivery survives conditional Record and keyed project workspace
       },
     }], server: { host: '127.0.0.1', port: 0 },
   })
-  await server.listen()
   t.after(() => server.close())
+  await server.listen()
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage()
@@ -61,13 +61,14 @@ test('recording delivery survives conditional Record and keyed project workspace
     if (name === 'screen_record.copy_raw') { copies.push(route); return }
     if (name === 'jobs.status') { statuses.push(route); return }
     if (name === 'jobs.cancel') { cancellations.push(route); return }
-    if (name === 'project.set_output_dir' && holdAuthorization) { authorizations.push(route); return }
+    if (name === 'project.get_output_dir' && holdAuthorization) { authorizations.push(route); return }
     if (name === 'screen_record.start') take += 1
     const result = name === 'screen_record.doctor' ? doctor
       : name === 'screen_record.start' ? { capture_id: `take-${take}`, pause: { enabled: false } }
         : name === 'screen_record.stop' ? { capture_id: `take-${take}`, raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json' }
           : name === 'screen_record.studio_event' ? { last_event: route.request().postDataJSON().event }
-          : name === 'screen_record.polish' ? { clip_id: `clip-${take}` } : {}
+          : name === 'screen_record.polish' ? { clip_id: `clip-${take}` }
+            : name === 'screen_record.status' ? { capture_id: `take-${take}`, ready: true, terminal: false, since_first_screen_frame_ms: 0 } : {}
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result }) })
   })
   const waitFor = async (items, count) => {

@@ -39,7 +39,7 @@ pub const PROXY_GOP_FRAMES: u32 = 30;
 /// Build the ffmpeg args (without global flags) that transcode `src` → the
 /// 960×540 editing proxy at `out`. Shared by [`make_proxy`] and
 /// [`make_proxy_with_progress`] so the encode is byte-identical either way.
-fn proxy_ffmpeg_args(src: &Path, out: &Path) -> Vec<String> {
+fn proxy_ffmpeg_args(src: &Path, out: &Path, tone_map: &str) -> Vec<String> {
     // Scale into a 960×540 box preserving aspect, pad to EXACTLY 960×540
     // (UI <video> relies on fixed proxy geometry); audio → AAC 128k.
     // Determinism flags applied so re-import on the same source is hashable.
@@ -48,9 +48,16 @@ fn proxy_ffmpeg_args(src: &Path, out: &Path) -> Vec<String> {
         "-i".into(),
         src.display().to_string(),
         "-vf".into(),
+        // `tone_map` (an HDR source's SDR conversion, leading comma) runs first so
+        // the preview shows the picture the export will have. Empty for SDR, so
+        // their proxies stay byte-identical.
         format!(
-            "scale={w}:{h}:force_original_aspect_ratio=decrease,\
+            "{tm}scale={w}:{h}:force_original_aspect_ratio=decrease,\
              pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            tm = tone_map
+                .strip_prefix(',')
+                .map(|chain| format!("{chain},"))
+                .unwrap_or_default(),
             w = PROXY_WIDTH,
             h = PROXY_HEIGHT
         ),
@@ -86,7 +93,7 @@ fn proxy_ffmpeg_args(src: &Path, out: &Path) -> Vec<String> {
 }
 
 pub fn make_proxy(src: &Path, proxies_dir: &Path, asset_id: &str) -> Result<PathBuf, CutError> {
-    make_proxy_with(src, proxies_dir, asset_id, |args, out| {
+    make_proxy_with(src, proxies_dir, asset_id, "", |args, out| {
         crate::ffmpeg::run_ffmpeg_validated_atomic_output(args, out, validate_proxy_output)
     })
 }
@@ -103,13 +110,27 @@ pub fn make_proxy_with_progress(
     total_ms: u64,
     on_progress: &dyn Fn(f32),
 ) -> Result<PathBuf, CutError> {
+    make_proxy_with_progress_and_tone_map(src, proxies_dir, asset_id, total_ms, on_progress, "")
+}
+
+/// [`make_proxy_with_progress`] for a source that needs an HDR -> SDR tone map
+/// (`render::source_color::hdr_to_sdr_filter`), so the preview matches the
+/// export. `tone_map` empty = the ordinary proxy.
+pub fn make_proxy_with_progress_and_tone_map(
+    src: &Path,
+    proxies_dir: &Path,
+    asset_id: &str,
+    total_ms: u64,
+    on_progress: &dyn Fn(f32),
+    tone_map: &str,
+) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
     require_live_output_dir(proxies_dir)?;
-    if crate::render::plain_internal_file_exists(&out)? && validate_proxy_output(&out).is_ok() {
+    if crate::render::plain_internal_file_exists(&out)? && reusable_proxy(&out) {
         on_progress(1.0);
         return Ok(out);
     }
-    make_proxy_with(src, proxies_dir, asset_id, |args, out| {
+    make_proxy_with(src, proxies_dir, asset_id, tone_map, |args, out| {
         if total_ms > 0 {
             crate::ffmpeg::run_ffmpeg_with_progress_validated_atomic_output(
                 args,
@@ -153,24 +174,37 @@ fn validate_proxy_output(path: &Path) -> Result<(), CutError> {
     Ok(())
 }
 
+/// An existing proxy is reused only when it is complete AND this engine made
+/// it (its `cache_trust` record matches). A file planted under a proxy's name
+/// in a received project, even a valid 960x540 video, is made again instead:
+/// reusing it would record it as this engine's own and the preview would show
+/// it (item 171).
+fn reusable_proxy(out: &Path) -> bool {
+    validate_proxy_output(out).is_ok() && crate::cache_trust::trusted(out)
+}
+
 fn make_proxy_with(
     src: &Path,
     proxies_dir: &Path,
     asset_id: &str,
+    tone_map: &str,
     encode: impl FnOnce(&[String], &Path) -> Result<(), CutError>,
 ) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
     require_live_output_dir(proxies_dir)?;
     let existing = crate::render::plain_internal_file_exists(&out)?;
-    if existing && validate_proxy_output(&out).is_ok() {
+    if existing && reusable_proxy(&out) {
         return Ok(out);
     }
     if existing {
-        // This is a project-local regenerable cache file. Do not let a failed
-        // encode leave a known-invalid final path for later cache lookups.
+        // This is a project-local regenerable cache file that is invalid or
+        // not this engine's own. Do not let a failed encode leave it at the
+        // final path for later cache lookups.
         std::fs::remove_file(&out)?;
     }
-    encode(&proxy_ffmpeg_args(src, &out), &out)?;
+    encode(&proxy_ffmpeg_args(src, &out, tone_map), &out)?;
+    // This engine made it: a later call (and a later open) may reuse it.
+    crate::cache_trust::remember(&out);
     Ok(out)
 }
 
@@ -215,7 +249,7 @@ mod tests {
         let unrelated = root.path().join("unrelated.mp4");
         std::fs::write(&unrelated, b"keep").unwrap();
         symlink(&unrelated, proxies.join("a1.mp4")).unwrap();
-        let error = make_proxy_with(Path::new("missing.mp4"), &proxies, "a1", |_, _| {
+        let error = make_proxy_with(Path::new("missing.mp4"), &proxies, "a1", "", |_, _| {
             panic!("linked cache must be refused before encode")
         })
         .unwrap_err();
@@ -231,7 +265,7 @@ mod tests {
         let out = proxies.join("a1.mp4");
         std::fs::write(&out, b"nonempty partial MP4 with no moov atom").unwrap();
 
-        let returned = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", |args, out| {
+        let returned = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", "", |args, out| {
             crate::atomic_output::run_with_atomic_output(args, out, |tmp_args| {
                 let tmp = Path::new(tmp_args.last().unwrap());
                 assert_ne!(tmp, out, "ffmpeg must write a sibling temp file");
@@ -251,13 +285,72 @@ mod tests {
     }
 
     #[test]
+    fn a_valid_proxy_this_engine_did_not_make_is_made_again() {
+        let has_ffmpeg = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok();
+        if !has_ffmpeg {
+            eprintln!("skipped: ffmpeg not found");
+            return;
+        }
+        let root = crate::atomic_output::private_test_tempdir();
+        let proxies = root.path().join("proxies");
+        private_proxy_dir(&proxies);
+        let out = proxies.join("a1.mp4");
+        // A complete 960x540 video planted under the proxy's name.
+        let made = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=960x540:rate=30:duration=1",
+            ])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&out)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        assert!(
+            validate_proxy_output(&out).is_ok(),
+            "the planted file is a valid proxy shape"
+        );
+        let planted = std::fs::read(&out).unwrap();
+
+        let encode = |args: &[String], out: &Path| {
+            crate::atomic_output::run_with_atomic_output(args, out, |tmp_args| {
+                std::fs::write(tmp_args.last().unwrap(), b"made by this engine").unwrap();
+                Ok(())
+            })
+        };
+        make_proxy_with(Path::new("source.mp4"), &proxies, "a1", "", encode).unwrap();
+        assert_ne!(
+            std::fs::read(&out).unwrap(),
+            planted,
+            "a planted proxy is never reused"
+        );
+
+        // A proxy this engine recorded is reused as before.
+        std::fs::write(&out, &planted).unwrap();
+        crate::cache_trust::remember(&out);
+        make_proxy_with(Path::new("source.mp4"), &proxies, "a1", "", |_, _| {
+            panic!("this engine's own valid proxy must be reused")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), planted);
+    }
+
+    #[test]
     fn simulated_sigsegv_never_leaves_a_final_proxy() {
         let root = crate::atomic_output::private_test_tempdir();
         let proxies = root.path().join("proxies");
         private_proxy_dir(&proxies);
         let out = proxies.join("a1.mp4");
 
-        let error = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", |args, out| {
+        let error = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", "", |args, out| {
             crate::atomic_output::run_with_atomic_output(args, out, |tmp_args| {
                 std::fs::write(tmp_args.last().unwrap(), b"partial bytes").unwrap();
                 Err(CutError::new(

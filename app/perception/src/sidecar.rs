@@ -12,17 +12,27 @@
 
 use crate::types::{PerceptionReport, Transcript, PERCEPTION_SCHEMA};
 use cut_core::{error_codes, CutError};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+mod installed_layout_tests;
 mod native_runtime;
 mod owned;
+mod python_missing;
+#[cfg(test)]
+mod python_missing_tests;
+mod real_python;
+/// True when `candidate` really runs as Python 3 (a bounded version probe).
+pub use real_python::runs_as_python;
+#[cfg(test)]
+mod report_files_tests;
 mod runtime_cache;
 #[cfg(test)]
 mod runtime_cache_tests;
+use native_runtime::sidecar_runtime_unchecked;
 pub use native_runtime::{
     apply_python_command_policy, configured_sidecar_python, native_runtime_context,
     premium_sidecar_runtime, python_command_args, sidecar_runtime, SidecarRuntime,
@@ -32,6 +42,11 @@ pub use owned::{
     build_contact_sheet_owned, build_qc_sheet_owned, run_instruments_owned,
     run_instruments_owned_ephemeral, run_instruments_owned_progress, run_subject_owned,
     transcribe_owned_progress,
+};
+pub use python_missing::{
+    captions_not_installed_error, captions_setup_action, check_interpreter,
+    is_captions_not_installed, is_windows_store_shortcut_run, InterpreterProblem,
+    CAPTIONS_NOT_INSTALLED_MESSAGE,
 };
 use runtime_cache::{cache_matches_runtime_context, runtime_context_provenance};
 pub use runtime_cache::{effective_stt_selection, EffectiveSttSelection};
@@ -44,7 +59,46 @@ const MAX_PERCEPTION_REPORT_BYTES: u64 = 64 * 1024 * 1024;
 pub type SidecarProgress = dyn Fn(f32, &str) + Send + Sync;
 
 #[cfg(test)]
-pub(super) static NATIVE_RUNTIME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static NATIVE_RUNTIME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize the tests that read or change process environment. A test that
+/// panics while holding the lock poisons it; the next test must still run, so
+/// the guard is recovered instead of unwrapped.
+#[cfg(test)]
+pub(super) fn lock_native_runtime_env() -> std::sync::MutexGuard<'static, ()> {
+    NATIVE_RUNTIME_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Puts the named environment variables back when dropped, including while a
+/// failing test unwinds, so one failure cannot leak into the tests after it.
+#[cfg(test)]
+pub(super) struct EnvRestore(Vec<(String, Option<std::ffi::OsString>)>);
+
+#[cfg(test)]
+impl EnvRestore {
+    pub(super) fn capture(names: &[&str]) -> Self {
+        Self(
+            names
+                .iter()
+                .map(|name| (name.to_string(), std::env::var_os(name)))
+                .collect(),
+        )
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        for (name, value) in self.0.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(&name, value),
+                None => std::env::remove_var(&name),
+            }
+        }
+    }
+}
 
 /// Parse a python `[instruments] PROGRESS <frac> <label>` stderr line into
 /// `(frac, label)`. Returns None for any other line. The contract is emitted by
@@ -359,20 +413,13 @@ fn sidecar_base_dirs_with(
     if let Some(d) = env_dir {
         dirs.push(d);
     }
-    // 2. a `perception/` payload beside the running exe (installed layout —
-    //    the installer stages instruments.py + requirements there).
-    if let Some(exe) = current_exe.and_then(|p| p.parent()) {
-        dirs.push(exe.join("perception"));
-        // 2b. macOS bundle layout: executables live in Contents/MacOS while
-        //     bundle resources land in Contents/Resources. The desktop shell
-        //     bridges this with SHELLX_CUT_SIDECAR_DIR when IT spawns cutd,
-        //     but a STANDALONE bundled engine (an agent running
-        //     `…/Contents/MacOS/cutd serve` directly — a documented headless
-        //     use) must find the payload without that env. Harmless on other
-        //     platforms (the dir simply doesn't exist).
-        if let Some(contents) = exe.parent() {
-            dirs.push(contents.join("Resources").join("perception"));
-        }
+    // 2. the packaged `perception/` payload for the running exe, on every
+    //    package layout (see `packaged_resource_dirs_for_exe`). The desktop shell
+    //    also names it in SHELLX_CUT_SIDECAR_DIR, but a hand-started engine (an
+    //    agent running `/usr/bin/cutd serve`, `...\cutd.exe`, `Contents/MacOS/cutd`)
+    //    must find it without that variable.
+    if let Some(exe) = current_exe {
+        dirs.extend(packaged_payload_dirs_for_exe(exe));
     }
     // 3. the app-data sidecar dir (bootstrap-downloaded venv).
     if let Some(d) = appdata_dir {
@@ -392,23 +439,127 @@ fn dev_checkout_sidecar_dir_for_exe(current_exe: Option<&Path>) -> Option<PathBu
     exe.starts_with(app_workspace).then(|| manifest.join("py"))
 }
 
-fn installed_macos_runtime_without_dev_checkout() -> bool {
-    cfg!(target_os = "macos")
-        && std::env::current_exe()
-            .ok()
-            .as_deref()
-            .and_then(|exe| dev_checkout_sidecar_dir_for_exe(Some(exe)))
-            .is_none()
+/// Where a packaged app keeps the resource folder `name` (`perception`,
+/// `agent-docs`, `ui-dist`) relative to the engine executable, one entry per
+/// package layout. The ONE rule for every packaged resource the engine reads:
+///   - Windows NSIS folder: `<install>\\cutd.exe` + `<install>\\<name>`
+///   - macOS bundle: `Contents/MacOS/cutd` + `Contents/Resources/<name>`
+///   - Linux DEB/RPM: `/usr/bin/cutd` + `/usr/lib/ShellX Cut/<name>`
+/// Derived from the executable's own location only; an environment variable can
+/// still override a caller's result, but is never needed.
+pub fn packaged_resource_dirs_for_exe(exe: &Path, name: &str) -> Vec<PathBuf> {
+    let Some(dir) = exe.parent() else {
+        return Vec::new();
+    };
+    let mut dirs = vec![dir.join(name)];
+    if let Some(prefix) = dir.parent() {
+        dirs.push(prefix.join("Resources").join(name));
+        dirs.push(prefix.join("lib").join("ShellX Cut").join(name));
+    }
+    dirs
 }
 
-fn fallback_python_for_runtime(installed_macos: bool, appdata_dir: Option<PathBuf>) -> PathBuf {
-    if installed_macos {
-        return appdata_dir
+/// The packaged resource folder `name` of the engine at `exe`: the first layout
+/// entry that holds `marker`. `None` for a source build, a test binary or a
+/// copied engine with no payload.
+pub fn packaged_resource_dir_for_exe(exe: &Path, name: &str, marker: &str) -> Option<PathBuf> {
+    packaged_resource_dirs_for_exe(exe, name)
+        .into_iter()
+        .find(|dir| dir.join(marker).is_file())
+}
+
+/// The packaged `perception` payload folders (see above).
+fn packaged_payload_dirs_for_exe(exe: &Path) -> Vec<PathBuf> {
+    packaged_resource_dirs_for_exe(exe, "perception")
+}
+
+/// Is the engine at `exe` the installed app's? The fact it knows about itself:
+/// the packaged `perception` payload (instruments.py) sits where the package
+/// layouts above put it relative to the executable. It is derived from the
+/// executable's own location, never from an environment variable (which a
+/// broken or hostile setup controls). A source build or a test binary has no
+/// such payload. An installed app never runs a Python from PATH: it runs the one
+/// Install captions provisions.
+fn is_installed_layout(exe: &Path) -> bool {
+    !is_cargo_build_exe(exe)
+        && packaged_payload_dirs_for_exe(exe)
+            .iter()
+            .any(|dir| dir.join("instruments.py").is_file())
+}
+
+/// First line cargo writes into the `CACHEDIR.TAG` of every target folder.
+const CARGO_CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+
+/// Is `exe` a binary of a cargo build, `<target>/{debug,release}/cutd` or
+/// `<target>/<triple>/{debug,release}/cutd`? Tauri copies the whole resource map
+/// (including `perception/instruments.py`) into the target folder next to the
+/// engine when the desktop crate shares its target folder, which would make a
+/// developer's source-built engine look installed. Both facts must hold: the
+/// executable sits in a folder named `debug` or `release` AND the target root
+/// above it carries cargo's own `CACHEDIR.TAG`. A real install keeps `cutd` in a
+/// folder of its own (`/usr/bin`, `<install>\\`, `Contents/MacOS`), so planting a
+/// tag there changes nothing; making an installed engine count as a source
+/// build would need the executable itself to live under a `debug`/`release`
+/// folder whose parent a writer has tagged, and that writer could replace the
+/// executable anyway.
+fn is_cargo_build_exe(exe: &Path) -> bool {
+    let is_profile = |dir: &Path| {
+        matches!(
+            dir.file_name().and_then(|name| name.to_str()),
+            Some("debug" | "release")
+        )
+    };
+    let Some(profile_dir) = exe.parent().filter(|dir| is_profile(dir)) else {
+        return false;
+    };
+    let Some(above) = profile_dir.parent() else {
+        return false;
+    };
+    // `--target <triple>` adds one folder between the target root and the profile.
+    [Some(above), above.parent()]
+        .into_iter()
+        .flatten()
+        .any(|root| {
+            std::fs::read(root.join("CACHEDIR.TAG"))
+                .map(|bytes| bytes.starts_with(CARGO_CACHEDIR_SIGNATURE.as_bytes()))
+                .unwrap_or(false)
+        })
+}
+
+fn installed_payload_beside_exe() -> bool {
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|exe| is_installed_layout(&exe))
+}
+
+/// The last rung. Installed: the app's own (possibly not yet provisioned)
+/// environment, so a missing one is the plain "captions are not installed"
+/// refusal. Source build or test run: a Python on PATH that really runs, else
+/// the same managed path.
+fn fallback_python_for_runtime(installed: bool, appdata_dir: Option<PathBuf>) -> PathBuf {
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    fallback_python_with_path(installed, appdata_dir, &path_var)
+}
+
+/// [`fallback_python_for_runtime`] over an explicit PATH value.
+fn fallback_python_with_path(
+    installed: bool,
+    appdata_dir: Option<PathBuf>,
+    path_var: &std::ffi::OsStr,
+) -> PathBuf {
+    let managed = || {
+        appdata_dir
             .map(|d| venv_python(&d))
-            .unwrap_or_else(|| PathBuf::from("shellx-cut-python-not-configured"));
+            // Absolute and absent: never a bare name a relative PATH entry
+            // (the current folder) could answer.
+            .unwrap_or_else(|| {
+                cut_media::toolpath::not_installed_program("shellx-cut-python-not-configured")
+            })
+    };
+    if installed {
+        return managed();
     }
-    let bare = if cfg!(windows) { "python" } else { "python3" };
-    PathBuf::from(bare)
+    real_python::real_python_in(path_var).unwrap_or_else(managed)
 }
 
 /// Resolve the sidecar entrypoint `(python, instruments.py)` for the CURRENT
@@ -418,10 +569,10 @@ fn fallback_python_for_runtime(installed_macos: bool, appdata_dir: Option<PathBu
 ///
 /// Resolution (highest specificity wins):
 ///   python: SHELLX_CUT_PYTHON override → the `.venv` of the first base dir that
-///           has one → bare `python3`/`python` only for developer/runtime surfaces
-///           where that cannot trigger Apple's CLT prompt. Installed macOS builds
-///           fall back to the expected app-data venv path so a missing sidecar is
-///           a normal "not configured" spawn error, not an OS installer dialog.
+///           has one → (source builds and tests only) a Python on PATH that
+///           really runs (see real_python.rs) → the expected app-data venv path,
+///           so a missing sidecar is the plain "captions are not installed"
+///           refusal, never an OS installer dialog or the Microsoft Store shortcut.
 ///   script: `instruments.py` from the first base dir that contains it; if none
 ///           do, the dev-checkout path (so the existing "script not found"
 ///           error stays accurate on the dev box).
@@ -446,10 +597,7 @@ pub fn sidecar_paths() -> (PathBuf, PathBuf) {
         return (py, script);
     }
     (
-        fallback_python_for_runtime(
-            installed_macos_runtime_without_dev_checkout(),
-            appdata_sidecar_dir(),
-        ),
+        fallback_python_for_runtime(installed_payload_beside_exe(), appdata_sidecar_dir()),
         script,
     )
 }
@@ -565,7 +713,7 @@ fn run_instruments_with_owner(
 ) -> Result<PerceptionReport, CutError> {
     // Resolve the context before considering a cached report. A supplied malformed
     // locator is authoritative and must not be hidden by a legacy cache hit.
-    let runtime = sidecar_runtime()?;
+    let runtime = sidecar_runtime_unchecked()?;
     let stt_selection = effective_stt_selection();
     let runtime_context = runtime_context_provenance(&runtime, set, &stt_selection)?;
 
@@ -638,17 +786,29 @@ fn run_instruments_with_owner(
     if persist {
         require_live_receipts_dir(receipts_dir)?;
         let path = receipts_dir.join(format!("{asset_id}.perception.json"));
-        std::fs::write(
+        // Replaces the name: never writes through a link or shared file.
+        cut_core::store::replace_project_file(
             &path,
-            serde_json::to_string_pretty(&report).map_err(CutError::from)?,
+            serde_json::to_string_pretty(&report)
+                .map_err(CutError::from)?
+                .as_bytes(),
         )?;
+        cut_media::cache_trust::remember(&path);
         tracing::info!(asset_id, path = %path.display(), "perception report written");
     }
     Ok(report)
 }
 
 fn require_live_receipts_dir(receipts_dir: &Path) -> Result<(), CutError> {
-    if receipts_dir.is_dir() {
+    // Item 162: the folder itself, never followed: a link or junction put at
+    // `receipts` after the project was opened would send the report write
+    // (a temporary file plus a rename) into a folder outside the project.
+    let plain = std::fs::symlink_metadata(receipts_dir).is_ok_and(|meta| {
+        meta.is_dir()
+            && !meta.file_type().is_symlink()
+            && !cut_core::reparse::names_another_entry(&meta)
+    });
+    if plain {
         return Ok(());
     }
     Err(CutError::new(
@@ -693,6 +853,8 @@ fn spawn_sidecar_streaming_with_runtime(
     runtime: &SidecarRuntime,
     stt_selection: &EffectiveSttSelection,
 ) -> Result<String, CutError> {
+    // Before anything else: no Python is "captions not installed", not a spawn error.
+    runtime.ensure_runnable()?;
     let native_context = runtime.native_context.is_some();
     let python = &runtime.python;
     let script = &runtime.script;
@@ -702,7 +864,9 @@ fn spawn_sidecar_streaming_with_runtime(
             "instruments.py not found",
             format!("expected at {}", script.display()),
         )
-        .with_suggested_action("check the app/perception/py checkout"));
+        .with_suggested_action(
+            "The captions files are missing from this install: reinstall ShellX Cut, then choose Install captions",
+        ));
     }
     if !native_context {
         match cleanup_stale_managed_venv_packages(python) {
@@ -747,16 +911,7 @@ fn spawn_sidecar_streaming_with_runtime(
             stt_selection.language.as_deref(),
         );
     }
-    let suggested_action = if cfg!(windows) {
-        "perception/transcription needs the Python sidecar. Run the ShellX Cut \
-         bootstrap (Tools > Set up perception), or manually: \
-         py -3 -m venv \"%LOCALAPPDATA%\\ShellX Cut\\perception\\.venv\" && \
-         \"%LOCALAPPDATA%\\ShellX Cut\\perception\\.venv\\Scripts\\pip\" install \
-         -r requirements.txt"
-    } else {
-        "create the venv: python3 -m venv app/perception/py/.venv && \
-         .venv/bin/pip install -r app/perception/py/requirements.txt"
-    };
+    let suggested_action = captions_setup_action();
     let default_control;
     let control = match control {
         Some(control) => control,
@@ -795,13 +950,25 @@ fn spawn_sidecar_streaming_with_runtime(
             return Err(CutError::new(
                 error_codes::SIDECAR,
                 "failed to run perception sidecar",
-                format!("{}: {error}", python.display()),
+                format!("{}: {} ({})", python.display(), error.message, error.cause),
             )
             .with_suggested_action(suggested_action));
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if !output.status.success() {
+        // The Windows Store python shortcut is not a Python: say what is
+        // missing, not its text.
+        if !native_context
+            && is_windows_store_shortcut_run(
+                output.status.code(),
+                &format!("{stdout}{}", String::from_utf8_lossy(&output.stderr)),
+            )
+        {
+            return Err(captions_not_installed_error(
+                &InterpreterProblem::WindowsStoreShortcut,
+            ));
+        }
         let cause = serde_json::from_str::<serde_json::Value>(stdout.trim())
             .ok()
             .and_then(|v| v.get("error").cloned())
@@ -898,9 +1065,12 @@ pub fn transcribe_progress(
     )?;
     let transcript = transcript_or_empty(report, asset_id)?;
     let path = receipts_dir.join(format!("{asset_id}.words.json"));
-    std::fs::write(
+    // Replaces the name: never writes through a link or shared file.
+    cut_core::store::replace_project_file(
         &path,
-        serde_json::to_string_pretty(&transcript).map_err(CutError::from)?,
+        serde_json::to_string_pretty(&transcript)
+            .map_err(CutError::from)?
+            .as_bytes(),
     )?;
     Ok(transcript)
 }
@@ -929,49 +1099,50 @@ fn transcript_or_empty(report: PerceptionReport, asset_id: &str) -> Result<Trans
 }
 
 /// Load an existing perception.json for an asset (None when not yet run).
+/// Item 155: the one gate for every reader: a report this engine did not
+/// write (it came with the project, or changed since) counts as not analysed
+/// on this computer and is None, never data; callers then say "run
+/// media.perception" or run the analysis as a job.
 /// Validates the schema tag; a mismatched schema is an error, not a silent None.
+/// The report must be an ordinary single-link file: a link, Windows junction
+/// point or file shared with another path is refused without being opened
+/// through, and the read stops at the report byte limit.
 pub fn load_report(
     receipts_dir: &Path,
     asset_id: &str,
 ) -> Result<Option<PerceptionReport>, CutError> {
+    use cut_core::store::{plain_file_state, read_bounded_cache, BoundedCacheRead, PlainFileState};
     let path = receipts_dir.join(format!("{asset_id}.perception.json"));
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || reparse {
-        return Err(CutError::new(
+    let not_plain = || {
+        CutError::new(
             error_codes::SIDECAR,
             "perception report is not a plain file",
             path.display().to_string(),
-        ));
+        )
+    };
+    match plain_file_state(&path) {
+        PlainFileState::Missing => return Ok(None),
+        PlainFileState::NotPlain => return Err(not_plain()),
+        PlainFileState::Plain => {}
     }
-    let file = std::fs::File::open(&path)?;
-    let opened = file.metadata()?;
-    if !opened.is_file() || opened.len() > MAX_PERCEPTION_REPORT_BYTES {
-        return Err(CutError::new(
-            error_codes::SIDECAR,
-            "perception report is not a bounded regular file",
-            path.display().to_string(),
-        ));
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_PERCEPTION_REPORT_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_PERCEPTION_REPORT_BYTES {
-        return Err(CutError::new(
-            error_codes::SIDECAR,
-            "perception report exceeds its byte limit",
-            path.display().to_string(),
-        ));
+    // Read once: the engine-origin check and the parse use the same bytes, so
+    // a file replaced after the check cannot be the one parsed.
+    let bytes = match read_bounded_cache(&path, MAX_PERCEPTION_REPORT_BYTES) {
+        BoundedCacheRead::Bytes(bytes) => bytes,
+        // Only an over-limit report this engine wrote is an error; any other
+        // over-limit file is simply not a report made on this computer.
+        BoundedCacheRead::Oversized if !cut_media::cache_trust::trusted(&path) => return Ok(None),
+        BoundedCacheRead::Oversized => {
+            return Err(CutError::new(
+                error_codes::SIDECAR,
+                "perception report exceeds its byte limit",
+                path.display().to_string(),
+            ))
+        }
+        BoundedCacheRead::Unavailable => return Err(not_plain()),
+    };
+    if !cut_media::cache_trust::trusted_bytes(&path, &bytes) {
+        return Ok(None);
     }
     let report: PerceptionReport = serde_json::from_slice(&bytes).map_err(CutError::from)?;
     if report.schema != PERCEPTION_SCHEMA {
@@ -1097,8 +1268,8 @@ mod tests {
 
     #[test]
     fn configured_sidecar_python_never_returns_bare_python_fallback() {
-        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let old_py = std::env::var_os(ENV_PYTHON);
+        let _guard = lock_native_runtime_env();
+        let _restore = EnvRestore::capture(&[ENV_PYTHON]);
         let tmp = tempfile::tempdir().unwrap();
         std::env::remove_var(ENV_PYTHON);
 
@@ -1131,11 +1302,6 @@ mod tests {
         let explicit = tmp.path().join("custom-python");
         std::env::set_var(ENV_PYTHON, &explicit);
         assert_eq!(configured_sidecar_python().unwrap(), Some(explicit));
-
-        match old_py {
-            Some(v) => std::env::set_var(ENV_PYTHON, v),
-            None => std::env::remove_var(ENV_PYTHON),
-        }
     }
 
     // Builds a UNIX venv layout (`.venv/bin/python`) to exercise the macOS
@@ -1237,12 +1403,54 @@ mod tests {
         );
         assert_eq!(
             fallback_python_for_runtime(true, None),
-            PathBuf::from("shellx-cut-python-not-configured")
+            cut_media::toolpath::not_installed_program("shellx-cut-python-not-configured")
         );
+        // A source build or test run: a Python on PATH that really runs, else the
+        // app's own (not yet provisioned) environment; never an unverified command.
+        let fallback = fallback_python_for_runtime(false, Some(appdata.clone()));
+        assert!(
+            fallback == venv_python(&appdata) || real_python::runs_as_python(&fallback),
+            "{}",
+            fallback.display()
+        );
+    }
+
+    /// The last rung of the ladder is a Python that runs, never a command that
+    /// only has the right name (the Windows Store shortcut, Apple's stub).
+    #[cfg(unix)]
+    #[test]
+    fn path_python_is_used_only_when_it_really_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let appdata = dir.path().join("appdata");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python3");
+        let write = |body: &str| {
+            std::fs::write(&python, body).unwrap();
+            std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // A shortcut that answers with a hint and exit 9009 is not a Python.
+        write("#!/bin/sh\necho 'Python was not found'\nexit 9009\n");
         assert_eq!(
-            fallback_python_for_runtime(false, Some(appdata)),
-            PathBuf::from(if cfg!(windows) { "python" } else { "python3" }),
-            "dev/non-mac runtime keeps the historical bare fallback"
+            fallback_python_with_path(false, Some(appdata.clone()), bin.as_os_str()),
+            venv_python(&appdata),
+            "a stub on PATH must not be used"
+        );
+        // The same name answering like Python is used (a new PATH value, so the
+        // per-PATH cache is not reused).
+        write("#!/bin/sh\necho '(3, 12)'\n");
+        let bin2 = dir.path().join("bin2");
+        std::fs::create_dir_all(&bin2).unwrap();
+        std::fs::copy(&python, bin2.join("python3")).unwrap();
+        assert_eq!(
+            fallback_python_with_path(false, Some(appdata.clone()), bin2.as_os_str()),
+            bin2.join("python3")
+        );
+        // An installed app never takes a Python from PATH.
+        assert_eq!(
+            fallback_python_with_path(true, Some(appdata.clone()), bin2.as_os_str()),
+            venv_python(&appdata)
         );
     }
 
@@ -1343,8 +1551,8 @@ mod tests {
     /// media path that does not exist — a real run would have to fail).
     #[test]
     fn legacy_cache_hit_skips_python() {
-        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+        let _guard = lock_native_runtime_env();
+        let _restore = EnvRestore::capture(&[cut_native_runtime_context::CONTEXT_ENV]);
         std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
         let dir = tempfile::tempdir().unwrap();
         let r = report(&["words", "silence", "scenes", "beats", "loudness"]);
@@ -1353,6 +1561,8 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
         )
         .unwrap();
+        // Stands in for this engine's own write (item 155).
+        cut_media::cache_trust::remember(&dir.path().join("a1.perception.json"));
         let got = run_instruments(
             Path::new("/definitely/missing.mp4"),
             dir.path(),
@@ -1364,16 +1574,12 @@ mod tests {
         .expect("cache hit must not need the media file");
         assert_eq!(got.asset_hash, "sha256:cafe");
         assert!(got.runtime_context.is_none());
-        match prior {
-            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-        }
     }
 
     #[test]
     fn invalid_prepared_context_rejects_matching_legacy_cache() {
-        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+        let _guard = lock_native_runtime_env();
+        let _restore = EnvRestore::capture(&[cut_native_runtime_context::CONTEXT_ENV]);
         let dir = tempfile::tempdir().unwrap();
         let r = report(&["words", "silence", "scenes", "beats", "loudness"]);
         std::fs::write(
@@ -1395,10 +1601,6 @@ mod tests {
         )
         .expect_err("a supplied invalid context must reject before cache reuse");
         assert!(error.message.contains("prepared native runtime rejected"));
-        match prior {
-            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-        }
     }
 
     /// A WordsOnly cached report must NOT satisfy a Full request: the
@@ -1428,8 +1630,8 @@ mod tests {
     /// NOT satisfy a Full one.
     #[test]
     fn audio_set_skips_scenes_and_caches_correctly() {
-        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+        let _guard = lock_native_runtime_env();
+        let _restore = EnvRestore::capture(&[cut_native_runtime_context::CONTEXT_ENV]);
         std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
         assert!(
             !InstrumentSet::AudioFull.names().contains(&"scenes"),
@@ -1444,6 +1646,8 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
         )
         .unwrap();
+        // Stands in for this engine's own write (item 155).
+        cut_media::cache_trust::remember(&dir.path().join("a1.perception.json"));
         // Cache hit for AudioFull (missing media path proves no python run).
         run_instruments(
             Path::new("/definitely/missing.wav"),
@@ -1464,10 +1668,6 @@ mod tests {
             None,
         )
         .is_err());
-        match prior {
-            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-        }
     }
 
     /// Stale hash (file changed since analysis) also bypasses the cache.
@@ -1492,6 +1692,99 @@ mod tests {
     }
 
     /// Schema-mismatched persisted report is an error, not a silent None.
+    /// Item 155: a report that came with the project (its asset_hash copied
+    /// from project.json) is not a cache hit: the run goes to the sidecar,
+    /// which here fails on the missing media, proving the plant was not used.
+    #[test]
+    fn planted_report_is_not_a_cache_hit() {
+        let _guard = lock_native_runtime_env();
+        let _restore = EnvRestore::capture(&[cut_native_runtime_context::CONTEXT_ENV]);
+        std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
+        let dir = tempfile::tempdir().unwrap();
+        let r = report(&["words", "silence", "scenes", "beats", "loudness"]);
+        std::fs::write(
+            dir.path().join("a1.perception.json"),
+            serde_json::to_string(&r).unwrap(),
+        )
+        .unwrap();
+        let got = run_instruments(
+            Path::new("/definitely/missing.mp4"),
+            dir.path(),
+            "a1",
+            "sha256:cafe",
+            InstrumentSet::Full,
+            None,
+        );
+        assert!(got.is_err(), "a planted report must not be reused");
+        // The single gate every reader goes through: not analysed here = None.
+        assert!(load_report(dir.path(), "a1").unwrap().is_none());
+    }
+
+    /// Item 162: a receipts folder that became a link is not written through.
+    #[cfg(unix)]
+    #[test]
+    fn linked_receipts_folder_is_not_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let receipts = dir.path().join("receipts");
+        std::os::unix::fs::symlink(&outside, &receipts).unwrap();
+        assert!(require_live_receipts_dir(&receipts).is_err());
+        let plain = dir.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        assert!(require_live_receipts_dir(&plain).is_ok());
+    }
+
+    /// The report checked as this engine's is the report parsed: a file
+    /// swapped in between the two is never returned. A second thread keeps
+    /// replacing the recorded report with another one; every load returns the
+    /// recorded report or nothing.
+    #[test]
+    fn a_report_replaced_after_its_check_is_never_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a1.perception.json");
+        let recorded = serde_json::to_vec(&report(&["words"])).unwrap();
+        let mut planted_report = report(&["words"]);
+        planted_report.source_path = "/planted.mp4".into();
+        let planted = serde_json::to_vec(&planted_report).unwrap();
+        std::fs::write(&path, &recorded).unwrap();
+        cut_media::cache_trust::remember(&path);
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let swapper = {
+            let (stop, dir, path) = (stop.clone(), dir.path().to_path_buf(), path.clone());
+            let (recorded, planted) = (recorded.clone(), planted.clone());
+            std::thread::spawn(move || {
+                let staging = dir.join("staging.json");
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    for body in [&planted, &recorded] {
+                        // A failed replace (a reader holds the file on
+                        // Windows) only means fewer swaps.
+                        let _ = std::fs::write(&staging, body);
+                        let _ = std::fs::rename(&staging, &path);
+                    }
+                }
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut loaded = 0;
+        let mut planted_seen = 0;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(got)) = load_report(dir.path(), "a1") {
+                loaded += 1;
+                if got.source_path == "/planted.mp4" {
+                    planted_seen += 1;
+                }
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        swapper.join().unwrap();
+        assert_eq!(
+            planted_seen, 0,
+            "{planted_seen} of {loaded} loads returned a report this engine did not write"
+        );
+    }
+
     #[test]
     fn load_report_rejects_wrong_schema() {
         let dir = tempfile::tempdir().unwrap();
@@ -1500,6 +1793,7 @@ mod tests {
             r#"{"schema":"other/9","asset_hash":"x","source_path":"y"}"#,
         )
         .unwrap();
+        cut_media::cache_trust::remember(&dir.path().join("a1.perception.json"));
         assert!(load_report(dir.path(), "a1").is_err());
     }
 
@@ -1508,6 +1802,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = std::fs::File::create(dir.path().join("a1.perception.json")).unwrap();
         file.set_len(MAX_PERCEPTION_REPORT_BYTES + 1).unwrap();
+        cut_media::cache_trust::remember(&dir.path().join("a1.perception.json"));
         assert!(load_report(dir.path(), "a1").is_err());
     }
 

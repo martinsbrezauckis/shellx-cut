@@ -13,7 +13,11 @@ impl LinkedMedia {
         primary_track: &str,
         at_ms: u64,
         ripple: bool,
+        placement: cut_core::edit::MovePlacement,
     ) -> Vec<cut_core::InverseOp> {
+        // Both halves land at the same time with the same placement. With
+        // overwrite, the counterpart replaces its own vacated slot or whatever
+        // is under its new one, so no later clip moves on any track.
         let mut steps = vec![
             cut_core::InverseOp {
                 verb: "edit.move".into(),
@@ -22,6 +26,7 @@ impl LinkedMedia {
                     "to_track": primary_track,
                     "at_ms": at_ms,
                     "ripple": false,
+                    "placement": placement.as_str(),
                 }),
             },
             cut_core::InverseOp {
@@ -31,6 +36,7 @@ impl LinkedMedia {
                     "to_track": self.track,
                     "at_ms": at_ms,
                     "ripple": false,
+                    "placement": placement.as_str(),
                 }),
             },
         ];

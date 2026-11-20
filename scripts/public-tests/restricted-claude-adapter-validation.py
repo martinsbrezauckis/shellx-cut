@@ -99,7 +99,7 @@ def test_capability_argv_and_frame_root() -> None:
             output.write(b"frame-pixels")
         with open(os.path.join(staging, "unrelated-secret.txt"), "wb") as output:
             output.write(b"not a frame")
-        if not restricted_claude._openat_available():
+        if os.name != "nt" and not restricted_claude._openat_available():
             try:
                 restricted_claude.create_frame_only_bundle(
                     staging, ["frames/frame-000001.jpg"])
@@ -179,6 +179,12 @@ def test_capability_argv_and_frame_root() -> None:
                 else:
                     fifo_rejected = False
             check("FIFO frames are rejected without a blocking open", fifo_rejected)
+
+        if os.name == "nt":
+            # The remaining cases exercise the POSIX descriptor-relative
+            # traversal helpers (_open_root_directory and friends), which the
+            # Windows bundle in restricted_claude_windows does not use.
+            return
 
         # A metadata failure happens after the leaf is open.  The helper must
         # translate it into the same fail-closed error without leaking the

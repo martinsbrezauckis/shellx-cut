@@ -7,11 +7,12 @@ import {
   loadPublishedTestInventory,
   resolvePublishedPrerequisites,
   verifyPublishedTestResources,
+  verifyPublishedNodeTestMembership,
   verifyPublishedUiLibraryMembership,
 } from './lib/published-test-inventory.mjs'
 
 function usage() {
-  process.stderr.write('usage: node scripts/check-published-test-inventory.mjs [--run] [--no-bail|--collect-all] [--root <path>] [--inventory <path>]\n')
+  process.stderr.write('usage: node scripts/check-published-test-inventory.mjs [--run] [--no-bail|--collect-all] [--allow-unlisted] [--root <path>] [--inventory <path>]\n')
 }
 
 const args = process.argv.slice(2)
@@ -19,10 +20,13 @@ let root = process.cwd()
 let inventoryPath
 let run = false
 let noBail = false
+let exact = true
 for (let index = 0; index < args.length; index += 1) {
   const argument = args[index]
   if (argument === '--run') {
     run = true
+  } else if (argument === '--allow-unlisted') {
+    exact = false
   } else if (argument === '--no-bail' || argument === '--collect-all') {
     noBail = true
   } else if (argument === '--root' || argument === '--inventory') {
@@ -45,12 +49,11 @@ if (!process.exitCode) {
   try {
     const inventory = loadPublishedTestInventory({ repoRoot: root, inventoryPath })
     verifyPublishedTestResources(inventory)
-    // The manifest is the positive public projection. In canonical source,
-    // discovery may include extra native-profile tests; every declared public
-    // test must still be discoverable. In the positive public export, the
-    // selected 33 files make the same discovery exact. The native source
-    // profile separately runs the wider canonical registry.
-    await verifyPublishedUiLibraryMembership(inventory)
+    // The manifest is the positive public projection. Declared tests must exist and be discovered, and the check is
+    // exact the other way: a public test (Node or UI library) that the inventory does not list fails. A checkout
+    // where other tests share these folders passes --allow-unlisted and compares with its own export policy.
+    await verifyPublishedUiLibraryMembership(inventory, undefined, { exact })
+    verifyPublishedNodeTestMembership(inventory, { exact })
     if (!run) {
       process.stdout.write(`PASS ${PUBLISHED_TEST_INVENTORY_GUARD} (${inventory.version}; ${inventory.tests.length} node tests, ${inventory.uiLibraryTests.tests.length} UI library tests)\n`)
     } else {

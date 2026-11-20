@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { callVerb, sourceUrl, type Project } from '../../lib/client'
+import { scopeMediaUrl } from '../../lib/mediaScope'
 import {
   overwriteSourceRange,
   overwriteSourceStill,
@@ -380,7 +381,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
   const mediaProps = {
     ref: (node: HTMLMediaElement | null) => { mediaRef.current = node },
     className: 'source-monitor__media',
-    src: asset.proxy ?? sourceUrl(asset.id),
+    src: (asset.proxy ? scopeMediaUrl(asset.proxy) : '') || sourceUrl(asset.id),
     controls: true,
     preload: 'metadata' as const,
     onLoadedMetadata: syncDuration,

@@ -80,22 +80,21 @@ pub(super) fn verify_movie_edit_list(
     timeout: Duration,
 ) -> Result<VerifiedMovieTiming> {
     let mut metadata = Command::new(ffprobe);
-    metadata
-        .args([
-            "-v",
-            "error",
-            "-ignore_editlist",
-            "1",
-            "-select_streams",
-            "v:0",
-            "-count_frames",
-            "-count_packets",
-            "-show_entries",
-            "stream=time_base,duration_ts,nb_read_frames,nb_read_packets:format=duration",
-            "-of",
-            "json",
-        ])
-        .arg(path);
+    metadata.args([
+        "-v",
+        "error",
+        "-ignore_editlist",
+        "1",
+        "-select_streams",
+        "v:0",
+        "-count_frames",
+        "-count_packets",
+        "-show_entries",
+        "stream=time_base,duration_ts,nb_read_frames,nb_read_packets:format=duration",
+        "-of",
+        "json",
+    ]);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut metadata, path);
     let output = run_owned_command(
         &mut metadata,
         &OwnedProcessControl::bounded(timeout, || false).with_output_cap(64 * 1024),
@@ -230,8 +229,8 @@ fn packet_proof(
             "csv=p=0",
             "-o",
         ])
-        .arg(file.path())
-        .arg(path);
+        .arg(file.path());
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut command, path);
     let growth_path = file.path().to_path_buf();
     let control = OwnedProcessControl::bounded(timeout, move || {
         fs::metadata(&growth_path).is_ok_and(|metadata| metadata.len() > limit)

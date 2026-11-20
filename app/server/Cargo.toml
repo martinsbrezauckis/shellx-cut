@@ -55,8 +55,8 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 # Binary verb payloads: render.frame/ui.screenshot inline base64 (the binary-output contract).
 base64 = "0.22"
-# system.fetch_tool: blocking HTTPS download from an allowlisted BtbN
-# ffmpeg build. ureq = tiny, blocking, rustls+webpki-roots by default (no
+# system.fetch_tool: blocking HTTPS download of a pinned ffmpeg build (and the
+# uv provisioner). ureq = tiny, blocking, rustls+webpki-roots by default (no
 # OpenSSL, no async) — ideal for a one-shot download inside a job task. We
 # stream bytes to disk while hashing (sha256 via sha2), verify against the
 # release checksums file, then shell out to the platform archive tool to
@@ -96,12 +96,19 @@ record-capture = { workspace = true, features = ["capture-linux"] }
 record-capture = { workspace = true, features = ["capture-windows"] }
 # std::fs::rename does not replace an existing destination on Windows. Plugin
 # permission persistence uses ReplaceFileW / MoveFileExW to preserve its
-# temp-file atomic replacement contract there.
+# temp-file atomic replacement contract there. vc_runtime.rs uses Windows' own
+# signature check (WinTrust, Cryptography), the registry and the token API.
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_Security_Cryptography_Catalog",
+  "Win32_Security_Cryptography_Sip",
+  "Win32_Security_WinTrust",
   "Win32_Storage_FileSystem",
   "Win32_System_JobObjects",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Registry",
   "Win32_System_Threading",
 ] }
 

@@ -45,12 +45,15 @@ function recoveryMessage(captures: RecordingRecoveryRow[]): RecordingRecoverySta
     const segments = attention.receipt?.recovered_segments
     return {
       state: 'attention',
-      message: `A prior recording was recovered${typeof segments === 'number' ? ` (${segments} saved segment${segments === 1 ? '' : 's'})` : ''}. Review it before relying on the final output.`,
+      message: `A prior recording was recovered${typeof segments === 'number' ? ` (${segments} saved segment${segments === 1 ? '' : 's'})` : ''}. Add it to the timeline with Recover recordings in Settings > Health & recovery.`,
     }
   }
+  const damaged = attention.state === 'corrupt' || attention.state === 'torn_journal' || attention.state === 'quarantined'
   return {
     state: 'attention',
-    message: `A prior recording needs attention (${attention.state.replaceAll('_', ' ')}). No repair has been run here.`,
+    message: damaged
+      ? 'A prior recording could not be fully recovered. Use Recover recordings in Settings > Health & recovery to add what could be read.'
+      : 'A prior recording was interrupted. Use Recover recordings in Settings > Health & recovery to add what was saved to the timeline.',
   }
 }
 
@@ -112,6 +115,12 @@ export function useRecordingScenes({
     [capability.catalog_revision, capability.supported, selectedSceneId, timer],
   )
 
+  // The Doctor setter must keep one identity for the whole panel lifetime: Record's `probe`
+  // depends on it, and the project reset effect re-runs whenever `probe` changes. A setter
+  // that changed with `recording` re-ran that reset at the start of every capture, which cleared
+  // the capability and marked the live timer and scene controls unavailable for the recording.
+  const recordingRef = useRef(recording)
+  recordingRef.current = recording
   const setDoctorCapability = useCallback((value: unknown) => {
     const next = recordingSceneCapability(value)
     setCapability(next)
@@ -121,11 +130,11 @@ export function useRecordingScenes({
         ? { state: 'ready', message: 'Selected scene will be sent with the next recording.' }
         : { state: 'draft', message: `${next.detail} Your selection is a local preview only.` }
     })
-    if (recording && !next.supported) {
+    if (recordingRef.current && !next.supported) {
       controlLifetimeRef.current.clearCapture()
       setTimerStatus({ state: 'unavailable', message: 'Live timer controls are unavailable because this recorder has not advertised the scene API.' })
     }
-  }, [recording])
+  }, [])
 
   const refreshRecovery = useCallback(async () => {
     if (!projectOpen) {

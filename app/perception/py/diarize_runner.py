@@ -45,10 +45,9 @@ server/diarize.rs (media.diarize).
 """
 from __future__ import annotations
 
-from local_media_io import input_args
+from local_media_io import input_args, media_tool
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -67,9 +66,21 @@ if _ff_dir:
     if _present:
         os.environ["PATH"] = os.pathsep.join(_present + [os.environ.get("PATH", "")])
 
-FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
+FFMPEG_BIN = media_tool("ffmpeg")
 
 SAMPLE_RATE = 16000  # the service's expected rate (it resamples anyway; we pin it)
+# Longest audio one run will decode and send: two hours. The decoded WAV is 16-bit
+# mono, so this also caps the temporary file at about 220 MiB (44-byte header +
+# 2 bytes * 16000 samples/s * 7200 s). Longer media is refused with a message,
+# never cut short.
+MAX_AUDIO_SECONDS = 2 * 60 * 60
+_BYTES_PER_SECOND = SAMPLE_RATE * 2
+
+
+def max_wav_bytes() -> int:
+    """Largest WAV a run may keep: header plus MAX_AUDIO_SECONDS of audio."""
+    return 44 + MAX_AUDIO_SECONDS * _BYTES_PER_SECOND
+FFPROBE_BIN = media_tool("ffprobe")
 SCHEMA = "shellx-cut/diarize/1"
 _SERVICE_OPENER = urllib.request.build_opener()
 _BLOCKED_SERVICE_HOSTS = {
@@ -78,9 +89,72 @@ _BLOCKED_SERVICE_HOSTS = {
 }
 
 
+# Exit codes. 1 is every failure that involves the service or the runner itself
+# (the engine then points the person at the service). The two codes below are
+# refusals about the asset that the runner makes on its own, so the engine can
+# state the plain reason and the matching next step. They are mirrored in
+# app/server/src/diarize.rs (a test there reads this file to keep them equal).
+EXIT_AUDIO_TOO_LONG = 3
+EXIT_NO_USABLE_AUDIO = 4
+
+
+class AssetRefusal(RuntimeError):
+    """The asset itself cannot be labelled; the service is not at fault.
+
+    ``exit_code`` is the process exit status the engine classifies on, and the
+    message is written to stderr unchanged: it is shown to the person."""
+
+    def __init__(self, message: str, exit_code: int):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
 def _die(msg: str, code: int = 1) -> "None":
     sys.stderr.write(msg.rstrip() + "\n")
     sys.exit(code)
+
+
+def _clock(seconds: float) -> str:
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}h {m:02d}m {sec:02d}s" if h else f"{m}m {sec:02d}s"
+
+
+def _too_long(seconds: float | None) -> AssetRefusal:
+    heard = f" (about {_clock(seconds)})" if seconds is not None else ""
+    # Only the reason: the engine adds the matching next step as the suggested action.
+    return AssetRefusal(
+        f"this asset's audio is too long to label speakers{heard}; the limit is "
+        f"{_clock(MAX_AUDIO_SECONDS)} of audio per run.",
+        EXIT_AUDIO_TOO_LONG,
+    )
+
+
+def probe_audio_seconds(media: str) -> float | None:
+    """The declared length of the asset's first audio stream (or of the container
+    when the stream carries none), in seconds; None when it cannot be read. Only an
+    early hint: the bounded decode below is what enforces the limit."""
+    try:
+        proc = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=duration:format=duration", "-of", "json",
+             *input_args(media)],
+            capture_output=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return None
+        info = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    for source in ((info.get("streams") or [{}])[0], info.get("format") or {}):
+        try:
+            value = float(source.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if value == value and value >= 0:  # not NaN
+            return value
+    return None
 
 
 def extract_wav16k(media: str, out_wav: str) -> None:
@@ -89,24 +163,39 @@ def extract_wav16k(media: str, out_wav: str) -> None:
     Mirrors the perception sidecar's extract_wav16k / dub's atempo decode: bare
     ``ffmpeg`` (resolved via SHELLX_CUT_FFMPEG_DIR), audio-only (``-vn``), downmixed
     to mono and resampled to 16 kHz. Raises RuntimeError on failure so the caller
-    fails the whole diarize honestly (never faked turns)."""
+    fails the whole diarize honestly (never faked turns).
+
+    The size is bounded: audio declared longer than MAX_AUDIO_SECONDS is refused
+    before decoding, and ffmpeg itself stops writing a little past the limit (``-t``
+    and ``-fs``), so a track of any length uses at most about max_wav_bytes() of
+    temporary disk. A file that reaches the limit is refused with a clear message,
+    not truncated."""
+    declared = probe_audio_seconds(media)
+    if declared is not None and declared > MAX_AUDIO_SECONDS:
+        raise _too_long(declared)
     cmd = [
         FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         *input_args(media),
         "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE),
+        "-t", str(MAX_AUDIO_SECONDS + 1), "-fs", str(max_wav_bytes() + _BYTES_PER_SECOND),
         "-c:a", "pcm_s16le", "-f", "wav", out_wav,
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=120)
     if proc.returncode != 0:
-        raise RuntimeError(
-            "ffmpeg audio extract failed (no audio stream, or a bad/again unreadable "
-            "asset): " + proc.stderr.decode("utf-8", "replace").strip()[:300]
+        raise AssetRefusal(
+            "this asset has no audio that can be read (no audio stream, or the file "
+            "is damaged or unreadable): "
+            + proc.stderr.decode("utf-8", "replace").strip()[:300],
+            EXIT_NO_USABLE_AUDIO,
         )
     if not os.path.isfile(out_wav) or os.path.getsize(out_wav) <= 44:  # 44 = WAV hdr
-        raise RuntimeError(
-            "ffmpeg produced no audio — the asset has no decodable audio stream to "
-            "diarize (diarization needs speech)."
+        raise AssetRefusal(
+            "this asset has no audio that can be read; speaker labelling needs "
+            "an asset with speech.",
+            EXIT_NO_USABLE_AUDIO,
         )
+    if os.path.getsize(out_wav) > max_wav_bytes():
+        raise _too_long(None)
 
 
 def service_url(endpoint: str, route: str, query: dict[str, str] | None = None) -> str:
@@ -155,16 +244,20 @@ def check_health(endpoint: str, secret: str | None, timeout: float) -> None:
         )
 
 
-def diarize_bytes(
-    endpoint: str, wav: bytes, max_speakers: int | None, secret: str | None,
+def _post_wav(
+    endpoint: str, body, length: int, max_speakers: int | None, secret: str | None,
     timeout: float,
 ) -> dict:
-    """POST the WAV bytes to {endpoint}/diarize and return the parsed JSON. Raises
-    RuntimeError with an actionable message on any transport/HTTP error."""
+    """POST `body` (bytes or an open binary file holding `length` bytes) to
+    {endpoint}/diarize and return the parsed JSON. A file is sent from disk in
+    blocks, never loaded whole. Raises RuntimeError with an actionable message on
+    any transport/HTTP error."""
     query = {"max_speakers": str(int(max_speakers))} if max_speakers else None
     url = service_url(endpoint, "/diarize", query)
     req = urllib.request.Request(
-        url, data=wav, headers={"Content-Type": "audio/wav"}, method="POST"
+        url, data=body,
+        headers={"Content-Type": "audio/wav", "Content-Length": str(length)},
+        method="POST",
     )
     if secret:
         req.add_header("X-LV-VA-Auth", secret)
@@ -189,6 +282,26 @@ def diarize_bytes(
         raise RuntimeError(
             f"diarization service unreachable ({endpoint}): {e.reason}. "
             f"Start the configured diarization service or set CUT_DIARIZE_ENDPOINT."
+        )
+
+
+def diarize_bytes(
+    endpoint: str, wav: bytes, max_speakers: int | None, secret: str | None,
+    timeout: float,
+) -> dict:
+    """POST the WAV bytes to {endpoint}/diarize and return the parsed JSON."""
+    return _post_wav(endpoint, wav, len(wav), max_speakers, secret, timeout)
+
+
+def diarize_file(
+    endpoint: str, wav_path: str, max_speakers: int | None, secret: str | None,
+    timeout: float,
+) -> dict:
+    """POST the WAV file at `wav_path` to {endpoint}/diarize, streaming it from disk
+    (same request as diarize_bytes with the file's bytes)."""
+    with open(wav_path, "rb") as f:
+        return _post_wav(
+            endpoint, f, os.fstat(f.fileno()).st_size, max_speakers, secret, timeout
         )
 
 
@@ -238,11 +351,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="cutd-diarize-") as td:
         wav_path = os.path.join(td, "audio16k.wav")
         extract_wav16k(media, wav_path)
-        with open(wav_path, "rb") as f:
-            wav = f.read()
 
-        # 3. POST the bytes → normalized speaker turns.
-        resp = diarize_bytes(endpoint, wav, max_speakers, secret, timeout)
+        # 3. POST the file (streamed from disk) → normalized speaker turns.
+        resp = diarize_file(endpoint, wav_path, max_speakers, secret, timeout)
 
     turns = normalize_turns(resp.get("turns"))
     n_speakers = len({t["speaker"] for t in turns})
@@ -268,10 +379,17 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def entry() -> None:
+    """Run main() and turn every failure into a status the engine can classify."""
     try:
         sys.exit(main())
+    except AssetRefusal as e:
+        _die(str(e), e.exit_code)
     except RuntimeError as e:
         _die(f"diarize_runner: {e}")
     except Exception as e:  # noqa: BLE001 — surface ANY failure as a clean message
         _die(f"diarize_runner: unexpected error: {e}")
+
+
+if __name__ == "__main__":
+    entry()

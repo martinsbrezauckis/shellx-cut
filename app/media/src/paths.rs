@@ -54,6 +54,61 @@ pub struct PathFence {
     extra_roots: Vec<PathBuf>,
 }
 
+/// The output folder as the person typed it, without the Windows
+/// extended-length prefix.
+fn shown_folder(folder: &Path) -> String {
+    let text = folder.display().to_string();
+    text.strip_prefix(r"\\?\")
+        .map(str::to_string)
+        .unwrap_or(text)
+}
+
+/// Say what is really wrong with the folder a render or export should write
+/// into: missing, a file, full, or not writable. Access denied is never
+/// reported as "does not exist". Wording follows the recording lane's
+/// `folder_access::folder_error`; after both branches are merged the render
+/// path should call that helper and this function should be removed.
+pub fn output_folder_error(folder: &Path, error: &std::io::Error) -> CutError {
+    use std::io::ErrorKind;
+    let shown = shown_folder(folder);
+    match error.kind() {
+        ErrorKind::NotFound => CutError::new(
+            error_codes::NOT_FOUND,
+            format!("output folder not found: {shown}"),
+            error.to_string(),
+        )
+        .with_suggested_action("create the folder first, or choose an existing folder"),
+        ErrorKind::NotADirectory => CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("output folder is a file, not a folder: {shown}"),
+            "an export cannot be written inside a file",
+        )
+        .with_suggested_action("choose a folder, or a different name for the output path"),
+        ErrorKind::PermissionDenied => CutError::new(
+            error_codes::IO,
+            format!("output folder cannot be written: {shown} (access is denied)"),
+            error.to_string(),
+        )
+        .with_suggested_action(
+            "choose a folder you can write to, or give your user account write access to this folder",
+        ),
+        ErrorKind::StorageFull => CutError::new(
+            error_codes::IO,
+            format!("output folder is full: {shown} (the disk has no free space)"),
+            error.to_string(),
+        )
+        .with_suggested_action("free up disk space, or choose a folder on another drive"),
+        _ => CutError::new(
+            error_codes::IO,
+            format!("output folder cannot be used: {shown}"),
+            error.to_string(),
+        )
+        .with_suggested_action(
+            "check that the folder is on a connected drive you can write to, or choose another folder",
+        ),
+    }
+}
+
 impl PathFence {
     /// Build a fence rooted at `project_dir`. Errors if the dir does not
     /// exist — a fence over a nonexistent root would canonicalize to nothing.
@@ -90,6 +145,24 @@ impl PathFence {
     /// The canonical project dir (asset-path resolution + default out paths).
     pub fn project_dir(&self) -> &Path {
         &self.project_dir
+    }
+
+    /// The refusal for a target that is not inside the project or an outputs
+    /// folder.
+    fn outside_fence_error(&self, target: &Path) -> CutError {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            format!(
+                "output path {} is outside the project/outputs dirs",
+                target.display()
+            ),
+            format!("fence roots: {:?}", {
+                let mut roots = vec![self.project_dir.display().to_string()];
+                roots.extend(self.extra_roots.iter().map(|r| r.display().to_string()));
+                roots
+            }),
+        )
+        .with_suggested_action("write inside the project dir or configure an outputs dir")
     }
 
     /// Validate `candidate` as an output path. Returns the canonical absolute
@@ -140,15 +213,30 @@ impl PathFence {
         }
         let parent = absolute.parent().unwrap_or(Path::new("/"));
         let canonical_parent = parent.canonicalize().map_err(|e| {
-            CutError::new(
-                error_codes::INVALID_ARGS,
-                format!("output dir {} does not exist", parent.display()),
-                e.to_string(),
-            )
-            .with_suggested_action(
-                "create the directory first or use a path inside the project dir",
-            )
+            // A folder that cannot be resolved is first judged by where it
+            // would be: a target outside the project and outputs folders is
+            // refused as outside, whether or not that folder exists (on
+            // Windows `/tmp` is usually missing; the answer must not depend on
+            // it, and must not tell a caller which outside folders exist).
+            // Resolve the nearest folder that does exist and re-attach the
+            // missing rest, so a project reached through a linked path (a
+            // macOS temp folder, a mapped drive) still counts as inside.
+            let would_be = resolve_existing_prefix(&absolute);
+            let named_inside = std::iter::once(&self.project_dir)
+                .chain(self.extra_roots.iter())
+                .any(|root| would_be.starts_with(root));
+            if named_inside {
+                output_folder_error(parent, &e)
+            } else {
+                self.outside_fence_error(&absolute)
+            }
         })?;
+        if !canonical_parent.is_dir() {
+            return Err(output_folder_error(
+                parent,
+                &std::io::Error::from(std::io::ErrorKind::NotADirectory),
+            ));
+        }
         let canonical = canonical_parent.join(&file_name);
 
         // (3) Static imported links can redirect direct encoder writes even
@@ -172,19 +260,7 @@ impl PathFence {
             .chain(self.extra_roots.iter())
             .any(|root| canonical.starts_with(root));
         if !in_fence {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                format!(
-                    "output path {} is outside the project/outputs dirs",
-                    canonical.display()
-                ),
-                format!("fence roots: {:?}", {
-                    let mut roots = vec![self.project_dir.display().to_string()];
-                    roots.extend(self.extra_roots.iter().map(|r| r.display().to_string()));
-                    roots
-                }),
-            )
-            .with_suggested_action("write inside the project dir or configure an outputs dir"));
+            return Err(self.outside_fence_error(&canonical));
         }
 
         // (5) Overwrites only for media/sidecar suffixes.
@@ -220,6 +296,29 @@ impl PathFence {
         }
 
         Ok(canonical)
+    }
+}
+
+/// `path` with its longest existing leading part made canonical and the
+/// missing rest re-attached unchanged. Used only to decide which refusal a
+/// target with a missing folder gets; nothing is written through the result.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(resolved) = current.canonicalize() {
+            return missing
+                .iter()
+                .rev()
+                .fold(resolved, |joined, part| joined.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name);
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 
@@ -368,5 +467,78 @@ mod tests {
         fence
             .fence_output_path(&outputs.path().join("out.mov"))
             .unwrap();
+    }
+
+    /// A target outside the project is refused as outside whether or not its
+    /// folder exists: the answer must not depend on (or reveal) what exists
+    /// elsewhere on the machine. On Windows `/tmp` is usually missing.
+    #[test]
+    fn a_missing_folder_outside_the_project_is_refused_as_outside() {
+        let (_dir, fence) = setup();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let target = elsewhere.path().join("not-there").join("out.mp4");
+        let error = fence.fence_output_path(&target).unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS, "{error:?}");
+        assert!(
+            error.message.contains("outside the project/outputs dirs"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("not found"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_missing_output_folder_is_named_as_missing() {
+        let (dir, fence) = setup();
+        let error = fence
+            .fence_output_path(&dir.path().join("nope").join("out.mp4"))
+            .unwrap_err();
+        assert_eq!(error.code, error_codes::NOT_FOUND);
+        assert!(
+            error.message.starts_with("output folder not found"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.suggested_action.as_deref(),
+            Some("create the folder first, or choose an existing folder")
+        );
+    }
+
+    #[test]
+    fn an_output_folder_that_is_a_file_is_named_as_a_file() {
+        let (dir, fence) = setup();
+        let file = dir.path().join("plain.txt");
+        fs::write(&file, b"x").unwrap();
+        let error = fence.fence_output_path(&file.join("out.mp4")).unwrap_err();
+        assert!(
+            error.message.starts_with("output folder is a file"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("not found"), "{}", error.message);
+    }
+
+    #[test]
+    fn access_denied_and_full_disk_are_never_reported_as_missing() {
+        use std::io::{Error, ErrorKind};
+        let folder = Path::new(r"\\?\C:\work\readonly");
+        let denied = output_folder_error(
+            folder,
+            &Error::new(ErrorKind::PermissionDenied, "Access is denied."),
+        );
+        assert_eq!(denied.code, error_codes::IO);
+        assert_eq!(
+            denied.message,
+            r"output folder cannot be written: C:\work\readonly (access is denied)"
+        );
+        assert!(denied.cause.contains("Access is denied"));
+        assert!(!denied.suggested_action.unwrap().contains("create"));
+        let full = output_folder_error(folder, &Error::new(ErrorKind::StorageFull, "disk full"));
+        assert!(full.message.contains("is full"), "{}", full.message);
+        assert!(full
+            .suggested_action
+            .unwrap()
+            .contains("free up disk space"));
     }
 }

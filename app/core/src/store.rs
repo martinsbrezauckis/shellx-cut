@@ -45,13 +45,18 @@ use crate::types::{
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 mod atomic_media_insert;
 mod atomic_media_insert_replay;
 mod atomic_media_insert_request;
+mod cache_io;
+#[cfg(test)]
+mod cache_io_tests;
 mod commit_state;
+#[cfg(test)]
+mod format_fit_tests;
 mod group;
 mod history;
 mod name_policy;
@@ -70,6 +75,9 @@ mod speed_ramp_replay_tests;
 
 pub use atomic_media_insert::AtomicMediaInsertResult;
 pub use atomic_media_insert_request::{AtomicMediaInsert, AtomicMediaInsertTrack};
+pub use cache_io::{
+    open_plain_file, plain_file_state, read_bounded_cache, replace_project_file, PlainFileState,
+};
 pub use group::{AtomicGroupPreview, AtomicGroupRejectStatus};
 use name_policy::{validate_logged_project_name, validate_project_name};
 pub use open_health::{ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth};
@@ -84,30 +92,15 @@ pub use relink::{current_relink_receipt, is_exact_sha256, RelinkGroupChange, Rel
 const MAX_REPLAY_CACHE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PROBE_CACHE_BYTES: u64 = 4 * 1024 * 1024;
 
-enum BoundedCacheRead {
+/// Outcome of [`read_bounded_cache`].
+#[derive(Debug)]
+pub enum BoundedCacheRead {
+    /// The whole file, within the limit.
     Bytes(Vec<u8>),
+    /// An ordinary file larger than the limit.
     Oversized,
+    /// Missing, unreadable, or not an ordinary single-link file.
     Unavailable,
-}
-
-fn read_bounded_cache(path: &Path, limit: u64) -> BoundedCacheRead {
-    let Ok(file) = std::fs::File::open(path) else {
-        return BoundedCacheRead::Unavailable;
-    };
-    let Ok(metadata) = file.metadata() else {
-        return BoundedCacheRead::Unavailable;
-    };
-    if metadata.len() > limit {
-        return BoundedCacheRead::Oversized;
-    }
-    let mut bytes = Vec::new();
-    if file.take(limit + 1).read_to_end(&mut bytes).is_err() {
-        return BoundedCacheRead::Unavailable;
-    }
-    if bytes.len() as u64 > limit {
-        return BoundedCacheRead::Oversized;
-    }
-    BoundedCacheRead::Bytes(bytes)
 }
 
 fn read_bounded_replay_cache(path: &Path) -> BoundedCacheRead {
@@ -399,6 +392,18 @@ impl ProjectStore {
         actor: Actor,
     ) -> Result<Self, CutError> {
         validate_project_name(name)?;
+        if let Some(s) = settings.as_ref() {
+            crate::frame_size::check_project_frame_size(s.width, s.height)?;
+            // Same frame-rate rule as project.format.
+            if !(s.fps.is_finite() && s.fps > 0.0 && s.fps <= 240.0) {
+                return Err(CutError::new(
+                    codes::INVALID_ARGS,
+                    "fps out of range",
+                    "fps must be in (0, 240]",
+                )
+                .with_suggested_action("create the project with a frame rate such as 30"));
+            }
+        }
         let dir = parent_dir.join(format!("{name}.cutproj"));
         if dir.exists() {
             return Err(CutError::new(
@@ -472,6 +477,19 @@ impl ProjectStore {
                 "pass the .cutproj directory path",
             ));
         }
+        // Open is not create: a folder with neither journal nor project state is
+        // not a project, and opening it must not write project files into it
+        // (a media folder would silently become a project).
+        if !dir.join("ops.jsonl").is_file() && !dir.join("project.json").is_file() {
+            return Err(CutError::new(
+                codes::INVALID_ARGS,
+                format!("{} is not a ShellX Cut project", dir.display()),
+                "the folder has no ops.jsonl or project.json, so nothing was opened and nothing was written into it",
+            )
+            .with_suggested_action(
+                "to start a new project call project.create {name, dir?}; to open an existing one pass the path of its .cutproj folder (project.list shows recent projects)",
+            ));
+        }
         validate_internal_output_roots(dir)?;
         // Derived-output roots are part of the live project layout. Background
         // workers require these directories to already exist so a late worker
@@ -494,6 +512,9 @@ impl ProjectStore {
         let journal = log.replay_view()?;
         let ops = journal.records();
         let (mut rebuilt, replay) = snapshots::rebuild(dir, &journal, ops.len())?;
+        // A received journal, snapshot or cache can hold a format larger than
+        // Cut makes; open keeps the project and reports the reduced format.
+        let format_fits = crate::frame_size::fit_project_formats(&mut rebuilt);
         // A malformed or stale snapshot is never truth. Rebuild from the
         // journal and refresh this disposable cache for the next open.
         if replay.rejected_snapshot {
@@ -512,6 +533,7 @@ impl ProjectStore {
         // preserved. Idempotent — a no-op on already-grouped projects.
         let mut project = project;
         project.normalize_track_order();
+        crate::probe_facts::keep_own_derived_pointers(&mut project);
         // Canonicalize so a relative `--project` CLI path can't double up when
         // file-writing verbs join this dir with default rel paths and the path
         // fence re-resolves the still-relative result against the absolute
@@ -547,6 +569,7 @@ impl ProjectStore {
                     ProjectSnapshotHealth::NotPresent
                 },
                 journal_tail_recovery,
+                format_fits,
             },
         })
     }
@@ -736,8 +759,9 @@ impl ProjectStore {
         } else {
             apply_edit_verb(&mut next, verb, &args)?
         };
-        // Carry the optional `group_id` meta-arg as an effect so the
-        // undo cursor collapses the linked action (read before `args` is moved).
+        crate::subframe::guard(&self.project, &next, verb, &args)?; // no new clip under a frame
+                                                                    // Carry the optional `group_id` meta-arg as an effect so the
+                                                                    // undo cursor collapses the linked action (read before `args` is moved).
         let mut effects = effects;
         if let Some(ge) = group_effect(&args) {
             effects.push(ge);
@@ -784,6 +808,7 @@ impl ProjectStore {
         for s in &steps {
             effects.extend(apply_edit_verb(&mut next, &s.verb, &s.args)?);
         }
+        crate::subframe::guard(&self.project, &next, verb, &args)?;
         effects.extend(extra_effects);
         effects.push(edit::fx(None, json!({"lowered": steps})));
         // Carry the optional `group_id` meta-arg (see apply()).
@@ -1100,24 +1125,23 @@ impl ProjectStore {
     ) -> Result<OpRecord, CutError> {
         let mut next = self.project.clone();
         if let Some(w) = width {
-            if !(16..=7680).contains(&w) {
-                return Err(CutError::new(
-                    codes::INVALID_ARGS,
-                    "width out of range",
-                    "width must be 16..=7680 px",
-                ));
-            }
             next.settings.width = w;
         }
         if let Some(h) = height {
-            if !(16..=4320).contains(&h) {
-                return Err(CutError::new(
-                    codes::INVALID_ARGS,
-                    "height out of range",
-                    "height must be 16..=4320 px",
-                ));
-            }
             next.settings.height = h;
+        }
+        // One frame limit for the project and every render (see frame_size).
+        // Even sides are required only of a size being SET: an older project
+        // with an odd size can still change its frame rate (its renders round
+        // the size down to even and say so).
+        if width.is_some() || height.is_some() {
+            crate::frame_size::check_project_frame_size(next.settings.width, next.settings.height)?;
+        } else {
+            crate::frame_size::check_frame_size(
+                next.settings.width,
+                next.settings.height,
+                "project format",
+            )?;
         }
         if let Some(f) = fps {
             if !(f.is_finite() && f > 0.0 && f <= 240.0) {
@@ -1386,6 +1410,19 @@ impl ProjectStore {
         actor: Actor,
         rationale: Option<String>,
     ) -> Result<(String, OpRecord), CutError> {
+        self.record_import_with(asset_id, asset, actor, rationale, Value::Null)
+    }
+
+    /// [`Self::record_import`] with extra op args (replay reads the effect, not
+    /// the args): `{"proxy": false}` records a person's choice of no proxy.
+    pub fn record_import_with(
+        &mut self,
+        asset_id: Option<String>,
+        asset: Asset,
+        actor: Actor,
+        rationale: Option<String>,
+        extra_args: Value,
+    ) -> Result<(String, OpRecord), CutError> {
         let id = match asset_id {
             Some(id) => id,
             None => {
@@ -1424,7 +1461,13 @@ impl ProjectStore {
             ts: OpRecord::now_ts(),
             actor,
             verb: "media.import".into(),
-            args: json!({"path": asset.path}),
+            args: match extra_args {
+                Value::Object(mut extra) => {
+                    extra.insert("path".into(), json!(asset.path));
+                    Value::Object(extra)
+                }
+                _ => json!({"path": asset.path}),
+            },
             rationale,
             effects: vec![edit::fx(None, json!({"asset_id": id, "asset": asset}))],
             inverse: None, // assets persist; revert is timeline-scoped
@@ -3039,6 +3082,11 @@ pub fn apply_edit_verb_pinned(
                 /// float move (only the dest track changes).
                 #[serde(default)]
                 ripple: bool,
+                /// Destination placement (item 176). serde DEFAULT insert:
+                /// moves logged before 0.6.116 replay with their historical
+                /// splice; live moves record it explicitly.
+                #[serde(default)]
+                placement: edit::MovePlacement,
             }
             let a: A = serde_json::from_value(args.clone())?;
             // Pin the destination splice-split id on replay (rebase id-stability).
@@ -3049,6 +3097,7 @@ pub fn apply_edit_verb_pinned(
                 &a.to_track,
                 a.at_ms,
                 a.ripple,
+                a.placement,
                 pin.as_deref(),
             )
         }
@@ -4271,10 +4320,12 @@ pub fn apply_record(
                 let width = u32::try_from(w).map_err(|_| {
                     replay_corrupt(op, format!("project.format replay width {w} exceeds u32"))
                 })?;
-                if !(16..=7680).contains(&width) {
+                if !(crate::frame_size::MIN_FRAME_SIDE..=crate::frame_size::MAX_FRAME_SIDE)
+                    .contains(&width)
+                {
                     return Err(replay_corrupt(
                         op,
-                        format!("project.format replay width {width} is outside 16..=7680"),
+                        format!("project.format replay width {width} is outside 16..=8192"),
                     ));
                 }
                 project.settings.width = width;
@@ -4283,10 +4334,12 @@ pub fn apply_record(
                 let height = u32::try_from(h).map_err(|_| {
                     replay_corrupt(op, format!("project.format replay height {h} exceeds u32"))
                 })?;
-                if !(16..=4320).contains(&height) {
+                if !(crate::frame_size::MIN_FRAME_SIDE..=crate::frame_size::MAX_FRAME_SIDE)
+                    .contains(&height)
+                {
                     return Err(replay_corrupt(
                         op,
-                        format!("project.format replay height {height} is outside 16..=4320"),
+                        format!("project.format replay height {height} is outside 16..=8192"),
                     ));
                 }
                 project.settings.height = height;
@@ -4821,6 +4874,17 @@ fn replay_targets_non_audio(project: &Project, verb: &str, args: &Value) -> bool
         .is_some_and(|track| track.kind != crate::types::TrackKind::Audio)
 }
 
+/// Whether an asset's proxy pointer names a file directly in the project's own
+/// `proxies/` folder, the only place the engine writes proxies.
+pub fn proxy_pointer_in_project(value: &str) -> bool {
+    let mut parts = Path::new(value).components();
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(root)), Some(std::path::Component::Normal(_)), None)
+            if root == "proxies"
+    )
+}
+
 /// Re-point each asset's DERIVED pointers from their deterministic on-disk files
 /// after a log rebuild. Enrichment (probe/proxy/transcript/perception/filmstrip)
 /// is a project.json cache write, not an op, so a pure replay leaves these fields
@@ -4872,6 +4936,7 @@ pub fn rebuild_from_log(ops: &[OpRecord]) -> Result<Project, CutError> {
         apply_record(&mut project, op, &ops[..i])?;
         project.sync_active_sequence();
     }
+    crate::frame_size::fit_project_formats(&mut project);
     validate_replayed_asset_ids(&project)?;
     Ok(project)
 }
@@ -4919,6 +4984,7 @@ pub fn rebuild_skipping(ops: &[OpRecord], skip_idx: usize) -> Result<Project, Cu
         }
         project.sync_active_sequence();
     }
+    crate::frame_size::fit_project_formats(&mut project);
     validate_replayed_asset_ids(&project)?;
     Ok(project)
 }
@@ -5779,18 +5845,38 @@ mod undo_redo_tests {
     }
 
     #[test]
+    fn open_drops_a_proxy_pointer_outside_the_projects_proxy_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = ProjectStore::create(d.path(), "demo", None).unwrap();
+        let (aid, _) = s.record_import(None, asset(), actor(), None).unwrap();
+        for foreign in [
+            "/etc/hostname",
+            "../outside.mp4",
+            "proxies/../../outside.mp4",
+        ] {
+            s.project.assets.get_mut(&aid).unwrap().proxy = Some(foreign.into());
+            s.save().unwrap();
+            let reopened = ProjectStore::open(&s.dir).unwrap();
+            assert_eq!(reopened.project.assets[&aid].proxy, None, "{foreign}");
+        }
+        assert!(proxy_pointer_in_project("proxies/a1.mp4"));
+        assert!(!proxy_pointer_in_project("proxies/sub/a1.mp4"));
+    }
+
+    #[test]
     fn open_preserves_current_cache_only_asset_enrichment() {
         let d = tempfile::tempdir().unwrap();
         let mut s = ProjectStore::create(d.path(), "demo", None).unwrap();
         let (aid, _) = s.record_import(None, asset(), actor(), None).unwrap();
-        s.project.assets.get_mut(&aid).unwrap().proxy = Some("proxies/custom.mp4".into());
+        let own = format!("proxies/{aid}.mp4");
+        s.project.assets.get_mut(&aid).unwrap().proxy = Some(own.clone());
         s.project.assets.get_mut(&aid).unwrap().transcript =
             Some("receipts/custom.words.json".into());
         s.save().unwrap();
 
         let reopened = ProjectStore::open(&s.dir).unwrap();
         let reopened_asset = reopened.project.assets.get(&aid).unwrap();
-        assert_eq!(reopened_asset.proxy.as_deref(), Some("proxies/custom.mp4"));
+        assert_eq!(reopened_asset.proxy.as_deref(), Some(own.as_str()));
         assert_eq!(
             reopened_asset.transcript.as_deref(),
             Some("receipts/custom.words.json")

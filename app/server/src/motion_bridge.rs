@@ -631,7 +631,8 @@ pub(crate) async fn motion_link_edit(
         &motion_id,
         &source_revision,
     )?;
-    let child = tokio::process::Command::new(&program)
+    let mut launch = tokio::process::Command::new(&program);
+    launch
         .arg("--motion-package")
         .arg(&source_path)
         .arg("--motion-cut-return-request")
@@ -639,8 +640,9 @@ pub(crate) async fn motion_link_edit(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(false)
-        .spawn()
+        .kill_on_drop(false);
+    let child = crate::jobs::spawn_retrying_busy(&mut launch)
+        .await
         .map_err(|error| {
             CutError::new(
                 error_codes::SIDECAR,
@@ -681,6 +683,7 @@ fn resolve_motion_editor_program() -> Option<String> {
     };
     if let Some(found) = std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
+            .filter(|dir| dir.is_absolute())
             .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
             .find(|path| path.is_file())
     }) {
@@ -805,14 +808,16 @@ async fn materialize_motion_script(request: &MotionScriptRequest) -> Result<Path
         )
     })?;
     let script_path = request.out_dir.join("scripted-video.json");
-    if let Some(parent) = script_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            CutError::new(
-                error_codes::IO,
-                "create Motion scripted-video output dir",
-                e.to_string(),
-            )
-        })?;
+    if !admit_project_out_dir(&request.out_dir, &request.caller_scope, true)? {
+        tokio::fs::create_dir_all(&request.out_dir)
+            .await
+            .map_err(|e| {
+                CutError::new(
+                    error_codes::IO,
+                    "create Motion scripted-video output dir",
+                    e.to_string(),
+                )
+            })?;
     }
     let bytes = serde_json::to_vec_pretty(script).map_err(|e| {
         CutError::new(
@@ -821,8 +826,8 @@ async fn materialize_motion_script(request: &MotionScriptRequest) -> Result<Path
             e.to_string(),
         )
     })?;
-    tokio::fs::write(&script_path, [bytes, b"\n".to_vec()].concat())
-        .await
+    // Replaces the name: never writes through a link or shared file.
+    cut_core::store::replace_project_file(&script_path, &[bytes, b"\n".to_vec()].concat())
         .map_err(|e| {
             CutError::new(
                 error_codes::IO,
@@ -833,9 +838,42 @@ async fn materialize_motion_script(request: &MotionScriptRequest) -> Result<Path
     Ok(script_path)
 }
 
+/// An output folder inside the open project is reached only through plain
+/// project folders (no links or Windows junctions), so neither Cut nor
+/// the Motion tool can be redirected outside the project. With `create`, the
+/// folder chain is created through those checks. Returns false for a folder
+/// outside the project (a caller-chosen destination), which is left to the
+/// caller.
+fn admit_project_out_dir(out_dir: &Path, project: &Path, create: bool) -> Result<bool, CutError> {
+    let Some(relative) = out_dir
+        .strip_prefix(project)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+    else {
+        return Ok(false);
+    };
+    if create {
+        crate::output_paths::ensure_plain_project_relative_dir(project, relative)?;
+        return Ok(true);
+    }
+    let mut current = project.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        if std::fs::symlink_metadata(&current).is_err() {
+            break;
+        }
+        crate::output_paths::existing_plain_project_relative_dir(
+            project,
+            current.strip_prefix(project).unwrap_or(relative),
+        )?;
+    }
+    Ok(true)
+}
+
 pub(crate) async fn run_motion_template_connector(
     request: &MotionTemplateRequest,
 ) -> Result<Value, CutError> {
+    admit_project_out_dir(&request.out_dir, &request.caller_scope, false)?;
     let spec = build_motion_template_command(request)?;
     run_motion_command_spec(spec, "render a Motion template for Cut").await
 }
@@ -844,6 +882,7 @@ pub(crate) async fn run_motion_script_connector(
     request: &MotionScriptRequest,
     script_path: &Path,
 ) -> Result<Value, CutError> {
+    admit_project_out_dir(&request.out_dir, &request.caller_scope, false)?;
     let spec = build_motion_script_command(request, script_path)?;
     run_motion_command_spec(spec, "render a Motion script for Cut").await
 }

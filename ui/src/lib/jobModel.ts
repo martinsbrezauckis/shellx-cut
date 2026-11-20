@@ -20,9 +20,9 @@ export interface JobRecord {
   /** Terminal quality within state=done. Older persisted records may omit it. */
   completion?: 'success' | 'done_with_warnings'
   /** First-class terminal outcome; absent on active and legacy records. */
-  outcome?: 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'superseded'
+  outcome?: 'succeeded' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'superseded'
   /** Why a terminal job ended. Never infer cancellation from a failed state. */
-  outcome_reason?: 'completed' | 'completed_with_warnings' | 'true_failure' | 'user_cancelled' | 'project_switch_cancelled' | 'restart_interrupted' | 'superseded'
+  outcome_reason?: 'completed' | 'completed_with_warnings' | 'checks_failed' | 'items_failed' | 'true_failure' | 'user_cancelled' | 'project_switch_cancelled' | 'restart_interrupted' | 'superseded'
   progress: number
   /** Latest durable human-readable phase, when the worker reported one. */
   message?: string

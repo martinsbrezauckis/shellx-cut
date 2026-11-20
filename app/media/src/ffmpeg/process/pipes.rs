@@ -27,7 +27,14 @@ pub(super) struct Writer {
 pub(super) fn start_writer(mut stdin: ChildStdin, input: Vec<u8>) -> Writer {
     let (tx, done) = mpsc::sync_channel(1);
     let handle = thread::spawn(move || {
-        let result = stdin.write_all(&input).and_then(|_| stdin.flush());
+        let result = match stdin.write_all(&input).and_then(|_| stdin.flush()) {
+            // The child closed its input without reading all of it (it exited
+            // early, e.g. a stand-in interpreter that only prints a hint). That
+            // is not a failure to run it: its exit status and output say what
+            // happened, and the caller reports those.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        };
         drop(stdin);
         let _ = tx.send(result);
     });
@@ -200,8 +207,10 @@ pub(super) fn read_progress<R: Read + Send + 'static>(mut input: R) -> ProgressR
             }
             for byte in &buf[..n] {
                 if *byte == b'\n' {
+                    // A line may end in CR (a Windows writer): not part of the value.
                     let value = std::str::from_utf8(&line)
                         .ok()
+                        .map(|line| line.trim_end_matches('\r'))
                         .and_then(|line| line.strip_prefix("out_time_us="))
                         .and_then(|value| value.parse().ok());
                     let _ = tx.try_send(value);
@@ -251,5 +260,32 @@ pub(super) fn finish_progress(
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod early_exit_tests {
+    /// A child that exits without reading its input is reported with its own
+    /// exit status and output, not as a broken pipe (the input is larger than
+    /// a pipe buffer, so the write always meets the closed pipe).
+    #[test]
+    fn a_child_that_exits_before_reading_its_input_keeps_its_status() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "echo 'not installed' >&2; exit 3"]);
+        let control =
+            super::super::OwnedProcessControl::bounded(std::time::Duration::from_secs(30), || {
+                false
+            });
+        let input = vec![b'x'; 512 * 1024];
+        let output = super::super::run_owned_command_with_input(
+            &mut command,
+            &input,
+            &control,
+            "early exit",
+            None,
+        )
+        .expect("the child ran; its status is the result");
+        assert_eq!(output.status.code(), Some(3));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not installed"));
     }
 }

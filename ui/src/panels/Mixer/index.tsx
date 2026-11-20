@@ -214,6 +214,7 @@ export default function MixerDrawer({
           const r = await callVerb('export.audio', {
             format: 'wav',
             track: id,
+            scratch: `stem_${id.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 27)}`,
             rationale: 'mixer per-track meter stem',
           })
           if (cancelled || currentMeasurementKey.current !== measurementKey) return

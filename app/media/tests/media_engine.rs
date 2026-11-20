@@ -1127,6 +1127,9 @@ fn matte_half_alpha(dir: &Path, matte: &cut_core::ClipMatte, asset_hash: &str) {
     .chain([alpha_path.display().to_string()])
     .collect();
     cut_media::ffmpeg::run_ffmpeg(&args).expect("matte alpha source");
+    // Stands in for this engine's own bake: a render uses only an alpha this
+    // engine recorded (item 155).
+    cut_media::cache_trust::remember(&alpha_path);
 }
 
 fn matte_test_project(id: &str) -> Project {
@@ -5240,6 +5243,8 @@ fn render_range_preview_composites_matte() {
         .to_string()])
     .collect();
     cut_media::ffmpeg::run_ffmpeg(&alpha_args).expect("alpha source");
+    // Stands in for this engine's own bake (item 155).
+    cut_media::cache_trust::remember(&alpha_dir.join(matte.cache_filename("sha256:a2")));
 
     let mut p = Project::new(
         "t",
@@ -6586,3 +6591,5 @@ fn speed_retime_changes_render_duration() {
     let d3 = render(&build(0.5), "s3.mp4");
     assert!(d3.abs_diff(4000) <= 90, "0.5× rendered {d3} ms ≈ 4000");
 }
+
+cut_core::isolate_test_process!();

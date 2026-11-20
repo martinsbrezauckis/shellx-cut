@@ -2,6 +2,7 @@ import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { callVerb, type Project } from '../lib/client'
 import { getGenerateProxies } from '../lib/proxyPref'
 import { isTauri, pickMedia } from '../lib/tauri'
+import { publishUserActionFailure, TOOL_MISSING } from '../lib/userActionFeedback'
 import type { LayoutState } from '../layout/useLayout'
 
 interface AppImportEventsArgs {
@@ -32,7 +33,14 @@ export function useAppImportEvents({ project, onChanged, setLayout }: AppImportE
           proxy: getGenerateProxies(),
           rationale: 'user import from app-wide Import media command',
         })
-        if (r.ok) imported++
+        if (r.ok) {
+          imported++
+          continue
+        }
+        // Never fail silently: the shared notice explains it and, for missing
+        // video processing, offers the setup.
+        publishUserActionFailure('media.import', r, 'Import failed')
+        if (r.error?.code === TOOL_MISSING) break
       }
       if (imported > 0) onChangedRef.current?.()
     }

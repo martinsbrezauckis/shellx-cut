@@ -48,3 +48,74 @@ fn start_request_binds_the_retry_identity_revision_track_and_out_range() {
         }
     ));
 }
+
+// Voiceover records only the microphone. Its start admission must not read,
+// list, or probe screen capture, and a refusal must name the microphone.
+#[test]
+fn voiceover_start_admission_never_touches_screen_capture() {
+    record_capture::forbid_native_capture_access();
+    let before = record_capture::native_screen_access_attempts();
+    let admitted = crate::screen_record::ensure_voiceover_ready();
+    assert_eq!(
+        record_capture::native_screen_access_attempts(),
+        before,
+        "voiceover admission read screen capture state"
+    );
+    if let Err(error) = admitted {
+        assert!(error.message.contains("microphone"), "{error:?}");
+        assert!(!error.message.contains("screen"), "{error:?}");
+        assert!(error.suggested_action.is_some(), "{error:?}");
+    }
+}
+
+#[test]
+fn a_failed_take_says_why_and_never_leaks_paths() {
+    let blocked =
+        record_capture::MicrophoneProblem::Blocked(record_capture::MicrophoneSwitch::DesktopApps)
+            .into_error(Some(&record_core::RecordError::new(
+                "capture",
+                "mic config",
+                "Access is denied. (0x80070005)",
+            )));
+    let value = status_value(
+        &VoiceoverTimelineStatus::Finished {
+            take: take(),
+            outcome: record_capture::VoiceoverCaptureOutcome::Failed(blocked),
+        },
+        None,
+    );
+    assert_eq!(value["terminal"], "failed");
+    assert_eq!(
+        value["failure"]["reason"],
+        "windows_desktop_apps_microphone_off"
+    );
+    assert_eq!(
+        value["failure"]["message"],
+        "Windows is blocking microphone access for desktop apps"
+    );
+    assert!(value["failure"]["suggested_action"]
+        .as_str()
+        .is_some_and(|action| action.contains("Let desktop apps access your microphone")));
+    assert!(value["failure"]["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("0x80070005")));
+
+    let other =
+        record_core::RecordError::new("io", "publish microphone audio", r"C:\private\take.wav");
+    let value = status_value(
+        &VoiceoverTimelineStatus::Finished {
+            take: take(),
+            outcome: record_capture::VoiceoverCaptureOutcome::Failed(other),
+        },
+        None,
+    );
+    assert_eq!(value["failure"]["reason"], "capture_failed");
+    assert!(value["failure"].get("detail").is_none());
+    assert!(!value.to_string().contains("take.wav"));
+}
+
+#[test]
+fn a_take_that_did_not_fail_has_no_failure_field() {
+    let value = status_value(&VoiceoverTimelineStatus::Finalizing { take: take() }, None);
+    assert!(value.get("failure").is_none());
+}

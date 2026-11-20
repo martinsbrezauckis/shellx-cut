@@ -35,7 +35,7 @@ use pw::spa::pod::{ChoiceValue, Object, Pod, Property, PropertyFlags, Value};
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Id, SpaTypes};
 use pw::{properties::properties, spa};
 
-use crate::cursor_correlation::{CursorMetadataSample, PipewireCursorCapture};
+use crate::cursor_correlation::{CaptureSegment, CursorMetadataSample, PipewireCursorCapture};
 use crate::source_preview_bitmap::SourcePreviewPixelFormat;
 
 fn preview_format(format: VideoFormat) -> SourcePreviewPixelFormat {
@@ -203,19 +203,19 @@ pub(crate) fn valid_chunk_data(data: &[u8], offset: usize, size: usize) -> Optio
 /// full write returns. Publish this origin only after complete delivery succeeds.
 fn deliver_pixel_frame(
     start: Instant,
+    callback_ms: u64,
     capture_start_ms: &mut Option<u64>,
     deliver: impl FnOnce() -> bool,
 ) -> bool {
-    let source_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     if !deliver() {
         return false;
     }
     if capture_start_ms.is_none() {
-        *capture_start_ms = Some(source_ms);
+        *capture_start_ms = Some(callback_ms);
         let delivered_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         eprintln!(
-            "wayland_pw: first pixel frame source_ms={source_ms} delivered_ms={delivered_ms} write_ms={}",
-            delivered_ms.saturating_sub(source_ms)
+            "wayland_pw: first pixel frame source_ms={callback_ms} delivered_ms={delivered_ms} write_ms={}",
+            delivered_ms.saturating_sub(callback_ms)
         );
     }
     true
@@ -236,6 +236,7 @@ struct State {
     ff_stdin: Option<ChildStdin>,
     ff_child: Option<Child>,
     cursor_metadata: Vec<CursorMetadataSample>,
+    cursor_invalidations: Vec<u64>,
     /// Buffers dequeued (incl. cursor-only updates) — debug only.
     frames: u64,
     /// REAL pixel frames actually written to ffmpeg — the "did we capture video?"
@@ -255,7 +256,8 @@ struct State {
 /// constant-fps, exact-duration source video, exactly as for the gst path.
 fn spawn_ffmpeg(st: &mut State, pix_fmt: &str) {
     let size = format!("{}x{}", st.width, st.height);
-    match Command::new(&st.ff_bin)
+    let mut command = Command::new(&st.ff_bin);
+    command
         .args([
             "-v",
             "error",
@@ -284,9 +286,9 @@ fn spawn_ffmpeg(st: &mut State, pix_fmt: &str) {
             "passthrough",
             &st.raw_path,
         ])
-        .stdin(Stdio::piped())
-        .spawn()
-    {
+        .stdin(Stdio::piped());
+    // A just-written program can be briefly busy (cut_media::process_start).
+    match cut_media::process_start::retry_busy_start(|| command.spawn()) {
         Ok(mut child) => {
             st.ff_stdin = child.stdin.take();
             st.ff_child = Some(child);
@@ -360,6 +362,7 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
         ff_stdin: None,
         ff_child: None,
         cursor_metadata: Vec::new(),
+        cursor_invalidations: Vec::new(),
         frames: 0,
         pixel_frames: 0,
         capture_start_ms: None,
@@ -426,6 +429,9 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
             let Ok(mut st) = s_proc.try_borrow_mut() else {
                 return;
             };
+            // This is the SPA callback time. Encoding can block for tens of
+            // milliseconds and must not make cursor metadata appear later.
+            let callback_ms = u64::try_from(st.start.elapsed().as_millis()).unwrap_or(u64::MAX);
             st.frames = st.frames.saturating_add(1);
 
             // Frame pixels to ffmpeg. A zero-size chunk is a cursor-only update,
@@ -453,11 +459,18 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
                                         ff_stdin,
                                         ..
                                     } = &mut *st;
-                                    deliver_pixel_frame(*start, capture_start_ms, || {
-                                        ff_stdin.as_mut().is_some_and(|stdin| {
-                                            write_depadded(stdin, valid, w, h, bpp, stride, offset)
-                                        })
-                                    })
+                                    deliver_pixel_frame(
+                                        *start,
+                                        callback_ms,
+                                        capture_start_ms,
+                                        || {
+                                            ff_stdin.as_mut().is_some_and(|stdin| {
+                                                write_depadded(
+                                                    stdin, valid, w, h, bpp, stride, offset,
+                                                )
+                                            })
+                                        },
+                                    )
                                 };
                                 if wrote {
                                     st.pixel_frames = st.pixel_frames.saturating_add(1);
@@ -499,14 +512,18 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
             if let Some(cursor) = buffer.find_meta::<spa::buffer::meta::MetaCursor>() {
                 if cursor.id() != 0 {
                     let position = cursor.position();
-                    let t_ms = u64::try_from(st.start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    // Keep stationary samples too. A click after the cursor stops is
-                    // still exact only when a recent metadata buffer confirms it.
-                    st.cursor_metadata.push(CursorMetadataSample {
-                        t_ms,
-                        x: f64::from(position.x),
-                        y: f64::from(position.y),
-                    });
+                    let (x, y) = (f64::from(position.x), f64::from(position.y));
+                    if x >= 0.0 && y >= 0.0 && x < f64::from(st.width) && y < f64::from(st.height) {
+                        st.cursor_metadata.push(CursorMetadataSample {
+                            t_ms: callback_ms,
+                            x,
+                            y,
+                        });
+                    } else {
+                        st.cursor_invalidations.push(callback_ms);
+                    }
+                } else {
+                    st.cursor_invalidations.push(callback_ms);
                 }
             }
         })
@@ -605,12 +622,22 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
     let capture_end_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // Finalize: close ffmpeg's stdin (EOF) and wait so the mp4 is flushed/moov-written.
-    let (stdin, child, cursor_metadata, pixel_frames, frame_width, frame_height, capture_start_ms) = {
+    let (
+        stdin,
+        child,
+        cursor_metadata,
+        cursor_invalidations,
+        pixel_frames,
+        frame_width,
+        frame_height,
+        capture_start_ms,
+    ) = {
         let mut st = state.borrow_mut();
         (
             st.ff_stdin.take(),
             st.ff_child.take(),
             std::mem::take(&mut st.cursor_metadata),
+            std::mem::take(&mut st.cursor_invalidations),
             st.pixel_frames,
             st.width,
             st.height,
@@ -631,6 +658,11 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
         .ok_or_else(|| "no encoder-start timestamp from PipeWire frames".to_string())?;
     Ok(PipewireCursorCapture {
         metadata: cursor_metadata,
+        invalidations: cursor_invalidations,
+        segments: vec![CaptureSegment {
+            start_ms: capture_start_ms,
+            end_ms: capture_end_ms,
+        }],
         frame_width,
         frame_height,
         capture_start_ms,
@@ -813,6 +845,14 @@ mod tests {
     }
 
     #[test]
+    fn first_frame_origin_is_the_same_callback_tick_as_its_cursor_metadata() {
+        let start = std::time::Instant::now();
+        let mut origin = None;
+        assert!(deliver_pixel_frame(start, 418, &mut origin, || true));
+        assert_eq!(origin, Some(418));
+    }
+
+    #[test]
     fn slow_first_write_preserves_source_clock_and_later_frames_keep_it() {
         let start = std::time::Instant::now();
         let mut origin = None;
@@ -822,7 +862,7 @@ mod tests {
             start,
         };
         let frame = [7u8; 16];
-        assert!(deliver_pixel_frame(start, &mut origin, || {
+        assert!(deliver_pixel_frame(start, 0, &mut origin, || {
             write_depadded(&mut writer, &frame, 2, 2, 4, 0, 0)
         }));
         let first_origin = origin.unwrap();
@@ -830,7 +870,7 @@ mod tests {
         assert!(start.elapsed().as_millis() >= u128::from(first_origin) + 40);
         assert_eq!(writer.bytes, frame);
 
-        assert!(deliver_pixel_frame(start, &mut origin, || {
+        assert!(deliver_pixel_frame(start, 0, &mut origin, || {
             write_depadded(&mut writer, &frame, 2, 2, 4, 0, 0)
         }));
         assert_eq!(origin, Some(first_origin));
@@ -841,22 +881,22 @@ mod tests {
     fn failed_or_invalid_first_frame_does_not_publish_origin() {
         let start = std::time::Instant::now();
         let mut origin = None;
-        assert!(!deliver_pixel_frame(start, &mut origin, || {
+        assert!(!deliver_pixel_frame(start, 0, &mut origin, || {
             write_depadded(&mut FailingWriter, &[0u8; 16], 2, 2, 4, 0, 0)
         }));
         assert_eq!(origin, None);
         let mut out = Vec::new();
-        assert!(!deliver_pixel_frame(start, &mut origin, || {
+        assert!(!deliver_pixel_frame(start, 0, &mut origin, || {
             write_depadded(&mut out, &[0u8; 1], 2, 2, 4, 0, 0)
         }));
         assert_eq!(origin, None);
         assert!(out.is_empty());
-        assert!(deliver_pixel_frame(start, &mut origin, || {
+        assert!(deliver_pixel_frame(start, 0, &mut origin, || {
             write_depadded(&mut out, &[0u8; 16], 2, 2, 4, 0, 0)
         }));
         let first_origin = origin;
         assert!(first_origin.is_some());
-        assert!(!deliver_pixel_frame(start, &mut origin, || {
+        assert!(!deliver_pixel_frame(start, 0, &mut origin, || {
             write_depadded(&mut FailingWriter, &[0u8; 16], 2, 2, 4, 0, 0)
         }));
         assert_eq!(origin, first_origin);
@@ -881,6 +921,7 @@ mod tests {
         let mut origin = None;
         assert!(!deliver_pixel_frame(
             std::time::Instant::now(),
+            0,
             &mut origin,
             || write_depadded(&mut writer, &[0u8; 24], 2, 2, 4, 12, 0)
         ));
@@ -905,6 +946,7 @@ mod tests {
             ff_stdin: None,
             ff_child: None,
             cursor_metadata: Vec::new(),
+            cursor_invalidations: Vec::new(),
             frames: 0,
             pixel_frames: 0,
             capture_start_ms: None,
@@ -921,6 +963,7 @@ mod tests {
             let frame = [u8::try_from(index * 25).unwrap(), 100, 150, 0].repeat(128 * 128);
             assert!(deliver_pixel_frame(
                 start,
+                at_ms,
                 &mut state.capture_start_ms,
                 || { write_depadded(&mut stdin, &frame, 128, 128, 4, 0, 0) }
             ));

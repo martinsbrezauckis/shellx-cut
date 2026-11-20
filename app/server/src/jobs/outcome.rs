@@ -13,7 +13,12 @@ mod terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobOutcome {
+    /// Ran to its end and did what was asked (possibly with warnings).
     Succeeded,
+    /// Ran to its end but did NOT fully deliver: a written file failed its own
+    /// checks (`checks_failed`) or some items of a batch failed
+    /// (`items_failed`). Never read as success.
+    Partial,
     Failed,
     Cancelled,
     Interrupted,
@@ -25,6 +30,12 @@ pub enum JobOutcome {
 pub enum JobOutcomeReason {
     Completed,
     CompletedWithWarnings,
+    /// The job wrote its output, but the output did not pass its own checks
+    /// (a render whose receipt verdict is `problems`). Usable, not correct.
+    ChecksFailed,
+    /// A batch job (a render queue) finished, but some of its items failed:
+    /// the delivered items are real, the failed ones are named in the result.
+    ItemsFailed,
     TrueFailure,
     UserCancelled,
     ProjectSwitchCancelled,
@@ -37,7 +48,7 @@ pub(super) fn restart_interrupted(record: &mut JobRecord) {
     record.queue = None;
     record.waiting_on = None;
     record.completion = None;
-    record.progress = 1.0;
+    // Keep the progress the job really reached; an interrupted job is not 100%.
     record.outcome = Some(JobOutcome::Interrupted);
     record.outcome_reason = Some(JobOutcomeReason::RestartInterrupted);
     record.message = Some("interrupted by restart".into());
@@ -74,10 +85,49 @@ impl JobManager {
         );
     }
 
+    /// Mark done with an output that was written but did not pass its own
+    /// checks: "completed with problems" (completion done_with_warnings,
+    /// outcome_reason checks_failed). The output is kept; the result names the
+    /// failing checks and the way forward, and the status bar lists the job
+    /// like a failed one until dismissed.
+    pub fn finish_with_problems(&self, job_id: &str, result: serde_json::Value) {
+        self.complete(
+            job_id,
+            result,
+            JobCompletion::DoneWithWarnings,
+            JobOutcomeReason::ChecksFailed,
+            "done, but it did not pass its checks",
+        );
+    }
+
+    /// Mark done when some, not all, items of a batch failed: "done, but N of
+    /// M failed" (completion done_with_warnings, outcome_reason items_failed).
+    /// The result names each failed item; the status bar lists the job like a
+    /// failed one until dismissed. All items failed is a failure, not this.
+    pub fn finish_with_failed_items(
+        &self,
+        job_id: &str,
+        result: serde_json::Value,
+        failed: usize,
+        count: usize,
+    ) {
+        self.complete(
+            job_id,
+            result,
+            JobCompletion::DoneWithWarnings,
+            JobOutcomeReason::ItemsFailed,
+            &format!("done, but {failed} of {count} failed"),
+        );
+    }
+
     /// Mark a job as a true execution failure. Cancellations and restart
     /// interruptions use their dedicated lifecycle methods instead. Motion can
     /// report a caller cancellation from inside a worker, so preserve that too.
     pub fn fail(&self, job_id: &str, error: CutError) {
+        let error = crate::requirements::complete(error);
+        if let Some(doctor) = &self.doctor {
+            doctor.invalidate_on_missing(&error);
+        }
         let (outcome, reason, message) = match error.code.as_str() {
             "job_cancelled" | cut_core::error::codes::RENDER_CANCELLED => (
                 JobOutcome::Cancelled,
@@ -104,6 +154,10 @@ impl JobManager {
         error: CutError,
         result: serde_json::Value,
     ) {
+        let error = crate::requirements::complete(error);
+        if let Some(doctor) = &self.doctor {
+            doctor.invalidate_on_missing(&error);
+        }
         let (outcome, reason, message) = match error.code.as_str() {
             "job_cancelled" | cut_core::error::codes::RENDER_CANCELLED => (
                 JobOutcome::Cancelled,

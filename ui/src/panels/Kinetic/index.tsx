@@ -21,6 +21,7 @@
 //
 // Callers: App.tsx (mounted when open). Deps: lib/client, ../drawer.css.
 
+import { noTranscriptKind, noTranscriptSentence } from '../../lib/noTranscript'
 import { useMemo, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
@@ -160,7 +161,8 @@ export default function KineticDrawer({ project, onClose }: KineticDrawerProps) 
         // proxy never shows overlays) — makes the receipt below true.
         document.dispatchEvent(new CustomEvent('cut:show-composed'))
       } else {
-        setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'captions.kinetic failed'}`)
+        const missing = noTranscriptKind(r.error)
+        setErr(missing ? noTranscriptSentence(missing) : `${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'captions.kinetic failed'}`)
       }
     } catch {
       setErr('server unreachable')

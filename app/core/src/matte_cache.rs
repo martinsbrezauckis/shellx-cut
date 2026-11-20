@@ -17,17 +17,10 @@ fn unsafe_entry(path: &Path) -> CutError {
 #[path = "matte_cache_filesystem_tests.rs"]
 mod filesystem_tests;
 
+/// Only a name-surrogate reparse point (symbolic link, junction) names
+/// another entry; cloud placeholders and other reparse points do not.
 fn reparse(metadata: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = metadata;
-        false
-    }
+    crate::reparse::names_another_entry(metadata)
 }
 
 pub fn require_plain_directory(path: &Path) -> Result<(), CutError> {

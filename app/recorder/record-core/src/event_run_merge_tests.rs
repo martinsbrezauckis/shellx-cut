@@ -18,6 +18,7 @@ fn correlation(exact_clicks: u32) -> CursorCorrelation {
         source: CursorCoordinateSource::RdevinAbsolute,
         state: crate::CursorCoordinateState::Exact,
         exact_clicks,
+        held_clicks: 0,
         approximate_clicks: 0,
         unavailable_clicks: 0,
         max_metadata_age_ms: Some(12),
@@ -194,6 +195,60 @@ fn offsets_every_event_kind_and_preserves_half_open_edges() {
     );
     assert_eq!(merged.events.cursor_correlation.exact_clicks, 2);
     assert_eq!(merged.events.duration_ms, 30);
+}
+
+#[test]
+fn merges_exact_and_held_runs_without_crossing_the_pause_boundary() {
+    let mut first = events(20);
+    first.cursor_correlation = correlation(1);
+    first.cursor_correlation.source = CursorCoordinateSource::WaylandPipewireMetadata;
+    let mut second = events(10);
+    second.cursor_correlation = correlation(0);
+    second.cursor_correlation.source = CursorCoordinateSource::WaylandPipewireMetadata;
+    second.cursor_correlation.state = crate::CursorCoordinateState::Held;
+    second.cursor_correlation.held_clicks = 1;
+    second.clicks.push(ClickSample {
+        t_ms: 9,
+        x: 20.0,
+        y: 30.0,
+        button: MouseButton::Left,
+        down: true,
+        position_quality: ClickPositionQuality::Held,
+    });
+
+    let merged = merge_sealed_event_tracks(&[run(0, first), run(20, second)]).unwrap();
+    assert_eq!(
+        merged.events.cursor_correlation.state,
+        crate::CursorCoordinateState::Held
+    );
+    assert_eq!(merged.events.cursor_correlation.exact_clicks, 1);
+    assert_eq!(merged.events.cursor_correlation.held_clicks, 1);
+    assert_eq!(merged.events.clicks[0].t_ms, 29);
+    assert_eq!(
+        merged.events.clicks[0].position_quality,
+        ClickPositionQuality::Held
+    );
+}
+
+#[test]
+fn unavailable_only_runs_keep_unavailable_when_details_differ() {
+    let mut first = events(10);
+    first.cursor_correlation.state = crate::CursorCoordinateState::Unavailable;
+    first.cursor_correlation.exact_clicks = 0;
+    first.cursor_correlation.unavailable_clicks = 1;
+    first.cursor_correlation.detail = Some("first unavailable reason".into());
+    let mut second = events(10);
+    second.cursor_correlation.state = crate::CursorCoordinateState::Unavailable;
+    second.cursor_correlation.exact_clicks = 0;
+    second.cursor_correlation.unavailable_clicks = 1;
+    second.cursor_correlation.detail = Some("second unavailable reason".into());
+
+    let merged = merge_sealed_event_tracks(&[run(0, first), run(10, second)]).unwrap();
+    assert_eq!(
+        merged.events.cursor_correlation.state,
+        crate::CursorCoordinateState::Unavailable
+    );
+    assert_eq!(merged.events.cursor_correlation.unavailable_clicks, 2);
 }
 
 #[test]

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { relative, resolve, sep } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import { discoverLibraryTests } from '../../ui/public-tests/lib/libraryTestDiscovery.mjs'
@@ -144,7 +144,7 @@ export function loadPublishedTestInventory({ repoRoot = '.', inventoryPath = DEF
   const uiTests = []
   const seenUiTests = new Set()
   for (const relativePath of ui.tests) {
-    if (typeof relativePath !== 'string' || !relativePath.endsWith('.test.ts') || relativePath.startsWith('/') || relativePath.includes('\\') || relativePath.split('/').includes('..')) {
+    if (typeof relativePath !== 'string' || !/\.test\.(?:ts|mjs|js)$/.test(relativePath) || relativePath.startsWith('/') || relativePath.includes('\\') || relativePath.split('/').includes('..')) {
       fail(`invalid ui library test ${JSON.stringify(relativePath)}`)
     }
     if (seenUiTests.has(relativePath)) fail(`duplicate ui library test ${relativePath}`)
@@ -189,7 +189,23 @@ export function verifyPublishedTestResources(inventory, exists = existsSync) {
   return inventory
 }
 
-export async function verifyPublishedUiLibraryMembership(inventory, discover = discoverLibraryTests) {
+function listTests(directory, root, pattern) {
+  const out = []
+  if (!existsSync(directory)) return out
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name)
+    if (entry.isDirectory()) out.push(...listTests(path, root, pattern))
+    else if (entry.isFile() && pattern.test(entry.name)) out.push(relative(root, path).split(sep).join('/'))
+  }
+  return out.sort()
+}
+
+/**
+ * Both directions: every declared UI library test is discovered, and (unless `exact` is false) every discovered
+ * test is declared: a public test the inventory does not list fails the check. `exact: false` is for a checkout
+ * where other tests share the folders (the maintainers' source), which compares with its export policy instead.
+ */
+export async function verifyPublishedUiLibraryMembership(inventory, discover = discoverLibraryTests, { exact = true } = {}) {
   const ui = inventory.uiLibraryTests
   const discovered = await discover({
     publicTestsRoot: resolve(inventory.root, ui.root),
@@ -200,7 +216,26 @@ export async function verifyPublishedUiLibraryMembership(inventory, discover = d
   if (missing.length > 0) {
     fail(`declared UI library test membership differs from maintained discovery (missing ${missing.join(', ')})`)
   }
+  if (exact) {
+    const declared = new Set(ui.tests)
+    const undeclared = discovered.included.filter((path) => !declared.has(path))
+    if (undeclared.length > 0) {
+      fail(`public UI library tests exist that the inventory does not list (add them to ui_library_tests.tests): ${undeclared.join(', ')}`)
+    }
+  }
   return discovered
+}
+
+/** The same exactness for the published Node tests under scripts/public-tests. */
+export function verifyPublishedNodeTestMembership(inventory, { exact = true } = {}) {
+  if (!exact) return inventory
+  const declared = new Set(inventory.tests.map((test) => test.path))
+  const undeclared = listTests(resolve(inventory.root, 'scripts/public-tests'), inventory.root, /\.test\.mjs$/)
+    .filter((path) => !declared.has(path))
+  if (undeclared.length > 0) {
+    fail(`public Node tests exist that the inventory does not list (add them to tests): ${undeclared.join(', ')}`)
+  }
+  return inventory
 }
 
 export function defaultProbe(command, args, timeout = PUBLISHED_PREREQUISITE_PROBE_TIMEOUT_MS) {

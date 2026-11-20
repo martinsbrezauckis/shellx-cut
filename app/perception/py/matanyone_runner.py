@@ -44,14 +44,17 @@ on PATH. Primary caller: server/matte.rs (local-CLI transport, model=matanyone).
 """
 from __future__ import annotations
 
-from local_media_io import input_args
+from local_media_io import input_args, media_tool
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
+# The review's no-follow file helpers, imported as part of the judge/ folder
+# beside this file (adding judge/ itself to sys.path would hide that package
+# behind judge/judge.py for the rest of the process).
+from judge import judge_files  # noqa: E402
 
 # Cold Windows installs keep ffmpeg/ffprobe in the app tools dir, not PATH.
 # cutd forwards that directory as SHELLX_CUT_FFMPEG_DIR; mirror instruments.py.
@@ -62,8 +65,8 @@ if _ff_dir:
     if _present:
         os.environ["PATH"] = os.pathsep.join(_present + [os.environ.get("PATH", "")])
 
-FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
-FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
+FFMPEG_BIN = media_tool("ffmpeg")
+FFPROBE_BIN = media_tool("ffprobe")
 
 import numpy as np
 import torch
@@ -290,6 +293,11 @@ def main() -> int:
         if not Path(p).is_file():
             print(f"matanyone_runner: {what} not found: {p}", file=sys.stderr)
             return 2
+    try:
+        judge_files.require_replaceable(a.out_alpha, "alpha")
+    except judge_files.RefusedProjectFile as error:
+        print(f"matanyone_runner: {error}", file=sys.stderr)
+        return 2
     stats = run(a.in_video, a.out_alpha, a.mask, a.model,
                 a.max_size, a.warmup, a.erode, a.dilate)
     print(json.dumps(stats))  # ONE line of JSON on stdout — the caller parses it

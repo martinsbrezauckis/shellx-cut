@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type JobRecord } from '../lib/client'
 import { events } from '../lib/events'
+import { failedJobNotices, type FailedJobNotices } from '../lib/failedJobNotices'
+import {
+  interruptedJobNotices,
+  interruptedKey,
+  readInterruptedJobs,
+  type InterruptedJob,
+} from '../lib/interruptedJobNotices'
+
+const NO_FAILED_JOBS: FailedJobNotices = { shown: [], hidden: 0 }
 
 export interface JobView {
   job_id: string
@@ -84,11 +93,30 @@ export function retryableJobViews(records: JobRecord[]): RetryableJobView[] {
     }))
 }
 
-/** Tracks running jobs for the topbar chip and Render button disabled state. */
+/** Tracks running jobs for the topbar chip and Render button disabled state,
+ * plus failed jobs the person has not dismissed. A project change forgets the
+ * dismissals and ignores failures from before it. */
 export function useTopbarJobs() {
   const [jobs, setJobs] = useState<Record<string, JobView>>({})
   const [retryJobs, setRetryJobs] = useState<Record<string, RetryableJobView>>({})
+  const [failed, setFailed] = useState<FailedJobNotices>(NO_FAILED_JOBS)
   const seedRequest = useRef(0)
+  const lastRecords = useRef<JobRecord[]>([])
+  const dismissed = useRef(new Set<string>())
+  const watchSince = useRef(Date.now())
+  const [interrupted, setInterrupted] = useState<InterruptedJob[]>([])
+
+  const refreshFailed = useCallback(() => {
+    setFailed(failedJobNotices(lastRecords.current, watchSince.current, dismissed.current))
+  }, [])
+
+  const forgetFailures = useCallback(() => {
+    seedRequest.current += 1
+    lastRecords.current = []
+    dismissed.current = new Set()
+    watchSince.current = Date.now()
+    setFailed(NO_FAILED_JOBS)
+  }, [])
 
   useEffect(() => {
     const seed = async () => {
@@ -99,16 +127,33 @@ export function useTopbarJobs() {
         const list = (r.ok && (r.result as { jobs?: JobRecord[] })?.jobs) || []
         setJobs(Object.fromEntries(activeJobViews(list).map((job) => [job.job_id, job])))
         setRetryJobs(Object.fromEntries(retryableJobViews(list).map((job) => [job.job_id, job])))
+        lastRecords.current = list
+        refreshFailed()
+      } catch {
+        // Transport down: connection state is handled by the status bar.
+      }
+    }
+    // Work a kill, crash or power cut stopped: told at start, project or not.
+    const seedInterrupted = async () => {
+      try {
+        const r = await callVerb('jobs.interrupted', {})
+        if (r.ok) setInterrupted(readInterruptedJobs(r.result))
       } catch {
         // Transport down: connection state is handled by the status bar.
       }
     }
     const offStatus = events.onStatus((s) => {
-      if (s === 'open') void seed()
+      if (s === 'open') {
+        void seed()
+        void seedInterrupted()
+      }
     })
     const offEvents = events.subscribe((ev) => {
       if (ev.type === 'job_progress') {
-        if (ev.progress >= 1) {
+        // The job ENDED (done, failed or cancelled): learn it from the engine's
+        // job state. Progress alone says nothing about an ending, an ended job
+        // keeps the progress it reached.
+        if (ev.terminal) {
           void seed()
           return
         }
@@ -126,9 +171,13 @@ export function useTopbarJobs() {
         })
       } else if (ev.type === 'render_done') {
         void seed()
+      } else if (ev.type === 'project_changed') {
+        forgetFailures()
+        void seed()
       }
     })
     void seed()
+    void seedInterrupted()
     const poll = window.setInterval(() => void seed(), 3_000)
     return () => {
       seedRequest.current += 1
@@ -136,7 +185,7 @@ export function useTopbarJobs() {
       offStatus()
       offEvents()
     }
-  }, [])
+  }, [refreshFailed, forgetFailures])
 
   const removeJob = useCallback((jobId: string) => {
     setJobs((previous) => {
@@ -152,8 +201,21 @@ export function useTopbarJobs() {
       return next
     })
   }, [])
+  const dismissFailedJob = useCallback((jobId: string) => {
+    const key = interruptedKey(jobId)
+    if (key !== null) {
+      setInterrupted((previous) => previous.filter((job) => job.key !== key))
+      void callVerb('jobs.interrupted_dismiss', { key }).catch(() => {})
+      return
+    }
+    dismissed.current.add(jobId)
+    refreshFailed()
+  }, [refreshFailed])
   const jobList = Object.values(jobs)
   const retryJobList = Object.values(retryJobs)
   const renderRunning = jobList.some((j) => isRenderBlockingJobKind(j.kind))
-  return { jobList, retryJobList, renderRunning, removeJob, removeRetryJob }
+  const failedJobs: FailedJobNotices = interrupted.length > 0
+    ? { shown: [...interruptedJobNotices(interrupted), ...failed.shown], hidden: failed.hidden }
+    : failed
+  return { jobList, retryJobList, failedJobs, renderRunning, removeJob, removeRetryJob, dismissFailedJob }
 }

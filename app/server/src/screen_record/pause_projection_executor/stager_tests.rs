@@ -17,6 +17,79 @@ use super::{
     filter_graph, FfmpegFrameGridPauseProjectionSourceStager, FrameGridPauseProjectionSourceStager,
 };
 
+#[cfg(unix)]
+#[test]
+fn frame_grid_literal_probe_obeys_stage_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let root = tempdir().unwrap();
+    let capture = root.path().join("stall%03d");
+    fs::create_dir(&capture).unwrap();
+    make_source(&capture.join("first.mp4"), "red");
+    make_source(&capture.join("second.mp4"), "blue");
+    let real_probe = cut_media::toolpath::ffprobe();
+    let fake = root.path().join("slow-ffprobe");
+    fs::write(
+        &fake,
+        "#!/bin/sh\ncase \"$*\" in *format=format_name*) exec sleep 120;; *) exec \"$CUT_REAL_FFPROBE\" \"$@\";; esac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "screen_record::pause_projection_executor::stager::tests::frame_grid_probe_child",
+            "--nocapture",
+        ])
+        .env("CUT_STAGE_PROBE_DIR", &capture)
+        .env("CUT_REAL_FFPROBE", &real_probe)
+        .env("SHELLX_CUT_FFPROBE", &fake)
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "frame grid probe child failed");
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(2) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("frame grid probe outlived its stage deadline");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn frame_grid_probe_child() {
+    use std::time::Duration;
+
+    let Some(dir) = std::env::var_os("CUT_STAGE_PROBE_DIR") else {
+        return;
+    };
+    let capture = PathBuf::from(dir);
+    let input = capture.join("first.mp4");
+    let sources = vec![
+        source(input, 0, 0),
+        source(capture.join("second.mp4"), 1, 1),
+    ];
+    let control =
+        cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_millis(200), || false);
+    let error = FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg", "ffprobe")
+        .stage_frame_grid_with_control(
+            &capture,
+            &sources,
+            &grid(),
+            &capture.join("out.mp4"),
+            &control,
+        )
+        .expect_err("stage probe must stop");
+    assert_eq!(error.message, "operation timed out", "{error}");
+}
+
 fn rate() -> FrameRate {
     FrameRate::new(30, 1).unwrap()
 }

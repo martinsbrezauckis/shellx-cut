@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -36,11 +37,11 @@ const cleanReport = JSON.stringify({
   warnings: {},
 })
 
-function warningReport(advisoryId, packageName, version) {
+function warningReport(advisoryId, packageName, version, kind = 'unmaintained') {
   return JSON.stringify({
     vulnerabilities: { found: false, count: 0, list: [] },
     warnings: {
-      unmaintained: [{
+      [kind]: [{
         advisory: { id: advisoryId },
         package: { name: packageName, version },
       }],
@@ -104,37 +105,44 @@ const ownedException = {
   advisoryId: 'RUSTSEC-2099-0001',
   package: 'legacy-crate',
   version: '1.2.3',
+  kind: 'unmaintained',
   owner: 'Release owner',
   expires: '2099-09-30',
   reason: 'Upstream replacement is scheduled.',
 }
 
-test('dependency audit covers both Rust locks plus separate runtime and tooling npm graphs', () => {
+test('dependency audit covers all three Rust locks plus separate runtime and tooling npm graphs', () => {
   const plan = dependencyAuditPlan('/repo', 'linux')
   assert.deepEqual(plan.map(({ label, command, args, cwd }) => ({ label, command, args, cwd })), [
     {
       label: 'Rust workspace',
       command: 'cargo',
-      args: ['audit', '--file', '/repo/app/Cargo.lock', '--json'],
+      args: ['audit', '--file', resolve('/repo', 'app', 'Cargo.lock'), '--json'],
       cwd: '/repo',
     },
     {
       label: 'Rust desktop',
       command: 'cargo',
-      args: ['audit', '--file', '/repo/app/desktop/src-tauri/Cargo.lock', '--json'],
+      args: ['audit', '--file', resolve('/repo', 'app', 'desktop', 'src-tauri', 'Cargo.lock'), '--json'],
+      cwd: '/repo',
+    },
+    {
+      label: 'Rust test harness',
+      command: 'cargo',
+      args: ['audit', '--file', resolve('/repo', 'app', 'desktop', 'src-tauri', 'test-support', 'tauri-plugin-wdio-webdriver', 'Cargo.lock'), '--json'],
       cwd: '/repo',
     },
     {
       label: 'UI production dependencies',
       command: 'npm',
       args: ['audit', '--omit=dev', '--json'],
-      cwd: '/repo/ui',
+      cwd: resolve('/repo', 'ui'),
     },
     {
       label: 'UI optional test tooling',
       command: 'npm',
       args: ['audit', '--json'],
-      cwd: '/repo/ui',
+      cwd: resolve('/repo', 'ui'),
     },
   ])
 })
@@ -194,17 +202,33 @@ test('macOS ScreenCaptureKit bridge contract accepts a later compatible patch', 
 
 test('checked-in warning policy is exact, owned, and expiry-bound', () => {
   const policies = Object.values(RUST_WARNING_EXCEPTIONS).flat()
-  assert.equal(policies.length, 9)
-  assert.equal(new Set(policies.map((policy) => (
-    `${policy.advisoryId}:${policy.package}@${policy.version}`
-  ))).size, policies.length)
+  assert.equal(policies.length, 15)
+  for (const scopePolicies of Object.values(RUST_WARNING_EXCEPTIONS)) {
+    assert.equal(new Set(scopePolicies.map((policy) => (
+      `${policy.advisoryId}:${policy.package}@${policy.version}`
+    ))).size, scopePolicies.length)
+  }
   for (const policy of policies) {
     assert.match(policy.advisoryId, /^RUSTSEC-\d{4}-\d{4}$/)
     assert.ok(policy.owner)
     assert.match(policy.expires, /^\d{4}-\d{2}-\d{2}$/)
     assert.ok(policy.reason)
+    assert.ok(['unmaintained', 'unsound'].includes(policy.kind))
   }
   assert.equal(NPM_TOOLING_EXCEPTION, null)
+})
+
+test('harness warning policy holds only desktop entries for the same crate and version', () => {
+  const desktop = new Map(RUST_WARNING_EXCEPTIONS.desktop.map((policy) => [
+    `${policy.advisoryId}:${policy.package}@${policy.version}`,
+    policy,
+  ]))
+  assert.notEqual(RUST_WARNING_EXCEPTIONS.harness.length, 0)
+  for (const policy of RUST_WARNING_EXCEPTIONS.harness) {
+    const match = desktop.get(`${policy.advisoryId}:${policy.package}@${policy.version}`)
+    assert.ok(match, `harness exception without a desktop twin: ${policy.package}@${policy.version}`)
+    assert.deepEqual(policy, match)
+  }
 })
 
 test('desktop warning policy omits withdrawn gtk3-rs unmaintained advisories', () => {
@@ -242,12 +266,13 @@ test('dependency audit runs every check and fails when any process fails', () =>
     runner,
     platform: 'linux',
     logger,
-    rustWarningExceptions: { workspace: [], desktop: [] },
+    rustWarningExceptions: { workspace: [], desktop: [], harness: [] },
     npmToolingException: null,
   }), 1)
-  assert.equal(calls.length, 4)
-  assert.deepEqual(calls.map(({ command }) => command), ['cargo', 'cargo', 'npm', 'npm'])
+  assert.equal(calls.length, 5)
+  assert.deepEqual(calls.map(({ command }) => command), ['cargo', 'cargo', 'cargo', 'npm', 'npm'])
   assert.deepEqual(calls.map(({ options }) => options.stdio), [
+    ['ignore', 'pipe', 'pipe'],
     ['ignore', 'pipe', 'pipe'],
     ['ignore', 'pipe', 'pipe'],
     ['ignore', 'pipe', 'pipe'],
@@ -267,7 +292,7 @@ test('dependency audit admits the current ScreenCaptureKit bridge contract', () 
     runner,
     platform: 'linux',
     logger,
-    rustWarningExceptions: { workspace: [], desktop: [] },
+    rustWarningExceptions: { workspace: [], desktop: [], harness: [] },
     npmToolingException: null,
   }), 0)
 })
@@ -377,6 +402,19 @@ test('warning exception rejects advisory or version drift', () => {
   })
   assert.match(result.failures.join('\n'), /unexpected cargo-audit warning/)
   assert.match(result.failures.join('\n'), /stale warning exception/)
+})
+
+test('maintenance exceptions cannot accept a changed warning kind', () => {
+  for (const kind of ['unsound', 'yanked', 'new-category']) {
+    const result = evaluateRustAudit({
+      label: 'Rust test',
+      stdout: warningReport('RUSTSEC-2099-0001', 'legacy-crate', '1.2.3', kind),
+      exceptions: [ownedException],
+      now: new Date('2099-01-01T00:00:00Z'),
+    })
+    assert.match(result.failures.join('\n'), /warning kind changed/)
+    assert.deepEqual(result.accepted, [])
+  }
 })
 
 test('expired and stale warning exceptions fail closed', () => {

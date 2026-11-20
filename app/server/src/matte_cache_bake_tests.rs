@@ -279,7 +279,9 @@ fn linked_cache_parents_and_late_linked_publication_are_refused() {
 
 #[cfg(unix)]
 #[test]
-fn legacy_prefixed_cache_renders_offline_and_migrates_without_rebake() {
+fn legacy_prefixed_cache_is_baked_again_because_this_engine_did_not_make_it() {
+    // Item 155: a legacy-named alpha in the project cannot be told apart from
+    // one planted under that name, so it is baked again instead of migrated.
     let root = tempfile::tempdir().unwrap();
     let (portable, _) = leaves(root.path());
     let legacy = portable.parent().unwrap().join("sha256:a2.rvm.good.mkv");
@@ -289,20 +291,57 @@ fn legacy_prefixed_cache_renders_offline_and_migrates_without_rebake() {
         serde_json::to_vec(&stats()).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        cut_core::matte_cache::alpha_path(root.path(), "sha256:a2", &matte()).unwrap(),
-        legacy
-    );
-    assert!(
-        ensure(root.path(), "sha256:a2", &matte(), None, |_, _| panic!(
-            "migration must be offline"
-        ))
-        .unwrap()
-        .cached
-    );
-    assert_eq!(std::fs::read(&portable).unwrap(), b"legacy alpha");
-    assert_eq!(
-        cut_core::matte_cache::alpha_path(root.path(), "sha256:a2", &matte()).unwrap(),
-        portable
-    );
+    let baked = ensure(root.path(), "sha256:a2", &matte(), None, |_, staged| {
+        std::fs::write(staged, b"baked here").unwrap();
+        Ok(stats())
+    })
+    .unwrap();
+    assert!(!baked.cached);
+    assert_eq!(std::fs::read(&portable).unwrap(), b"baked here");
+}
+
+/// Item 155: a planted alpha and receipt under the exact cache name are not a
+/// cache hit; the bake runs and replaces them, and only then is it reused.
+#[test]
+fn planted_alpha_is_baked_again_then_reused() {
+    let root = tempfile::tempdir().unwrap();
+    let (portable, _) = leaves(root.path());
+    std::fs::write(&portable, b"planted alpha").unwrap();
+    std::fs::write(
+        portable.with_extension("json"),
+        serde_json::to_vec(&stats()).unwrap(),
+    )
+    .unwrap();
+    let first = ensure(root.path(), "sha256:a2", &matte(), None, |_, staged| {
+        std::fs::write(staged, b"baked here").unwrap();
+        Ok(stats())
+    })
+    .unwrap();
+    assert!(!first.cached, "the planted alpha must not be a cache hit");
+    assert_eq!(std::fs::read(&portable).unwrap(), b"baked here");
+    let second = ensure(root.path(), "sha256:a2", &matte(), None, |_, _| {
+        panic!("this engine's own bake is reused")
+    })
+    .unwrap();
+    assert!(second.cached);
+}
+
+#[test]
+fn an_oversized_cached_receipt_is_a_miss_and_is_rebaked() {
+    let root = tempfile::tempdir().unwrap();
+    let (alpha, receipt) = leaves(root.path());
+    std::fs::write(&alpha, b"old alpha").unwrap();
+    // A valid receipt followed by whitespace, one byte over the 1 MiB limit:
+    // before the limit it was read whole and served as a cache hit.
+    let mut body = serde_json::to_vec(&stats()).unwrap();
+    body.resize(1024 * 1024 + 1, b' ');
+    std::fs::write(&receipt, &body).unwrap();
+    let baked = ensure(root.path(), "sha256:a2", &matte(), None, |_, staged| {
+        std::fs::write(staged, b"fresh alpha")?;
+        Ok(stats())
+    })
+    .unwrap();
+    assert!(!baked.cached);
+    assert_eq!(std::fs::read(&alpha).unwrap(), b"fresh alpha");
+    assert!(std::fs::metadata(&receipt).unwrap().len() < 1024 * 1024);
 }

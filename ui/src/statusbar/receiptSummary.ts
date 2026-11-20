@@ -1,3 +1,4 @@
+import { isNotApplicable } from '../lib/checkApplicability'
 import type { CheckResult, RenderReceipt } from '../lib/client'
 
 export type ReceiptSummaryTone = 'pass' | 'fail' | 'unmeasured' | 'waived'
@@ -15,6 +16,21 @@ function isUnmeasured(check: CheckResult): boolean {
     && (Reflect.get(details, 'status') === 'unmeasured' || Reflect.get(details, 'measured') === false)
 }
 
+const NOT_MEASURED_PREFIX = 'not measured, because '
+
+/** The engine's plain reason the output checks were not measured, without its
+ * "not measured, because" lead-in (for example "captions and transcription are
+ * not installed"). Null when no unmeasured check carries one. */
+export function unmeasuredReason(checks: readonly CheckResult[]): string | null {
+  for (const check of checks) {
+    if (!isUnmeasured(check)) continue
+    const reason = Reflect.get(check.details as object, 'reason')
+    if (typeof reason !== 'string' || !reason.trim()) continue
+    return reason.startsWith(NOT_MEASURED_PREFIX) ? reason.slice(NOT_MEASURED_PREFIX.length) : reason
+  }
+  return null
+}
+
 function isWaived(check: CheckResult): boolean {
   const details = check.details
   return details !== null && typeof details === 'object'
@@ -26,7 +42,10 @@ function isWaived(check: CheckResult): boolean {
  * check measured a pass. */
 export function receiptSummary(receipt: RenderReceipt): ReceiptSummary {
   const duration = (receipt.duration_ms / 1000).toFixed(1)
-  const checks = receipt.checks.filter((check) => check.name !== 'footage_profile')
+  // Checks that do not apply to this export are neither passes nor failures.
+  const all = receipt.checks.filter((check) => check.name !== 'footage_profile')
+  const checks = all.filter((check) => !isNotApplicable(check))
+  const notApplicable = all.length - checks.length
   const unmeasured = checks.filter(isUnmeasured).length
   const failing = checks.filter((check) => !check.pass && !isUnmeasured(check)).length
   const waived = checks.filter(isWaived).length
@@ -41,7 +60,15 @@ export function receiptSummary(receipt: RenderReceipt): ReceiptSummary {
       : `${failing} failed${unmeasured > 0 ? ` · ${unmeasured} unmeasured` : ''}`
     return { text: `${duration}s · ${detail}`, tone: 'fail', waived, toFix }
   }
-  if (unmeasured > 0) return { text: `${duration}s · ${unmeasured} unmeasured`, tone: 'unmeasured', waived, toFix }
+  if (unmeasured > 0) {
+    const reason = unmeasuredReason(checks)
+    return {
+      text: `${duration}s · ${unmeasured} unmeasured${reason ? ` (${reason})` : ''}`,
+      tone: 'unmeasured',
+      waived,
+      toFix,
+    }
+  }
   if (waived > 0) {
     const measured = checks.length - waived
     const detail = measured === 0
@@ -49,6 +76,11 @@ export function receiptSummary(receipt: RenderReceipt): ReceiptSummary {
       : `${measured}/${checks.length} PASS · ${waived} waived`
     return { text: `${duration}s · ${detail}`, tone: 'waived', waived, toFix }
   }
-  if (receipt.pass) return { text: `${duration}s · all checks pass`, tone: 'pass', waived, toFix }
+  if (receipt.pass) {
+    const text = notApplicable > 0
+      ? `${duration}s · ${checks.length} checks pass · ${notApplicable} not applicable`
+      : `${duration}s · all checks pass`
+    return { text, tone: 'pass', waived, toFix }
+  }
   return { text: `${duration}s · needs review`, tone: 'fail', waived, toFix }
 }

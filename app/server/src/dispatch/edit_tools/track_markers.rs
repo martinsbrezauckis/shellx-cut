@@ -96,12 +96,13 @@ pub(in crate::dispatch) async fn edit_track(
 
     let (src_path, _hash) = asset_info(state, &asset_id).await?;
     let rt = crate::track::runtime()?.ok_or_else(|| {
-        CutError::new(
+        crate::requirements::refusal(
             error_codes::NOT_FOUND,
-            "motion tracking needs the perception sidecar (python + cv2), which is not installed",
-            "run system.doctor; install the perception sidecar so its venv carries cv2",
+            "captions_runtime",
+            "Motion tracking needs Captions and transcription, which are not installed",
+            "tracking runs on the captions runtime's computer-vision tools",
         )
-        .with_suggested_action("system.doctor → install the perception sidecar")
+        .with_suggested_action(cut_perception::captions_setup_action())
     })?;
 
     let res = run_blocking("edit.track", move || {

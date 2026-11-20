@@ -3118,6 +3118,10 @@ pub struct Project {
     /// words, while source transcript views can still render them quietly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript_ignores: Vec<TranscriptIgnore>,
+    /// Probes this engine established in this session (probe_facts.rs).
+    /// Runtime-only: never saved, never part of equality.
+    #[serde(skip)]
+    pub probe_facts: crate::probe_facts::ProbeFacts,
 }
 
 impl Project {
@@ -3170,6 +3174,7 @@ impl Project {
             smart_bins: vec![],
             caption_style_presets: vec![],
             transcript_ignores: vec![],
+            probe_facts: Default::default(),
         }
     }
 

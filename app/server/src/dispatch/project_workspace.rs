@@ -11,7 +11,7 @@ mod project_health;
 mod project_identity;
 mod project_paths;
 mod project_sync;
-use project_health::project_health as project_health_read;
+use project_health::{format_reduced_warnings, project_health as project_health_read};
 pub(crate) use project_identity::project_identity as path_free_project_identity;
 use project_paths::default_projects_dir;
 
@@ -73,11 +73,27 @@ fn install_project_starter(
         receipts.join("a1.perception.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
+    cut_media::cache_trust::remember(&receipts.join("a1.perception.json")); // item 155
     std::fs::write(
         receipts.join("a1.words.json"),
         serde_json::to_vec_pretty(&transcript)?,
     )?;
     Ok(path)
+}
+
+/// Open `store` as the project of a fresh engine (`--project` at start), with
+/// the same open checks as a switch: proxies held until checked, present title
+/// movies checked before any media read.
+pub(crate) async fn open_at_start(state: &AppState, mut store: ProjectStore) {
+    let held = super::media::hold_proxies(&mut store);
+    let dir = store.dir.clone();
+    {
+        let mut project = state.project.write().await;
+        super::edit_tools::begin_open_title_check(&dir);
+        *project = Some(store);
+    }
+    super::media::check_held_proxies(state, held);
+    super::edit_tools::remake_overlays_at_open(state, dir);
 }
 
 /// Replace the open project while the caller holds `project_transition`.
@@ -88,8 +104,10 @@ fn install_project_starter(
 /// from being started during the transition. A timed-out drain restores the
 /// previous store; a later attach failure reattaches its job persistence before
 /// restoring it.
-async fn activate_project_locked(state: &AppState, next: ProjectStore) -> Result<(), CutError> {
+async fn activate_project_locked(state: &AppState, mut next: ProjectStore) -> Result<(), CutError> {
     let next_name = next.project.name.clone();
+    // Proxies are used only once checked as this engine's own (in the background).
+    let held = super::media::hold_proxies(&mut next);
     let previous = {
         let mut project = state.project.write().await;
         if let Some(store) = project.as_ref() {
@@ -133,12 +151,73 @@ async fn activate_project_locked(state: &AppState, next: ProjectStore) -> Result
     // A successful detach invalidates every opaque, in-memory cache plan from
     // the old project. Keep it if draining failed and the old project is restored.
     *state.cache_purge_plan.lock().await = None;
-    *state.project.write().await = Some(next);
+    {
+        // Media reads wait for the open's title check from the first moment
+        // the project is visible (marked under the lock that installs it).
+        let mut project = state.project.write().await;
+        super::edit_tools::begin_open_title_check(&next_dir);
+        *project = Some(next);
+    }
     state.events.publish(Event::ProjectChanged {
         open: true,
         name: Some(next_name),
     });
+    super::media::check_held_proxies(state, held);
+    super::edit_tools::remake_overlays_at_open(state, next_dir);
     Ok(())
+}
+
+/// Ask before a project change cancels work. Running renders and exports are
+/// refused unless the caller passed `cancel_running_jobs:true`; the refusal
+/// lists them so the person (UI) or the agent can decide. Other running jobs
+/// (imports, proxies, analysis) are cancelled as before and reported in the
+/// result as `cancelled_jobs`, so nothing is lost silently. Called with the
+/// transition lock held, so no job can start between this check and the switch.
+fn jobs_a_project_change_would_cancel(
+    state: &AppState,
+    confirmed: bool,
+) -> Result<Vec<crate::jobs::ActiveJobInfo>, CutError> {
+    let active = state.jobs.active_jobs();
+    let delivery: Vec<&crate::jobs::ActiveJobInfo> =
+        active.iter().filter(|job| job.is_delivery()).collect();
+    if !delivery.is_empty() && !confirmed {
+        let listed = delivery
+            .iter()
+            .map(|job| {
+                format!(
+                    "{} ({}, {:.0}% done{})",
+                    job.job_id,
+                    job.kind,
+                    job.progress * 100.0,
+                    job.message
+                        .as_deref()
+                        .map(|m| format!(", {m}"))
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(CutError::new(
+            "jobs_running",
+            format!(
+                "changing the project would cancel {} running job(s) that were asked for (renders, exports, reviews, analysis, downloads) and nothing has been changed",
+                delivery.len()
+            ),
+            format!("running: {listed}"),
+        )
+        .with_suggested_action(
+            "wait for them to finish, or cancel them with jobs.cancel, or repeat the call with cancel_running_jobs:true to cancel them and change the project now",
+        ));
+    }
+    Ok(active)
+}
+
+/// Add `cancelled_jobs` to a project-change result when jobs were cancelled.
+fn with_cancelled_jobs(mut payload: Value, cancelled: &[crate::jobs::ActiveJobInfo]) -> Value {
+    if !cancelled.is_empty() {
+        payload["cancelled_jobs"] = json!(cancelled);
+    }
+    payload
 }
 
 fn rollback_created_project(path: &Path) {
@@ -179,6 +258,8 @@ pub(super) async fn project_create(
         settings: Option<cut_core::ProjectSettings>,
         dir: Option<String>,
         starter: Option<ProjectStarter>,
+        #[serde(default)]
+        cancel_running_jobs: bool,
     }
     let a: Args = parse_args(args)?;
     // ProjectStore::create appends "<name>.cutproj" to its parent arg; when
@@ -205,6 +286,7 @@ pub(super) async fn project_create(
     };
     let _transition = state.project_transition.lock().await;
     crate::screen_record::refuse_project_transition_if_active(state, None).await?;
+    let cancelled = jobs_a_project_change_would_cancel(state, a.cancel_running_jobs)?;
     let store = ProjectStore::create_with_actor(&parent, &a.name, a.settings, actor)?;
     let starter_asset_path = match a.starter {
         Some(starter) => match install_project_starter(&store, starter) {
@@ -241,7 +323,10 @@ pub(super) async fn project_create(
         rollback_created_project(&project_dir);
         return Err(error);
     }
-    Ok(VerbResult::ok_with_ops(payload, vec![op_id]))
+    Ok(VerbResult::ok_with_ops(
+        with_cancelled_jobs(payload, &cancelled),
+        vec![op_id],
+    ))
 }
 
 /// project.open{path} → loads (or rebuilds) the project.
@@ -249,14 +334,16 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     #[derive(serde::Deserialize)]
     struct Args {
         path: String,
+        #[serde(default)]
+        cancel_running_jobs: bool,
     }
     let a: Args = parse_args(args)?;
     let _transition = state.project_transition.lock().await;
     crate::screen_record::refuse_project_transition_if_active(state, None).await?;
+    let cancelled = jobs_a_project_change_would_cancel(state, a.cancel_running_jobs)?;
     let store = ProjectStore::open(Path::new(&a.path))?;
     let ops = store.log.read_all()?;
     super::edit_tools::validate_split_metadata_projection(&ops)?;
-    let recovery_scan = crate::screen_record::recovery::scan_recovery_for_project(&store.dir)?;
     // Touch (or register, if externally-created) this project in the global index,
     // refreshing its recency + timeline summary for the recent-projects list.
     let clips: u64 = store
@@ -272,18 +359,21 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
         Some(clips),
     )?;
     let project_revision = store.log.current_revision()?;
-    let payload = json!({
+    // Item 141: a format larger than Cut makes was reduced while opening.
+    let format_warnings = format_reduced_warnings(store.open_health());
+    let mut payload = json!({
         "path": store.dir,
         "project": store.project,
         "project_revision": project_revision,
-        "recovery_scan": {
-            "recovered": recovery_scan.recovered,
-            "deferred": recovery_scan.deferred,
-            "failed_closed": recovery_scan.failed_closed,
-        },
     });
+    let project_dir = store.dir.clone();
     activate_project_locked(state, store).await?;
-    Ok(VerbResult::ok(payload))
+    // Interrupted recordings are prepared in a background job of the newly
+    // active project; opening never waits for that work.
+    let recovery_job = crate::screen_record::recovery::background::start(state, &project_dir)?;
+    payload["recovery_scan"] =
+        crate::screen_record::recovery::background::started_report(recovery_job);
+    Ok(VerbResult::ok(with_cancelled_jobs(payload, &cancelled)).with_warnings(format_warnings))
 }
 
 /// project.list{sort?, q?} → the recent-projects index, reconciled against the
@@ -684,6 +774,11 @@ pub(super) fn full_project_state(store: &ProjectStore, sync: Value) -> Result<Va
     let project_identity = path_free_project_identity(store)?;
     if let Some(object) = v.as_object_mut() {
         object.insert("project_identity".into(), project_identity);
+        // Clips shorter than one frame (each with track, at_ms, duration_ms):
+        // what an agent reads to find them; absent when there is none.
+        if let Some(short) = cut_core::subframe::report(&store.project) {
+            object.insert("subframe_clips".into(), short);
+        }
         // B5's grouped operation is durable project evidence, not a
         // renderer-local success toast. Expose it only while it names the
         // current revision, so Projects can carry the exact evidence through
@@ -889,9 +984,17 @@ pub(super) async fn project_health(state: &AppState, args: Value) -> Result<Verb
 }
 
 /// project.close{} — save + drop the open project.
-pub(super) async fn project_close(state: &AppState) -> Result<VerbResult, CutError> {
+pub(super) async fn project_close(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct Args {
+        #[serde(default)]
+        cancel_running_jobs: bool,
+    }
+    let a: Args = parse_args(args)?;
     let _transition = state.project_transition.lock().await;
     crate::screen_record::refuse_project_transition_if_active(state, None).await?;
+    let cancelled = jobs_a_project_change_would_cancel(state, a.cancel_running_jobs)?;
     let previous = {
         let mut project = state.project.write().await;
         if let Some(store) = project.as_ref() {
@@ -905,13 +1008,17 @@ pub(super) async fn project_close(state: &AppState) -> Result<VerbResult, CutErr
         return Err(error);
     }
     *state.cache_purge_plan.lock().await = None;
+    crate::output_paths::monitor_scratch::clear_all(); // item 98
     if closed_name.is_some() {
         state.events.publish(Event::ProjectChanged {
             open: false,
             name: closed_name,
         });
     }
-    Ok(VerbResult::ok(json!({"closed": true})))
+    Ok(VerbResult::ok(with_cancelled_jobs(
+        json!({"closed": true}),
+        &cancelled,
+    )))
 }
 
 /// project.checkpoint{name, rationale?} — checkpoint IS an op (the append-only operation-log contract).
@@ -1234,7 +1341,8 @@ fn find_draft_adapter() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("CUTD_DRAFT_ADAPTER") {
         if !p.is_empty() {
             let pb = PathBuf::from(&p);
-            return pb.is_file().then_some(pb);
+            // Absolute only: a relative path would be read against the current folder.
+            return (pb.is_absolute() && pb.is_file()).then_some(pb);
         }
     }
     None
@@ -1794,160 +1902,4 @@ pub(super) async fn project_diff(state: &AppState, args: Value) -> Result<VerbRe
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn oversized_overlay_store() -> (tempfile::TempDir, ProjectStore) {
-        let root = tempfile::tempdir().expect("temporary project root");
-        let mut store = ProjectStore::create(root.path(), "oversized-overlay", None)
-            .expect("create project store");
-        let (asset_id, _) = store
-            .record_import(
-                Some("a1".into()),
-                cut_core::Asset {
-                    path: "/testdata/title.mov".into(),
-                    hash: "sha256:title".into(),
-                    probe: Some(json!({"duration_ms": 100})),
-                    transcript: None,
-                    perception: None,
-                    proxy: None,
-                    filmstrip: None,
-                },
-                Actor::system(),
-                None,
-            )
-            .expect("record title asset");
-        store
-            .apply_lowered(
-                "title.add",
-                json!({
-                    "text": "x".repeat(16 * 1024 + 1),
-                    "range_ms": [0, 100],
-                }),
-                Actor::system(),
-                None,
-                vec![
-                    InverseOp {
-                        verb: "edit.add_track".into(),
-                        args: json!({"kind": "video", "id": "title1"}),
-                    },
-                    InverseOp {
-                        verb: "edit.insert".into(),
-                        args: json!({
-                            "asset": asset_id,
-                            "track": "title1",
-                            "at_ms": 0,
-                            "src_range_ms": [0, 100],
-                            "ripple": false,
-                        }),
-                    },
-                ],
-                vec![],
-            )
-            .expect("record oversized title metadata");
-        (root, store)
-    }
-
-    fn effect(detail: Value) -> OpEffect {
-        OpEffect {
-            track: Some("title1".into()),
-            detail: detail.as_object().expect("effect object").clone(),
-        }
-    }
-
-    fn op(verb: &str, args: Value, effects: Vec<OpEffect>) -> OpRecord {
-        OpRecord {
-            op_id: format!("op_{verb}"),
-            ts: OpRecord::now_ts(),
-            actor: Actor::system(),
-            verb: verb.into(),
-            args,
-            rationale: None,
-            effects,
-            inverse: None,
-            status: cut_core::OpStatus::Applied,
-        }
-    }
-
-    #[test]
-    fn split_projects_title_and_shape_metadata_to_independent_right_halves() {
-        let ops = vec![
-            op(
-                "title.add",
-                json!({"text":"ORIGINAL TITLE","range_ms":[0,1000]}),
-                vec![effect(json!({"added_clip":"title-left"}))],
-            ),
-            op(
-                "edit.add_shape",
-                json!({"shape":"rect","text":"ORIGINAL SHAPE","fill":"#FF0000","range_ms":[0,1000]}),
-                vec![effect(json!({"added_clip":"shape-left"}))],
-            ),
-            op(
-                "edit.split",
-                json!({"track":"title1","at_ms":500}),
-                vec![effect(json!({"left":"title-left","right":"title-right"}))],
-            ),
-            op(
-                "edit.split",
-                json!({"track":"title2","at_ms":500}),
-                vec![effect(json!({"left":"shape-left","right":"shape-right"}))],
-            ),
-            op(
-                "title.update",
-                json!({"clip":"title-right","text":"RIGHT TITLE"}),
-                vec![],
-            ),
-            op(
-                "shape.update",
-                json!({"clip":"shape-right","label":"RIGHT SHAPE","fill":"#00FF00"}),
-                vec![],
-            ),
-        ];
-
-        let titles = title_clip_texts(&ops);
-        assert_eq!(
-            titles.get("title-left").map(String::as_str),
-            Some("ORIGINAL TITLE")
-        );
-        assert_eq!(
-            titles.get("title-right").map(String::as_str),
-            Some("RIGHT TITLE")
-        );
-
-        let shapes = shape_clip_props(&ops);
-        assert_eq!(shapes["shape-left"]["text"], "ORIGINAL SHAPE");
-        assert_eq!(shapes["shape-left"]["fill"], "#FF0000");
-        assert_eq!(shapes["shape-right"]["text"], "RIGHT SHAPE");
-        assert_eq!(shapes["shape-right"]["fill"], "#00FF00");
-    }
-
-    #[tokio::test]
-    async fn project_open_and_state_reject_oversized_overlay_metadata() {
-        let (_root, store) = oversized_overlay_store();
-        let path = store.dir.clone();
-
-        let state = AppState::new();
-        let open_error = project_open(&state, json!({"path": path}))
-            .await
-            .expect_err("project.open must reject oversized imported overlay metadata");
-        assert_eq!(open_error.code, error_codes::INVALID_ARGS);
-        assert!(
-            open_error.message.contains("metadata exceeds"),
-            "{open_error:?}"
-        );
-        assert!(
-            state.project.read().await.is_none(),
-            "failed open must not activate"
-        );
-
-        *state.project.write().await = Some(store);
-        let state_error = project_state(&state, json!({}))
-            .await
-            .expect_err("project.state must reject oversized overlay metadata");
-        assert_eq!(state_error.code, error_codes::INVALID_ARGS);
-        assert!(
-            state_error.message.contains("metadata exceeds"),
-            "{state_error:?}"
-        );
-    }
-}
+mod tests;

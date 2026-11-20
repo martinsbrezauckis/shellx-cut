@@ -20,6 +20,7 @@
 //! caller: render::format_codec_args (HW-aware selection) + the server doctor.
 
 use crate::ffmpeg::{ffmpeg_bin, run_owned_command, OwnedProcessControl};
+use crate::toolpath::ToolCache;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -70,57 +71,383 @@ impl HwCaps {
     }
 }
 
-static CAPS: OnceLock<HwCaps> = OnceLock::new();
+static PROBE: ToolCache<&'static (HwCaps, HwDiagnosis)> = ToolCache::new();
 const HW_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The CUDA filter probe's budget. The first run of FFmpeg's CUDA filters for a
+/// user (and after a driver update) waits while the driver compiles their
+/// kernels for this GPU and stores them in its cache: measured 8.0 s on an RTX
+/// PRO 4500 (Blackwell) against 0.2 s once cached. Within 5 s that first probe
+/// timed out, the "no CUDA chain" answer stayed for the whole session and an
+/// opted-in render went to software. A machine without CUDA fails at once.
+const CUDA_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Size probes synthesise real frames, and 8K costs more than 256x256, so the
 /// existence probe's budget is too tight to reuse. A timeout here reads as
 /// "cannot do this size" and falls back to software, which is the safe answer.
 const HW_SIZE_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Detected HW encoders (probed once, then cached for the process lifetime).
+/// Detected HW encoders (probed once per tools generation: installing or
+/// choosing another ffmpeg re-probes after the next doctor re-scan; each
+/// generation's answer is leaked so callers keep a `'static` borrow).
 /// `SHELLX_CUT_NO_HWENC=1` forces the software tier (CI / reproducibility / a
 /// machine whose HW encoder is flaky).
 pub fn hw_caps() -> &'static HwCaps {
-    CAPS.get_or_init(|| {
-        if std::env::var_os("SHELLX_CUT_NO_HWENC").is_some() {
-            return HwCaps::default();
-        }
-        probe()
+    &cached_probe().0
+}
+
+/// Why the resolved ffmpeg has no working hardware encoder (empty when it has
+/// one). Comes from the same probe as [`hw_caps`], so asking costs no extra
+/// encode.
+pub fn hw_diagnosis() -> &'static HwDiagnosis {
+    &cached_probe().1
+}
+
+fn cached_probe() -> &'static (HwCaps, HwDiagnosis) {
+    PROBE.get_or_init(|| {
+        let probed = if std::env::var_os("SHELLX_CUT_NO_HWENC").is_some() {
+            (
+                HwCaps::default(),
+                HwDiagnosis {
+                    disabled_by_setting: true,
+                    failures: Vec::new(),
+                },
+            )
+        } else {
+            probe_at(&ffmpeg_bin())
+        };
+        Box::leak(Box::new(probed))
     })
 }
 
-fn probe() -> HwCaps {
+/// Probe every candidate encoder of one ffmpeg binary: the working ones, plus
+/// the reason each failing one failed (best-first per codec; the first working
+/// candidate of a codec ends that codec's scan).
+fn probe_at(ffmpeg: &OsStr) -> (HwCaps, HwDiagnosis) {
     let mut caps = HwCaps::default();
+    let mut diagnosis = HwDiagnosis::default();
     for (codec, names) in CANDIDATES {
         for name in *names {
-            if encoder_works(name) {
-                let slot = match *codec {
-                    "h264" => &mut caps.h264,
-                    "hevc" => &mut caps.hevc,
-                    "av1" => &mut caps.av1,
-                    _ => continue,
-                };
-                *slot = Some((*name).to_string());
-                break; // best-first: first working candidate wins
+            match probe_encoder_at_size(ffmpeg, name, 256, 256, HW_SIZE_PROBE_TIMEOUT) {
+                Ok(()) => {
+                    let slot = match *codec {
+                        "h264" => &mut caps.h264,
+                        "hevc" => &mut caps.hevc,
+                        "av1" => &mut caps.av1,
+                        _ => continue,
+                    };
+                    *slot = Some((*name).to_string());
+                    break; // best-first: first working candidate wins
+                }
+                Err(Some(failure)) => diagnosis.failures.push(failure),
+                // ffmpeg itself did not run: nothing to learn about the encoder.
+                Err(None) => {}
             }
         }
     }
-    caps
+    (caps, diagnosis)
 }
 
-/// Does `encoder` actually run on the RESOLVED ffmpeg? A 0.1 s test encode to a
-/// null muxer — the only reliable signal (listing ≠ a working GPU/driver). Quiet;
-/// returns true on a clean exit.
-fn encoder_works(encoder: &str) -> bool {
-    encoder_works_at(&ffmpeg_bin(), encoder)
+// === Why hardware encoding is not available ===================================
+//
+// A failed test encode is not one condition. The same "no hardware encoder"
+// outcome has four different causes and each needs different advice, so the
+// probe keeps ffmpeg's own error text and sorts it.
+
+/// The cause of one failed test encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncoderFailureKind {
+    /// This ffmpeg build does not contain the encoder at all.
+    NotInBuild,
+    /// The encoder is in the build but the installed graphics driver is older
+    /// than the encoder needs.
+    DriverTooOld,
+    /// The encoder is in the build but this computer has no graphics device it
+    /// can use (no GPU, no driver loaded, or an unsupported GPU).
+    NoDevice,
+    /// The encoder is in the build and failed to open for another reason.
+    CannotOpen,
 }
 
-/// Like [`encoder_works`] but against an EXPLICIT ffmpeg binary — used by the
-/// doctor's multi-candidate scan to probe each discovered ffmpeg, not just the
-/// resolved one.
-fn encoder_works_at(ffmpeg: &OsStr, encoder: &str) -> bool {
-    encoder_works_at_size(ffmpeg, encoder, 256, 256)
+/// One failed test encode: the encoder, the sorted cause, and ffmpeg's own error
+/// lines (kept for the technical detail, never rewritten).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EncoderFailure {
+    pub encoder: String,
+    pub kind: EncoderFailureKind,
+    /// ffmpeg's own error lines, trimmed to a few hundred characters.
+    pub detail: Option<String>,
+}
+
+/// Sort ffmpeg's stderr from a failed test encode into a cause.
+///
+/// Matching is on lower-cased phrases ffmpeg and the vendor libraries print.
+/// Driver-too-old is tested before no-device because an old NVIDIA driver also
+/// prints "minimum required driver" text that a missing driver does not.
+pub fn classify_encoder_failure(stderr: &str) -> EncoderFailureKind {
+    let low = stderr.to_ascii_lowercase();
+    let has = |needle: &str| low.contains(needle);
+    if has("unknown encoder") || has("encoder not found") {
+        EncoderFailureKind::NotInBuild
+    } else if has("required nvenc api version")
+        || has("driver is too old")
+        || has("driver version is too old")
+        || has("driver is older")
+        || has("update your driver")
+        || has("update the driver")
+    {
+        EncoderFailureKind::DriverTooOld
+    } else if has("cannot load")
+        || has("could not dynamically load")
+        || has("no capable devices")
+        || has("no nvenc capable")
+        || has("no encode device")
+        || has("unsupported device")
+        || has("error initializing an internal mfx session")
+        || has("amfrt")
+        || has("no device available")
+        || has("no such device")
+    {
+        EncoderFailureKind::NoDevice
+    } else {
+        EncoderFailureKind::CannotOpen
+    }
+}
+
+/// The stderr lines that explain a failed test encode, joined and bounded. These
+/// are ffmpeg's own words, so a person or an agent can search them.
+///
+/// ffmpeg ends a failed encode with generic lines ("Error while opening encoder",
+/// "Conversion failed!"); the useful ones come earlier, prefixed with the encoder's
+/// own log context (`[h264_nvenc @ ...]`). Prefer those, and fall back to the last
+/// few lines when the encoder printed nothing under its own name.
+fn failure_detail(encoder: &str, stderr: &str) -> Option<String> {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let context = format!("[{encoder} @");
+    let own: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with(&context))
+        .take(3)
+        .collect();
+    let chosen: &[&str] = if own.is_empty() {
+        &lines[lines.len().saturating_sub(3)..]
+    } else {
+        &own
+    };
+    let mut joined = chosen.join(" / ");
+    if joined.len() > 400 {
+        let mut cut = 400;
+        while !joined.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        joined.truncate(cut);
+    }
+    Some(joined)
+}
+
+/// What to tell the person, in the order of how much it helps: the cause that
+/// the person can fix beats the one they cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HwShortfall {
+    /// Hardware encoding is switched off for this installation.
+    SwitchedOff,
+    /// The encoder exists but the graphics driver is too old for it.
+    DriverTooOld,
+    /// The encoder exists and failed to open on this computer for another reason.
+    CannotOpen,
+    /// No usable graphics device.
+    NoGpu,
+    /// This ffmpeg contains no hardware encoder.
+    NoEncoderInBuild,
+    /// Nothing recorded (the probe found no failure to explain).
+    Unknown,
+}
+
+impl HwShortfall {
+    /// The cause in one plain sentence (no encoder acronyms).
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::SwitchedOff => "Hardware encoding is switched off for this installation.",
+            Self::DriverTooOld => {
+                "The graphics driver is too old for the hardware encoder in this ffmpeg."
+            }
+            Self::CannotOpen => {
+                "The hardware encoder in this ffmpeg could not be started on this computer."
+            }
+            Self::NoGpu => "No graphics card that can encode video was found.",
+            Self::NoEncoderInBuild => "This ffmpeg has no hardware video encoder.",
+            Self::Unknown => "The hardware encoder could not be used.",
+        }
+    }
+
+    /// What the person can do about it.
+    pub fn action(self) -> &'static str {
+        match self {
+            Self::SwitchedOff => "Software encoding always works, only slower.",
+            Self::DriverTooOld => "Update the graphics driver, then restart ShellX Cut.",
+            Self::CannotOpen => {
+                "Update the graphics driver or pick another ffmpeg with 'Change ffmpeg'; \
+                 the technical detail has ffmpeg's own message."
+            }
+            Self::NoGpu => {
+                "If this computer has an NVIDIA, Intel or AMD graphics card, install or \
+                 update its driver."
+            }
+            Self::NoEncoderInBuild => {
+                "Install an ffmpeg build that includes GPU encoders, then pick it with \
+                 'Change ffmpeg'."
+            }
+            Self::Unknown => "Software encoding always works, only slower.",
+        }
+    }
+}
+
+/// Why no hardware encoder worked on one ffmpeg binary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct HwDiagnosis {
+    /// True when `SHELLX_CUT_NO_HWENC` stopped the probe from running.
+    pub disabled_by_setting: bool,
+    /// One entry per encoder that was tried and failed.
+    pub failures: Vec<EncoderFailure>,
+}
+
+impl HwDiagnosis {
+    /// The shortfall that explains the missing hardware encoder. `codec` limits
+    /// the view to one codec's encoders ("h264", "hevc", "av1"); None looks at
+    /// every encoder that was tried.
+    pub fn shortfall(&self, codec: Option<&str>) -> HwShortfall {
+        if self.disabled_by_setting {
+            return HwShortfall::SwitchedOff;
+        }
+        let of_codec = |f: &&EncoderFailure| match codec {
+            Some(c) => f.encoder.starts_with(c),
+            None => true,
+        };
+        let kinds: Vec<EncoderFailureKind> = self
+            .failures
+            .iter()
+            .filter(of_codec)
+            .map(|f| f.kind)
+            .collect();
+        let any = |k: EncoderFailureKind| kinds.contains(&k);
+        if any(EncoderFailureKind::DriverTooOld) {
+            HwShortfall::DriverTooOld
+        } else if any(EncoderFailureKind::CannotOpen) {
+            HwShortfall::CannotOpen
+        } else if any(EncoderFailureKind::NoDevice) {
+            HwShortfall::NoGpu
+        } else if any(EncoderFailureKind::NotInBuild) {
+            HwShortfall::NoEncoderInBuild
+        } else {
+            HwShortfall::Unknown
+        }
+    }
+
+    /// ffmpeg's own error lines for the failure that decided [`Self::shortfall`].
+    pub fn technical_detail(&self, codec: Option<&str>) -> Option<String> {
+        let wanted = match self.shortfall(codec) {
+            HwShortfall::DriverTooOld => EncoderFailureKind::DriverTooOld,
+            HwShortfall::CannotOpen => EncoderFailureKind::CannotOpen,
+            HwShortfall::NoGpu => EncoderFailureKind::NoDevice,
+            _ => return None,
+        };
+        self.failures
+            .iter()
+            .filter(|f| codec.is_none_or(|c| f.encoder.starts_with(c)))
+            .find(|f| f.kind == wanted)
+            .and_then(|f| f.detail.as_ref().map(|d| format!("{}: {d}", f.encoder)))
+    }
+}
+
+/// Why a render that asked for hardware encoding used software, ready to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoftwareFallback {
+    /// One or two plain sentences: what happened and what the person can do.
+    pub message: String,
+    /// ffmpeg's own error line when there is one.
+    pub detail: Option<String>,
+}
+
+/// Explain a software render that was asked to use hardware.
+///
+/// `codec` is the base codec ("h264"|"hevc"|"av1") or "" for a format that has no
+/// hardware tier; `(w, h)` is the real output size (0 = unknown). A working
+/// hardware encoder that declined the frame size is the one case where the
+/// encoder exists and the probe found nothing wrong.
+pub fn software_fallback(codec: &str, w: u32, h: u32) -> SoftwareFallback {
+    if codec.is_empty() {
+        return SoftwareFallback {
+            message: "This format has no hardware encoder, so this export used software \
+                      encoding."
+                .into(),
+            detail: None,
+        };
+    }
+    if let Some(enc) = hw_caps().for_codec(codec) {
+        if w == 0 || h == 0 {
+            return SoftwareFallback {
+                message: format!(
+                    "The hardware encoder ({enc}) cannot encode a picture this large, so this \
+                     export used software encoding."
+                ),
+                detail: None,
+            };
+        }
+        // Item 96: name the encoder's size limit and the hardware codec that can
+        // do this size (HEVC reaches 8K where H.264 hardware stops at 4096 px).
+        let limit = crate::hwencode_limits::limit_with(enc, encoder_supports_size);
+        let alternative = crate::hwencode_limits::hardware_alternative(codec, w, h);
+        return SoftwareFallback {
+            message: size_fallback_message(
+                enc,
+                &crate::hwencode_limits::limit_phrase(&limit, w, h),
+                w,
+                h,
+                alternative.as_ref().map(|(label, e)| (*label, e.as_str())),
+            ),
+            detail: None,
+        };
+    }
+    let diagnosis = hw_diagnosis();
+    let shortfall = diagnosis.shortfall(Some(codec));
+    SoftwareFallback {
+        message: format!(
+            "No usable hardware encoder was found, so this export used software encoding. {} {}",
+            shortfall.reason(),
+            shortfall.action()
+        ),
+        detail: diagnosis.technical_detail(Some(codec)),
+    }
+}
+
+/// The plan and receipt sentence for a frame larger than the hardware encoder
+/// takes: the limit, the size, and the faster choice when one exists.
+pub(crate) fn size_fallback_message(
+    encoder: &str,
+    limit: &str,
+    w: u32,
+    h: u32,
+    alternative: Option<(&str, &str)>,
+) -> String {
+    let mut message = format!(
+        "The hardware encoder ({encoder}) {limit}; this export is {w}x{h}, so it used \
+         software encoding, which is much slower."
+    );
+    if let Some((label, alt)) = alternative {
+        message.push_str(&format!(
+            " Choose {label} to encode this size in hardware ({alt})."
+        ));
+    }
+    message
 }
 
 /// Does `encoder` run AT THIS FRAME SIZE on the resolved ffmpeg?
@@ -137,7 +464,25 @@ fn encoder_works_at(ffmpeg: &OsStr, encoder: &str) -> bool {
 /// table that would be wrong somewhere: the machine answers for itself, and a
 /// future driver that lifts a ceiling is picked up with no code change.
 fn encoder_works_at_size(ffmpeg: &OsStr, encoder: &str, w: u32, h: u32) -> bool {
-    command_status_with_timeout(
+    probe_encoder_at_size(ffmpeg, encoder, w, h, HW_SIZE_PROBE_TIMEOUT).is_ok()
+}
+
+/// Run one test encode and say why it failed. `Err(None)` means ffmpeg itself
+/// did not run (missing binary, timeout), which says nothing about the encoder.
+fn probe_encoder_at_size(
+    ffmpeg: &OsStr,
+    encoder: &str,
+    w: u32,
+    h: u32,
+    timeout: Duration,
+) -> Result<(), Option<EncoderFailure>> {
+    let size_input = format!("testsrc=duration=0.1:size={w}x{h}:rate=30");
+    // The test picture must have the pixel format a render sends. testsrc is
+    // RGB, and without `-pix_fmt` ffmpeg hands the encoder a 4:4:4 RGB format
+    // it lists; NVIDIA's AV1 engine refuses 4:4:4 ("No capable devices found")
+    // although it encodes every 4:2:0 render, so the probe reported no AV1
+    // encoder on a GPU that has one.
+    let output = command_output_with_timeout(
         ffmpeg,
         &[
             "-hide_banner",
@@ -146,15 +491,61 @@ fn encoder_works_at_size(ffmpeg: &OsStr, encoder: &str, w: u32, h: u32) -> bool 
             "-f",
             "lavfi",
             "-i",
-            &format!("testsrc=duration=0.1:size={w}x{h}:rate=30"),
+            &size_input,
             "-c:v",
             encoder,
+            "-pix_fmt",
+            render_pix_fmt(encoder),
             "-f",
             "null",
             "-",
         ],
-        HW_SIZE_PROBE_TIMEOUT,
+        timeout,
     )
+    .ok_or(None)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(Some(EncoderFailure {
+        encoder: encoder.to_string(),
+        kind: classify_encoder_failure(&stderr),
+        detail: failure_detail(encoder, &stderr),
+    }))
+}
+
+/// True when the ffmpeg a colour-managed render would use has the `zscale`
+/// filter (libzimg): the one Cut needs to tone-map HDR sources to SDR. The
+/// render routes a `zscale` graph to such a build when one exists
+/// (`toolpath::ffmpeg_for`); this asks whether that build really has it.
+/// One `ffmpeg -filters` per tools generation.
+pub fn zscale_available() -> bool {
+    static CACHE: OnceLock<Mutex<Option<(u64, bool)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let generation = crate::toolpath::tools_generation();
+    if let Ok(guard) = cache.lock() {
+        if let Some((g, ok)) = *guard {
+            if g == generation {
+                return ok;
+            }
+        }
+    }
+    let bin = crate::toolpath::ffmpeg_for(&[crate::toolpath::FfmpegFeature::Zscale]);
+    let ok = feature_filters_at(&bin).2;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((generation, ok));
+    }
+    ok
+}
+
+/// The pixel format a render hands this encoder (see `hwencode_args::args_for`):
+/// Intel's encoders take NV12, every other backend 8-bit 4:2:0 planar.
+fn render_pix_fmt(encoder: &str) -> &'static str {
+    if encoder.ends_with("_qsv") {
+        "nv12"
+    } else {
+        "yuv420p"
+    }
 }
 
 /// Memoised [`encoder_works_at_size`] for the resolved ffmpeg.
@@ -163,9 +554,15 @@ fn encoder_works_at_size(ffmpeg: &OsStr, encoder: &str, w: u32, h: u32) -> bool 
 /// (encoder, width, height) answer is computed once per process. Keyed on the
 /// size too — the whole point is that one encoder can pass at 4K and fail at 8K.
 pub fn encoder_supports_size(encoder: &str, w: u32, h: u32) -> bool {
-    static SIZE_CACHE: OnceLock<Mutex<HashMap<(String, u32, u32), bool>>> = OnceLock::new();
+    static SIZE_CACHE: OnceLock<Mutex<HashMap<(u64, String, u32, u32), bool>>> = OnceLock::new();
     let cache = SIZE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (encoder.to_string(), w, h);
+    // The tools generation is part of the key: another ffmpeg may differ.
+    let key = (
+        crate::toolpath::tools_generation(),
+        encoder.to_string(),
+        w,
+        h,
+    );
     if let Ok(map) = cache.lock() {
         if let Some(hit) = map.get(&key) {
             return *hit;
@@ -219,22 +616,22 @@ pub fn hw_codec_args(
 // not bit-reproducible, so the deterministic software graph stays the DEFAULT and
 // the GPU path is opt-in and probe-gated.
 
-static GPU_FILTERS: OnceLock<bool> = OnceLock::new();
+static GPU_FILTERS: ToolCache<bool> = ToolCache::new();
 
 /// True when the full CUDA render chain — `hwupload` -> `scale_cuda` ->
 /// `overlay_cuda` -> `h264_nvenc` — verified by a runtime probe,
-/// cached for the process lifetime).
+/// cached per tools generation).
 ///
 /// WHY the whole chain, not "is the filter listed": scale_cuda/overlay_cuda need a
 /// working CUDA device + driver, and the fast-track also needs NVENC to encode the
 /// VRAM frames. A LISTED filter can still fail to init (no device / wrong driver),
-/// so — exactly like [`encoder_works`] — the only reliable signal is to RUN it. The
+/// so — exactly like the encoder probe — the only reliable signal is to RUN it. The
 /// probe composites a tiny CUDA overlay and encodes one frame to `-f null`; a clean
 /// exit means the GPU render path's filters are usable here.
 /// `SHELLX_CUT_NO_HWENC=1` forces it off (the GPU path needs NVENC, so the no-HW
 /// reproducibility switch disables the GPU filter path too).
 pub fn gpu_filters_available() -> bool {
-    *GPU_FILTERS.get_or_init(|| {
+    GPU_FILTERS.get_or_init(|| {
         if std::env::var_os("SHELLX_CUT_NO_HWENC").is_some() {
             return false;
         }
@@ -287,7 +684,7 @@ fn gpu_filter_chain_works_at(ffmpeg: &OsStr) -> bool {
             "null",
             "-",
         ],
-        HW_PROBE_TIMEOUT,
+        CUDA_PROBE_TIMEOUT,
     )
 }
 
@@ -380,6 +777,10 @@ pub struct FfmpegCaps {
     /// for a color-managed render even when it is not the fastest.
     #[serde(default)]
     pub zscale: bool,
+    /// Why this binary has no working hardware encoder (empty when it has one,
+    /// or when it did not run).
+    #[serde(default)]
+    pub diagnosis: HwDiagnosis,
 }
 
 impl FfmpegCaps {
@@ -411,8 +812,26 @@ impl FfmpegCaps {
 }
 
 /// The version token from `ffmpeg -version` (3rd whitespace field of line 1), or
-/// None when the binary cannot be spawned / exits non-zero. Quiet.
-fn ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
+/// None when the binary cannot be spawned / exits non-zero. Quiet. Cached per
+/// selected program and tools generation, just like the per-build filter probe.
+pub(crate) fn ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Versions = HashMap<std::ffi::OsString, Option<String>>;
+    static SEEN: Mutex<Option<(u64, Versions)>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    let generation = crate::toolpath::tools_generation();
+    if seen.as_ref().is_none_or(|(g, _)| *g != generation) {
+        *seen = Some((generation, HashMap::new()));
+    }
+    let (_, versions) = seen.as_mut()?;
+    versions
+        .entry(ffmpeg.to_os_string())
+        .or_insert_with(|| read_ffmpeg_version_at(ffmpeg))
+        .clone()
+}
+
+fn read_ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
     let out = command_output_with_timeout(ffmpeg, &["-hide_banner", "-version"], HW_PROBE_TIMEOUT)?;
     if !out.status.success() {
         return None;
@@ -431,7 +850,7 @@ fn ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
 /// would silently lose caption burn-in; one that dropped libzimg would fail a
 /// color-managed render). Returns `(libass, vidstab, zscale)`; `(false,false,false)`
 /// if the binary does not run. One cheap spawn (no encode).
-fn feature_filters_at(ffmpeg: &OsStr) -> (bool, bool, bool) {
+pub(crate) fn feature_filters_at(ffmpeg: &OsStr) -> (bool, bool, bool) {
     match command_output_with_timeout(ffmpeg, &["-hide_banner", "-filters"], HW_PROBE_TIMEOUT) {
         Some(o) if o.status.success() => {
             let t = String::from_utf8_lossy(&o.stdout);
@@ -448,7 +867,10 @@ fn feature_filters_at(ffmpeg: &OsStr) -> (bool, bool, bool) {
     }
 }
 
-fn filter_listing_has(listing: &str, target: &str) -> bool {
+/// Whether an `ffmpeg -filters` listing names `target` in its filter column.
+/// The one parser for that listing: the doctor's capability card and the
+/// per-candidate scan both use it, so they cannot disagree.
+pub fn filter_listing_has(listing: &str, target: &str) -> bool {
     listing.lines().any(|line| {
         let mut cols = line.split_whitespace();
         let Some(flags) = cols.next() else {
@@ -457,7 +879,10 @@ fn filter_listing_has(listing: &str, target: &str) -> bool {
         let Some(name) = cols.next() else {
             return false;
         };
-        flags.len() >= 3
+        // FFmpeg up to 8.x prints three flag characters ("T.."); 9.x prints
+        // two (".."). Accept both, or every 9.x build reads as lacking libass,
+        // vid.stab and zimg and the per-feature build selection never fires.
+        flags.len() >= 2
             && flags
                 .chars()
                 .all(|c| c == '.' || c == '|' || c.is_ascii_alphabetic())
@@ -482,26 +907,21 @@ pub fn probe_ffmpeg_caps(ffmpeg: &Path) -> FfmpegCaps {
     } else {
         (false, false, false)
     };
-    let (hw, cuda_filters) = if version.is_none() || no_hw {
-        (HwCaps::default(), false)
+    let (hw, cuda_filters, diagnosis) = if version.is_none() {
+        (HwCaps::default(), false, HwDiagnosis::default())
+    } else if no_hw {
+        (
+            HwCaps::default(),
+            false,
+            HwDiagnosis {
+                disabled_by_setting: true,
+                failures: Vec::new(),
+            },
+        )
     } else {
-        let mut caps = HwCaps::default();
-        for (codec, names) in CANDIDATES {
-            for name in *names {
-                if encoder_works_at(osff, name) {
-                    let slot = match *codec {
-                        "h264" => &mut caps.h264,
-                        "hevc" => &mut caps.hevc,
-                        "av1" => &mut caps.av1,
-                        _ => continue,
-                    };
-                    *slot = Some((*name).to_string());
-                    break; // best-first: first working candidate wins
-                }
-            }
-        }
+        let (caps, diagnosis) = probe_at(osff);
         let cuda = gpu_filter_chain_works_at(osff);
-        (caps, cuda)
+        (caps, cuda, diagnosis)
     };
     FfmpegCaps {
         path: ffmpeg.display().to_string(),
@@ -511,6 +931,7 @@ pub fn probe_ffmpeg_caps(ffmpeg: &Path) -> FfmpegCaps {
         libass,
         vidstab,
         zscale,
+        diagnosis,
     }
 }
 
@@ -539,6 +960,7 @@ mod tests {
             libass: false,
             vidstab: false,
             zscale: false,
+            diagnosis: HwDiagnosis::default(),
         };
         assert_eq!(
             mk(HwCaps::default(), false, false).rank(),
@@ -701,5 +1123,260 @@ Filters:\n\
         assert!(filter_listing_has(listing, "ass"));
         assert!(!filter_listing_has(listing, "zscale"));
         assert!(!filter_listing_has(listing, "vidstabtransform"));
+    }
+
+    /// ffmpeg's real messages sort into the four causes. The first is the exact
+    /// text from a machine whose ffmpeg has NVENC but whose driver is too old.
+    #[test]
+    fn failure_text_is_sorted_into_causes() {
+        let old_driver = "[h264_nvenc @ 000001] Driver does not support the required nvenc API \
+             version. Required: 13.1 Found: 13.0\n[h264_nvenc @ 000001] The minimum required \
+             Nvidia driver for nvenc is 610.00 or newer\n";
+        assert_eq!(
+            classify_encoder_failure(old_driver),
+            EncoderFailureKind::DriverTooOld
+        );
+        assert_eq!(
+            classify_encoder_failure("Unknown encoder 'h264_nvenc'\n"),
+            EncoderFailureKind::NotInBuild
+        );
+        assert_eq!(
+            classify_encoder_failure("[h264_nvenc @ 1] Cannot load libcuda.so.1\n"),
+            EncoderFailureKind::NoDevice
+        );
+        assert_eq!(
+            classify_encoder_failure("[h264_nvenc @ 1] No capable devices found\n"),
+            EncoderFailureKind::NoDevice
+        );
+        assert_eq!(
+            classify_encoder_failure("something nobody has seen before\n"),
+            EncoderFailureKind::CannotOpen
+        );
+    }
+
+    /// The advice follows the cause: a driver that is too old is never answered
+    /// with "install another ffmpeg", and a build without encoders is.
+    #[test]
+    fn shortfall_picks_the_cause_the_person_can_fix() {
+        let failure = |encoder: &str, kind| EncoderFailure {
+            encoder: encoder.into(),
+            kind,
+            detail: Some(format!("{encoder} said no")),
+        };
+        let driver = HwDiagnosis {
+            disabled_by_setting: false,
+            failures: vec![
+                failure("h264_nvenc", EncoderFailureKind::DriverTooOld),
+                failure("h264_qsv", EncoderFailureKind::NoDevice),
+                failure("h264_amf", EncoderFailureKind::NotInBuild),
+            ],
+        };
+        assert_eq!(driver.shortfall(None), HwShortfall::DriverTooOld);
+        assert!(HwShortfall::DriverTooOld
+            .action()
+            .contains("Update the graphics driver"));
+        assert!(!HwShortfall::DriverTooOld.action().contains("ffmpeg build"));
+        assert_eq!(
+            driver.technical_detail(Some("h264")).as_deref(),
+            Some("h264_nvenc: h264_nvenc said no")
+        );
+        // hevc was never tried on this machine in this fixture: no cause recorded.
+        assert_eq!(driver.shortfall(Some("hevc")), HwShortfall::Unknown);
+
+        let none_in_build = HwDiagnosis {
+            disabled_by_setting: false,
+            failures: vec![
+                failure("h264_nvenc", EncoderFailureKind::NotInBuild),
+                failure("h264_qsv", EncoderFailureKind::NotInBuild),
+            ],
+        };
+        assert_eq!(none_in_build.shortfall(None), HwShortfall::NoEncoderInBuild);
+        assert!(HwShortfall::NoEncoderInBuild
+            .action()
+            .contains("ffmpeg build that includes GPU encoders"));
+
+        let no_gpu = HwDiagnosis {
+            disabled_by_setting: false,
+            failures: vec![failure("h264_nvenc", EncoderFailureKind::NoDevice)],
+        };
+        assert_eq!(no_gpu.shortfall(None), HwShortfall::NoGpu);
+
+        let off = HwDiagnosis {
+            disabled_by_setting: true,
+            failures: vec![],
+        };
+        assert_eq!(off.shortfall(None), HwShortfall::SwitchedOff);
+    }
+
+    /// Writes an executable stand-in for ffmpeg that fails every encode with the
+    /// given stderr, so the probe wiring is checked without a GPU.
+    #[cfg(unix)]
+    fn failing_ffmpeg(dir: &Path, stderr: &str) -> std::path::PathBuf {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("fake-ffmpeg.sh");
+        let mut f = std::fs::File::create(&script).unwrap();
+        writeln!(f, "#!/bin/sh").unwrap();
+        writeln!(f, "cat >&2 <<'EOF'\n{stderr}\nEOF").unwrap();
+        writeln!(f, "exit 1").unwrap();
+        drop(f);
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        script
+    }
+
+    /// End to end through the real probe loop: an ffmpeg that lists the encoder
+    /// but reports an old driver yields "no hardware", the driver cause and
+    /// ffmpeg's own line in the technical detail.
+    #[cfg(unix)]
+    #[test]
+    fn probe_reports_old_driver_with_ffmpeg_message() {
+        let dir = tempfile::tempdir().unwrap();
+        // ffmpeg's real tail: the encoder's own lines first, then generic ones.
+        let ff = failing_ffmpeg(
+            dir.path(),
+            "[h264_nvenc @ 0x1] Driver does not support the required nvenc API version. \
+             Required: 13.1 Found: 13.0\n[h264_nvenc @ 0x1] The minimum required Nvidia driver \
+             for nvenc is 610.00 or newer\n[vost#0:0/h264_nvenc @ 0x2] Error while opening \
+             encoder - maybe incorrect parameters such as bit rate, frame rate, width or \
+             height.\n[vf#0:0 @ 0x3] Error sending frames to consumers: Function not \
+             implemented\nConversion failed!",
+        );
+        let (caps, diagnosis) = probe_at(ff.as_os_str());
+        assert!(!caps.any());
+        assert_eq!(diagnosis.shortfall(Some("h264")), HwShortfall::DriverTooOld);
+        let detail = diagnosis.technical_detail(Some("h264")).unwrap();
+        assert!(detail.contains("Required: 13.1 Found: 13.0"), "{detail}");
+        assert!(detail.contains("610.00"), "{detail}");
+        assert!(
+            !detail.contains("Conversion failed"),
+            "the generic closing lines must not push out the cause: {detail}"
+        );
+    }
+
+    /// Item 97: an RTX 5080 encodes AV1 from 4:2:0 but refuses the 4:4:4 RGB
+    /// that ffmpeg picks for a bare testsrc, so the probe must feed the pixel
+    /// format a render sends. The stand-in behaves like that GPU.
+    #[cfg(unix)]
+    #[test]
+    fn av1_probe_feeds_the_render_pixel_format() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("rgb-refusing-ffmpeg.sh");
+        let mut f = std::fs::File::create(&script).unwrap();
+        writeln!(f, "#!/bin/sh").unwrap();
+        writeln!(
+            f,
+            "case \" $* \" in *\" -pix_fmt yuv420p \"*) exit 0;; esac"
+        )
+        .unwrap();
+        writeln!(f, "echo '[av1_nvenc @ 0x1] No capable devices found' >&2").unwrap();
+        writeln!(f, "exit 1").unwrap();
+        drop(f);
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let (caps, _) = probe_at(script.as_os_str());
+        assert_eq!(caps.av1.as_deref(), Some("av1_nvenc"));
+    }
+
+    /// Item 96: 8K H.264 on an NVIDIA GPU says the encoder's limit and points
+    /// at HEVC, which the same GPU encodes at 8K.
+    #[test]
+    fn size_fallback_names_the_limit_and_hevc() {
+        let m = size_fallback_message(
+            "h264_nvenc",
+            "accepts at most 4096x2160",
+            7680,
+            4320,
+            Some(("HEVC", "hevc_nvenc")),
+        );
+        assert!(m.contains("(h264_nvenc) accepts at most 4096x2160"), "{m}");
+        assert!(m.contains("7680x4320"), "{m}");
+        assert!(
+            m.contains("Choose HEVC to encode this size in hardware (hevc_nvenc)"),
+            "{m}"
+        );
+        let none = size_fallback_message(
+            "hevc_videotoolbox",
+            "cannot encode 8192x8192",
+            8192,
+            8192,
+            None,
+        );
+        assert!(!none.contains("Choose"), "{none}");
+    }
+
+    /// An ffmpeg without the encoders is the one case where "install an ffmpeg
+    /// with GPU encoders" is the right advice.
+    #[cfg(unix)]
+    #[test]
+    fn probe_reports_missing_encoders_in_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let ff = failing_ffmpeg(dir.path(), "Unknown encoder 'h264_nvenc'");
+        let (_, diagnosis) = probe_at(ff.as_os_str());
+        assert_eq!(
+            diagnosis.shortfall(Some("h264")),
+            HwShortfall::NoEncoderInBuild
+        );
+    }
+
+    /// FFmpeg 9.x shortened the flags column to two characters.
+    #[test]
+    fn feature_filter_parser_reads_the_two_flag_listing_of_ffmpeg_9() {
+        let listing = "\
+Filters:\n\
+  T.. = Timeline support\n\
+  A = Audio input/output\n\
+  ------\n\
+ .. ass               V->V       Render ASS subtitles onto input video using the libass library.\n\
+ .. vidstabtransform  V->V       Transform the frames, pass 2 of 2 for stabilization.\n\
+ .S zscale            V->V       Apply resizing, colorspace and bit depth conversion.\n";
+
+        assert!(filter_listing_has(listing, "ass"));
+        assert!(filter_listing_has(listing, "vidstabtransform"));
+        assert!(filter_listing_has(listing, "zscale"));
+        assert!(!filter_listing_has(listing, "Audio"));
+    }
+
+    /// A stand-in ffmpeg that answers like FFmpeg 9: `-version`, and a
+    /// `-filters` listing with the two-character flags column. Everything else
+    /// (the hardware test encodes) fails, as on a machine without encoders.
+    #[cfg(unix)]
+    const FAKE_FFMPEG_9: &str = "#!/bin/sh
+for a in \"$@\"; do
+  case \"$a\" in
+    -version) echo 'ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers'; exit 0;;
+    -filters) printf 'Filters:\\n  T.. = Timeline support\\n  ------\\n .. ass               V->V       Render ASS subtitles.\\n .. subtitles         V->V       Render text subtitles.\\n .. vidstabdetect     V->V       Extract transformations.\\n .. vidstabtransform  V->V       Transform the frames.\\n .S zscale            V->V       Apply resizing.\\n'; exit 0;;
+  esac
+done
+exit 1
+";
+
+    /// The per-candidate scan (doctor gpu card, automatic and per-feature
+    /// selection) reads the FFmpeg 9 listing: an earlier parser read every 9.x
+    /// build as lacking libass, vid.stab and zimg.
+    #[cfg(unix)]
+    #[test]
+    fn candidate_scan_reads_the_ffmpeg_9_filter_listing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("ffmpeg");
+        std::fs::write(&fake, FAKE_FFMPEG_9).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A freshly written script can briefly be busy while another test
+        // thread forks; retry the spawn a few times.
+        let mut caps = probe_ffmpeg_caps(&fake);
+        for _ in 0..5 {
+            if caps.version.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            caps = probe_ffmpeg_caps(&fake);
+        }
+        assert_eq!(caps.version.as_deref(), Some("9.0.2"));
+        assert!(caps.libass && caps.vidstab && caps.zscale, "{caps:?}");
     }
 }

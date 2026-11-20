@@ -4,6 +4,7 @@
 // health is filesystem-backed and revision-bound, while the UI must never call
 // a partial page a whole-project green result.
 
+import { finishedWithProblems, problemsText } from '../../lib/failedJobNotices'
 import type { VerbArgs, VerbResult } from '../../lib/client'
 import type { JobRecord } from '../../lib/clientModel'
 import type { DoctorReport } from '../../lib/doctor'
@@ -16,12 +17,14 @@ import type {
 import type { CaptureRecoveryInventory } from './captureRecoveryModel'
 import { editingCacheRow } from './cacheHealthModel'
 
-export type HealthState = 'healthy' | 'attention' | 'recoverable' | 'active-recovery' | 'unrecoverable' | 'unsupported' | 'checking'
-export type HealthAction = 'assets' | 'recording' | 'toolchain' | null
+export type HealthState = 'healthy' | 'attention' | 'recoverable' | 'active-recovery' | 'unrecoverable' | 'unsupported' | 'checking' | 'not-checked'
+export type HealthAction = 'assets' | 'recording' | 'toolchain' | 'check-capture' | 'recover-recordings' | null
 
 export interface RecorderDoctor {
   cards: Array<{ name: string; status: 'ok' | 'missing' | 'degraded' | 'unknown' | string; detail: string }>
   ready: boolean
+  /** Status reads never capture; this says what they know about screen capture. */
+  screen_check?: 'checked' | 'not_checked' | 'permission_needed' | 'not_applicable'
 }
 
 export interface HealthRow {
@@ -192,6 +195,17 @@ function jobsRow(jobsList: JobsListResult | null, scanFailed: boolean): HealthRo
   const trueFailures = failed.filter((job) => job.outcome_reason === 'true_failure')
   if (trueFailures.length > 0) return unrecoverable('jobs', 'Background jobs', `${trueFailures.length} job${plural(trueFailures.length)} ended in a true failure.`, 'Inspect the job error before choosing a retry.')
   if (failed.length > 0) return attention('jobs', 'Background jobs', `${failed.length} terminal job${plural(failed.length)} did not complete normally.`, labelledReasons(failed) || 'Legacy records did not report a terminal reason.')
+  // Exports written but not passing their own checks: listed with the reason.
+  const withProblems = jobsList.jobs.filter(finishedWithProblems)
+  if (withProblems.length > 0) {
+    const failedItems = withProblems.filter((job) => job.outcome_reason === 'items_failed').length
+    const summary = failedItems === withProblems.length
+      ? `${failedItems} batch export${plural(failedItems)} finished with failed items.`
+      : failedItems === 0
+        ? `${withProblems.length} export${plural(withProblems.length)} finished with problems: written, but not passing ${withProblems.length === 1 ? 'its' : 'their'} checks.`
+        : `${withProblems.length} exports finished with problems or failed items.`
+    return attention('jobs', 'Background jobs', summary, withProblems.map(problemsText).join(' '))
+  }
   return healthy('jobs', 'Background jobs', 'No active jobs or persistence notices.')
 }
 
@@ -207,6 +221,12 @@ function captureRow(input: {
     return attention('capture', 'Capture', 'The capture recovery check did not complete. Check again before relying on it.', undefined, 'recording')
   }
   if (!input.doctor || !input.recovery) return checking('capture', 'Capture', 'Checking capture readiness and recovery reported by this check…', 'recording')
+  if (!input.doctor.ready && input.doctor.screen_check === 'not_checked') {
+    return { id: 'capture', label: 'Capture', state: 'not-checked', summary: 'Screen capture is not checked yet. Check it here, or it is checked when you start a recording.', action: 'check-capture' }
+  }
+  if (!input.doctor.ready && input.doctor.screen_check === 'permission_needed') {
+    return attention('capture', 'Capture', 'Screen recording permission is needed: turn on ShellX Cut in System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen ShellX Cut.', undefined, 'check-capture')
+  }
   if (!input.doctor.ready) {
     return attention(
       'capture',
@@ -216,28 +236,38 @@ function captureRow(input: {
       'recording',
     )
   }
-  const states = new Set(input.recovery.captures.map((capture) => capture.state))
-  const attentionStates = ['corrupt', 'torn_journal', 'quarantined', 'owner_ambiguous'] as const
-  const attentionStatesFound = attentionStates.filter((state) => states.has(state))
-  if (attentionStatesFound.length > 0) {
+  // Person-facing words; the snake-case states stay in the engine contract.
+  const damagedStates = ['corrupt', 'torn_journal', 'quarantined'] as const
+  const damagedWords: Record<typeof damagedStates[number], string> = {
+    corrupt: 'its recovery record cannot be read',
+    torn_journal: 'its recovery record was cut off',
+    quarantined: 'a damaged part was set aside',
+  }
+  const damaged = input.recovery.captures.filter((capture) => damagedStates.includes(capture.state as typeof damagedStates[number]))
+  if (damaged.length > 0) {
+    const found = damagedStates.filter((state) => damaged.some((capture) => capture.state === state))
     return attentionRow(
       'capture',
       'Capture',
-      `${attentionStatesFound.length} capture recovery state${plural(attentionStatesFound.length)} needs attention in this check.`,
-      `Reported: ${attentionStatesFound.map((state) => state.replaceAll('_', ' ')).join(', ')}.`,
-      'recording',
+      `${damaged.length} recording${plural(damaged.length)} could not be fully recovered.`,
+      `For ${damaged.length === 1 ? 'this recording' : 'these recordings'}, ${found.map((state) => damagedWords[state]).join('; ')}. What could be read can still be added to the timeline.`,
+      'recover-recordings',
     )
   }
-  const recoverableStates = ['interrupted', 'recovered'] as const
-  const recoverable = recoverableStates.filter((state) => states.has(state))
-  if (recoverable.length > 0) {
-    const count = input.recovery.captures.filter((capture) => recoverableStates.includes(capture.state as typeof recoverableStates[number])).length
+  // An unfinished capture (owner_ambiguous: no sealed result yet) or an
+  // interrupted or recovered one; captures with nothing saved are left out.
+  const waitingStates = ['owner_ambiguous', 'interrupted', 'recovered'] as const
+  const waiting = input.recovery.captures.filter((capture) =>
+    waitingStates.includes(capture.state as typeof waitingStates[number])
+    && capture.recoverable !== false
+    && !(capture.recoverable === undefined && capture.state === 'owner_ambiguous' && capture.checkpoints === 0))
+  if (waiting.length > 0) {
     return recoverableRow(
       'capture',
       'Capture',
-      `${count} capture${plural(count)} reported as recoverable in this check.`,
-      `Reported: ${recoverable.map((state) => state.replaceAll('_', ' ')).join(', ')}.`,
-      'recording',
+      `${waiting.length} recording${plural(waiting.length)} ${waiting.length === 1 ? 'was' : 'were'} interrupted.`,
+      'What was saved can be added to the end of the timeline.',
+      'recover-recordings',
     )
   }
   const audioPacketReceipts = input.recovery.captures.filter(

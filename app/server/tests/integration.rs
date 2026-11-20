@@ -16,8 +16,32 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// Test port — NOT 6161 so a dev server can stay running while tests run.
-const ADDR: &str = "127.0.0.1:16161";
+/// The engine binds port 0 (the system picks a free one) so two runs of this
+/// test can share a machine and a dev server on 6161 can stay up. The real
+/// address is read back from the engine's own discovery file once it is up.
+static BOUND_ADDR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn addr() -> &'static str {
+    BOUND_ADDR.get().expect("engine address is known")
+}
+
+/// Wait for the engine to publish its bound address (`engine.addr`, first
+/// line) in its isolated state home, then confirm the socket accepts.
+fn wait_for_engine(state_home: &std::path::Path) -> Option<String> {
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(100));
+        let Ok(text) = std::fs::read_to_string(state_home.join("engine.addr")) else {
+            continue;
+        };
+        let Some(bound) = text.lines().next().map(str::to_owned) else {
+            continue;
+        };
+        if TcpStream::connect(&bound).is_ok() {
+            return Some(bound);
+        }
+    }
+    None
+}
 
 /// Minimal blocking HTTP request against the test server; returns the body.
 /// `content_type` None = send NO Content-Type header (the bare `curl -d`
@@ -33,11 +57,12 @@ fn http_with_ct(
     let ct = content_type
         .map(|c| format!("Content-Type: {c}\r\n"))
         .unwrap_or_default();
+    let addr = addr();
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {ADDR}\r\n{ct}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{ct}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
     );
-    let mut s = TcpStream::connect(ADDR).expect("connect test server");
+    let mut s = TcpStream::connect(addr).expect("connect test server");
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s.write_all(req.as_bytes()).unwrap();
     let mut buf = Vec::new();
@@ -64,17 +89,21 @@ async fn server_end_to_end() {
     // temporary projects out of the user's actual app-state registry.
     let state_home = tempfile::tempdir().expect("state home tempdir");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_cutd"))
-        .args(["serve", "--headless", "--addr", ADDR])
+        .args(["serve", "--headless", "--addr", "127.0.0.1:0"])
         .env("SHELLX_CUT_HOME", state_home.path())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn cutd");
-    let up = (0..50).any(|_| {
-        std::thread::sleep(Duration::from_millis(100));
-        TcpStream::connect(ADDR).is_ok()
-    });
-    assert!(up, "cutd never opened {ADDR}");
+    let Some(bound) = wait_for_engine(state_home.path()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "cutd never published a reachable address in {}",
+            state_home.path().display()
+        );
+    };
+    BOUND_ADDR.set(bound).expect("address set once");
 
     // Everything in a closure so the child is killed even on panic.
     let result = std::panic::AssertUnwindSafe(async {
@@ -82,7 +111,7 @@ async fn server_end_to_end() {
         // Plain (non-TLS) websocket scheme is correct here: the server binds
         // 127.0.0.1 only (server contract) and this is a loopback test — no TLS in
         // the path, nothing crosses a network boundary.
-        let ws_url = format!("{scheme}://{ADDR}/api/events", scheme = "ws");
+        let ws_url = format!("{scheme}://{}/api/events", addr(), scheme = "ws");
         let (ws, _resp) = tokio_tungstenite::connect_async(ws_url)
             .await
             .expect("ws connect");
@@ -254,3 +283,5 @@ async fn server_end_to_end() {
         std::panic::resume_unwind(p);
     }
 }
+
+cut_core::isolate_test_process!();

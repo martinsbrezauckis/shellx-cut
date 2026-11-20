@@ -55,7 +55,7 @@ async function stopVite(vite) {
 
 async function replaceWithTrustedKeys(page, control, text) {
   await control.click()
-  await page.keyboard.press('Control+A')
+  await page.keyboard.press('ControlOrMeta+A')
   await page.keyboard.type(text)
 }
 

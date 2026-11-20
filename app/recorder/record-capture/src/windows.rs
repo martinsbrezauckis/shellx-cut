@@ -163,7 +163,7 @@ impl Capture for WindowsCapture {
         }
         let (src, parent_w, parent_h, parent_surface) = if let Some(ref window_id) = cfg.window {
             let target = crate::windows_picker::resolve_window(window_id)
-                .map_err(|error| cap_err("resolve the selected window identity", error))?;
+                .map_err(crate::window_target::window_unavailable)?;
             let win = WcWindow::from_raw_hwnd(target.0);
             // The source picker lists minimized windows so the list is stable
             // as windows are minimized/restored). A minimized window has a 0×0 capture
@@ -515,8 +515,9 @@ impl Capture for WindowsCapture {
         stop.store(true, Ordering::Relaxed);
         let (cursor, mut clicks, scrolls, keys) = input.seal(duration_ms)?;
         let (source_path, verified_media) = if let Some(checkpoints) = checkpoints.as_ref() {
-            let (source, media) =
+            let (source, media, notes) =
                 checkpoints.stitch(&ffmpeg_bin(), &ffprobe_bin(), "source.mp4")?;
+            crate::capture_notes::publish(std::path::Path::new(&out_dir), &notes);
             (source.display().to_string(), Some(media))
         } else {
             (path, None)

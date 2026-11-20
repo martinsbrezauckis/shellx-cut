@@ -18,6 +18,7 @@ async fn assemble_broll_rejects_a_project_switch_after_search_without_mutating_e
     std::fs::write(search_dir.join("held-broll.png"), ONE_BY_ONE_PNG).unwrap();
 
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     create_project(&state, "a", &a_path).await;
     create_project(&state, "b", &b_path).await;
     let reopened_a = dispatch(

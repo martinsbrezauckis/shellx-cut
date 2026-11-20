@@ -16,9 +16,10 @@ import { useEffect, useRef, useState } from 'react'
 import { callVerb, type JobRecord, type Project, type ProjectEntry } from './lib/client'
 import { isTauri, onFileDrop } from './lib/tauri'
 import { getGenerateProxies } from './lib/proxyPref'
+import { publishUserActionFailure, publishUserActionMessage, TOOL_MISSING } from './lib/userActionFeedback'
 import {
   availableProjectName,
-  isSupportedMediaPath,
+  planDrop,
   projectNameFromMediaPath,
   supportedMediaKind,
 } from './lib/projectBootstrap'
@@ -79,12 +80,11 @@ export default function DropZone({
           flash('Finish the current import before dropping more media')
           return
         }
-        const unsupported = paths.filter((path) => !isSupportedMediaPath(path))
-        const mediaPaths = paths.filter(isSupportedMediaPath)
-        if (mediaPaths.length === 0) {
-          flash(`Skipped ${unsupported.length} unsupported file${unsupported.length === 1 ? '' : 's'}`)
-          return
-        }
+        const { media: mediaPaths, skippedNotice } = planDrop(paths)
+        // Named, dismissible notice for every dropped item that is not imported
+        // (folders, unsupported types): never a bare count that fades away.
+        if (skippedNotice) publishUserActionMessage(skippedNotice, { source: 'drop', code: 'not_imported', count: paths.length - mediaPaths.length })
+        if (mediaPaths.length === 0) return
         busyRef.current = true
         let createdName: string | null = null
         let createdProject: Project | null = null
@@ -125,6 +125,11 @@ export default function DropZone({
             })
             if (!imported.ok) {
               firstError ??= imported.error?.message ?? imported.error?.code ?? 'import failed'
+              if (imported.error?.code === TOOL_MISSING) {
+                publishUserActionFailure('media.import', imported, 'Import failed')
+                firstReady = false
+                break
+              }
               if (createdName && index === 0) {
                 firstReady = false
                 break
@@ -170,7 +175,7 @@ export default function DropZone({
             }
           }
 
-          const skipped = unsupported.length > 0 ? ` · skipped ${unsupported.length} unsupported` : ''
+          const skipped = skippedNotice ? ' · some items were not imported (see the notice)' : ''
           const partial = ok < mediaPaths.length || !firstReady || firstError
           if (createdName) {
             const placed = firstPlaced ? ' · first item added to timeline' : ''

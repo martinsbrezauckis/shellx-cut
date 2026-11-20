@@ -30,11 +30,15 @@ pub(super) fn align() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let ffmpeg = std::env::var_os("SHELLX_RECORD_FFMPEG");
+    // A relative operator value would be read against the current folder (a
+    // received project): it is not authoritative and gets the engine's choice.
+    let absolute =
+        |key: &str| std::env::var_os(key).filter(|value| std::path::Path::new(value).is_absolute());
+    let ffmpeg = absolute("SHELLX_RECORD_FFMPEG");
     if let Some(next) = assignments.0.next(ffmpeg, cut_media::toolpath::ffmpeg()) {
         std::env::set_var("SHELLX_RECORD_FFMPEG", next);
     }
-    let ffprobe = std::env::var_os("SHELLX_RECORD_FFPROBE");
+    let ffprobe = absolute("SHELLX_RECORD_FFPROBE");
     if let Some(next) = assignments.1.next(ffprobe, cut_media::toolpath::ffprobe()) {
         std::env::set_var("SHELLX_RECORD_FFPROBE", next);
     }

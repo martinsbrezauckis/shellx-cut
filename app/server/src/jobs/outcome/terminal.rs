@@ -18,21 +18,28 @@ impl JobManager {
         reason: JobOutcomeReason,
         message: &str,
     ) {
+        // `outcome` says whether the job did what was asked: a job that ran
+        // to its end but did not fully deliver is `partial`, never
+        // `succeeded` (an agent may judge a job by this one field).
+        let outcome = match reason {
+            JobOutcomeReason::ChecksFailed | JobOutcomeReason::ItemsFailed => JobOutcome::Partial,
+            _ => JobOutcome::Succeeded,
+        };
         let kind = self.update(job_id, |record| {
             record.state = JobState::Done;
             record.queue = None;
             record.waiting_on = None;
             record.completion = Some(completion);
             record.progress = 1.0;
-            record.outcome = Some(JobOutcome::Succeeded);
+            record.outcome = Some(outcome);
             record.outcome_reason = Some(reason);
             record.message = Some(message.to_string());
             record.result = Some(result);
             if let Some(retry) = record.retry.as_mut() {
-                retry.terminal(JobOutcome::Succeeded);
+                retry.terminal(outcome);
             }
         });
-        self.publish_terminal_progress(job_id, kind, message);
+        self.publish_terminal_progress(job_id, kind, 1.0, message);
     }
 
     pub(super) fn terminate(
@@ -109,12 +116,18 @@ impl JobManager {
         message: &str,
         result: Option<serde_json::Value>,
     ) {
+        let mut final_progress = 1.0_f32;
         let kind = self.update(job_id, |record| {
             record.state = JobState::Failed;
             record.queue = None;
             record.waiting_on = None;
             record.completion = None;
-            record.progress = 1.0;
+            // A job that did not finish (cancelled, superseded, interrupted or
+            // failed) keeps the progress it really reached, so neither a person
+            // nor an agent reads "100%" as "complete". 1.0 means finished work;
+            // readers learn that the job ENDED from its state (and the event's
+            // `terminal` flag), never from the progress value.
+            final_progress = record.progress;
             record.outcome = Some(outcome);
             record.outcome_reason = Some(reason);
             record.message = Some(message.to_string());
@@ -126,16 +139,23 @@ impl JobManager {
                 retry.terminal(outcome);
             }
         });
-        self.publish_terminal_progress(job_id, kind, message);
+        self.publish_terminal_progress(job_id, kind, final_progress, message);
     }
 
-    fn publish_terminal_progress(&self, job_id: &str, kind: Option<String>, message: &str) {
+    fn publish_terminal_progress(
+        &self,
+        job_id: &str,
+        kind: Option<String>,
+        progress: f32,
+        message: &str,
+    ) {
         if let Some(kind) = kind {
             self.events.publish(crate::events::Event::JobProgress {
                 job_id: job_id.to_string(),
                 kind,
-                progress: 1.0,
+                progress,
                 message: Some(message.to_string()),
+                terminal: true,
             });
         }
     }

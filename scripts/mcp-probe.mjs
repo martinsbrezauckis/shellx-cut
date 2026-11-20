@@ -8,31 +8,34 @@
 // Any failure → diagnostic on stderr, exit 1. cutd's own logs go to ITS
 // stderr (passed through) so a hung probe is debuggable.
 //
-// Usage: node scripts/mcp-probe.mjs
+// Usage: node scripts/mcp-probe.mjs [--cutd /absolute/path/to/cutd]
 // Use this helper to inspect the generated MCP surface of a running engine.
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { safeJsonParse } from "./lib/safe-data.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CUTD_REL = "./app/target/debug/cutd";
-const CUTD_PATH = resolve(root, CUTD_REL);
+let cutdPath = resolve(root, CUTD_REL);
 
 function fail(message) {
   process.stderr.write(`mcp-probe: ${message}\n`);
   process.exit(1);
 }
 
-if (process.argv.length > 2) {
-  fail("custom cutd paths are not accepted; run cargo build -p server and use the repo debug binary");
+if (process.argv.length !== 2) {
+  if (process.argv.length !== 4 || process.argv[2] !== "--cutd" || !isAbsolute(process.argv[3])) {
+    fail("expected --cutd with an absolute executable path");
+  }
+  cutdPath = process.argv[3];
 }
-if (!existsSync(CUTD_PATH) || !statSync(CUTD_PATH).isFile()) {
-  fail("repo debug cutd binary does not exist; build first with cargo build -p server");
+if (!existsSync(cutdPath) || !statSync(cutdPath).isFile()) {
+  fail("selected cutd binary does not exist; build first with cargo build -p server");
 }
-const child = spawn("./app/target/debug/cutd", ["mcp"], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
-child.on("error", (e) => { fail(`cannot spawn repo debug cutd: ${e.message}`); });
+const child = spawn(cutdPath, ["mcp"], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
+child.on("error", (e) => { fail(`cannot spawn selected cutd: ${e.message}`); });
 
 // 15s hard timeout: a silent hang is itself a coverage failure.
 const timer = setTimeout(() => { process.stderr.write("mcp-probe: timeout — no tools/list reply in 15s (is `cutd mcp` reading stdin?)\n"); child.kill(); process.exit(1); }, 15000);

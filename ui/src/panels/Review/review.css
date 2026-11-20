@@ -262,6 +262,21 @@
   padding: 6px var(--space-3);
   border-bottom: 1px solid var(--hairline);
 }
+/* Which encoder made the file; the amber note appears only when hardware was
+   asked for and software ran. */
+.rr-rc__encode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+  font: var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3);
+  padding: 4px var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.rr-rc__encode-note { color: var(--amber); }
+.rr-rc__encode-detail { flex-basis: 100%; }
+.rr-rc__encode-detail code { overflow-wrap: anywhere; }
 /* The rendered-video download — the receipt IS the deliverable. Accent it so the
    user sees where their .mp4 comes out. */
 .rr-rc__download {
@@ -362,6 +377,11 @@
 }
 .rr-check--waived .rr-check__name { color: var(--ink-2); }
 .rr-check__state--waived { color: var(--amber); opacity: 0.8; }
+/* not applicable: nothing to check on this export; muted, never green */
+.rr-dot--na { background: transparent; border: 1px solid var(--ink-3); box-sizing: border-box; }
+.rr-check--na .rr-check__name { color: var(--ink-3); }
+.rr-check__state--na { color: var(--ink-3); }
+.rr-check__na-note { font: var(--fs-ui-xs) var(--sans); color: var(--ink-2); margin-bottom: 6px; }
 .rr-check__measured {
   font: 600 var(--fs-micro) var(--mono);
   letter-spacing: 0.05em;

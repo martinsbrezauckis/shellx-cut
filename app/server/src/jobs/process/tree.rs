@@ -123,11 +123,32 @@ impl ProcessTree {
 #[cfg(unix)]
 fn signal_group(pgid: i32, signal: i32) -> io::Result<()> {
     validate_process_group(pgid)?;
-    let result = unsafe { libc::kill(-pgid, signal) };
-    if result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+    // macOS answers EPERM, not ESRCH, while every member of the group is
+    // already dead but not yet fully reaped (a zombie, or a process in its last
+    // moments of exit). The group is ours and same-user, so no live member can
+    // refuse the signal: retry briefly, and when only that answer remains the
+    // group holds nothing alive and the stop is complete. Without this a
+    // finished worker was reported as "close external worker tree: Operation
+    // not permitted" and failed the job that had already produced its result.
+    const EPERM_ATTEMPTS: u32 = 20;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let result = unsafe { libc::kill(-pgid, signal) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => return Ok(()),
+            Some(libc::EPERM) if cfg!(target_os = "macos") => {
+                if attempt >= EPERM_ATTEMPTS {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => return Err(error),
+        }
     }
 }
 
@@ -145,6 +166,23 @@ fn validate_process_group(pgid: i32) -> io::Result<()> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{signal_group, validate_process_group};
+
+    /// A group whose only member has exited but is not yet reaped (a zombie)
+    /// is already stopped: signalling it must not fail, on any Unix. macOS
+    /// answers EPERM for such a group.
+    #[test]
+    fn a_group_of_exited_unreaped_processes_counts_as_stopped() {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("true");
+        command.process_group(0);
+        let child = command.spawn().unwrap();
+        let pgid = i32::try_from(child.id()).unwrap();
+        // Let it exit; do NOT wait on it, so it stays a zombie.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        signal_group(pgid, libc::SIGKILL).expect("a dead group is a completed stop");
+        let mut child = child;
+        let _ = child.wait();
+    }
 
     #[test]
     fn unsafe_process_group_ids_fail_before_signalling() {

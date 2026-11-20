@@ -59,10 +59,52 @@ fn root(project_dir: &Path) -> Result<CaptureRoot, CutError> {
 }
 
 fn containment_error(stage: &str, error: ManifestError) -> CutError {
+    // A project folder that refuses new files is a permission problem, not an
+    // unsafe link: name the folder and say it cannot be written.
+    if let ManifestError::Io { path, source } = &error {
+        if source.kind() == std::io::ErrorKind::PermissionDenied {
+            let folder = path.parent().unwrap_or(path.as_path());
+            return cut_media::folder_access::folder_error("recording folder", folder, source);
+        }
+    }
     CutError::new(
         error_codes::IO,
         format!("could not {stage}: {error}"),
         "screen-record files must stay in local plain directories under the open project",
     )
     .with_suggested_action("remove the unsafe cache link or reparse point, then retry")
+}
+
+#[cfg(all(test, unix))]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn project_that_refuses_new_files_is_named_and_not_called_an_unsafe_link() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("locked.cutproj");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = create_capture_dir(&project, "cap_1_2_3");
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            error.message.contains("cannot be written"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("locked.cutproj"),
+            "{}",
+            error.message
+        );
+        assert_ne!(
+            error.suggested_action.as_deref(),
+            Some("remove the unsafe cache link or reparse point, then retry")
+        );
+    }
 }

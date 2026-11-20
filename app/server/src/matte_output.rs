@@ -89,16 +89,21 @@ impl StagedOutput {
     }
 }
 
+/// A seed mask is reused only when this engine baked it
+/// (`cut_media::cache_trust`): its name comes from data in project.json, so a
+/// received project could carry another picture under it. Anything else is
+/// baked again over its name.
 pub(super) fn bake_seed(
     final_path: &Path,
     bake: impl FnOnce(&Path) -> Result<(), CutError>,
 ) -> Result<PathBuf, CutError> {
-    if cache_hit(final_path)? {
+    if cache_hit(final_path)? && cut_media::cache_trust::trusted(final_path) {
         return Ok(final_path.to_owned());
     }
     let stage = StagedOutput::new(final_path)?;
     bake(stage.path())?;
     stage.publish()?;
+    cut_media::cache_trust::remember(final_path);
     Ok(final_path.to_owned())
 }
 

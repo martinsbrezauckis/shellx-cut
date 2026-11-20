@@ -227,18 +227,11 @@ fn is_plain_dir_metadata(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_dir() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry, and the standard library reports exactly those as symlinks; cloud
+/// placeholders and other reparse points are the file or folder itself.
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    metadata.file_type().is_symlink()
 }
 
 fn is_safe_leaf(value: &str) -> bool {

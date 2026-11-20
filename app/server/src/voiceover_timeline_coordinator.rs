@@ -77,12 +77,12 @@ pub(crate) async fn start(
             &current_revision,
         )));
     }
-    // Keep the existing Record workspace's explicit, capability-backed
-    // admission model. A headless/unadmitted build never presents an enabled
-    // voiceover path merely because a browser can draw a record icon.
-    crate::screen_record::ensure_voiceover_ready().map_err(start_retry_rejected)?;
+    // Voiceover needs only the microphone: the saved input must exist, and the
+    // OS must allow microphone access. Neither check touches screen capture.
     let source =
         crate::screen_record::microphone::source_for_start().map_err(start_retry_rejected)?;
+    crate::screen_record::ensure_voiceover_ready()
+        .map_err(|error| start_retry_rejected(error.with_requirement("microphone_permission")))?;
     let status = owner
         .accept_native(
             &store.dir,
@@ -404,7 +404,33 @@ fn status_value(status: &VoiceoverTimelineStatus, owner: Option<&VoiceoverOwnerC
             "capability": owner.capability,
         });
     }
+    if let VoiceoverTimelineStatus::Finished {
+        outcome: record_capture::VoiceoverCaptureOutcome::Failed(error),
+        ..
+    } = status
+    {
+        value["failure"] = failure_value(error);
+    }
     value
+}
+
+/// Why a take failed, in words the person can act on. The system's own text is
+/// returned only for a recognised microphone problem; any other failure keeps
+/// its detail in the private recovery state.
+fn failure_value(error: &record_core::RecordError) -> Value {
+    match record_capture::MicrophoneProblem::from_error(error) {
+        Some(problem) => json!({
+            "reason": problem.reason(),
+            "message": error.message,
+            "suggested_action": error.suggested_action,
+            "detail": error.cause,
+        }),
+        None => json!({
+            "reason": "capture_failed",
+            "message": error.message,
+            "suggested_action": error.suggested_action,
+        }),
+    }
 }
 
 fn outcome_name(outcome: &record_capture::VoiceoverCaptureOutcome) -> &'static str {

@@ -12,26 +12,26 @@ import secrets
 import shutil
 from ctypes import wintypes
 from functools import lru_cache
+from importlib import util as _import_util
+# judge/project_folders.py holds the one link rule (name surrogates only, as in the engine).
+_spec = _import_util.spec_from_file_location("project_folders", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "project_folders.py"))
+project_folders = _import_util.module_from_spec(_spec)
+_spec.loader.exec_module(project_folders)
 FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT = 0x10, 0x80, 0x400
 FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT = 0x02000000, 0x00200000
 FILE_SHARE_READ, FILE_SHARE_ALL = 1, 7
-FILE_READ_DATA, FILE_WRITE_DATA = 1, 2
-FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY = 2, 4
-FILE_TRAVERSE = 0x20
-FILE_READ_ATTRIBUTES = 0x80
-SYNCHRONIZE = 0x100000
-OPEN_EXISTING = 3
+FILE_READ_DATA, FILE_WRITE_DATA, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY = 1, 2, 2, 4
+FILE_TRAVERSE, FILE_READ_ATTRIBUTES, SYNCHRONIZE = 0x20, 0x80, 0x100000
 FILE_ATTRIBUTE_TAG_INFO, FILE_STANDARD_INFO = 9, 1
 FILE_ID_INFO, FILE_CASE_SENSITIVE_INFO = 18, 23
-FILE_TYPE_DISK = 1
+OPEN_EXISTING, FILE_TYPE_DISK = 3, 1
 FILE_OPEN, FILE_CREATE, FILE_OPEN_IF = 1, 2, 3
 FILE_DIRECTORY_FILE = 1
 FILE_NON_DIRECTORY_FILE = 0x40
 FILE_SYNCHRONOUS_IO_NONALERT = 0x20
 OBJ_CASE_INSENSITIVE = 0x40
 OBJ_DONT_REPARSE = 0x1000
-TOKEN_QUERY = 8
-TOKEN_USER = 1
+TOKEN_QUERY, TOKEN_USER = 8, 1
 SDDL_REVISION_1 = 1
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 class _FileAttributeTagInfo(ctypes.Structure):
@@ -173,7 +173,8 @@ def _validate(handle: int, *, directory: bool, root: tuple[str, int] | None = No
               single_link: bool = False) -> tuple[str, tuple[int, bytes]]:
     tag, standard = (_query(handle, FILE_ATTRIBUTE_TAG_INFO, _FileAttributeTagInfo),
                      _query(handle, FILE_STANDARD_INFO, _FileStandardInfo))
-    if (_api()[0].GetFileType(handle) != FILE_TYPE_DISK or tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT
+    if (_api()[0].GetFileType(handle) != FILE_TYPE_DISK
+            or project_folders.attributes_name_another_entry(tag.attributes, tag.reparse_tag)
             or bool(standard.directory) != directory or (single_link and standard.number_of_links != 1)):
         raise ValueError("restricted frame object is not a permitted regular filesystem object")
     if directory and _query(handle, FILE_CASE_SENSITIVE_INFO, _FileCaseSensitiveInfo).flags:

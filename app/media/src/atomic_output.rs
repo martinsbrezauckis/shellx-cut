@@ -30,11 +30,12 @@ pub(crate) fn private_test_tempdir() -> tempfile::TempDir {
 /// as the output. The handle is closed before ffmpeg starts because ffmpeg
 /// opens and truncates its own output path (including on Windows).
 ///
-/// The containing output/cache directory must itself be a local plain
-/// directory. On Unix it also cannot be writable by group or other users, so
-/// another user cannot replace this reservation between its creation and
-/// ffmpeg's later open. The temp remains directly beside the final output,
-/// preserving the same-directory atomic rename contract.
+/// The directory must be a local plain directory and not writable by EVERYONE
+/// (other-write) unless it has the sticky bit; group-write is allowed (see
+/// `reserved.rs`). The leaf is created exclusively (`O_EXCL`, random name) and
+/// owner-only (0600); its identity is re-checked after ffmpeg ran, so a file a
+/// group member swapped in is never published. It stays beside the final output
+/// (same-directory atomic rename).
 fn reserve_temporary_output(out: &Path) -> Result<PathBuf, CutError> {
     let parent = out.parent().unwrap_or_else(|| Path::new("."));
     ensure_plain_output_dir(parent)?;
@@ -65,6 +66,20 @@ fn reserve_temporary_output(out: &Path) -> Result<PathBuf, CutError> {
 }
 
 fn ensure_plain_output_dir(path: &Path) -> Result<(), CutError> {
+    plain_output_dir_policy(path, true)
+}
+
+/// The rule every FFmpeg output directory must meet, read-only (nothing is
+/// tightened): used by the render's staging, the export-folder check, the set
+/// verb, the chip and `ui.state`, so a folder the render would refuse is refused
+/// when it is chosen, with the same reason.
+pub fn check_output_dir_policy(path: &Path) -> Result<(), CutError> {
+    plain_output_dir_policy(path, false)
+}
+
+// The permission bits are a Unix notion; elsewhere `harden` has nothing to act on.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn plain_output_dir_policy(path: &Path, harden: bool) -> Result<(), CutError> {
     let metadata = fs::symlink_metadata(path)?;
     if !is_plain_directory(&metadata) {
         return Err(CutError::new(
@@ -82,18 +97,18 @@ fn ensure_plain_output_dir(path: &Path) -> Result<(), CutError> {
         use std::os::unix::fs::MetadataExt;
         let mut metadata = metadata;
 
-        if metadata.mode() & 0o022 != 0 {
+        if harden && metadata.mode() & 0o022 != 0 {
             harden_owned_project_output_dir(path, &metadata)?;
             metadata = fs::symlink_metadata(path)?;
         }
-        if metadata.mode() & 0o022 != 0 {
+        if everyone_can_replace_files(metadata.mode()) {
             return Err(CutError::new(
                 error_codes::IO,
                 format!(
-                    "output directory is writable by group or other users: {}",
+                    "output directory can be written by anyone on this computer: {}",
                     path.display()
                 ),
-                "ffmpeg output staging requires a directory protected from external replacement",
+                "ffmpeg output staging needs a directory where other users cannot replace the staged file: not writable by everyone, or with the sticky bit set",
             ));
         }
     }
@@ -101,16 +116,11 @@ fn ensure_plain_output_dir(path: &Path) -> Result<(), CutError> {
     Ok(())
 }
 
-/// Cut project output/cache directories are private working state, but a
-/// cooperative shell umask commonly creates them as 0775. Tighten only an
-/// output directory owned by this process and lexically contained in a
-/// `.cutproj` package. User-selected shared output folders stay untouched and
-/// are still refused by `ensure_plain_output_dir`.
-///
-/// Open the directory itself with `O_NOFOLLOW` and chmod that descriptor so a
-/// concurrent path replacement cannot redirect the permission change. The
-/// identity comparison also makes a rename between open and verification fail
-/// closed before any temporary output is reserved.
+/// Cut's own project output/cache directories stay owner-only: a directory owned
+/// by this process inside a `.cutproj` that a shell umask made group/other
+/// writable is tightened, through the opened descriptor (`O_NOFOLLOW`, identity
+/// re-checked) so a concurrent replacement cannot redirect it. A folder the
+/// person chose is never changed, only refused (everyone-writable, no sticky bit).
 #[cfg(unix)]
 fn harden_owned_project_output_dir(path: &Path, expected: &fs::Metadata) -> Result<(), CutError> {
     use std::fs::OpenOptions;
@@ -181,18 +191,10 @@ fn is_plain_regular_file(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names
+/// another entry; cloud placeholders and other reparse points do not.
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 /// Remove only a known plain regular reservation. An unexpected replacement is
@@ -286,6 +288,7 @@ pub(crate) fn run_with_validated_atomic_output<T>(
 ) -> Result<T, CutError> {
     clear_stale_empty_output(out)?;
     let tmp = reserve_temporary_output(out)?;
+    let reserved = ReservedFile::of(&tmp);
     let mut tmp_args = args.to_vec();
     if let Some(last) = tmp_args.last_mut() {
         *last = tmp.display().to_string();
@@ -299,6 +302,14 @@ pub(crate) fn run_with_validated_atomic_output<T>(
         }
     };
     let temporary_metadata = fs::symlink_metadata(&tmp)?;
+    if !reserved.still_ours(&temporary_metadata) {
+        // Not removed: it is no longer the file this render reserved.
+        return Err(CutError::new(
+            error_codes::FFMPEG,
+            "the staged output was replaced while the render ran",
+            "another user changed the file this render was writing, so it was not published",
+        ));
+    }
     if !is_plain_regular_file(&temporary_metadata) {
         remove_reserved_temporary_output(&tmp);
         return Err(CutError::new(
@@ -327,6 +338,11 @@ pub(crate) fn run_with_validated_atomic_output<T>(
         }
     }
 }
+
+mod reserved;
+#[cfg(unix)]
+use reserved::everyone_can_replace_files;
+use reserved::ReservedFile;
 
 #[cfg(test)]
 mod tests;

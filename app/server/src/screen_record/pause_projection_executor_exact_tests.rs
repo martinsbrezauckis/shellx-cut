@@ -198,6 +198,7 @@ fn events(duration_ms: u64) -> EventTrack {
             source: CursorCoordinateSource::RdevinAbsolute,
             state: CursorCoordinateState::Exact,
             exact_clicks: 0,
+            held_clicks: 0,
             approximate_clicks: 0,
             unavailable_clicks: 0,
             max_metadata_age_ms: Some(16),

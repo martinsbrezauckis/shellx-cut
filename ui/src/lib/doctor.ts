@@ -6,7 +6,10 @@
 // this ONE shape (the shellX provider-model-card pattern). Callers: panels/
 // Environment/*, statusbar/, App.tsx. Deps: lib/client (callVerb).
 
+import type { RequirementsSection } from './requirementsModel'
+export type { RequirementTool } from './requirementsModel'
 import { callVerb } from './client'
+import { errorText } from './jobFailureText'
 
 /** Card status (mirror doctor.rs CardStatus, lowercase serde). 'unknown' is the
  *  HONEST middle state a timed-out/errored probe degrades to (readiness tri-state) — neither
@@ -55,6 +58,8 @@ export interface DoctorReport {
   cards: DoctorCard[]
   /** true when the ESSENTIAL deps (ffmpeg) are ok — false surfaces the wizard. */
   essential_ok: boolean
+  /** What needs what (schema/requirements.json); absent from older engines. */
+  requirements?: RequirementsSection
 }
 
 /** The job result shape from a completed system.fetch_tool. */
@@ -66,11 +71,32 @@ export interface FetchOutcome {
   source_url: string
   bytes: number
   ffmpeg_ok_after: boolean
+  /** What the downloaded build cannot do, if anything (e.g. Stabilize). */
+  limitation?: string | null
+}
+
+type DoctorReply = ReturnType<typeof callVerb<'system.doctor'>>
+const doctorFlights: { read?: DoctorReply; scan?: DoctorReply } = {}
+
+/** Ask the engine for the doctor report. The first scan on a machine with the
+ * captions and perception tools installed can take many seconds, and several
+ * panels ask on start-up. A browser keeps only a few connections to the engine,
+ * so identical requests are shared: a read joins any scan already in flight and
+ * a forced re-scan joins another re-scan, but never a plain read. */
+export function callDoctor(refresh = false): DoctorReply {
+  const shared = refresh ? doctorFlights.scan : doctorFlights.scan ?? doctorFlights.read
+  if (shared) return shared
+  const key = refresh ? 'scan' : 'read'
+  const flight: DoctorReply = callVerb('system.doctor', refresh ? { refresh: true } : {}).finally(() => {
+    if (doctorFlights[key] === flight) delete doctorFlights[key]
+  })
+  doctorFlights[key] = flight
+  return flight
 }
 
 /** Fetch the doctor report. `refresh` forces a re-scan (else cached read). */
 export async function fetchDoctor(refresh = false): Promise<DoctorReport | null> {
-  const r = await callVerb('system.doctor', refresh ? { refresh: true } : {})
+  const r = await callDoctor(refresh)
   return r.ok ? (r.result as DoctorReport) : null
 }
 
@@ -121,17 +147,102 @@ export async function fetchMotionManagementStatus(): Promise<MotionManagementSta
   return r.ok ? (r.result as MotionManagementStatus) : null
 }
 
-/** Kick the consented tool download. Returns the job id to poll, or null on a
- *  verb-level error (e.g. unknown tool — never happens from the wizard UI). */
-export async function fetchTool(tool: 'ffmpeg'): Promise<{ job_id: string } | null> {
-  const r = await callVerb('system.fetch_tool', { tool })
-  return r.ok ? (r.result as { job_id: string }) : null
+/** Kick a tool download. FFmpeg: only from the person's own Download choice
+ *  next to its consent text, which passes their agreement. The Microsoft
+ *  Visual C++ runtime has no consent argument: its Install button names
+ *  Microsoft's licence beside it, and Windows asks for permission itself.
+ *  Returns the job id to poll, or null on a verb-level error. */
+export async function fetchTool(tool: 'ffmpeg' | 'vc-runtime'): Promise<SetupStart> {
+  return setupStart(await callVerb('system.fetch_tool', tool === 'ffmpeg' ? { tool, accept_license: true } : { tool }))
 }
 
-/** True only when the doctor has CONFIRMED ffmpeg is absent. Unknown means the
- *  probe timed out or could not verify; do not present that as missing. */
+/** A setup verb's answer: its job, or the engine's refusal in plain words
+ *  (e.g. captions refusing up front without the Microsoft runtime). */
+export type SetupStart = { job_id: string } | { refused: string } | null
+
+function setupStart(r: { ok: boolean; result?: unknown; error?: { message?: string; suggested_action?: string } | null }): SetupStart {
+  if (r.ok) return r.result as { job_id: string }
+  return r.error?.message ? { refused: errorText(r.error, '') } : null
+}
+
+/** The Microsoft Visual C++ runtime card (Windows only) when it is MISSING:
+ *  captions and the other Python features cannot be installed until it is. */
+export function missingVcRuntime(report: DoctorReport | null): DoctorCard | null {
+  const card = report?.cards.find((c) => c.id === 'vc-runtime')
+  return card && card.status === 'missing' ? card : null
+}
+
+/** How to get ffmpeg + ffprobe on this machine (doctor ffmpeg card
+ *  `details.setup`, mirror of cut_media::tool_setup::FfmpegSetupGuide). */
+export interface FfmpegSetupGuide {
+  route: 'builtin_download' | 'homebrew' | 'package_manager' | 'choose_build'
+  fetch_available: boolean
+  steps: string[]
+  commands: { label: string; command: string }[]
+  help_url: string | null
+  custom_build: string
+  /** The built-in download and the consent text shown before it starts. */
+  download?: FfmpegDownloadOffer | null
+}
+
+/** Mirror of cut_media::tool_setup::DownloadOffer. */
+export interface FfmpegDownloadOffer {
+  publisher: string
+  publisher_url: string
+  version: string
+  size_bytes: number
+  size_is_exact: boolean
+  license: string
+  license_url: string
+  source_url: string
+  limitation: string | null
+  consent: string
+}
+
+/** The setup guide carried by an ffmpeg/ffprobe card, or null when absent. */
+export function ffmpegSetupGuide(card: DoctorCard | null | undefined): FfmpegSetupGuide | null {
+  const setup = card?.details?.setup
+  if (!setup || typeof setup !== 'object') return null
+  const guide = setup as Partial<FfmpegSetupGuide>
+  if (!Array.isArray(guide.steps) || !Array.isArray(guide.commands)) return null
+  return setup as FfmpegSetupGuide
+}
+
+/** Show the step-by-step setup for a confirmed missing ffmpeg: where there is
+ *  no download, or where another way exists beside it (Homebrew on a Mac).
+ *  Unknown/ok cards never show it. */
+export function needsManualFfmpegSetup(card: DoctorCard): boolean {
+  if (card.id !== 'ffmpeg') return false
+  const guide = ffmpegSetupGuide(card)
+  if (guide === null) return false
+  // A degraded build (e.g. the macOS download without vid.stab) keeps the
+  // steps to the complete build where there are any.
+  if (card.status === 'degraded') return guide.commands.length > 0 && unavailableFeatures(card).length > 0
+  return card.status === 'missing' && (!guide.fetch_available || guide.commands.length > 0)
+}
+
+/** What a present-but-incomplete ffmpeg cannot do, in plain words, from the
+ *  card's capability facts (only confirmed `false` values count). */
+export function unavailableFeatures(card: DoctorCard): string[] {
+  const d = card.details ?? {}
+  const out: string[] = []
+  if (d.can_stabilize === false) out.push('Stabilize')
+  if (d.can_burn_captions === false) out.push('captions burned into exports')
+  if (d.can_color_manage === false) out.push('color-managed export')
+  return out
+}
+
+/** The download offer to show beside the Download button, if any. */
+export function ffmpegDownloadOffer(card: DoctorCard): FfmpegDownloadOffer | null {
+  const offer = ffmpegSetupGuide(card)?.download
+  return offer && typeof offer.consent === 'string' ? offer : null
+}
+
+/** True only when the doctor has CONFIRMED ffmpeg or ffprobe is absent (either
+ *  one stops import, preview and export). Unknown means the probe timed out or
+ *  could not verify; do not present that as missing. */
 export function isFfmpegMissing(report: DoctorReport | null | undefined): boolean {
-  return report?.cards.find((card) => card.id === 'ffmpeg')?.status === 'missing'
+  return !!report?.cards.some((card) => (card.id === 'ffmpeg' || card.id === 'ffprobe') && card.status === 'missing')
 }
 
 /** Provision the Python perception sidecar (system.setup_perception). Mirrors
@@ -140,9 +251,8 @@ export function isFfmpegMissing(report: DoctorReport | null | undefined): boolea
  *  The job is LONG (downloads uv, a Python runtime, torch, the model — several
  *  minutes); the caller must poll without a timeout assumption. Returns the job
  *  id to poll, or null on a verb-level error. */
-export async function setupPerception(): Promise<{ job_id: string } | null> {
-  const r = await callVerb('system.setup_perception', { warm_model: true })
-  return r.ok ? (r.result as { job_id: string }) : null
+export async function setupPerception(): Promise<SetupStart> {
+  return setupStart(await callVerb('system.setup_perception', { warm_model: true }))
 }
 
 /** Provision an AI background-removal (matte) runtime (system.setup_matte).
@@ -155,13 +265,12 @@ export async function setupPerception(): Promise<{ job_id: string } | null> {
  *  Both return a {job_id} (no path) per schema, so EnvCards polls them with the
  *  same runJob helper as ffmpeg/perception. Returns the job id, or null on a
  *  verb-level error. */
-export async function setupMatte(tier: 'rvm' | 'matanyone'): Promise<{ job_id: string } | null> {
+export async function setupMatte(tier: 'rvm' | 'matanyone'): Promise<SetupStart> {
   const args =
     tier === 'matanyone'
       ? { model: 'matanyone' as const, accept_noncommercial: true }
       : { model: 'rvm' as const }
-  const r = await callVerb('system.setup_matte', args)
-  return r.ok ? (r.result as { job_id: string }) : null
+  return setupStart(await callVerb('system.setup_matte', args))
 }
 
 /** The recommended STT (transcription) models the engine ships first-class
@@ -205,6 +314,8 @@ export function cardLabel(card: DoctorCard): { title: string; role: string } {
       return { title: 'Video processing', role: 'Import, preview, export, and extract frames' }
     case 'ffprobe':
       return { title: 'Media inspection', role: 'Read clip duration, size, codecs, and audio tracks' }
+    case 'vc-runtime':
+      return { title: 'Microsoft Visual C++ runtime', role: 'Windows needs it for captions and the other local AI tools' }
     case 'perception':
       return { title: 'Captions and transcription', role: 'Word edits, captions, silence cleanup, and search' }
     case 'matte':
@@ -246,25 +357,30 @@ export function isEssential(card: DoctorCard): boolean {
  *  The server already keeps `essential_ok` TRUE on an unverified ffmpeg, so this
  *  is belt-and-suspenders that also documents the precise auto-pop condition. */
 export function shouldAutoPopWizard(report: DoctorReport | null): boolean {
-  if (!report) return false
-  const ffmpeg = report.cards.find((c) => c.id === 'ffmpeg')
-  return ffmpeg?.status === 'missing'
+  return isFfmpegMissing(report)
 }
 
-/** Does this card have a one-click fix action in the UI? Only the ffmpeg tool
- *  card maps to system.fetch_tool, and ONLY where its BtbN payload exists
- *  (Windows/Linux x86_64). Other platforms use the Doctor-provided local-install
- *  guidance, so we never render a dead Install button. readiness tri-state: only on
- *  a CONFIRMED missing/degraded card — NOT on 'unknown' (an unverified probe must
- *  not push a confident "Install" for a binary that's probably present; the
- *  neutral Re-scan affordance handles it instead). */
+/** Does this card have a one-click fix action in the UI? The ffmpeg and ffprobe
+ *  cards share system.fetch_tool, and only where the engine reports a
+ *  built-in download (Windows/Linux x86_64 and Apple silicon). Other platforms
+ *  use the Doctor-provided install guidance, so we never render a dead button.
+ *  Readiness tri-state: only on a CONFIRMED missing/degraded card — NOT on
+ *  'unknown'. A download that itself lacks a feature (the macOS build has no
+ *  vid.stab) is offered only when ffmpeg is missing: it cannot fix a degraded
+ *  build. */
 export function hasFetchAction(card: DoctorCard, os: string, arch: string): boolean {
-  return (
-    card.id === 'ffmpeg' &&
-    (card.status === 'missing' || card.status === 'degraded') &&
-    (os === 'windows' || os === 'linux') &&
-    arch === 'x86_64'
-  )
+  // Microsoft's runtime: the engine says when its own download applies.
+  if (card.id === 'vc-runtime') return card.status === 'missing' && card.details?.fetch_available === true
+  if (card.id !== 'ffmpeg' && card.id !== 'ffprobe') return false
+  if (card.status !== 'missing' && (card.id !== 'ffmpeg' || card.status !== 'degraded')) return false
+  // The engine says where its download exists; older reports fall back to the
+  // platform pair the registry has always served.
+  const guide = ffmpegSetupGuide(card)
+  if (guide) {
+    if (!guide.fetch_available) return false
+    return card.status === 'missing' || !guide.download?.limitation
+  }
+  return (os === 'windows' || os === 'linux') && arch === 'x86_64'
 }
 
 /** Does this card have the "Install captions" action? The perception card maps
@@ -437,7 +553,8 @@ export function groupCards(cards: DoctorCard[]): {
 export type EnvHealthLevel = 'unknown' | 'ok' | 'degraded' | 'missing'
 
 /** Collapse the doctor report to one health rung, missing-essential first:
- *  missing ESSENTIAL dep (ffmpeg → red) > any degraded card (amber) > ok (green).
+ *  missing ESSENTIAL dep (ffmpeg → red) > any degraded REQUIRED card (amber) > ok (green);
+ *  optional extras (see isOptionalCard) never count.
  *  The single source of truth for BOTH the status-bar env chip and the topbar
  *  Setup button's nudge dot, so the two can never disagree. */
 export function envHealthLevel(doctor: DoctorReport | null): EnvHealthLevel {
@@ -452,11 +569,27 @@ export function envHealthLevel(doctor: DoctorReport | null): EnvHealthLevel {
   // the EXPECTED state — it must NOT paint the global env chip / Setup dot amber
   // for everyone who never runs them. They surface their own neutral OPTIONAL
   // chip inside the Environment panel instead; the global nudge stays green.
-  if (
-    doctor.cards.some(
-      (c) => c.kind !== 'service' && (c.status === 'degraded' || c.status === 'unknown'),
-    )
-  )
+  if (doctor.cards.some((c) => !isOptionalCard(c) && (c.status === 'degraded' || c.status === 'unknown'))) {
     return 'degraded'
+  }
   return 'ok'
+}
+
+/**
+ * Cards for OPTIONAL extras: the remote services (dub, diarize), the render
+ * judges (a coding-agent CLI that may be installed but not signed in), the
+ * background-removal tools and the GPU encoder. Core editing, export and
+ * captions work without them, so an optional card that is not ready must not
+ * paint the global "Setup needs attention" chip or the Setup dot. The required
+ * set is what is left: FFmpeg and FFprobe, the captions runtime and the disk.
+ */
+export function isOptionalCard(card: { id: string; kind: string }): boolean {
+  return card.kind === 'service' || card.kind === 'judge' || card.kind === 'matte' || card.id === 'gpu-encode'
+}
+
+/** The optional extras that are not ready, for a quiet "available" note (never a warning). */
+export function optionalExtrasNote(doctor: DoctorReport | null): string | null {
+  if (!doctor) return null
+  const open = doctor.cards.filter((card) => isOptionalCard(card) && card.status !== 'ok')
+  return open.length ? `Optional extras you can set up: ${open.map((card) => card.id).join(', ')}.` : null
 }

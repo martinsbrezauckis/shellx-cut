@@ -140,7 +140,16 @@ export function firstUseRecordingPreset(doctor: unknown): RecordingPreset | null
 export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown): string | null {
   if (!doctor || typeof doctor !== 'object') return 'Recorder checks did not return a current result.'
   const d = doctor as Record<string, unknown>
-  if ((d.start_allowed ?? d.ready) !== true) return 'Screen capture is unavailable. Check Recorder setup and permissions.'
+  if ((d.start_allowed ?? d.ready) !== true) {
+    // Name what is missing (for example macOS screen recording permission and
+    // where to turn it on) instead of a generic refusal.
+    const screen = Array.isArray(d.cards)
+      ? (d.cards as Array<{ name?: unknown; status?: unknown; detail?: unknown }>).find((card) => card.name === 'screen_capture' && card.status !== 'ok')
+      : undefined
+    return typeof screen?.detail === 'string' && screen.detail
+      ? `Screen capture is not ready: ${screen.detail}`
+      : 'Screen capture is not ready. Open Record and press Check to see what is missing.'
+  }
   if (preset.source.kind === 'portal_display') {
     if (!doctorAllowsPortalDisplay(d)) return 'The Linux screen-sharing portal is not available. Review Recorder setup.'
   } else if (preset.source.kind === 'display') {

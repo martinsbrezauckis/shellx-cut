@@ -397,6 +397,7 @@ pub fn autoedit(
 
 /// Controlled counterpart for a tracked export job. The process control owns
 /// the job's deadline/cancellation probe all the way down to ffmpeg children.
+#[cfg(test)]
 pub fn render_with_control(
     source: &Path,
     plan: &record_core::EditPlan,
@@ -407,7 +408,7 @@ pub fn render_with_control(
     render_with_control_progress(source, plan, out, audio, control, |_, _| {})
 }
 
-/// Like [`render_with_control`], while reporting confirmed compositor frame flow
+/// Like `render_with_control`, while reporting confirmed compositor frame flow
 /// to a tracked caller. The recorder export job turns that into durable
 /// `jobs.status` phase/progress evidence; foreground polish callers keep the
 /// no-op observer above.
@@ -422,6 +423,29 @@ pub fn render_with_control_progress(
     align_ffmpeg_env();
     let audio_s = audio.map(|p| p.to_string_lossy().into_owned());
     record_render::render_video_audio_with_control_progress(
+        &source.to_string_lossy(),
+        plan,
+        &out.to_string_lossy(),
+        audio_s.as_deref(),
+        control,
+        on_frame,
+    )
+    .map_err(record_err)
+}
+
+/// The polished editable clip: the same picture as
+/// [`render_with_control_progress`], encoded at the faster polish preset.
+pub fn render_polish_with_control_progress(
+    source: &Path,
+    plan: &record_core::EditPlan,
+    out: &Path,
+    audio: Option<&Path>,
+    control: &record_render::ffmpeg::ProcessControl,
+    on_frame: impl FnMut(u64, u64),
+) -> Result<u64, CutError> {
+    align_ffmpeg_env();
+    let audio_s = audio.map(|p| p.to_string_lossy().into_owned());
+    record_render::render_polish_with_control_progress(
         &source.to_string_lossy(),
         plan,
         &out.to_string_lossy(),
@@ -465,40 +489,36 @@ pub fn mux_raw_with_control(
     align_ffmpeg_env();
     let ffmpeg = cut_media::toolpath::ffmpeg();
     let mut cmd = std::process::Command::new(&ffmpeg);
-    cmd.arg("-y")
-        .args([
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-i",
-        ])
-        .arg(source);
-    if let Some(a) = audio {
-        cmd.args([
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-i",
-        ])
-        .arg(a)
-        .args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-af",
-            "apad",
-            "-shortest",
-        ]);
-    } else {
-        cmd.args(["-map", "0:v:0", "-c", "copy"]);
-    }
+    cmd.arg("-y");
+    record_render::ffmpeg::with_media_process_control(control, || {
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, source)?;
+        if let Some(a) = audio {
+            let video_duration = super::raw_mux::video_duration_arg(source).or_else(|error| {
+                control
+                    .check("probe raw mux video duration")
+                    .map_err(record_err)?;
+                Err(error)
+            })?;
+            cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, a)?;
+            cmd.args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                // Pad and cut the audio to the video length; `-shortest` with an
+                // endless pad could keep FFmpeg encoding silence forever.
+                "-af",
+                &format!("apad=whole_dur={video_duration},atrim=duration={video_duration}"),
+            ]);
+        } else {
+            cmd.args(["-map", "0:v:0", "-c", "copy"]);
+        }
+        Ok::<(), CutError>(())
+    })?;
     cmd.arg(out);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

@@ -3,8 +3,10 @@
 //! Long tasks publish progress and persist `<proj>/jobs/<id>.json`, keeping status
 //! observable across crashes. Callers are dispatch plus jobs.status/list/cancel.
 
+mod consent;
 mod dependency;
 mod durable_admission;
+pub(crate) mod interrupted;
 mod locking;
 #[cfg(test)]
 mod locking_tests;
@@ -21,7 +23,7 @@ use cut_core::CutError;
 pub use dependency::JobDependencyInfo;
 pub(crate) use outcome::{JobOutcome, JobOutcomeReason};
 use persistence::{persist, recover, JobPersistenceNotice};
-pub(crate) use process::{run_owned, ProcessControl, ProcessTermination};
+pub(crate) use process::{run_owned, spawn_retrying_busy, ProcessControl, ProcessTermination};
 pub use queue::JobQueueInfo;
 pub use retry::{
     JobInputFingerprint, JobRetry, JobRetryDescriptor, ScreenRecordExportRetryDescriptor,
@@ -30,7 +32,7 @@ pub use retry::{
 use runtime::JobTaskControl;
 pub(crate) use runtime::{
     begin_current_blocking_worker, begin_current_process_worker, current_job_cancellation,
-    JobCancellation, JobCancellationReason,
+    hold_cooperative_cancellation, JobCancellation, JobCancellationReason,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -39,11 +41,34 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
+/// How long a project change waits for the old project's workers to stop. A stop
+/// measured on an idle Linux box takes under 0.15 s; a busy Windows machine
+/// (virus scanner, many ffmpeg children) was seen to need several seconds, so
+/// the wait is generous: waiting longer costs a pause, refusing costs work.
 #[cfg(not(test))]
-const JOB_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const JOB_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 #[cfg(test)]
 const JOB_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 const DETACHED_JOB_TOMBSTONE_LIMIT: usize = 1024;
+
+/// One running or queued job a project change would cancel.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ActiveJobInfo {
+    pub job_id: String,
+    pub kind: String,
+    pub progress: f32,
+    /// Latest phase text, when the job published one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl ActiveJobInfo {
+    /// Work someone asked for that a project change would throw away: the
+    /// change asks first (item 135, see `consent`).
+    pub fn is_delivery(&self) -> bool {
+        consent::asks_before_cancel(&self.kind)
+    }
+}
 
 /// Job lifecycle states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,8 +96,8 @@ pub enum JobCompletion {
 pub struct JobRecord {
     /// "job_NNN" id, unique per server run.
     pub job_id: String,
-    /// Job kind: "probe" | "proxy" | "transcribe" | "perception" | "render"
-    /// | "judge" | "import_chain".
+    /// Job kind: "probe" | "proxy" | "proxy_check" | "transcribe" | "perception"
+    /// | "render" | "judge" | "import_chain" (and more; see ui jobPresentation).
     pub kind: String,
     pub state: JobState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,6 +145,7 @@ pub struct JobManager {
     inner: Arc<Mutex<JobManagerInner>>,
     /// Bus to publish job_progress / render_done events on.
     pub events: EventBus,
+    doctor: Option<crate::doctor::cache::DoctorCache>,
 }
 
 #[derive(Debug)]
@@ -140,6 +166,8 @@ struct JobManagerInner {
     /// Corrupt records moved out of active history during project recovery.
     persistence_notices: Vec<JobPersistenceNotice>,
     next_seq: u64,
+    /// How long a project change or a cancellation waits for workers to stop.
+    drain_timeout: std::time::Duration,
 }
 
 impl JobManager {
@@ -154,15 +182,53 @@ impl JobManager {
                 persist_dir: None,
                 persistence_notices: Vec::new(),
                 next_seq: 0,
+                drain_timeout: JOB_DRAIN_TIMEOUT,
             })),
             events,
+            doctor: None,
         }
+    }
+
+    pub(crate) fn with_doctor(mut self, doctor: crate::doctor::cache::DoctorCache) -> Self {
+        self.doctor = Some(doctor);
+        self
     }
 
     /// Stop every task owned by the current project and detach its persisted
     /// job table before another project is attached. Background work keeps
     /// absolute project paths, so letting it survive a project switch can write
     /// late results into a project the user has already closed (or deleted).
+    fn drain_timeout(&self) -> std::time::Duration {
+        self.lock_inner().drain_timeout
+    }
+
+    /// Tests that exercise ordering around a project change, not the drain
+    /// budget itself, widen the wait so a slow machine cannot turn a worker
+    /// that is still stopping into a refused change.
+    #[cfg(test)]
+    pub(crate) fn set_drain_timeout_for_test(&self, timeout: std::time::Duration) {
+        self.lock_inner().drain_timeout = timeout;
+    }
+
+    /// Queued and running jobs of the open project: what closing or replacing it
+    /// would cancel. Read-only; cancels nothing.
+    pub fn active_jobs(&self) -> Vec<ActiveJobInfo> {
+        let mut jobs: Vec<ActiveJobInfo> = self
+            .lock_inner()
+            .jobs
+            .values()
+            .filter(|record| matches!(record.state, JobState::Queued | JobState::Running))
+            .map(|record| ActiveJobInfo {
+                job_id: record.job_id.clone(),
+                kind: record.kind.clone(),
+                progress: record.progress,
+                message: record.message.clone(),
+            })
+            .collect();
+        jobs.sort_by(|a, b| a.job_id.cmp(&b.job_id));
+        jobs
+    }
+
     pub async fn detach_project(&self) -> Result<(), CutError> {
         let (mut tasks, active_ids) = {
             let mut inner = self.lock_inner();
@@ -188,7 +254,8 @@ impl JobManager {
         // ffmpeg/Python child has been waited/reaped. If the grace period
         // expires, keep the current project attached and make the caller retry;
         // attaching the next project while an old worker is alive is forbidden.
-        let deadline = tokio::time::Instant::now() + JOB_DRAIN_TIMEOUT;
+        let drain_timeout = self.drain_timeout();
+        let deadline = tokio::time::Instant::now() + drain_timeout;
         let mut pending = Vec::new();
         for (job_id, mut task) in tasks.drain(..) {
             if !task.wait_until(deadline).await {
@@ -208,11 +275,11 @@ impl JobManager {
                 "project change is waiting for background work to stop",
                 format!(
                     "workers still active after {} ms: {pending_ids}",
-                    JOB_DRAIN_TIMEOUT.as_millis()
+                    drain_timeout.as_millis()
                 ),
             )
             .with_suggested_action(
-                "wait for the named worker to finish shutting down, then retry the project change",
+                "the old project's running jobs were already cancelled and are stopping; wait a few seconds, then retry the project change (it completes once they have stopped)",
             ));
         }
 
@@ -314,7 +381,8 @@ impl JobManager {
         // dropped before jobs.cancel reports a terminal record to the caller.
         // An already-started blocking worker is counted separately and must
         // finish before cancellation can honestly report success.
-        let deadline = tokio::time::Instant::now() + JOB_DRAIN_TIMEOUT;
+        let drain_timeout = self.drain_timeout();
+        let deadline = tokio::time::Instant::now() + drain_timeout;
         let drained = control.wait_until(deadline).await;
         // A task can cross its commit point and finish between removal of the
         // handle and cooperative cancellation. Never overwrite/report that completed
@@ -327,17 +395,7 @@ impl JobManager {
         }
         if !drained {
             self.lock_inner().tasks.insert(job_id.to_string(), control);
-            return Err(CutError::new(
-                "job_cancel_pending",
-                format!("job '{job_id}' is still stopping"),
-                format!(
-                    "a blocking worker did not finish within {} ms",
-                    JOB_DRAIN_TIMEOUT.as_millis()
-                ),
-            )
-            .with_suggested_action(
-                "wait for the worker to finish shutting down, then retry jobs.cancel",
-            ));
+            return Err(self.cancel_pending_error(job_id, drain_timeout));
         }
         self.cancel_by_user(job_id);
         Ok(true)
@@ -360,6 +418,7 @@ impl JobManager {
                 kind,
                 progress,
                 message,
+                terminal: false,
             });
         }
     }
@@ -402,7 +461,7 @@ impl JobManager {
         let terminal = matches!(rec.state, JobState::Done | JobState::Failed);
         // Persist every transition crash-recoverably, clearing any prior notice before serializing.
         rec.persistence_error = None;
-        if let Some(dir) = persist_dir {
+        if let Some(dir) = persist_dir.as_ref() {
             match persist(&dir.join(format!("{job_id}.json")), rec) {
                 Ok(()) => {}
                 Err(e) => {
@@ -417,6 +476,9 @@ impl JobManager {
         }
         if terminal {
             inner.tasks.remove(job_id);
+            if let Some(project_dir) = persist_dir.as_deref().and_then(std::path::Path::parent) {
+                interrupted::note_ended(project_dir, job_id);
+            }
         }
         Some(kind)
     }
@@ -432,593 +494,4 @@ impl JobManager {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Reopening a project must advance the job sequence past the highest
-    /// persisted id, so a fresh server (next_seq=0) never re-mints — and thereby
-    /// overwrites — an existing job_NNN.json. Regression gate for the
-    /// `attach_project` next-sequence regression.
-    #[test]
-    fn attach_advances_seq_past_persisted_ids() {
-        let dir = tempfile::tempdir().unwrap();
-        let proj = dir.path();
-        let jobs = proj.join("jobs");
-        std::fs::create_dir_all(&jobs).unwrap();
-        // A prior run left a finished record and a damaged newer filename.
-        let rec = JobRecord {
-            job_id: "job_005".into(),
-            kind: "render".into(),
-            state: JobState::Done,
-            completion: Some(JobCompletion::Success),
-            outcome: Some(JobOutcome::Succeeded),
-            outcome_reason: Some(JobOutcomeReason::Completed),
-            progress: 1.0,
-            message: Some("done".into()),
-            queue: None,
-            waiting_on: None,
-            retry: None,
-            created_ts: "2026-06-16T00:00:00.000Z".into(),
-            updated_ts: "2026-06-16T00:00:00.000Z".into(),
-            result: None,
-            error: None,
-            persistence_error: None,
-        };
-        std::fs::write(
-            jobs.join("job_005.json"),
-            serde_json::to_string(&rec).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(jobs.join("job_007.json"), b"not valid json").unwrap();
-
-        // Fresh manager (next_seq=0) attaches the project, then mints a job.
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(proj).unwrap();
-        let created = mgr.create("render");
-        assert_eq!(
-            created.job_id, "job_008",
-            "next id must follow every recovered filename/history id, not restart or reuse corruption"
-        );
-        // The prior record is still on disk (not clobbered).
-        assert!(
-            jobs.join("job_005.json").exists(),
-            "persisted job_005 preserved"
-        );
-        assert_eq!(mgr.persistence_notices().len(), 1);
-    }
-
-    #[test]
-    fn create_persists_queued_job_before_worker_starts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(dir.path()).unwrap();
-
-        let created = mgr.create("render");
-        let persisted = dir
-            .path()
-            .join("jobs")
-            .join(format!("{}.json", created.job_id));
-        assert!(
-            persisted.exists(),
-            "queued job must be crash-visible immediately"
-        );
-
-        let text = std::fs::read_to_string(persisted).unwrap();
-        let rec: JobRecord = serde_json::from_str(&text).unwrap();
-        assert_eq!(rec.job_id, created.job_id);
-        assert_eq!(rec.kind, "render");
-        assert_eq!(rec.state, JobState::Queued);
-        assert_eq!(rec.completion, None);
-    }
-
-    #[test]
-    fn progress_persists_the_latest_human_phase_across_record_reads() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(dir.path()).unwrap();
-        let job = mgr.create("render_queue");
-
-        mgr.progress(&job.job_id, 0.25, Some("rendering delivery 2/8".into()));
-        mgr.progress(&job.job_id, 0.5, None);
-
-        let active = mgr.get(&job.job_id).unwrap();
-        assert_eq!(active.progress, 0.5);
-        assert_eq!(active.message.as_deref(), Some("rendering delivery 2/8"));
-        let persisted: JobRecord = serde_json::from_slice(
-            &std::fs::read(dir.path().join("jobs").join("job_001.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(persisted.message, active.message);
-
-        mgr.finish(&job.job_id, serde_json::json!({"ok": true}));
-        assert_eq!(
-            mgr.get(&job.job_id).unwrap().message.as_deref(),
-            Some("done")
-        );
-    }
-
-    #[tokio::test]
-    async fn detach_project_cancels_old_jobs_and_isolates_the_next_project() {
-        let old = tempfile::tempdir().unwrap();
-        let next = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(old.path()).unwrap();
-
-        let started = std::sync::Arc::new(tokio::sync::Notify::new());
-        let waiting = started.notified();
-        let signal = started.clone();
-        let job = mgr.create("enrich");
-        mgr.spawn(&job.job_id, async move {
-            signal.notify_one();
-            std::future::pending::<()>().await;
-        });
-        waiting.await;
-
-        mgr.detach_project().await.unwrap();
-        assert_eq!(mgr.active_task_count_for_tests(), 0);
-        assert!(mgr.list().is_empty());
-        assert!(
-            mgr.lock_inner().detached_job_ids.contains(&job.job_id),
-            "only fully detached project jobs become quiet late-update tombstones"
-        );
-
-        let old_record: JobRecord = serde_json::from_str(
-            &std::fs::read_to_string(old.path().join("jobs").join(format!("{}.json", job.job_id)))
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(old_record.state, JobState::Failed);
-        assert_eq!(old_record.outcome, Some(JobOutcome::Cancelled));
-        assert_eq!(
-            old_record.outcome_reason,
-            Some(JobOutcomeReason::ProjectSwitchCancelled)
-        );
-        assert_eq!(
-            old_record.error.as_ref().map(|error| error.code.as_str()),
-            Some("job_cancelled")
-        );
-
-        mgr.attach_project(next.path()).unwrap();
-        mgr.finish(&job.job_id, serde_json::json!({"late": true}));
-        assert!(
-            !next
-                .path()
-                .join("jobs")
-                .join(format!("{}.json", job.job_id))
-                .exists(),
-            "a late update from the detached project must not enter the next project"
-        );
-        let next_job = mgr.create("render");
-        assert!(next
-            .path()
-            .join("jobs")
-            .join(format!("{}.json", next_job.job_id))
-            .exists());
-    }
-
-    #[tokio::test]
-    async fn detach_waits_for_spawn_blocking_worker_to_finish() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use tokio::sync::Notify;
-        use tokio::time::{sleep, timeout, Duration};
-
-        let old = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(old.path()).unwrap();
-
-        let job = mgr.create("render");
-        let worker_started = Arc::new(Notify::new());
-        let worker_finished = Arc::new(AtomicBool::new(false));
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let started = worker_started.clone();
-        let finished = worker_finished.clone();
-        mgr.spawn(&job.job_id, async move {
-            let _ = crate::dispatch::run_blocking("test.blocking_worker", move || {
-                started.notify_one();
-                release_rx.recv().expect("test releases worker");
-                finished.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-            .await;
-        });
-        worker_started.notified().await;
-
-        let detach_mgr = mgr.clone();
-        let detaching = tokio::spawn(async move { detach_mgr.detach_project().await });
-        sleep(Duration::from_millis(50)).await;
-        assert!(
-            !detaching.is_finished(),
-            "project detach must wait for an already-running blocking worker"
-        );
-        assert!(!worker_finished.load(Ordering::SeqCst));
-
-        release_tx.send(()).unwrap();
-        timeout(Duration::from_secs(1), detaching)
-            .await
-            .expect("detach should finish after worker exits")
-            .expect("detach task should not panic")
-            .expect("detach should succeed");
-        assert!(worker_finished.load(Ordering::SeqCst));
-        assert_eq!(mgr.active_task_count_for_tests(), 0);
-    }
-
-    #[tokio::test]
-    async fn switch_project_fails_closed_while_blocking_worker_is_alive() {
-        use tokio::sync::Notify;
-        use tokio::time::{timeout, Duration};
-
-        let old = tempfile::tempdir().unwrap();
-        let next = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(old.path()).unwrap();
-
-        let job = mgr.create("render");
-        let worker_started = Arc::new(Notify::new());
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let started = worker_started.clone();
-        mgr.spawn(&job.job_id, async move {
-            let _ = crate::dispatch::run_blocking("test.blocking_worker", move || {
-                started.notify_one();
-                release_rx.recv().expect("test releases worker");
-                Ok(())
-            })
-            .await;
-        });
-        worker_started.notified().await;
-
-        let error = mgr.switch_project(next.path()).await.unwrap_err();
-        assert_eq!(error.code, "job_cancel_pending");
-        assert!(
-            !next.path().join("jobs").exists(),
-            "next project must not attach while an old blocking worker is alive"
-        );
-
-        release_tx.send(()).unwrap();
-        timeout(Duration::from_secs(1), async {
-            loop {
-                if mgr
-                    .lock_inner()
-                    .tasks
-                    .values()
-                    .all(|task| !task.has_blocking_workers())
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("blocking worker should exit");
-
-        mgr.switch_project(next.path()).await.unwrap();
-        let next_job = mgr.create("proxy");
-        assert!(
-            next.path()
-                .join("jobs")
-                .join(format!("{}.json", next_job.job_id))
-                .exists(),
-            "next project attaches only after every old worker is gone"
-        );
-    }
-
-    #[test]
-    fn terminal_completion_quality_is_explicit_and_backward_compatible() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(dir.path()).unwrap();
-
-        let complete = mgr.create("proxy");
-        mgr.finish(&complete.job_id, serde_json::json!({"proxy": true}));
-        assert_eq!(
-            mgr.get(&complete.job_id).unwrap().completion,
-            Some(JobCompletion::Success)
-        );
-        assert_eq!(
-            mgr.get(&complete.job_id).unwrap().outcome,
-            Some(JobOutcome::Succeeded)
-        );
-
-        let partial = mgr.create("enrich");
-        mgr.finish_with_warnings(
-            &partial.job_id,
-            serde_json::json!({"transcript": false, "warnings": ["stt unavailable"]}),
-        );
-        let partial = mgr.get(&partial.job_id).unwrap();
-        assert_eq!(partial.state, JobState::Done);
-        assert_eq!(partial.completion, Some(JobCompletion::DoneWithWarnings));
-        assert_eq!(
-            partial.outcome_reason,
-            Some(JobOutcomeReason::CompletedWithWarnings)
-        );
-        let persisted = std::fs::read_to_string(
-            dir.path()
-                .join("jobs")
-                .join(format!("{}.json", partial.job_id)),
-        )
-        .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&persisted).unwrap()["completion"],
-            "done_with_warnings"
-        );
-
-        let legacy: JobRecord = serde_json::from_value(serde_json::json!({
-            "job_id": "job_legacy",
-            "kind": "render",
-            "state": "done",
-            "progress": 1.0,
-            "created_ts": "2026-01-01T00:00:00Z",
-            "updated_ts": "2026-01-01T00:00:00Z"
-        }))
-        .unwrap();
-        assert_eq!(legacy.completion, None);
-        assert_eq!(legacy.outcome, None);
-        assert_eq!(legacy.outcome_reason, None);
-    }
-
-    #[test]
-    fn create_reports_persistence_failure_in_memory() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(dir.path()).unwrap();
-        let jobs_path = dir.path().join("jobs");
-        std::fs::remove_dir_all(&jobs_path).unwrap();
-        std::fs::write(&jobs_path, b"not a directory").unwrap();
-
-        let created = mgr.create("render");
-        assert!(
-            created.persistence_error.is_some(),
-            "create should surface a queued-job persistence failure"
-        );
-        let live = mgr.get(&created.job_id).unwrap();
-        assert_eq!(live.persistence_error, created.persistence_error);
-    }
-
-    #[test]
-    fn create_durable_refuses_persistence_failure_without_an_in_memory_record() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(dir.path()).unwrap();
-        let jobs_path = dir.path().join("jobs");
-        std::fs::remove_dir_all(&jobs_path).unwrap();
-        std::fs::write(&jobs_path, b"not a directory").unwrap();
-
-        let error = mgr
-            .create_durable("portable_package")
-            .expect_err("durable admission must refuse an unwritable job store");
-        assert_eq!(error.code, cut_core::error_codes::IO);
-        assert!(
-            mgr.list().is_empty(),
-            "a rejected job must not become visible"
-        );
-    }
-
-    #[test]
-    fn update_reports_persistence_failure_in_memory() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = JobManager::new(EventBus::new());
-        mgr.attach_project(dir.path()).unwrap();
-        let created = mgr.create("render");
-        let jobs_path = dir.path().join("jobs");
-        std::fs::remove_dir_all(&jobs_path).unwrap();
-        std::fs::write(&jobs_path, b"not a directory").unwrap();
-
-        mgr.finish(&created.job_id, serde_json::json!({"path":"out.mp4"}));
-        let live = mgr.get(&created.job_id).unwrap();
-        assert_eq!(live.state, JobState::Done);
-        assert_eq!(live.completion, Some(JobCompletion::Success));
-        assert_eq!(live.result, Some(serde_json::json!({"path":"out.mp4"})));
-        assert!(
-            live.persistence_error.is_some(),
-            "terminal transition should expose persistence failure"
-        );
-    }
-
-    #[tokio::test]
-    async fn spawn_tracks_handle_and_abort_removes_it() {
-        let mgr = JobManager::new(EventBus::new());
-        let job = mgr.create("render");
-
-        mgr.spawn(&job.job_id, async {
-            std::future::pending::<()>().await;
-        });
-        assert_eq!(mgr.active_task_count_for_tests(), 1);
-
-        assert!(mgr.abort(&job.job_id).await.unwrap());
-        assert_eq!(mgr.active_task_count_for_tests(), 0);
-        let record = mgr.get(&job.job_id).unwrap();
-        assert_eq!(record.state, JobState::Failed);
-        assert_eq!(record.outcome, Some(JobOutcome::Cancelled));
-        assert_eq!(record.outcome_reason, Some(JobOutcomeReason::UserCancelled));
-    }
-
-    #[tokio::test]
-    async fn terminal_transitions_publish_progress_one() {
-        for transition in ["success", "warnings", "failure"] {
-            let bus = EventBus::new();
-            let mut events = bus.subscribe();
-            let mgr = JobManager::new(bus);
-            let job = mgr.create("analysis");
-            match transition {
-                "success" => mgr.finish(&job.job_id, serde_json::json!({"ok": true})),
-                "warnings" => mgr.finish_with_warnings(
-                    &job.job_id,
-                    serde_json::json!({"warnings": ["partial"]}),
-                ),
-                "failure" => mgr.fail(
-                    &job.job_id,
-                    CutError::new("failed", "analysis failed", "test"),
-                ),
-                _ => unreachable!(),
-            }
-            let event = events.recv().await.expect("terminal progress event");
-            assert!(
-                matches!(event, crate::events::Event::JobProgress { .. }),
-                "expected job progress, got {event:?}"
-            );
-            if let crate::events::Event::JobProgress {
-                job_id,
-                kind,
-                progress,
-                message,
-            } = event
-            {
-                assert_eq!(job_id, job.job_id);
-                assert_eq!(kind, "analysis");
-                assert_eq!(progress, 1.0);
-                assert!(message.is_some());
-            }
-        }
-    }
-
-    #[test]
-    fn terminal_job_state_cannot_regress_to_running_or_other_terminal() {
-        use serde_json::json;
-
-        let mgr = JobManager::new(EventBus::new());
-        let done = mgr.create("render");
-        mgr.finish(&done.job_id, json!({"path":"out.mp4"}));
-        mgr.progress(&done.job_id, 0.25, Some("late progress".into()));
-        let rec = mgr.get(&done.job_id).unwrap();
-        assert_eq!(rec.state, JobState::Done);
-        assert_eq!(rec.progress, 1.0);
-        assert_eq!(rec.result, Some(json!({"path":"out.mp4"})));
-
-        let failed = mgr.create("render");
-        let error = CutError::new("boom", "failed once", "test failure");
-        mgr.fail(&failed.job_id, error.clone());
-        mgr.finish(&failed.job_id, json!({"path":"late.mp4"}));
-        let rec = mgr.get(&failed.job_id).unwrap();
-        assert_eq!(rec.state, JobState::Failed);
-        assert_eq!(rec.error, Some(error));
-        assert_eq!(rec.result, None);
-    }
-
-    #[tokio::test]
-    async fn spawn_limited_serializes_jobs_with_the_same_key() {
-        use serde_json::json;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use tokio::sync::Notify;
-        use tokio::time::{sleep, timeout, Duration};
-
-        let mgr = JobManager::new(EventBus::new());
-        let first = mgr.create("enrich");
-        let second = mgr.create("enrich");
-        let running = Arc::new(AtomicUsize::new(0));
-        let max_running = Arc::new(AtomicUsize::new(0));
-        let second_started = Arc::new(AtomicBool::new(false));
-        let first_gate = Arc::new(Notify::new());
-        let release_first = Arc::new(Notify::new());
-        let second_gate = Arc::new(Notify::new());
-
-        let first_id = first.job_id.clone();
-        let mgr_first = mgr.clone();
-        let running_first = running.clone();
-        let max_first = max_running.clone();
-        let first_gate_task = first_gate.clone();
-        let release_first_task = release_first.clone();
-        mgr.spawn_limited(&first.job_id, "enrich", 1, async move {
-            let active = running_first.fetch_add(1, Ordering::SeqCst) + 1;
-            max_first.fetch_max(active, Ordering::SeqCst);
-            first_gate_task.notify_one();
-            release_first_task.notified().await;
-            running_first.fetch_sub(1, Ordering::SeqCst);
-            mgr_first.finish(&first_id, json!({"ok": true}));
-        });
-
-        let second_id = second.job_id.clone();
-        let mgr_second = mgr.clone();
-        let running_second = running.clone();
-        let max_second = max_running.clone();
-        let second_started_task = second_started.clone();
-        let second_gate_task = second_gate.clone();
-        mgr.spawn_limited(&second.job_id, "enrich", 1, async move {
-            second_started_task.store(true, Ordering::SeqCst);
-            let active = running_second.fetch_add(1, Ordering::SeqCst) + 1;
-            max_second.fetch_max(active, Ordering::SeqCst);
-            running_second.fetch_sub(1, Ordering::SeqCst);
-            mgr_second.finish(&second_id, json!({"ok": true}));
-            second_gate_task.notify_one();
-        });
-
-        timeout(Duration::from_secs(1), first_gate.notified())
-            .await
-            .expect("first limited job should start");
-        sleep(Duration::from_millis(50)).await;
-        let first_record = mgr.get(&first.job_id).unwrap();
-        assert_eq!(first_record.state, JobState::Running);
-        assert_eq!(first_record.queue, None);
-        let second_record = mgr.get(&second.job_id).unwrap();
-        assert_eq!(second_record.state, JobState::Queued);
-        assert_eq!(
-            second_record.queue,
-            Some(JobQueueInfo {
-                resource: "enrich".into(),
-                max_running: 1,
-            }),
-            "the durable queued record names the constrained resource and capacity"
-        );
-        assert!(
-            !second_started.load(Ordering::SeqCst),
-            "second job must stay queued while the first holds the enrich slot"
-        );
-
-        release_first.notify_one();
-        timeout(Duration::from_secs(1), second_gate.notified())
-            .await
-            .expect("second limited job should start after first finishes");
-        assert_eq!(max_running.load(Ordering::SeqCst), 1);
-        assert_eq!(mgr.get(&second.job_id).unwrap().queue, None);
-    }
-
-    #[tokio::test]
-    async fn with_limit_shares_slots_with_spawn_limited_jobs() {
-        use serde_json::json;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use tokio::sync::Notify;
-        use tokio::time::{sleep, timeout, Duration};
-
-        let mgr = JobManager::new(EventBus::new());
-        let job = mgr.create("enrich");
-        let first_started = Arc::new(Notify::new());
-        let release_first = Arc::new(Notify::new());
-        let direct_started = Arc::new(AtomicBool::new(false));
-
-        let job_id = job.job_id.clone();
-        let mgr_job = mgr.clone();
-        let first_started_task = first_started.clone();
-        let release_first_task = release_first.clone();
-        mgr.spawn_limited(&job.job_id, "analysis", 1, async move {
-            first_started_task.notify_one();
-            release_first_task.notified().await;
-            mgr_job.finish(&job_id, json!({"ok": true}));
-        });
-
-        timeout(Duration::from_secs(1), first_started.notified())
-            .await
-            .expect("limited job should start first");
-
-        let mgr_direct = mgr.clone();
-        let direct_started_task = direct_started.clone();
-        let direct = tokio::spawn(async move {
-            mgr_direct
-                .with_limit("analysis", 1, async move {
-                    direct_started_task.store(true, Ordering::SeqCst);
-                    42
-                })
-                .await
-        });
-
-        sleep(Duration::from_millis(50)).await;
-        assert!(
-            !direct_started.load(Ordering::SeqCst),
-            "direct limited work must wait for the background job holding the same slot"
-        );
-
-        release_first.notify_one();
-        let value = timeout(Duration::from_secs(1), direct)
-            .await
-            .expect("direct limited work should finish")
-            .expect("direct task should not panic");
-        assert_eq!(value, 42);
-    }
-}
+mod tests;

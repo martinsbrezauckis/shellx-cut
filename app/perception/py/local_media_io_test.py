@@ -174,5 +174,74 @@ class LocalMediaIoTests(unittest.TestCase):
                     self.assertIn("whitelist", result.stderr.lower())
 
 
+@unittest.skipUnless(importlib.util.find_spec("numpy") and shutil.which("ffmpeg"),
+                     "numpy/FFmpeg unavailable")
+class WhisperFallbackInputTests(unittest.TestCase):
+    """The Whisper engines never open the media path themselves: their own
+    loaders (whisperX runs ffmpeg, faster-whisper opens PyAV) have no protocol or
+    format limits, so a playlist would make them open other files."""
+
+    def run_words(self, fake_modules):
+        import sys
+        import types
+        import instruments
+        import numpy  # noqa: F401 — loaded before sys.modules is patched (it cannot load twice)
+
+        torch = types.ModuleType("torch")
+        torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+        sample = Path(__file__).resolve().parents[2] / "server/assets/first-edit-sample.mp4"
+        env = {"SHELLX_CUT_STT_MODEL": "whisperx-tiny"}
+        with patch.dict(sys.modules, {"torch": torch, **fake_modules}), \
+                patch.dict(os.environ, env), \
+                patch.object(instruments, "context_requested", lambda: False):
+            return instruments.instrument_words(str(sample), "a1", "tiny")
+
+    def test_whisperx_gets_decoded_samples_not_the_path(self):
+        import types
+        seen = []
+
+        def load_audio(path):
+            raise AssertionError(f"whisperX opened the path itself: {path}")
+
+        class Model:
+            def transcribe(self, audio, **_):
+                seen.append(audio)
+                return {"segments": [], "language": "en"}
+
+        whisperx = types.ModuleType("whisperx")
+        whisperx.load_audio = load_audio
+        whisperx.load_model = lambda *a, **k: Model()
+        result = self.run_words({"whisperx": whisperx})
+        self.assertEqual(result["words"], [])
+        self.assertEqual(len(seen), 1)
+        self.assertNotIsInstance(seen[0], str)
+        self.assertEqual(str(seen[0].dtype), "float32")
+        self.assertGreater(seen[0].size, 16000 // 2)
+
+    def test_faster_whisper_gets_decoded_samples_not_the_path(self):
+        import types
+        seen = []
+        whisperx = types.ModuleType("whisperx")
+
+        def unavailable(*_a, **_k):
+            raise RuntimeError("whisperX unavailable in this test")
+
+        whisperx.load_model = unavailable
+
+        class WhisperModel:
+            def __init__(self, *a, **k):
+                pass
+
+            def transcribe(self, audio, **_):
+                seen.append(audio)
+                return iter(()), types.SimpleNamespace(language="en")
+
+        faster_whisper = types.ModuleType("faster_whisper")
+        faster_whisper.WhisperModel = WhisperModel
+        self.run_words({"whisperx": whisperx, "faster_whisper": faster_whisper})
+        self.assertEqual(len(seen), 1)
+        self.assertNotIsInstance(seen[0], str)
+
+
 if __name__ == "__main__":
     unittest.main()

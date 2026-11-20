@@ -20,6 +20,7 @@ static SYSTEM_AUDIO_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Process-local ownership for the one native system-audio stream. A probe and
 /// a recording must never compete for the platform tap/loopback device.
+#[derive(Debug)]
 pub struct SystemAudioLease(());
 
 pub fn reserve_system_audio() -> Result<SystemAudioLease> {

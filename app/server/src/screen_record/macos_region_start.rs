@@ -52,20 +52,16 @@ pub(super) async fn start_from_foreground_ticket(
     let quality = record_capture::admit_capture_quality(request.quality).map_err(record_err)?;
     let cadence = super::cadence::from_server_fps(request.fps)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
+    let microphone_source = super::microphone::source_for_recording_start(request.audio)?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
 
     let target =
         monitor_start_admission::admit(None, Some(&monitor_id), false, &recorder_doctor.monitors)?;
-    let microphone_source = if request.audio {
-        super::microphone::source_for_start()?
-    } else {
-        record_capture::MicrophoneSource::SystemDefault
-    };
 
     let capture_id = new_capture_id();
     windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
-    let recovery_scan = recovery::scan_recovery_for_project(&dir)?;
+    let recovery_job = recovery::background::start(state, &dir)?;
     let out_dir = create_capture_dir(&dir, &capture_id)?;
     recovery::begin(&out_dir, &capture_id, &cadence)?;
     let project_path = capture_file(&dir, &capture_id, "project.json")?;
@@ -119,11 +115,7 @@ pub(super) async fn start_from_foreground_ticket(
         "open_ended": request.duration_ms.is_none(),
         "cadence": cadence,
         "studio_events": crate::screen_record_studio::studio_events_path(&out_dir),
-        "recovery_scan": {
-            "recovered": recovery_scan.recovered,
-            "deferred": recovery_scan.deferred,
-            "failed_closed": recovery_scan.failed_closed,
-        },
+        "recovery_scan": recovery::background::started_report(recovery_job),
         "note": "private macOS region capture runs until its duration bound or screen_record.stop",
     })))
 }

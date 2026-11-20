@@ -10,9 +10,9 @@ feature exposes). The verb contract lives in `schema/verbs.json`.
 
 | Tool | Needed for | Notes |
 |---|---|---|
-| Rust (stable, via [rustup](https://rustup.rs)) | the engine (`cutd`) and all crates | edition 2021 workspace; tested with rustc 1.94 |
-| Node.js + npm | the UI bundle and the JS test harnesses | tested with Node 24; anything recent works |
-| ffmpeg + ffprobe | media probe, proxies, rendering | on `PATH`, or point at a dir with `SHELLX_CUT_FFMPEG_DIR`; the consented `system.fetch_tool` downloader installs a separate BtbN GPL runtime on Windows/Linux, while macOS requires a compatible local install; FFmpeg is not bundled in Cut installers |
+| Rust (stable, via [rustup](https://rustup.rs)) | the engine (`cutd`) and all crates | edition 2021 workspace; CI and release builds use rustc 1.99.0 |
+| Node.js + npm | the UI bundle and the JS test harnesses | CI uses Node 22.16.0 |
+| ffmpeg + ffprobe | media probe, proxies, rendering | on `PATH`, or point at a dir with `SHELLX_CUT_FFMPEG_DIR`; a source-built `cutd` (and every test binary) in the cargo target folder uses the first FFmpeg in the search order (unless `SHELLX_CUT_FFMPEG` or a saved Choose ffmpeg setting names one), and `SHELLX_CUT_FFMPEG_AUTO=1` turns on the installed engine's automatic hardware pick; the consented `system.fetch_tool` downloader installs a separate GPL runtime from its publisher on Windows/Linux x86_64 and Apple silicon (the macOS build has no vid.stab); Intel Macs need a compatible local install; FFmpeg is not bundled in Cut installers |
 | `jq`, `curl` | schema checks, examples, and `verbargs-sync.sh` | standard on most systems |
 
 Linux builds also need the native development headers used by capture and
@@ -31,11 +31,42 @@ capture is not exercised at runtime. A cached Cargo target can hide missing
 PipeWire, XInput/XTest, or Clang resource headers, so contributors should
 occasionally verify a clean-target build.
 
+Installing the Linux packages needs no extra steps on a supported system. The
+`.deb` and `.rpm` declare every library the shell and the engine link (the
+webview, GTK, ALSA, PipeWire, GStreamer, X11 and XTest libraries) plus the
+GStreamer tools and PipeWire plugin the screen recorder runs, and a minimum libc
+of glibc 2.39 (older systems refuse the install instead of failing at start).
+The supported distributions are Ubuntu 24.04 or newer, Debian 13 or newer and
+Fedora 43 or newer. The `.rpm` names Fedora packages (for example
+`pipewire-gstreamer`), so other RPM-based distributions such as openSUSE are not
+supported. The glibc of the machine that builds the packages sets the minimum
+the binaries need: build release Linux packages on Ubuntu 24.04 (glibc 2.39).
+`scripts/build-linux.sh` reads every shipped binary and fails when a linked
+library is not declared or the binaries need a newer glibc than the packages
+declare. The H.264/AAC decoders for preview
+and the x264 encoder for screen recording come from GStreamer packages that the
+package manager installs as recommendations (`gstreamer1.0-plugins-bad` and
+`-ugly` on Debian and Ubuntu, where they are in `universe`). If a system left
+them out, Doctor names the missing GStreamer element and the package that
+provides it. On Fedora, x264enc comes from RPM Fusion. The packages also declare
+`tar`, `xz` and `gzip`: the in-app FFmpeg download is a `.tar.xz` that `tar`
+unpacks through `xz`, and it checks for them before downloading. An engine
+started by hand from the package (`/usr/bin/cutd serve --headless`) finds its
+packaged agent documents, UI and captions payload from its own location; the
+`SHELLX_CUT_AGENT_DOCS_DIR` and `SHELLX_CUT_SIDECAR_DIR` variables only override
+that.
+
 Optional, feature-gated (the app degrades honestly without them):
 
 - **Python 3.12 + [uv](https://docs.astral.sh/uv/)** — the perception sidecar
   (transcription, captions, scene detection, reframe). Installable from inside
-  the app via `system.setup_perception`; nothing is bundled.
+  the app via `system.setup_perception`; nothing is bundled. In a source build
+  the sidecar uses `SHELLX_CUT_PYTHON` when set, else the `.venv` of its
+  perception folder (`app/perception/py/.venv`), else a `python3`/`python.exe`
+  on PATH only when it answers as Python 3 within 5 seconds (the Microsoft
+  Store shortcut and Apple's command-line stub are skipped), else the app-data
+  environment that `system.setup_perception` creates. An installed app never
+  uses a Python found on PATH.
 - **espeak-ng** — only for `scripts/make-test-assets.sh` (generates `testdata/`
   with known ground truth).
 
@@ -90,7 +121,7 @@ npm --prefix ui ci --ignore-scripts
 npm --prefix ui run build
 cargo build --release --manifest-path app/Cargo.toml -p server --bin cutd
 node scripts/release/stage-tauri-cutd.mjs
-(cd app/desktop && npx --yes @tauri-apps/cli@2.11.2 build --config '{"bundle":{"createUpdaterArtifacts":false}}')
+(cd app/desktop && npx --yes @tauri-apps/cli@2.12.1 build --config '{"bundle":{"createUpdaterArtifacts":false}}')
 ```
 
 ### Official release packages
@@ -112,11 +143,19 @@ cargo clippy --workspace --all-targets --manifest-path app/Cargo.toml -- -D warn
 cargo test --workspace --manifest-path app/Cargo.toml
 node scripts/schema-validation-parity.mjs    # identical schema failures on dispatch/REST/CLI/MCP
 scripts/verbargs-sync.sh                     # every verb has a typed UI client binding
+node scripts/generate-verbs.mjs --check      # schema/verbs.json matches its fragments
 node scripts/generate-verb-contract.mjs --check
+node scripts/generate-requirements-docs.mjs --check   # SKILL/reference "what needs what" matches schema/requirements.json
 npm --prefix ui run build
 npm --prefix ui run test:lib
 node scripts/check-published-test-inventory.mjs
 ```
+
+`npm --prefix ui run test:lib` includes browser tests that need Playwright's
+Chromium (`npx --prefix ui playwright install chromium`). The perception
+helpers also have Python unit tests (`app/perception/py/*_test.py`). Changing a
+Rust or npm dependency makes `scripts/public-tests/third-party-notice.test.mjs`
+fail until `THIRD-PARTY-NOTICES.txt` is regenerated by the maintainers.
 
 `docs/public/FEATURE_SURFACE_CONTRACT.md` explains the observable human, agent,
 and debug surfaces that the gates above validate.
@@ -125,6 +164,7 @@ Native/UI test environments must isolate both kinds of user data. Set
 `SHELLX_CUT_HOME` for the internal project index, global Library, and mutable
 tool preferences exercised by the tests (currently FFmpeg and transcription
 model choices), and set `SHELLX_CUT_PROJECTS_DIR` for the user-visible managed
-`.cutproj` directory.
+`.cutproj` directory. The remembered export folder is part of the first: it is
+kept in `SHELLX_CUT_HOME` (`export-folder.json`) with the project index.
 Using only the first variable still lets `project.list` discover projects in the
 real default projects folder.

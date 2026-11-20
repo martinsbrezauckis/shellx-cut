@@ -55,6 +55,12 @@ impl ProcessControl {
         }
         Ok(())
     }
+
+    pub(super) fn media_control(&self) -> cut_media::ffmpeg::OwnedProcessControl {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        let cancelled = self.cancelled.clone();
+        cut_media::ffmpeg::OwnedProcessControl::bounded(remaining, move || cancelled())
+    }
 }
 
 /// Owns the leader and its process group/Job Object until the leader is reaped.
@@ -78,7 +84,9 @@ impl ManagedChild {
         control.check(context)?;
         process_tree::configure(command)
             .map_err(|error| ff_err("configure ffmpeg owner", error))?;
-        let mut direct = command.spawn().map_err(|error| ff_err(context, error))?;
+        // A just-written program can be briefly busy (cut_media::process_start).
+        let mut direct = cut_media::process_start::retry_busy_start(|| command.spawn())
+            .map_err(|error| ff_err(context, error))?;
         let process_tree = match process_tree::ProcessTree::establish(&direct) {
             Ok(tree) => tree,
             Err(error) => {

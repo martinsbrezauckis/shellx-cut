@@ -19,6 +19,13 @@ fn main() {
         // The picker is Objective-C++. Rust's final linker invocation uses
         // -nodefaultlibs, so name libc++ explicitly just as record-capture's
         // macOS shims do.
+        // Every quit (menu, Cmd+Q, Dock, Apple Event, logout) asks the close
+        // guard first: see src/macos_quit_hook.rs.
+        println!("cargo:rerun-if-changed=src/macos_quit_hook.m");
+        cc::Build::new()
+            .file("src/macos_quit_hook.m")
+            .flag("-fobjc-arc")
+            .compile("sxc_macos_quit_hook");
         println!("cargo:rustc-link-lib=c++");
         println!("cargo:rustc-link-lib=framework=AppKit");
         println!("cargo:rustc-link-lib=framework=Foundation");
@@ -40,6 +47,13 @@ fn main() {
             // See record-capture/build.rs: xwin's MSVC headers may be newer
             // than the maintained clang-cl on the central Linux builder.
             .define("_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH", None)
+            // Compile with the static C++ runtime (/MT). The shell links
+            // Tauri's hybrid CRT (static vcruntime, Windows-provided UCRT);
+            // a /MD object here would add an MSVCP140.dll import that a clean
+            // Windows install does not have, and the app would not start.
+            // scripts/lib/windows-pe-imports.mjs fails the build on such an
+            // import.
+            .static_crt(true)
             .compile("sxc_windows_region_picker");
         println!("cargo:rustc-link-lib=user32");
         println!("cargo:rustc-link-lib=gdi32");

@@ -22,6 +22,24 @@ export function openVideoToolsSettings(): void {
   }, 260)
 }
 
+/** Windows: open the Microsoft Visual C++ runtime entry that captions need first. */
+export function openVcRuntimeSettings(): void {
+  document.dispatchEvent(new CustomEvent('cut:open-ui-surface', {
+    detail: { id: 'settings-ai-transcription' },
+  }))
+  window.setTimeout(() => {
+    document.dispatchEvent(new CustomEvent('cut:local-highlight', {
+      detail: {
+        selector: '[data-cut-env-card="vc-runtime"]',
+        label: 'Microsoft Visual C++ runtime',
+        description: 'Install this first: captions on Windows need it.',
+        duration_ms: 4500,
+        scroll: true,
+      },
+    }))
+  }, 260)
+}
+
 export function openVideoToolsGuide(): void {
   openCutManual('cut.preview.ffmpeg_setup')
 }

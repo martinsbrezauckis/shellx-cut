@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the v0.6.115 candidate Debug API; v0.6.114 is the latest published release.
+This reference describes the Debug API in v0.6.116 candidate source; v0.6.115 is the latest published release.
 
 ## Starting the server
 
@@ -21,9 +21,58 @@ cutd verb project.state '{}'              # one-shot CLI escape hatch (no server
 The desktop app runs the same `cutd` internally — an agent can drive the
 installed app and a headless dev server identically.
 
+**Which FFmpeg the engine uses** is decided by the engine itself, the same
+whether the app or a person/agent started it. In order:
+1. `SHELLX_CUT_FFMPEG` (an exact path);
+2. the person's choice (`system.set_ffmpeg`, Choose ffmpeg);
+3. the automatic pick of a hardware-capable installed FFmpeg;
+4. the first FFmpeg in the fixed search order.
+
+The automatic pick is on by default. `SHELLX_CUT_FFMPEG_AUTO=0` turns it off and
+`=1` turns it on. A source build (a `cutd` or test binary inside a cargo target
+folder) keeps it off unless `=1` is set, so tests stay deterministic.
+`system.doctor`'s `ffmpeg` card reports the build in `details.resolved` and the
+reason in `details.selection` (`reason`, `automatic`, `found`, `text`).
+
 **Port discovery:** on startup `cutd` writes its bound address to
-`engine.addr` in the app-data dir and removes it on graceful shutdown.
-Clients (MCP proxy, CLI) read this file first and fall back to `127.0.0.1:6161`.
+`engine.addr` in the app-data dir and removes it on graceful shutdown: closing
+the window or quitting the app, a termination signal (SIGTERM, Ctrl-C) sent to
+`cutd`, and the desktop app ending in any way (an engine the app started shuts
+itself down when the app is gone). On macOS and Linux the app asks its engine to
+stop and waits up to 3 seconds before it ends it; on Windows it ends the engine
+at once and removes the file itself. A close or quit during a recording first
+saves the recording (see the recording section). A forced kill of `cutd` itself, or a power
+loss, cannot run that cleanup and leaves the file behind. Clients (MCP proxy,
+CLI, the desktop shell when it adopts a running engine) read this file first and
+otherwise fall back to `127.0.0.1:6161`; when nothing answers they report `no
+cutd server at <addr>` and name `engine.addr` when it points at an address where
+nothing listens. The file is rewritten the next time an engine starts.
+
+**Who answers is checked before anything is sent.** `engine.addr` holds two
+lines: the bound address, then `instance=<id>`, a random value the engine picks
+when it starts. Before a client sends a verb (project paths and content) it
+asks `GET /api/agent` and accepts the peer only when the answer names the
+product `ShellX Cut`, the same version as the client, and, when the file has an
+instance line, the same `instance` value. A different program on that port, a
+different version, or an older engine that reused the port is refused: nothing
+but that identity request is sent, and the client says which check failed. For a
+leftover `engine.addr` whose address another program now uses, the right action
+is to open ShellX Cut (its engine rewrites the file when it starts); delete the
+file only if you are not going to run ShellX Cut. With another program on
+`127.0.0.1:6161` and no `engine.addr`, open ShellX Cut: its engine then takes a
+free port and writes the file. `cutd verb` reports the refusal as its result
+instead of silently working on a private state; `--standalone` stays the
+explicit way to do that.
+
+Compatibility: a file written by an older engine holds the address alone. A new
+client reads it and checks product and version only. An older client reading a
+new file cannot parse the two-line content, so it ignores the file and probes
+`127.0.0.1:6161` only; an engine on another port is then not found until the
+client is updated (the client and engine ship in the same `cutd`, so this means
+an old `cutd` kept somewhere else). A new client with an older engine of a
+different version refuses it with a version message, as the desktop shell
+already did. `/api/agent` is on the same loopback-only listener as every other
+route: `cutd` still refuses to bind a non-loopback address.
 
 | OS | discovery file |
 |---|---|
@@ -78,10 +127,11 @@ All verbs go through one route; the rest are read-side support surfaces.
 | `/api/verb/{name}` | POST | dispatch any of the schema's verbs; body = args JSON; returns the envelope `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,cause,…}}` |
 | `/api/state` | GET | current project/timeline state snapshot |
 | `/api/verbs` | GET | the live verb registry (generated from `schema/verbs.json`) |
-| `/api/events` | GET (WS) | event stream: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated`. `op_applied` carries `revision`, `from_revision`, and `{delta:{kind:"op",count:1}}`; clients repair a missed frame through bounded `project.state{since_revision}` deltas or an explicit snapshot fallback. (`project_changed` refreshes visible clients after REST/CLI/MCP create, open, or close; `doctor_updated` refreshes environment capabilities; agents key on `receipt_ready`) |
+| `/api/events` | GET (WS) | event stream: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated · output_folder_changed`. `job_progress` carries `terminal:true` on the event that ends a job (done, failed or cancelled); an ended job keeps the progress it reached (1.0 means finished), so read "ended" from `terminal` or the job state. `op_applied` carries `revision`, `from_revision`, and `{delta:{kind:"op",count:1}}`; clients repair a missed frame through bounded `project.state{since_revision}` deltas or an explicit snapshot fallback. (`project_changed` refreshes visible clients after REST/CLI/MCP create, open, or close; `doctor_updated` refreshes environment capabilities; agents key on `receipt_ready`) |
 | `/api/frame?at_ms=[&h=][&compose=1]` | GET | bounded composited/scrub JPEG at a timeline position — `h` defaults to 540 and may not exceed 2160; derived width and pixels are capped at 4K UHD. Use `export.frame` for an explicit full-resolution still. |
 | `/api/agent` | GET | `shellx-cut/agent-docs/2`: machine-readable API/docs discovery, exact running executable, MCP proxy/standalone metadata, copyable client config, and self-test contract |
 | `/api/agent-doc/*path` | GET | serves the agent docs (e.g. `skill/shellx-cut/SKILL.md`) over HTTP for installed-app onboarding |
+| `/api/third-party-notices` | GET | the bundled `THIRD-PARTY-NOTICES.txt` (libraries compiled into ShellX Cut with copyright lines and licence texts) as plain text; Settings > About shows it |
 | `/api/export/*path` | GET | download rendered artifacts by PROJECT-RELATIVE path, resolved against the open project's `exports/` subtree. Refuses (409) when the same relative name also matches a different file in the chosen output folder — an ambiguous request is never answered with a guess |
 | `/api/export-file?path=` | GET | download ONE exact export by absolute path — the shape that can name a file in the folder chosen with `project.set_output_dir`. Fenced to the authorized export roots (project `exports/` subtree, `CUTD_OUTPUTS_DIR`, the chosen output folder); a path that is missing or outside them is refused, never substituted |
 | `/api/source/{asset}` | GET | stream a registered asset's original source (seekable, chunked; fenced to the asset registry) |
@@ -241,6 +291,13 @@ verb, exact JSON Pointer, failed keyword, concise constraint, and recovery:
 }
 ```
 
+A refusal about a missing tool or condition also carries
+`error.requirement {id, name, get}` from `schema/requirements.json` (for example
+`{"id":"ffmpeg","name":"Video processing (FFmpeg)","get":{"settings":"settings-video-performance","button":"Download (or Choose ffmpeg)","verb":"system.fetch_tool",...}}`),
+the same entry `system.doctor` lists under `requirements.tools`; a failed job's
+`error` carries it too. `system.doctor {feature:"<verb or feature id>"}` says
+before a call whether a verb (or a whole feature) can run and what blocks it.
+
 Use JSON values with the declared types; stringly booleans and numbers are not
 coerced. Handler-level checks still enforce project-dependent rules after the
 schema passes. Errors never echo argument values, and unknown-property names
@@ -321,7 +378,20 @@ are refused. Cancellation does not claim success until
 tracked blocking workers and their synchronous child processes have finished.
 If that bounded drain is still in progress, `job_cancel_pending` asks the
 caller to wait and retry. A project switch uses the same fail-closed boundary:
-the next project is not attached while an old worker is alive. File-writing
+the next project is not attached while an old worker is alive, and it waits up
+to 20 seconds for the old workers to stop. A project change (`project.open`,
+`project.create`, `project.close`) never cancels running work someone asked
+for (renders, exports, reviews, generation, analysis asked for by verb, tool
+downloads) silently: without `cancel_running_jobs:true` it is refused up front with code
+`jobs_running` (the cause lists each job with its kind and progress) and nothing
+changes, so the project stays open and the work keeps running; the Projects panel
+asks the person and repeats the call with the flag. Only the automatic
+follow-ups of an import (import chain, proxy, enrichment) and a cache purge are
+cancelled without asking, and the result lists them
+as `cancelled_jobs:[{job_id,kind,progress,message?}]`. If the old workers still
+have not stopped after the wait, the change is refused with `job_cancel_pending`:
+the jobs were already cancelled and are stopping, the project stays open, and a
+retry completes the change once they have stopped. File-writing
 verbs are fenced to the project/export directories (schema the output-fencing contract).
 `JobRecord.state` remains compatible (`queued`, `running`, `done`, `failed`).
 Active records also retain the latest optional human-readable `message` reported
@@ -336,12 +406,57 @@ child returns, and both clear when the owning job becomes terminal. Clients can
 explain a wait without guessing from a zero progress value.
 New terminal records also report `outcome` and `outcome_reason`: a user cancel,
 project-switch cancel, restart interruption, supersession, and true failure
-stay distinct even though non-success outcomes retain `state:"failed"` for
-existing clients. Older persisted records omit these fields.
+stay distinct even though they retain `state:"failed"` for existing clients.
+`outcome` answers "did the job do what was asked": `succeeded` yes (warnings in
+`result.warnings`), `partial` it ran to its end (`state:"done"`) but did not
+fully deliver (`outcome_reason` `checks_failed` or `items_failed`), anything
+else no. Older persisted records omit these fields.
 Job JSON is written atomically. On project reopen, a malformed job record is
 kept under the project's `jobs/quarantine/` folder and reported through
 `jobs.list.result.persistence_notices`; it is never silently ignored or reused
 as a future job ID.
+
+Closing or quitting the desktop app uses the same rule. `jobs.before_quit{}`
+is what the app asks before it closes: work someone asked for refuses with
+`jobs_running` (nothing stops), and `jobs.before_quit{cancel_running_jobs:true}`
+cancels every running job the normal way (an export removes its staging and
+lock files) and returns once they have stopped (`job_cancel_pending` when a
+worker is still stopping). There is no verb that closes the app. The app's
+question is `overlays.quit_question:{message, running, choices}` in `ui.state`
+while it is open; `running` lists each job by id, kind and current progress
+("job_004 (render, 68% done)"), never its free-text message. An engine that does not
+answer is never taken for one with nothing running: the app asks whether to quit
+anyway, keeping the app open by default; an update asks the same before it stops
+the engine. Work that a kill, crash, power cut or Windows session end cut
+off is listed at any time, with or without an open project, by
+`jobs.interrupted{}`: `{interrupted:[{key, job_id, kind, project_path,
+project_name, started_unix_ms, helpers_stopped, leftover_files_removed,
+export_folders, message, suggested_action}]}`. A helper the engine started
+never outlives it: every helper carries the engine run's mark in its
+environment; on Linux and macOS a small watcher (`cutd __lifeline`, in its own
+session) holds a pipe only the engine writes to and, when the kernel closes
+it because the engine ended or was killed, stops every process with that mark
+(TERM, then KILL after 2 s); on Windows the engine is in a Job Object that
+kills every process in it when the engine ends. At start the engine also stops
+any process that still carries a dead run's mark (counted in
+`helpers_stopped`) before it removes that export's unfinished files from every
+folder the export could write to (the project's `exports` and the app-wide
+export folder): only `.cut-ffmpeg-*.tmp.*`, `.<name>.<pid>.<n>.tmp[.<ext>]`,
+`.<name>.shellx-cut-reservation.lock` and `.<name>.shellx-cut-reserving`, only
+ordinary files, nothing this engine wrote, and nothing while any export in
+that folder still holds its lock. While the engine runs work of its own,
+`jobs.interrupted` lists without tidying.
+`jobs.interrupted_dismiss{key}` forgets one notice. A stop that arrives after a
+render has published its finished file cannot undo the export: the job ends
+done, the receipt is written, and checks the stop cut short are not measured.
+
+When an engine that the desktop app started exits on its own, the app shows a
+native dialog ("ShellX Cut engine stopped": **Restart the engine** / **Quit
+ShellX Cut**). A restarted engine has no project open: call `project.open`
+again and read `jobs.interrupted{}`. Only one desktop window runs per user:
+opening the app again brings that window forward, and a `.cutproj` path given
+on the command line opens in it; a launch with its own `SHELLX_CUT_HOME` is
+separate.
 
 Job-owned external workers (translation local/CLI, dubbing, diarization,
 Generate and draft adapters, judge review, Motion CLI commands, Agent Chat,
@@ -398,7 +513,7 @@ leaves all other plugins disabled until separately approved.
 
 ## Confirmed UI control
 
-`ui.open`, `ui.playhead`, `ui.select`, and `ui.highlight` are correlated
+`ui.open`, `ui.playhead`, `ui.select`, `ui.highlight`, and `ui.preview` are correlated
 request/response operations, not fire-and-forget notifications. Success means
 the exact WebSocket client that received the request reported a later,
 committed state revision:
@@ -445,6 +560,44 @@ it is `null` while the doctor report is pending and absent on older connected UI
 clients. The server adds `connected:true` and `ui_clients`; after the last UI
 socket disconnects it returns `no_ui_client` instead of stale state.
 
+More fields say what the person faces outside the panels:
+
+- `preview` is `{mode:"composed"|"live", showing, hidden_elements, media,
+  composed_frame, media_problem}`: `mode` is the COMPOSED setting (on by
+  default), `showing` what the monitor draws now (`composed_frame`,
+  `live_preview`, `source_frame` or `none`), `hidden_elements` what that picture
+  leaves out at the playhead (titles, fades, ...), `media` whether the live
+  preview plays the `proxy` or the `original`, and `composed_frame` `{state,
+  at_ms, reason, latency_ms, requests}` the exact paused frame.
+- `preview.media_problem` is `{kind:"cannot_decode", asset_ids, message}`
+  while the preview monitor says the system cannot decode the preview video
+  (on Linux the message names the package to install), otherwise `null`.
+
+- `overlays.native_dialogs` lists every operating-system dialog the app opened
+  and is waiting behind, `{kind:"open"|"save"|"confirm"|"message", opened_by,
+  title?}`, cleared when the person chooses, cancels, or the dialog fails. An
+  agent cannot press it: use the verb that takes the path or the answer
+  directly (for "Work is still running", `project.open {path,
+  cancel_running_jobs:true}`).
+- `record_hotkey {state, scope, reason}` is how the global F9 shortcut is
+  registered; `reason` is the sentence Record shows when it is not.
+- `export_folder {destination, usable, folder}` is where exports go, as the
+  status bar shows it (`chosen` or `project_exports`; `usable:false` when the
+  chosen folder is gone or locked); `folder` is its name only, the path is
+  `project.get_output_dir`.
+- `notices` lists the person-facing notices shown now, structured and
+  path-free: `action_feedback {source, code, setup_surface, count?}` (the
+  shared notice for a person's action; `source` is the verb whose refusal is
+  shown, `drop` for dropped items that were not imported, or `app`;
+  `setup_surface` is the `ui.open` panel behind its Open setup button),
+  `odd_project_size {state:"open"|"refused"|"done", width, height,
+  even_width, even_height}`, `recording_recovery {capture_id, situation,
+  can_recover, state:"offered"|"busy"|"done"}` and `recording_recovery_more
+  {count}` (the rows of `screen_record.pending`), and `failed_job {job_id,
+  job_kind}` and `failed_jobs_more {count}` (the status bar's failed-job rows;
+  read the reason with `jobs.status` or `jobs.list`). The wording itself comes
+  from the verb or record each entry names.
+
 ## Linked A/V timeline edits
 
 Imported video with audio is represented as aligned clips on video and audio
@@ -454,6 +607,14 @@ and timeline span, both clips change atomically and one undo restores the pair.
 Pass `linked:false` only for a deliberate independent move or trim, such as a
 split edit. Ambiguous or locked counterparts are rejected instead of silently
 desynchronizing media.
+
+A move has two modes, named as in Premiere Pro, DaVinci Resolve, Final Cut and
+Avid. **Overwrite** (`ripple:false`, the default and the plain drag): what lies
+under `[at_ms, at_ms + duration)` is trimmed or removed, and no later clip moves
+on any track, so a linked pair moved to another video track at the same time
+keeps its audio exactly where it was. **Insert** (`ripple:true`, the Alt-drag):
+the clip is spliced in and the rest of every track moves right. The result's
+`placement` is `"overwrite"` or `"insert"`.
 
 ## Atomic linked A/V insert
 
@@ -755,6 +916,98 @@ curl -sS http://127.0.0.1:6161/api/verb/screen_record.recovery_status \
   -d '{"limit":50}'
 ```
 
+`owner_ambiguous` in that read means only that the capture has no sealed result yet;
+the read does not check the recording process. Opening the project seals a capture
+whose recording process is gone (and a capture left behind by a failed Stop in the
+same process). Each row also reports `recoverable`: whether a clip can be made from
+its files that was not already added to the timeline.
+
+A recording is never lost silently:
+
+- `screen_record.active{}` reports the running recording; the caller needs no
+  capture id and the result carries it (`capture_id`, `kind:"recording"|"rehearsal"`, `ready`, `first_screen_frame_unix_ms`,
+  `since_first_screen_frame_ms`). The app shows a recording it did not start, for
+  example one an agent started, with the recording bar and Stop.
+- Closing the desktop app or quitting during a recording first stops and saves it
+  (`screen_record.stop{capture_id, reason:"app_exit"}`; the app window adds the
+  take to the timeline as after a normal Stop and shows "Saving your recording
+  before ShellX Cut closes…"), then closes. If the window does not answer within
+  6 seconds, the desktop shell stops the recording itself. An engine that is
+  shut down (Ctrl-C, SIGTERM, or its desktop app gone) first finishes and saves a
+  running recording. Save points are written every 15 seconds, so after a crash
+  or power cut the video after the last save point is lost; the sound files are
+  kept whole.
+- `screen_record.pending{}` (no project needed) lists recordings the person has not
+  been told about: interrupted by a crash, a forced quit or a power cut
+  (`interrupted`, or `nothing_saved` before the first 15-second part was saved),
+  saved while the app was closing (`saved_on_close`, with `added_to_timeline`),
+  finished but never added (`saved_not_added`), stopped by an error after part of it
+  was saved (`failed`), or with files removed (`files_missing`). Each item has a
+  `message` for the person, a `suggested_action`, `can_recover`, `project_path` and
+  `files_folder`. The app shows them at start.
+- `screen_record.recover{capture_id}` (with the recording's project open) adds what
+  was saved to the end of the timeline: the finished or stitched video joined with
+  the microphone and system sound (an unfinished sound file is copied with corrected
+  sizes; the original is kept), or, when no video part was saved, the microphone and
+  the system sound each on its own track, starting together as they were recorded. The project is checkpointed first. Nothing in the recording folder
+  is deleted. The reply says what was kept against what was recorded:
+  `recovered_ms`, `recorded_ms_at_least` (proved by the sound files, written every
+  second, and the last video part that was started), `lost_tail_lower_bound_ms`
+  (their difference) and `recorded_longer_unknown`; its `message` says the same
+  ("Recovered 15 s of about 20 s. The last 5 s were not saved before the recording
+  stopped."). Sound recorded after the saved picture is placed right after it, from
+  the same files, and `sound_after_picture` is true.
+- `screen_record.pending` rows with saved checkpoints awaiting preparation report `recovered_extent_state:"not_measured"`, a message saying the saved amount is not measured yet, and no duration fields. Once measured they report `recovered_extent_state:"measured"` and say, in `message`, how much can be recovered of what was recorded, with `recovered_ms`, `recorded_ms_at_least` and `recorded_longer_unknown` (the numbers `screen_record.recover` reports; `ui.state.notices` carries the state and numbers too).
+- `screen_record.pending_dismiss{capture_id}` forgets a notice and keeps the files.
+- Opening a project with an interrupted recording (or starting a recording)
+  launches a visible `recording_recovery` job ("Preparing interrupted
+  recording"); `project.open` never waits for it, and `screen_record.recover`
+  refuses with "this recording is still being prepared" until it ends.
+- `screen_record.polish` makes the polished clip as a `screen_record_polish` job
+  with frame progress ("Polishing the recording: frame N of M"); the clip is only
+  ever added to the project the recording belongs to (`placed:false` with
+  `waiting_in_project` otherwise).
+- Known limits in this version: a recording is saved in 15-second parts, and at
+  each part boundary the picture of a moving screen holds for about 0.5 s on
+  macOS and about 2 s on Windows while the sound keeps recording; on Windows a
+  Stop of a long moving recording takes several seconds (about 11 s for one
+  minute).
+
+A Stop that arrives before the first screen frame returns `capture` with message
+`nothing was recorded` and the action to start again and wait until the timer
+runs (a backend that already reports a stop before the first frame keeps its own
+message); nothing is left to recover (the capture reports `recoverable:false`) and the next recording can start at once.
+A window that is not in the current Doctor window list is refused by
+`screen_record.start` before anything is created (`not_found`, "the selected window
+is no longer available"). A missing folder is reported as "<label> not found:
+<path>" (action: create it or choose an existing folder) and a folder that exists
+but cannot be written as "<label> cannot be written: <path> (access is denied)",
+never as "not found"; the label is "output folder" when the folder is chosen,
+"export folder" when an export checks it, or "recording folder".
+`project.set_output_dir` checks that it can write a new file in the folder and
+refuses one it cannot; the choice is an app-wide remembered preference held by
+the engine, `project.get_output_dir` reads it, and `output_folder_changed`
+announces changes (the engine re-checks the folder about every 10 seconds, so
+the status-bar chip turns "unavailable" when it disappears); an export that would
+use a chosen folder that has since been deleted or locked is refused before it
+starts, naming the folder; on Linux and macOS a folder everyone can write to is
+refused ("export folder can be written by anyone on this computer: <path>")
+unless its sticky bit is set, while a group-writable folder is accepted; and a raw copy that cannot be written keeps the recording
+saved in the project. While a microphone or system-audio test runs, every
+recording start (the Record button, F9, the global hotkey and
+`screen_record.start`) is refused: the verb answers `conflict` ("An audio test is
+still running, so the recording cannot start yet.") with the action to wait a few
+seconds and start again; the window says "Finish the audio test before
+recording."
+
+`screen_record.doctor` takes `mode`: `check` (the default) runs the full check,
+including a short real screen capture on Windows and macOS that can make the
+system show its screen-recording alert, so use it only when the person asks to
+check or starts a recording; `status` returns the same fields without starting a
+capture or a system prompt (the screen card is the last check, or not checked
+yet); `microphone` reads only the microphone choice and permission. Record and
+Settings > Health & Recovery read `status` when they open and run `check` from
+their check button; voiceover reads `microphone`. In `check` mode,
 `screen_record.doctor` reports a native backend as `ok` only after a bounded,
 discarded frame reaches Cut. It does not persist image content. On Linux, the
 XDG ScreenCast portal could open a source picker or a new consent request, so
@@ -766,8 +1019,9 @@ ScreenCast portal observation. That lets `screen_record.start` open the user-sel
 source picker without manufacturing a green Doctor result. On macOS,
 drive these verbs through the installed signed app: ScreenCaptureKit uses Screen
 Recording permission and `system_audio:true` uses the separate Audio Capture
-permission declared by the app bundle. The first request can show either system
-prompt; restart Cut after granting it, then retry the capture. A successful
+permission declared by the app bundle. The first `check` or recording start can
+show either system prompt (opening Record or a project does not); restart Cut
+after granting it, then retry the capture. A successful
 `screen_record.stop` reports `system.wav` through `raw_streams.system`.
 Doctor exposes that optional audio path as a separate `system_audio` card. It
 stays `unknown` for a compiled backend because Doctor never starts a live
@@ -1169,7 +1423,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, all 291 tools, and that the
+read-only check proves protocol negotiation, ping, every verb as a tool (317), and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use

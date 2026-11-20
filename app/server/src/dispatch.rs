@@ -41,14 +41,31 @@ use cut_core::{
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
+pub(crate) mod adapter_location;
 pub(crate) mod adapter_python;
 pub(crate) use adapter_python::ENV_ADAPTER_PYTHON;
 #[cfg(test)]
 use adapter_python::{adapter_python_for_platform, find_python_on_path};
 
 /// Dispatch one verb. `actor` records who/which surface for the op-log.
-/// Returns the universal envelope; never panics on bad input.
+/// Returns the universal envelope; never panics on bad input. A refusal that
+/// names a missing tool or condition gets its name and way forward from
+/// schema/requirements.json on the way out.
 pub async fn dispatch(state: &AppState, name: &str, args: Value, actor: Actor) -> VerbResult {
+    let result = crate::requirements::complete_result(
+        Box::pin(dispatch_unfilled(state, name, args, actor)).await,
+    );
+    if result
+        .error
+        .as_ref()
+        .is_some_and(|error| state.doctor_cache.invalidate_on_missing(error))
+    {
+        state.doctor_cached().await;
+    }
+    result
+}
+
+async fn dispatch_unfilled(state: &AppState, name: &str, args: Value, actor: Actor) -> VerbResult {
     // Contract gate: only verbs in schema/verbs.json exist.
     let Some(spec) = state.registry.get(name) else {
         return VerbResult::err(CutError::new(
@@ -59,7 +76,9 @@ pub async fn dispatch(state: &AppState, name: &str, args: Value, actor: Actor) -
     };
     // Compile-once input contract gate. This runs before every route, including
     // nested recipe/plugin dispatch, so REST, CLI and MCP cannot diverge.
-    if let Err(e) = state.registry.validate_args(spec, &args) {
+    // Then media verbs refuse before any handler when ffmpeg is missing.
+    let validated = state.registry.validate_args(spec, &args);
+    if let Err(e) = crate::media_tool_gate::admit(state, name, &args, validated).await {
         return VerbResult::err(e);
     }
     let dispatch_target = spec.behavior.dispatch;
@@ -104,523 +123,7 @@ async fn dispatch_validated(
     publish_request_receipt: bool,
 ) -> VerbResult {
     let request_actor = actor.clone();
-    // `DispatchTarget` is generated from schema/verbs.json. This match has no
-    // catch-all arm on purpose: the compiler proves every schema target has a
-    // corresponding handler, and registry loading verifies every verb names
-    // exactly one generated target.
-    let mut result: VerbResult = match dispatch_target {
-        // ------------------------------------------------------------------
-        // project.*
-        // ------------------------------------------------------------------
-        DispatchTarget::ProjectCreate => project_create(state, args, actor).await.into(),
-        DispatchTarget::ProjectOpen => project_open(state, args).await.into(),
-        DispatchTarget::ProjectList => project_list(args).await.into(),
-        DispatchTarget::ProjectForget => project_forget(args).await.into(),
-        DispatchTarget::ProjectDelete => project_delete(state, args).await.into(),
-        DispatchTarget::ProjectSave => project_save(state).await.into(),
-        DispatchTarget::ProjectPackagePlan => project_package_plan(state, args).await.into(),
-        DispatchTarget::ProjectPackageCreate => project_package_create(state, args).await.into(),
-        DispatchTarget::ProjectState => project_state(state, args).await.into(),
-        DispatchTarget::ProjectHealth => project_health(state, args).await.into(),
-        DispatchTarget::ProjectCachePreview => project_cache_preview(state).await.into(),
-        DispatchTarget::ProjectCacheRebuild => project_cache_rebuild(state, args).await.into(),
-        DispatchTarget::ProjectCachePurge => project_cache_purge(state, args).await.into(),
-        DispatchTarget::ProjectSequenceList => project_sequence_list(state).await.into(),
-        DispatchTarget::ProjectSequenceIndex => project_sequence_index(state, args).await.into(),
-        DispatchTarget::ProjectSequenceCreate => {
-            project_sequence_create(state, args, actor).await.into()
-        }
-        DispatchTarget::ProjectSequenceSwitch => {
-            project_sequence_switch(state, args, actor).await.into()
-        }
-        DispatchTarget::ProjectSequenceRename => {
-            project_sequence_rename(state, args, actor).await.into()
-        }
-        DispatchTarget::ProjectSequenceDelete => {
-            project_sequence_delete(state, args, actor).await.into()
-        }
-        DispatchTarget::ProjectOps => project_ops(state, args).await.into(),
-        DispatchTarget::ProjectGroupPreview => project_group_preview(state, args).await.into(),
-        DispatchTarget::ProjectGroupReject => project_group_reject(state, args, actor).await.into(),
-        DispatchTarget::ProjectClose => project_close(state).await.into(),
-        DispatchTarget::ProjectCheckpoint => project_checkpoint(state, args, actor).await.into(),
-        DispatchTarget::ProjectRename => project_rename(state, args, actor).await.into(),
-        DispatchTarget::ProjectFormat => project_format(state, args, actor).await.into(),
-        DispatchTarget::ProjectColor => project_color(state, args, actor).await.into(),
-        DispatchTarget::ProjectBrand => project_brand(state, args, actor).await.into(),
-        DispatchTarget::ProjectSetOutputDir => crate::output_paths::project_set_output_dir(args)
-            .await
-            .into(),
-        DispatchTarget::CommentAdd => comment_add(state, args, actor).await.into(),
-        DispatchTarget::CommentExport => comment_export(state, args).await.into(),
-        DispatchTarget::CommentImport => comment_import(state, args, actor).await.into(),
-        DispatchTarget::CommentList => comment_list(state, args).await.into(),
-        DispatchTarget::CommentResolve => comment_resolve(state, args, actor).await.into(),
-        DispatchTarget::CommentDraft => comment_draft(state, args, actor).await.into(),
-        DispatchTarget::CommentApply => comment_apply(state, args, actor).await.into(),
-        DispatchTarget::ProjectRevert => project_revert(state, args, actor).await.into(),
-        DispatchTarget::ProjectUndo => project_undo(state, actor).await.into(),
-        DispatchTarget::ProjectRedo => project_redo(state, actor).await.into(),
-        DispatchTarget::ProjectDiff => project_diff(state, args).await.into(),
-        DispatchTarget::LibraryList => library_list(args).await.into(),
-        DispatchTarget::LibraryAdd => library_add(state, args).await.into(),
-        DispatchTarget::LibraryRelink => library_relink(args).await.into(),
-        DispatchTarget::LibraryRemove => library_remove(args).await.into(),
-        DispatchTarget::LibraryMove => library_move(args).await.into(),
-        DispatchTarget::LibraryTag => library_tag(args).await.into(),
-        DispatchTarget::LibraryFavorite => library_favorite(args).await.into(),
-        DispatchTarget::LibraryUse => library_use(args).await.into(),
-        DispatchTarget::LibraryAddToProject => {
-            library_add_to_project(state, args, actor).await.into()
-        }
-        DispatchTarget::LibraryFolderAdd => library_folder_add(args).await.into(),
-        DispatchTarget::LibraryFolderRename => library_folder_rename(args).await.into(),
-        DispatchTarget::LibraryFolderRemove => library_folder_remove(args).await.into(),
-
-        // ------------------------------------------------------------------
-        // media.* — import kicks the probe→proxy→transcribe→perception chain
-        // ------------------------------------------------------------------
-        DispatchTarget::MediaImport => media_import(state, args, actor).await.into(),
-        DispatchTarget::MediaRemove => media_remove(state, args, actor).await.into(),
-        DispatchTarget::MediaRelink => media_relink(state, args, actor).await.into(),
-        DispatchTarget::MediaRelinkPreview => media_relink_preview(state, args).await.into(),
-        DispatchTarget::MediaRelinkApply => media_relink_apply(state, args, actor).await.into(),
-        DispatchTarget::MediaCheck => media_check(state, args).await.into(),
-        DispatchTarget::MediaBinSave => media_bin_save(state, args, actor).await.into(),
-        DispatchTarget::MediaBinDelete => media_bin_delete(state, args, actor).await.into(),
-        DispatchTarget::MediaBinList => media_bin_list(state, args).await.into(),
-        DispatchTarget::MediaProbe => media_probe(state, args).await.into(),
-        DispatchTarget::MediaWaveform => media_waveform(state, args).await.into(),
-        DispatchTarget::MediaFilmstrip => media_filmstrip(state, args).await.into(),
-        DispatchTarget::MediaTranscribe => media_transcribe(state, args).await.into(),
-        DispatchTarget::MediaPerception => media_perception(state, args).await.into(),
-        DispatchTarget::MediaDiarize => crate::diarize::media_diarize(state, args).await.into(),
-
-        // ------------------------------------------------------------------
-        // jobs.* (the background-job contract: jobs domain replaces media.status)
-        // ------------------------------------------------------------------
-        DispatchTarget::JobsStatus => jobs_status(state, args).await.into(),
-        DispatchTarget::JobsList => jobs_list(state).await.into(),
-        DispatchTarget::JobsCancel => jobs_cancel(state, args).await.into(),
-        DispatchTarget::JobsRetry => jobs_retry(state, args).await.into(),
-
-        // ------------------------------------------------------------------
-        // edit.* — thin arg-parse wrappers over cut_core::edit, one op each
-        // ------------------------------------------------------------------
-        DispatchTarget::EditSplit => edit_split(state, args, actor).await.into(),
-        DispatchTarget::EditCutToBeat => edit_cut_to_beat(state, args, actor).await.into(),
-        DispatchTarget::EditSplitAtScenes => edit_split_at_scenes(state, args, actor).await.into(),
-        DispatchTarget::EditMarkScenes => edit_mark_scenes(state, args, actor).await.into(),
-        DispatchTarget::EditTrimEdges => edit_trim_edges(state, args, actor).await.into(),
-        DispatchTarget::EditRippleDelete => edit_ripple_delete(state, args, actor).await.into(),
-        DispatchTarget::EditTrim => edit_trim(state, args, actor).await.into(),
-        DispatchTarget::EditSpeed => edit_speed(state, args, actor).await.into(),
-        DispatchTarget::EditSpeedRamp => edit_speed_ramp(state, args, actor).await.into(),
-        DispatchTarget::EditMove => edit_move(state, args, actor).await.into(),
-        DispatchTarget::EditInsert => edit_insert(state, args, actor).await.into(),
-        DispatchTarget::EditInsertLinked => edit_insert_linked(state, args, actor).await.into(),
-        DispatchTarget::EditOverwrite => edit_overwrite(state, args, actor).await.into(),
-        DispatchTarget::EditDuplicate => edit_duplicate(state, args, actor).await.into(),
-        DispatchTarget::EditNest => edit_nest(state, args, actor).await.into(),
-        DispatchTarget::EditReplace => edit_replace(state, args, actor).await.into(),
-        DispatchTarget::EditFitToFill => edit_fit_to_fill(state, args, actor).await.into(),
-        DispatchTarget::EditDetachAudio => edit_detach_audio(state, args, actor).await.into(),
-        DispatchTarget::EditSplitEdit => edit_split_edit(state, args, actor).await.into(),
-        DispatchTarget::EditPaste => edit_paste(state, args, actor).await.into(),
-        DispatchTarget::EditGain => edit_gain(state, args, actor).await.into(),
-        DispatchTarget::EditFade => edit_fade(state, args, actor).await.into(),
-        DispatchTarget::EditMuteRange => edit_mute_range(state, args, actor).await.into(),
-        DispatchTarget::EditTransform => edit_transform(state, args, actor).await.into(),
-        DispatchTarget::EditCrop => edit_crop(state, args, actor).await.into(),
-        DispatchTarget::EditGrade => edit_grade(state, args, actor).await.into(),
-        DispatchTarget::EditGradeStack => edit_grade_stack(state, args, actor).await.into(),
-        DispatchTarget::EditGradeWindow => edit_grade_window(state, args, actor).await.into(),
-        DispatchTarget::GradeSave => grade_save(state, args, actor).await.into(),
-        DispatchTarget::GradeApply => grade_apply(state, args, actor).await.into(),
-        DispatchTarget::GradeList => grade_list(state).await.into(),
-        DispatchTarget::EditColorSpace => edit_color_space(state, args, actor).await.into(),
-        DispatchTarget::EditColorMatch => edit_color_match(state, args, actor).await.into(),
-        DispatchTarget::EditAutoBalance => edit_auto_balance(state, args, actor).await.into(),
-        DispatchTarget::EditMatte => edit_matte(state, args, actor).await.into(),
-        DispatchTarget::EditEffect => edit_effect(state, args, actor).await.into(),
-        DispatchTarget::EditAdjustment => edit_adjustment(state, args, actor).await.into(),
-        DispatchTarget::EditReverse => edit_reverse(state, args, actor).await.into(),
-        DispatchTarget::EditStabilize => edit_stabilize(state, args, actor).await.into(),
-        DispatchTarget::EditFreeze => edit_freeze(state, args, actor).await.into(),
-        DispatchTarget::EditAnimate => edit_animate(state, args, actor).await.into(),
-        DispatchTarget::EditKeyframe => edit_keyframe(state, args, actor).await.into(),
-        DispatchTarget::EditAutoZoom => edit_auto_zoom(state, args, actor).await.into(),
-        DispatchTarget::EditAddMask => edit_add_mask(state, args, actor).await.into(),
-        DispatchTarget::EditRedact => edit_redact(state, args, actor).await.into(),
-        DispatchTarget::EditTrack => edit_track(state, args).await.into(),
-        DispatchTarget::EditMulticamSync => edit_multicam_sync(state, args).await.into(),
-        DispatchTarget::EditMulticamSwitch => edit_multicam_switch(state, args, actor).await.into(),
-        DispatchTarget::EditEq => edit_eq(state, args, actor).await.into(),
-        DispatchTarget::AudioCleanupVoice => audio_cleanup_voice(state, args, actor).await.into(),
-        DispatchTarget::EditSlide => edit_slide(state, args, actor).await.into(),
-        DispatchTarget::TitleAdd => title_add(state, args, actor).await.into(),
-        DispatchTarget::TitleUpdate => title_update(state, args, actor).await.into(),
-        DispatchTarget::TitleTemplates => title_templates(state, args, actor).await.into(),
-        DispatchTarget::EditAddShape => edit_add_shape(state, args, actor).await.into(),
-        DispatchTarget::ShapeUpdate => shape_update(state, args, actor).await.into(),
-        DispatchTarget::EditSeekMarker => edit_seek_marker(state, args, actor).await.into(),
-        DispatchTarget::AssetsProviders => assets_providers(state, args, actor).await.into(),
-        DispatchTarget::AssetsSearch => assets_search(state, args, actor).await.into(),
-        DispatchTarget::AssetsFetch => assets_fetch(state, args, actor).await.into(),
-        DispatchTarget::AssetsGenerate => assets_generate(state, args, actor).await.into(),
-        DispatchTarget::AssetsGeneratedList => generated_assets::assets_generated_list(state, args)
-            .await
-            .into(),
-        DispatchTarget::AgentChat => agent_chat(state, args, actor).await.into(),
-        DispatchTarget::PluginsList => plugins_list(state, args, actor).await.into(),
-        DispatchTarget::PluginsEnable => plugins_enable(state, args, actor).await.into(),
-        DispatchTarget::PluginsCall => plugins_call(state, args, actor).await.into(),
-        DispatchTarget::MediaIndexStatus => media_index_status(state, args).await.into(),
-        DispatchTarget::MediaSearch => media_search(state, args, actor).await.into(),
-        DispatchTarget::MediaIndex => media_index(state, args, actor).await.into(),
-        DispatchTarget::MediaIntelligenceStatus => {
-            media_intelligence_status(state, args).await.into()
-        }
-        DispatchTarget::MediaIntelligenceRebuild => {
-            media_intelligence_rebuild(state, args).await.into()
-        }
-        DispatchTarget::MediaIntelligenceSearch => {
-            media_intelligence_search(state, args).await.into()
-        }
-        DispatchTarget::InspectMedia => inspect_media(state, args).await.into(),
-        DispatchTarget::InspectRange => inspect_range(state, args).await.into(),
-        DispatchTarget::EffectsList => effects_list(state, args, actor).await.into(),
-        DispatchTarget::TransitionsList => transitions_list(state, args, actor).await.into(),
-        DispatchTarget::CaptionsKinetic => captions_kinetic(state, args, actor).await.into(),
-        DispatchTarget::EditCrossfade => edit_crossfade(state, args, actor).await.into(),
-        DispatchTarget::EditDuck => edit_duck(state, args, actor).await.into(),
-        DispatchTarget::EditAddTrack => edit_add_track(state, args, actor).await.into(),
-        DispatchTarget::EditRemoveTrack => edit_remove_track(state, args, actor).await.into(),
-        DispatchTarget::EditReorderTrack => edit_reorder_track(state, args, actor).await.into(),
-        DispatchTarget::EditBlend => edit_blend(state, args, actor).await.into(),
-        DispatchTarget::EditTrackVisible => edit_track_visible(state, args, actor).await.into(),
-        DispatchTarget::EditTrackLock => edit_track_lock(state, args, actor).await.into(),
-        DispatchTarget::EditMute => edit_mute(state, args, actor).await.into(),
-        DispatchTarget::EditSolo => edit_solo(state, args, actor).await.into(),
-        DispatchTarget::EditPan => edit_pan(state, args, actor).await.into(),
-        DispatchTarget::EditSlip => edit_slip(state, args, actor).await.into(),
-        DispatchTarget::EditRoll => edit_roll(state, args, actor).await.into(),
-        DispatchTarget::EditSlideEdit => edit_slide_edit(state, args, actor).await.into(),
-        DispatchTarget::EditPasteAttributes => {
-            crate::paste_attributes::edit_paste_attributes(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::EditAddMarker => edit_add_marker(state, args, actor).await.into(),
-        DispatchTarget::EditRemoveMarker => edit_remove_marker(state, args, actor).await.into(),
-        DispatchTarget::EditMoveMarker => edit_move_marker(state, args, actor).await.into(),
-        DispatchTarget::EditUpdateMarker => edit_update_marker(state, args, actor).await.into(),
-        DispatchTarget::EditRestore => edit_restore(state, args, actor).await.into(),
-
-        // ------------------------------------------------------------------
-        // audio.* — music bed with auto-duck + beat markers
-        // ------------------------------------------------------------------
-        DispatchTarget::AudioAddMusic => audio_add_music(state, args, actor).await.into(),
-        DispatchTarget::AudioDub => crate::dub::audio_dub(state, args, actor).await.into(),
-
-        // ------------------------------------------------------------------
-        // transcript.* — transcript-driven edits (one op per removed span)
-        // ------------------------------------------------------------------
-        DispatchTarget::TranscriptGet => speech_text::transcript_get(state, args).await.into(),
-        DispatchTarget::TranscriptTimeline => {
-            speech_text::transcript_timeline(state, args).await.into()
-        }
-        DispatchTarget::TranscriptCutWords => speech_text::transcript_cut_words(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::TranscriptIgnoreWords => {
-            speech_text::transcript_ignore_words(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::TranscriptMuteWords => {
-            speech_text::transcript_mute_words(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::TranscriptAssemble => speech_text::transcript_assemble(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::TranscriptSearch => {
-            speech_text::transcript_search(state, args).await.into()
-        }
-        DispatchTarget::TranscriptChapters => {
-            speech_text::transcript_chapters(state, args).await.into()
-        }
-        DispatchTarget::TranscriptRemoveSilences => {
-            speech_text::transcript_remove_silences(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::TranscriptRemoveFillers => {
-            speech_text::transcript_remove_fillers(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::TranscriptRemoveRetakes => {
-            speech_text::transcript_remove_retakes(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::TranscriptTranslate => {
-            speech_text::transcript_translate(state, args).await.into()
-        }
-
-        // ------------------------------------------------------------------
-        // captions.*
-        // ------------------------------------------------------------------
-        DispatchTarget::CaptionsGenerate => captions_generate(state, args, actor).await.into(),
-        DispatchTarget::CaptionsTranslate => captions_translate(state, args, actor).await.into(),
-        DispatchTarget::CaptionsImport => captions_import(state, args, actor).await.into(),
-        DispatchTarget::CaptionsAddText => speech_text::captions_add_text(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::CaptionsSetStyle => speech_text::captions_set_style(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::CaptionsSaveStyle => speech_text::captions_save_style(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::CaptionsApplyStyle => speech_text::captions_apply_style(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::CaptionsListStyles => {
-            speech_text::captions_list_styles(state, args).await.into()
-        }
-        DispatchTarget::CaptionsReflow => captions_reflow(state, args, actor).await.into(),
-        DispatchTarget::CaptionsShift => captions_shift(state, args, actor).await.into(),
-        DispatchTarget::CaptionsSetRange => captions_set_range(state, args, actor).await.into(),
-        DispatchTarget::CaptionsSetText => captions_set_text(state, args, actor).await.into(),
-        DispatchTarget::CaptionsBulkPreview => captions_bulk_preview(state, args).await.into(),
-        DispatchTarget::CaptionsBulkApply => captions_bulk_apply(state, args, actor).await.into(),
-
-        // ------------------------------------------------------------------
-        // render.* / verify.* / export.*
-        // ------------------------------------------------------------------
-        DispatchTarget::RenderPreview => render_preview(state, args).await.into(),
-        DispatchTarget::RenderFrame => render_frame(state, args).await.into(),
-        DispatchTarget::RenderCompare => render_compare(state, args).await.into(),
-        DispatchTarget::RenderStoryboard => render_storyboard(state, args).await.into(),
-        DispatchTarget::RenderFinal => render_final(state, args, actor).await.into(),
-        DispatchTarget::RenderReframe => render_reframe(state, args, actor).await.into(),
-        DispatchTarget::RenderDirect => render_direct(state, args, actor).await.into(),
-        DispatchTarget::RenderQc => render_qc(state, args, actor).await.into(),
-        DispatchTarget::VerifyChecks => verify_checks(state, args).await.into(),
-        DispatchTarget::VerifyRerun => verify_rerun(state, args).await.into(),
-        DispatchTarget::VerifyPacing => verify_pacing(state).await.into(),
-        DispatchTarget::VerifyCaptions => verify_captions(state, args).await.into(),
-        DispatchTarget::VerifyDelivery => verify_delivery(state, args).await.into(),
-        DispatchTarget::VerifyLoudness => verify_loudness(state, args).await.into(),
-        DispatchTarget::VerifyScopes => verify_scopes(state, args).await.into(),
-        DispatchTarget::VerifyBrand => verify_brand(state, args).await.into(),
-        DispatchTarget::VerifyJudge => verify_judge(state, args).await.into(),
-        DispatchTarget::VerifyPregate => verify_pregate(state, args).await.into(),
-        DispatchTarget::ExportFrame => export_frame(state, args, actor).await.into(),
-        DispatchTarget::ExportRange => export_range(state, args, actor).await.into(),
-        DispatchTarget::ExportAudio => export_audio(state, args, actor).await.into(),
-        DispatchTarget::ExportPublish => export_publish(state, args, actor).await.into(),
-        DispatchTarget::ExportGif => export_gif(state, args, actor).await.into(),
-        DispatchTarget::ExportXml => export_xml(state, args).await.into(),
-        DispatchTarget::ExportOtio => export_otio(state, args).await.into(),
-        DispatchTarget::ExportEdl => export_edl(state, args).await.into(),
-        DispatchTarget::ImportOtio => import_otio(state, args, actor).await.into(),
-        DispatchTarget::ExportSrt => export_srt(state, args).await.into(),
-        DispatchTarget::ExportVtt => export_vtt(state, args).await.into(),
-        DispatchTarget::ExportAss => export_ass(state, args).await.into(),
-        DispatchTarget::ExportTranscript => export_transcript(state, args).await.into(),
-        DispatchTarget::ExportChapters => export_chapters(state, args).await.into(),
-
-        // ------------------------------------------------------------------
-        // clip.* — social repurposing: rank shareable windows + bundle
-        // ------------------------------------------------------------------
-        DispatchTarget::ClipCandidates => clip_candidates(state, args).await.into(),
-        DispatchTarget::RenderBundle => render_bundle(state, args, actor).await.into(),
-        DispatchTarget::RenderQueue => render_queue(state, args, actor).await.into(),
-        DispatchTarget::AutopilotRun => autopilot_run(state, args, actor).await.into(),
-
-        // ------------------------------------------------------------------
-        // generate.* — native Generate module foundation. Pure catalog reads,
-        // non-mutating previews, native inserts, prompt planning, and storyboard
-        // planning all live in one domain.
-        // ------------------------------------------------------------------
-        DispatchTarget::GenerateList => generate_handlers::generate_list(args).await.into(),
-        DispatchTarget::GenerateDescribe => generate_handlers::generate_describe(args).await.into(),
-        DispatchTarget::GeneratePreview => generate_handlers::generate_preview(state, args)
-            .await
-            .into(),
-        DispatchTarget::GenerateInsert => generate_handlers::generate_insert(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::GenerateFromPrompt => {
-            generate_handlers::generate_from_prompt(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::GenerateStoryboard => {
-            generate_handlers::generate_storyboard(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionTemplateToCut => {
-            crate::motion_bridge::motion_template_to_cut(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionScriptToCut => {
-            crate::motion_bridge::motion_script_to_cut(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionJobGet => crate::motion_jobs::get(state, args).await.into(),
-        DispatchTarget::MotionJobList => crate::motion_jobs::list(state, args).await.into(),
-        DispatchTarget::MotionMapImport => {
-            crate::motion_bridge::motion_map_import(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionApplyImport => {
-            crate::motion_bridge::motion_apply_import(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkRefresh => {
-            crate::motion_bridge::motion_link_refresh(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkRelink => {
-            crate::motion_bridge::motion_link_relink(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkEdit => {
-            crate::motion_bridge::motion_link_edit(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkTrackingInventory => {
-            crate::motion_tracking::inventory(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkTrackingRequest => {
-            crate::motion_tracking::request(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkTrackingInspect => {
-            crate::motion_tracking::inspect(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkTrackingApply => {
-            crate::motion_tracking::apply(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkTrackingVerify => {
-            crate::motion_tracking::verify(state, args, actor)
-                .await
-                .into()
-        }
-        DispatchTarget::MotionLinkTrackingDetach => {
-            crate::motion_tracking::detach(state, args, actor)
-                .await
-                .into()
-        }
-
-        // ------------------------------------------------------------------
-        // recipe.* — declarative pipeline manifests: list/describe (pure
-        // reads) + run (a job; the pure orchestrator over the existing verbs).
-        // ------------------------------------------------------------------
-        DispatchTarget::RecipeList => recipe_list(args).await.into(),
-        DispatchTarget::RecipeDescribe => recipe_describe(args).await.into(),
-        DispatchTarget::RecipeRun => recipe_run(state, args, actor).await.into(),
-
-        DispatchTarget::AssembleBroll => assemble_broll(state, args, actor).await.into(),
-        DispatchTarget::AssembleRepurpose => speech_text::assemble_repurpose(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::AssembleShorts => speech_text::assemble_shorts(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::AssembleFromScript => speech_text::assemble_from_script(state, args, actor)
-            .await
-            .into(),
-        DispatchTarget::ScoreClip => speech_text::score_clip(state, args).await.into(),
-
-        // screen_record.* keeps the exhaustive domain list here; bounded adapters own routing.
-        target @ (DispatchTarget::ScreenRecordDoctor
-        | DispatchTarget::ScreenRecordMicrophoneSelection
-        | DispatchTarget::ScreenRecordSystemAudioProbe
-        | DispatchTarget::ScreenRecordRehearsalStart
-        | DispatchTarget::ScreenRecordRehearsalDiscard
-        | DispatchTarget::ScreenRecordStart
-        | DispatchTarget::ScreenRecordSceneActivate
-        | DispatchTarget::ScreenRecordSceneTimer
-        | DispatchTarget::ScreenRecordPause
-        | DispatchTarget::ScreenRecordResume
-        | DispatchTarget::ScreenRecordRecoveryStatus
-        | DispatchTarget::ScreenRecordStatus
-        | DispatchTarget::ScreenRecordLiveFrame
-        | DispatchTarget::ScreenRecordPreviewCapability
-        | DispatchTarget::ScreenRecordPreviewStart
-        | DispatchTarget::ScreenRecordPreviewStatus
-        | DispatchTarget::ScreenRecordPreviewFrame
-        | DispatchTarget::ScreenRecordPreviewPause
-        | DispatchTarget::ScreenRecordPreviewResume
-        | DispatchTarget::ScreenRecordPreviewHide
-        | DispatchTarget::ScreenRecordPreviewStop
-        | DispatchTarget::ScreenRecordStop
-        | DispatchTarget::ScreenRecordStudioEvent
-        | DispatchTarget::ScreenRecordAutoedit
-        | DispatchTarget::ScreenRecordPolish
-        | DispatchTarget::ScreenRecordExport
-        | DispatchTarget::ScreenRecordCopyRaw) => {
-            screen_record_routes::dispatch(target, state, args, actor).await
-        }
-        DispatchTarget::VoiceoverStart => voiceover::start(state, args, actor).await.into(),
-        DispatchTarget::VoiceoverTick => voiceover::tick(state, args, actor).await.into(),
-        DispatchTarget::VoiceoverStop => voiceover::stop(state, args, actor).await.into(),
-        DispatchTarget::VoiceoverCancel => voiceover::cancel(state, args, actor).await.into(),
-        DispatchTarget::VoiceoverObservePlayhead => {
-            voiceover::observe_playhead(state, args, actor).await.into()
-        }
-
-        // ------------------------------------------------------------------
-        // ui.* — relayed to the connected UI client over WS (ui_bridge.rs)
-        // ------------------------------------------------------------------
-        DispatchTarget::UiState => ui_state(state).await.into(),
-        DispatchTarget::UiScreenshot => ui_screenshot(state, args).await.into(),
-        DispatchTarget::DebugScreenshot => debug_screenshot(args).await.into(),
-        DispatchTarget::UiOpen
-        | DispatchTarget::UiPlayhead
-        | DispatchTarget::UiSelect
-        | DispatchTarget::UiHighlight => ui_forward(state, name, args).await.into(),
-
-        // ------------------------------------------------------------------
-        // system.* — environment doctor + consented tool fetch
-        // ------------------------------------------------------------------
-        DispatchTarget::SystemMcpTest => crate::mcp::self_test(state).await.into(),
-        DispatchTarget::SystemDoctor => system_doctor(state, args).await.into(),
-        DispatchTarget::SystemMotionStatus => system_motion_status(args).await.into(),
-        DispatchTarget::SystemSetFfmpeg => crate::ffmpeg_settings::system_set_ffmpeg(state, args)
-            .await
-            .into(),
-        DispatchTarget::SystemSetSttModel => crate::stt_settings::system_set_stt_model(state, args)
-            .await
-            .into(),
-        DispatchTarget::SystemFetchTool => system_fetch_tool(state, args, actor).await.into(),
-        DispatchTarget::SystemSetupPerception => {
-            system_setup_perception(state, args, actor).await.into()
-        }
-        DispatchTarget::SystemSetupMatte => system_setup_matte(state, args, actor).await.into(),
-    };
+    let mut result: VerbResult = route_verb(state, name, dispatch_target, args, actor).await;
     if result.ok {
         if let Some(op_ids) = result.op_ids.clone() {
             let warnings = {
@@ -642,6 +145,488 @@ async fn dispatch_validated(
     )
     .await;
     result
+}
+
+type VerbFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = VerbResult> + Send + 'a>>;
+
+/// Box one handler's future: `verb!(handler(state, args))` awaits the handler
+/// and converts its result into the envelope.
+macro_rules! verb {
+    ($handler:expr) => {
+        Box::pin(async move { $handler.await.into() })
+    };
+}
+
+/// Start the handler of one verb target. This is a plain fn and every arm
+/// boxes its own future: a debug build gives a poll function a separate stack
+/// slot for every match arm's temporaries, and with ~280 arms inline in
+/// `dispatch_validated` its poll frame was ~900 KB (Windows debug test build).
+/// Nested verbs (`screen_record.polish` -> `edit.insert`) stacked two such
+/// frames and overflowed the 2 MiB test thread. Here the arm temporaries live
+/// only while the future is built, and a poll runs just the chosen handler.
+fn route_verb<'a>(
+    state: &'a AppState,
+    name: &'a str,
+    dispatch_target: DispatchTarget,
+    args: Value,
+    actor: Actor,
+) -> VerbFuture<'a> {
+    // Targets come from schema/verbs.json; no catch-all arm on purpose: the compiler proves every
+    // target has a handler, and registry loading verifies each verb names exactly one target.
+    match dispatch_target {
+        // ------------------------------------------------------------------
+        // project.*
+        // ------------------------------------------------------------------
+        DispatchTarget::ProjectCreate => verb!(project_create(state, args, actor)),
+        DispatchTarget::ProjectOpen => verb!(project_open(state, args)),
+        DispatchTarget::ProjectList => verb!(project_list(args)),
+        DispatchTarget::ProjectForget => verb!(project_forget(args)),
+        DispatchTarget::ProjectDelete => verb!(project_delete(state, args)),
+        DispatchTarget::ProjectSave => verb!(project_save(state)),
+        DispatchTarget::ProjectPackagePlan => verb!(project_package_plan(state, args)),
+        DispatchTarget::ProjectPackageCreate => verb!(project_package_create(state, args)),
+        DispatchTarget::ProjectState => verb!(project_state(state, args)),
+        DispatchTarget::ProjectHealth => verb!(project_health(state, args)),
+        DispatchTarget::ProjectCachePreview => verb!(project_cache_preview(state)),
+        DispatchTarget::ProjectCacheRebuild => verb!(project_cache_rebuild(state, args)),
+        DispatchTarget::ProjectCachePurge => verb!(project_cache_purge(state, args)),
+        DispatchTarget::ProjectSequenceList => verb!(project_sequence_list(state)),
+        DispatchTarget::ProjectSequenceIndex => verb!(project_sequence_index(state, args)),
+        DispatchTarget::ProjectSequenceCreate => verb!(project_sequence_create(state, args, actor)),
+        DispatchTarget::ProjectSequenceSwitch => verb!(project_sequence_switch(state, args, actor)),
+        DispatchTarget::ProjectSequenceRename => verb!(project_sequence_rename(state, args, actor)),
+        DispatchTarget::ProjectSequenceDelete => verb!(project_sequence_delete(state, args, actor)),
+        DispatchTarget::ProjectOps => verb!(project_ops(state, args)),
+        DispatchTarget::ProjectGroupPreview => verb!(project_group_preview(state, args)),
+        DispatchTarget::ProjectGroupReject => verb!(project_group_reject(state, args, actor)),
+        DispatchTarget::ProjectClose => verb!(project_close(state, args)),
+        DispatchTarget::ProjectCheckpoint => verb!(project_checkpoint(state, args, actor)),
+        DispatchTarget::ProjectRename => verb!(project_rename(state, args, actor)),
+        DispatchTarget::ProjectFormat => verb!(project_format(state, args, actor)),
+        DispatchTarget::ProjectColor => verb!(project_color(state, args, actor)),
+        DispatchTarget::ProjectBrand => verb!(project_brand(state, args, actor)),
+        DispatchTarget::ProjectSetOutputDir => {
+            verb!(crate::output_paths::project_set_output_dir(state, args))
+        }
+        DispatchTarget::ProjectGetOutputDir => {
+            verb!(crate::output_paths::project_get_output_dir())
+        }
+        DispatchTarget::CommentAdd => verb!(comment_add(state, args, actor)),
+        DispatchTarget::CommentExport => verb!(comment_export(state, args)),
+        DispatchTarget::CommentImport => verb!(comment_import(state, args, actor)),
+        DispatchTarget::CommentList => verb!(comment_list(state, args)),
+        DispatchTarget::CommentResolve => verb!(comment_resolve(state, args, actor)),
+        DispatchTarget::CommentDraft => verb!(comment_draft(state, args, actor)),
+        DispatchTarget::CommentApply => verb!(comment_apply(state, args, actor)),
+        DispatchTarget::ProjectRevert => verb!(project_revert(state, args, actor)),
+        DispatchTarget::ProjectUndo => verb!(project_undo(state, actor)),
+        DispatchTarget::ProjectRedo => verb!(project_redo(state, actor)),
+        DispatchTarget::ProjectDiff => verb!(project_diff(state, args)),
+        DispatchTarget::LibraryList => verb!(library_list(args)),
+        DispatchTarget::LibraryAdd => verb!(library_add(state, args)),
+        DispatchTarget::LibraryRelink => verb!(library_relink(args)),
+        DispatchTarget::LibraryRemove => verb!(library_remove(args)),
+        DispatchTarget::LibraryMove => verb!(library_move(args)),
+        DispatchTarget::LibraryTag => verb!(library_tag(args)),
+        DispatchTarget::LibraryFavorite => verb!(library_favorite(args)),
+        DispatchTarget::LibraryUse => verb!(library_use(args)),
+        DispatchTarget::LibraryAddToProject => verb!(library_add_to_project(state, args, actor)),
+        DispatchTarget::LibraryFolderAdd => verb!(library_folder_add(args)),
+        DispatchTarget::LibraryFolderRename => verb!(library_folder_rename(args)),
+        DispatchTarget::LibraryFolderRemove => verb!(library_folder_remove(args)),
+
+        // ------------------------------------------------------------------
+        // media.* — import kicks the probe→proxy→transcribe→perception chain
+        // ------------------------------------------------------------------
+        DispatchTarget::MediaImport => verb!(media_import(state, args, actor)),
+        DispatchTarget::MediaRemove => verb!(media_remove(state, args, actor)),
+        DispatchTarget::MediaRelink => verb!(media_relink(state, args, actor)),
+        DispatchTarget::MediaRelinkPreview => verb!(media_relink_preview(state, args)),
+        DispatchTarget::MediaRelinkApply => verb!(media_relink_apply(state, args, actor)),
+        DispatchTarget::MediaCheck => verb!(media_check(state, args)),
+        DispatchTarget::MediaBinSave => verb!(media_bin_save(state, args, actor)),
+        DispatchTarget::MediaBinDelete => verb!(media_bin_delete(state, args, actor)),
+        DispatchTarget::MediaBinList => verb!(media_bin_list(state, args)),
+        DispatchTarget::MediaProbe => verb!(media_probe(state, args)),
+        DispatchTarget::MediaWaveform => verb!(media_waveform(state, args)),
+        DispatchTarget::MediaFilmstrip => verb!(media_filmstrip(state, args)),
+        DispatchTarget::MediaTranscribe => verb!(media_transcribe(state, args)),
+        DispatchTarget::MediaPerception => verb!(media_perception(state, args)),
+        DispatchTarget::MediaDiarize => verb!(crate::diarize::media_diarize(state, args)),
+
+        // ------------------------------------------------------------------
+        // jobs.* (the background-job contract: jobs domain replaces media.status)
+        // ------------------------------------------------------------------
+        DispatchTarget::JobsStatus => verb!(jobs_status(state, args)),
+        DispatchTarget::JobsList => verb!(jobs_list(state)),
+        DispatchTarget::JobsCancel => verb!(jobs_cancel(state, args)),
+        DispatchTarget::JobsRetry => verb!(jobs_retry(state, args)),
+        DispatchTarget::JobsBeforeQuit => verb!(jobs_before_quit(state, args)),
+        DispatchTarget::JobsInterrupted => verb!(jobs_interrupted(state, args)),
+        DispatchTarget::JobsInterruptedDismiss => verb!(jobs_interrupted_dismiss(args)),
+
+        // ------------------------------------------------------------------
+        // edit.* — thin arg-parse wrappers over cut_core::edit, one op each
+        // ------------------------------------------------------------------
+        DispatchTarget::EditSplit => verb!(edit_split(state, args, actor)),
+        DispatchTarget::EditCutToBeat => verb!(edit_cut_to_beat(state, args, actor)),
+        DispatchTarget::EditSplitAtScenes => verb!(edit_split_at_scenes(state, args, actor)),
+        DispatchTarget::EditMarkScenes => verb!(edit_mark_scenes(state, args, actor)),
+        DispatchTarget::EditTrimEdges => verb!(edit_trim_edges(state, args, actor)),
+        DispatchTarget::EditRippleDelete => verb!(edit_ripple_delete(state, args, actor)),
+        DispatchTarget::EditTrim => verb!(edit_trim(state, args, actor)),
+        DispatchTarget::EditSpeed => verb!(edit_speed(state, args, actor)),
+        DispatchTarget::EditSpeedRamp => verb!(edit_speed_ramp(state, args, actor)),
+        DispatchTarget::EditMove => verb!(edit_move(state, args, actor)),
+        DispatchTarget::EditInsert => verb!(edit_insert(state, args, actor)),
+        DispatchTarget::EditInsertLinked => verb!(edit_insert_linked(state, args, actor)),
+        DispatchTarget::EditOverwrite => verb!(edit_overwrite(state, args, actor)),
+        DispatchTarget::EditDuplicate => verb!(edit_duplicate(state, args, actor)),
+        DispatchTarget::EditNest => verb!(edit_nest(state, args, actor)),
+        DispatchTarget::EditReplace => verb!(edit_replace(state, args, actor)),
+        DispatchTarget::EditFitToFill => verb!(edit_fit_to_fill(state, args, actor)),
+        DispatchTarget::EditDetachAudio => verb!(edit_detach_audio(state, args, actor)),
+        DispatchTarget::EditSplitEdit => verb!(edit_split_edit(state, args, actor)),
+        DispatchTarget::EditPaste => verb!(edit_paste(state, args, actor)),
+        DispatchTarget::EditGain => verb!(edit_gain(state, args, actor)),
+        DispatchTarget::EditFade => verb!(edit_fade(state, args, actor)),
+        DispatchTarget::EditMuteRange => verb!(edit_mute_range(state, args, actor)),
+        DispatchTarget::EditTransform => verb!(edit_transform(state, args, actor)),
+        DispatchTarget::EditCrop => verb!(edit_crop(state, args, actor)),
+        DispatchTarget::EditGrade => verb!(edit_grade(state, args, actor)),
+        DispatchTarget::EditGradeStack => verb!(edit_grade_stack(state, args, actor)),
+        DispatchTarget::EditGradeWindow => verb!(edit_grade_window(state, args, actor)),
+        DispatchTarget::GradeSave => verb!(grade_save(state, args, actor)),
+        DispatchTarget::GradeApply => verb!(grade_apply(state, args, actor)),
+        DispatchTarget::GradeList => verb!(grade_list(state)),
+        DispatchTarget::EditColorSpace => verb!(edit_color_space(state, args, actor)),
+        DispatchTarget::EditColorMatch => verb!(edit_color_match(state, args, actor)),
+        DispatchTarget::EditAutoBalance => verb!(edit_auto_balance(state, args, actor)),
+        DispatchTarget::EditMatte => verb!(edit_matte(state, args, actor)),
+        DispatchTarget::EditEffect => verb!(edit_effect(state, args, actor)),
+        DispatchTarget::EditAdjustment => verb!(edit_adjustment(state, args, actor)),
+        DispatchTarget::EditReverse => verb!(edit_reverse(state, args, actor)),
+        DispatchTarget::EditStabilize => verb!(edit_stabilize(state, args, actor)),
+        DispatchTarget::EditFreeze => verb!(edit_freeze(state, args, actor)),
+        DispatchTarget::EditAnimate => verb!(edit_animate(state, args, actor)),
+        DispatchTarget::EditKeyframe => verb!(edit_keyframe(state, args, actor)),
+        DispatchTarget::EditAutoZoom => verb!(edit_auto_zoom(state, args, actor)),
+        DispatchTarget::EditAddMask => verb!(edit_add_mask(state, args, actor)),
+        DispatchTarget::EditRedact => verb!(edit_redact(state, args, actor)),
+        DispatchTarget::EditTrack => verb!(edit_track(state, args)),
+        DispatchTarget::EditMulticamSync => verb!(edit_multicam_sync(state, args)),
+        DispatchTarget::EditMulticamSwitch => verb!(edit_multicam_switch(state, args, actor)),
+        DispatchTarget::EditEq => verb!(edit_eq(state, args, actor)),
+        DispatchTarget::AudioCleanupVoice => verb!(audio_cleanup_voice(state, args, actor)),
+        DispatchTarget::EditSlide => verb!(edit_slide(state, args, actor)),
+        DispatchTarget::TitleAdd => verb!(title_add(state, args, actor)),
+        DispatchTarget::TitleUpdate => verb!(title_update(state, args, actor)),
+        DispatchTarget::TitleTemplates => verb!(title_templates(state, args, actor)),
+        DispatchTarget::EditAddShape => verb!(edit_add_shape(state, args, actor)),
+        DispatchTarget::ShapeUpdate => verb!(shape_update(state, args, actor)),
+        DispatchTarget::EditSeekMarker => verb!(edit_seek_marker(state, args, actor)),
+        DispatchTarget::AssetsProviders => verb!(assets_providers(state, args, actor)),
+        DispatchTarget::AssetsSearch => verb!(assets_search(state, args, actor)),
+        DispatchTarget::AssetsFetch => verb!(assets_fetch(state, args, actor)),
+        DispatchTarget::AssetsGenerate => verb!(assets_generate(state, args, actor)),
+        DispatchTarget::AssetsGeneratedList => {
+            verb!(generated_assets::assets_generated_list(state, args))
+        }
+        DispatchTarget::AgentChat => verb!(agent_chat(state, args, actor)),
+        DispatchTarget::PluginsList => verb!(plugins_list(state, args, actor)),
+        DispatchTarget::PluginsEnable => verb!(plugins_enable(state, args, actor)),
+        DispatchTarget::PluginsCall => verb!(plugins_call(state, args, actor)),
+        DispatchTarget::MediaIndexStatus => verb!(media_index_status(state, args)),
+        DispatchTarget::MediaSearch => verb!(media_search(state, args, actor)),
+        DispatchTarget::MediaIndex => verb!(media_index(state, args, actor)),
+        DispatchTarget::MediaIntelligenceStatus => verb!(media_intelligence_status(state, args)),
+        DispatchTarget::MediaIntelligenceRebuild => verb!(media_intelligence_rebuild(state, args)),
+        DispatchTarget::MediaIntelligenceSearch => verb!(media_intelligence_search(state, args)),
+        DispatchTarget::InspectMedia => verb!(inspect_media(state, args)),
+        DispatchTarget::InspectRange => verb!(inspect_range(state, args)),
+        DispatchTarget::EffectsList => verb!(effects_list(state, args, actor)),
+        DispatchTarget::TransitionsList => verb!(transitions_list(state, args, actor)),
+        DispatchTarget::CaptionsKinetic => verb!(captions_kinetic(state, args, actor)),
+        DispatchTarget::EditCrossfade => verb!(edit_crossfade(state, args, actor)),
+        DispatchTarget::EditDuck => verb!(edit_duck(state, args, actor)),
+        DispatchTarget::EditAddTrack => verb!(edit_add_track(state, args, actor)),
+        DispatchTarget::EditRemoveTrack => verb!(edit_remove_track(state, args, actor)),
+        DispatchTarget::EditReorderTrack => verb!(edit_reorder_track(state, args, actor)),
+        DispatchTarget::EditBlend => verb!(edit_blend(state, args, actor)),
+        DispatchTarget::EditTrackVisible => verb!(edit_track_visible(state, args, actor)),
+        DispatchTarget::EditTrackLock => verb!(edit_track_lock(state, args, actor)),
+        DispatchTarget::EditMute => verb!(edit_mute(state, args, actor)),
+        DispatchTarget::EditSolo => verb!(edit_solo(state, args, actor)),
+        DispatchTarget::EditPan => verb!(edit_pan(state, args, actor)),
+        DispatchTarget::EditSlip => verb!(edit_slip(state, args, actor)),
+        DispatchTarget::EditRoll => verb!(edit_roll(state, args, actor)),
+        DispatchTarget::EditSlideEdit => verb!(edit_slide_edit(state, args, actor)),
+        DispatchTarget::EditPasteAttributes => verb!(
+            crate::paste_attributes::edit_paste_attributes(state, args, actor)
+        ),
+        DispatchTarget::EditAddMarker => verb!(edit_add_marker(state, args, actor)),
+        DispatchTarget::EditRemoveMarker => verb!(edit_remove_marker(state, args, actor)),
+        DispatchTarget::EditMoveMarker => verb!(edit_move_marker(state, args, actor)),
+        DispatchTarget::EditUpdateMarker => verb!(edit_update_marker(state, args, actor)),
+        DispatchTarget::EditRestore => verb!(edit_restore(state, args, actor)),
+
+        // ------------------------------------------------------------------
+        // audio.* — music bed with auto-duck + beat markers
+        // ------------------------------------------------------------------
+        DispatchTarget::AudioAddMusic => verb!(audio_add_music(state, args, actor)),
+        DispatchTarget::AudioDub => verb!(crate::dub::audio_dub(state, args, actor)),
+
+        // ------------------------------------------------------------------
+        // transcript.* — transcript-driven edits (one op per removed span)
+        // ------------------------------------------------------------------
+        DispatchTarget::TranscriptGet => verb!(speech_text::transcript_get(state, args)),
+        DispatchTarget::TranscriptTimeline => verb!(speech_text::transcript_timeline(state, args)),
+        DispatchTarget::TranscriptCutWords => {
+            verb!(speech_text::transcript_cut_words(state, args, actor))
+        }
+        DispatchTarget::TranscriptIgnoreWords => {
+            verb!(speech_text::transcript_ignore_words(state, args, actor))
+        }
+        DispatchTarget::TranscriptMuteWords => {
+            verb!(speech_text::transcript_mute_words(state, args, actor))
+        }
+        DispatchTarget::TranscriptAssemble => {
+            verb!(speech_text::transcript_assemble(state, args, actor))
+        }
+        DispatchTarget::TranscriptSearch => verb!(speech_text::transcript_search(state, args)),
+        DispatchTarget::TranscriptChapters => verb!(speech_text::transcript_chapters(state, args)),
+        DispatchTarget::TranscriptRemoveSilences => {
+            verb!(speech_text::transcript_remove_silences(state, args, actor))
+        }
+        DispatchTarget::TranscriptRemoveFillers => {
+            verb!(speech_text::transcript_remove_fillers(state, args, actor))
+        }
+        DispatchTarget::TranscriptRemoveRetakes => {
+            verb!(speech_text::transcript_remove_retakes(state, args, actor))
+        }
+        DispatchTarget::TranscriptTranslate => {
+            verb!(speech_text::transcript_translate(state, args))
+        }
+
+        // ------------------------------------------------------------------
+        // captions.*
+        // ------------------------------------------------------------------
+        DispatchTarget::CaptionsGenerate => verb!(captions_generate(state, args, actor)),
+        DispatchTarget::CaptionsTranslate => verb!(captions_translate(state, args, actor)),
+        DispatchTarget::CaptionsImport => verb!(captions_import(state, args, actor)),
+        DispatchTarget::CaptionsAddText => {
+            verb!(speech_text::captions_add_text(state, args, actor))
+        }
+        DispatchTarget::CaptionsSetStyle => {
+            verb!(speech_text::captions_set_style(state, args, actor))
+        }
+        DispatchTarget::CaptionsSaveStyle => {
+            verb!(speech_text::captions_save_style(state, args, actor))
+        }
+        DispatchTarget::CaptionsApplyStyle => {
+            verb!(speech_text::captions_apply_style(state, args, actor))
+        }
+        DispatchTarget::CaptionsListStyles => verb!(speech_text::captions_list_styles(state, args)),
+        DispatchTarget::CaptionsReflow => verb!(captions_reflow(state, args, actor)),
+        DispatchTarget::CaptionsShift => verb!(captions_shift(state, args, actor)),
+        DispatchTarget::CaptionsSetRange => verb!(captions_set_range(state, args, actor)),
+        DispatchTarget::CaptionsSetText => verb!(captions_set_text(state, args, actor)),
+        DispatchTarget::CaptionsBulkPreview => verb!(captions_bulk_preview(state, args)),
+        DispatchTarget::CaptionsBulkApply => verb!(captions_bulk_apply(state, args, actor)),
+
+        // ------------------------------------------------------------------
+        // render.* / verify.* / export.*
+        // ------------------------------------------------------------------
+        DispatchTarget::RenderPreview => verb!(render_preview(state, args)),
+        DispatchTarget::RenderFrame => verb!(render_frame(state, args)),
+        DispatchTarget::RenderCompare => verb!(render_compare(state, args)),
+        DispatchTarget::RenderStoryboard => verb!(render_storyboard(state, args)),
+        DispatchTarget::RenderFinal => verb!(render_final(state, args, actor)),
+        DispatchTarget::RenderReframe => verb!(render_reframe(state, args, actor)),
+        DispatchTarget::RenderDirect => verb!(render_direct(state, args, actor)),
+        DispatchTarget::RenderQc => verb!(render_qc(state, args, actor)),
+        DispatchTarget::VerifyChecks => verb!(verify_checks(state, args)),
+        DispatchTarget::VerifyRerun => verb!(verify_rerun(state, args)),
+        DispatchTarget::VerifyPacing => verb!(verify_pacing(state)),
+        DispatchTarget::VerifyCaptions => verb!(verify_captions(state, args)),
+        DispatchTarget::VerifyDelivery => verb!(verify_delivery(state, args)),
+        DispatchTarget::VerifyLoudness => verb!(verify_loudness(state, args)),
+        DispatchTarget::VerifyScopes => verb!(verify_scopes(state, args)),
+        DispatchTarget::VerifyBrand => verb!(verify_brand(state, args)),
+        DispatchTarget::VerifyJudge => verb!(verify_judge(state, args)),
+        DispatchTarget::VerifyPregate => verb!(verify_pregate(state, args)),
+        DispatchTarget::ExportFrame => verb!(export_frame(state, args, actor)),
+        DispatchTarget::ExportRange => verb!(export_range(state, args, actor)),
+        DispatchTarget::ExportAudio => verb!(export_audio(state, args, actor)),
+        DispatchTarget::ExportPublish => verb!(export_publish(state, args, actor)),
+        DispatchTarget::ExportGif => verb!(export_gif(state, args, actor)),
+        DispatchTarget::ExportXml => verb!(export_xml(state, args)),
+        DispatchTarget::ExportOtio => verb!(export_otio(state, args)),
+        DispatchTarget::ExportEdl => verb!(export_edl(state, args)),
+        DispatchTarget::ImportOtio => verb!(import_otio(state, args, actor)),
+        DispatchTarget::ExportSrt => verb!(export_srt(state, args)),
+        DispatchTarget::ExportVtt => verb!(export_vtt(state, args)),
+        DispatchTarget::ExportAss => verb!(export_ass(state, args)),
+        DispatchTarget::ExportTranscript => verb!(export_transcript(state, args)),
+        DispatchTarget::ExportChapters => verb!(export_chapters(state, args)),
+
+        // ------------------------------------------------------------------
+        // clip.* — social repurposing: rank shareable windows + bundle
+        // ------------------------------------------------------------------
+        DispatchTarget::ClipCandidates => verb!(clip_candidates(state, args)),
+        DispatchTarget::RenderBundle => verb!(render_bundle(state, args, actor)),
+        DispatchTarget::RenderQueue => verb!(render_queue(state, args, actor)),
+        DispatchTarget::AutopilotRun => verb!(autopilot_run(state, args, actor)),
+
+        // ------------------------------------------------------------------
+        // generate.* — native Generate module foundation. Pure catalog reads,
+        // non-mutating previews, native inserts, prompt planning, and storyboard
+        // planning all live in one domain.
+        // ------------------------------------------------------------------
+        DispatchTarget::GenerateList => verb!(generate_handlers::generate_list(args)),
+        DispatchTarget::GenerateDescribe => verb!(generate_handlers::generate_describe(args)),
+        DispatchTarget::GeneratePreview => verb!(generate_handlers::generate_preview(state, args)),
+        DispatchTarget::GenerateInsert => {
+            verb!(generate_handlers::generate_insert(state, args, actor))
+        }
+        DispatchTarget::GenerateFromPrompt => {
+            verb!(generate_handlers::generate_from_prompt(state, args, actor))
+        }
+        DispatchTarget::GenerateStoryboard => {
+            verb!(generate_handlers::generate_storyboard(state, args, actor))
+        }
+        DispatchTarget::MotionTemplateToCut => verb!(crate::motion_bridge::motion_template_to_cut(
+            state, args, actor
+        )),
+        DispatchTarget::MotionScriptToCut => verb!(crate::motion_bridge::motion_script_to_cut(
+            state, args, actor
+        )),
+        DispatchTarget::MotionJobGet => verb!(crate::motion_jobs::get(state, args)),
+        DispatchTarget::MotionJobList => verb!(crate::motion_jobs::list(state, args)),
+        DispatchTarget::MotionMapImport => {
+            verb!(crate::motion_bridge::motion_map_import(state, args, actor))
+        }
+        DispatchTarget::MotionApplyImport => verb!(crate::motion_bridge::motion_apply_import(
+            state, args, actor
+        )),
+        DispatchTarget::MotionLinkRefresh => verb!(crate::motion_bridge::motion_link_refresh(
+            state, args, actor
+        )),
+        DispatchTarget::MotionLinkRelink => {
+            verb!(crate::motion_bridge::motion_link_relink(state, args, actor))
+        }
+        DispatchTarget::MotionLinkEdit => {
+            verb!(crate::motion_bridge::motion_link_edit(state, args, actor))
+        }
+        DispatchTarget::MotionLinkTrackingInventory => {
+            verb!(crate::motion_tracking::inventory(state, args, actor))
+        }
+        DispatchTarget::MotionLinkTrackingRequest => {
+            verb!(crate::motion_tracking::request(state, args, actor))
+        }
+        DispatchTarget::MotionLinkTrackingInspect => {
+            verb!(crate::motion_tracking::inspect(state, args, actor))
+        }
+        DispatchTarget::MotionLinkTrackingApply => {
+            verb!(crate::motion_tracking::apply(state, args, actor))
+        }
+        DispatchTarget::MotionLinkTrackingVerify => {
+            verb!(crate::motion_tracking::verify(state, args, actor))
+        }
+        DispatchTarget::MotionLinkTrackingDetach => {
+            verb!(crate::motion_tracking::detach(state, args, actor))
+        }
+
+        // ------------------------------------------------------------------
+        // recipe.* — declarative pipeline manifests: list/describe (pure
+        // reads) + run (a job; the pure orchestrator over the existing verbs).
+        // ------------------------------------------------------------------
+        DispatchTarget::RecipeList => verb!(recipe_list(args)),
+        DispatchTarget::RecipeDescribe => verb!(recipe_describe(args)),
+        DispatchTarget::RecipeRun => verb!(recipe_run(state, args, actor)),
+
+        DispatchTarget::AssembleBroll => verb!(assemble_broll(state, args, actor)),
+        DispatchTarget::AssembleRepurpose => {
+            verb!(speech_text::assemble_repurpose(state, args, actor))
+        }
+        DispatchTarget::AssembleShorts => verb!(speech_text::assemble_shorts(state, args, actor)),
+        DispatchTarget::AssembleFromScript => {
+            verb!(speech_text::assemble_from_script(state, args, actor))
+        }
+        DispatchTarget::ScoreClip => verb!(speech_text::score_clip(state, args)),
+
+        // screen_record.* keeps the exhaustive domain list here; bounded adapters own routing.
+        target @ (DispatchTarget::ScreenRecordDoctor
+        | DispatchTarget::ScreenRecordMicrophoneSelection
+        | DispatchTarget::ScreenRecordSystemAudioProbe
+        | DispatchTarget::ScreenRecordRehearsalStart
+        | DispatchTarget::ScreenRecordRehearsalDiscard
+        | DispatchTarget::ScreenRecordStart
+        | DispatchTarget::ScreenRecordSceneActivate
+        | DispatchTarget::ScreenRecordSceneTimer
+        | DispatchTarget::ScreenRecordPause
+        | DispatchTarget::ScreenRecordResume
+        | DispatchTarget::ScreenRecordRecoveryStatus
+        | DispatchTarget::ScreenRecordActive
+        | DispatchTarget::ScreenRecordPending
+        | DispatchTarget::ScreenRecordPendingDismiss
+        | DispatchTarget::ScreenRecordRecover
+        | DispatchTarget::ScreenRecordStatus
+        | DispatchTarget::ScreenRecordLiveFrame
+        | DispatchTarget::ScreenRecordPreviewCapability
+        | DispatchTarget::ScreenRecordPreviewStart
+        | DispatchTarget::ScreenRecordPreviewStatus
+        | DispatchTarget::ScreenRecordPreviewFrame
+        | DispatchTarget::ScreenRecordPreviewPause
+        | DispatchTarget::ScreenRecordPreviewResume
+        | DispatchTarget::ScreenRecordPreviewHide
+        | DispatchTarget::ScreenRecordPreviewStop
+        | DispatchTarget::ScreenRecordStop
+        | DispatchTarget::ScreenRecordStudioEvent
+        | DispatchTarget::ScreenRecordAutoedit
+        | DispatchTarget::ScreenRecordPolish
+        | DispatchTarget::ScreenRecordExport
+        | DispatchTarget::ScreenRecordCopyRaw) => {
+            Box::pin(
+                async move { screen_record_routes::dispatch(target, state, args, actor).await },
+            )
+        }
+        DispatchTarget::VoiceoverStart => verb!(voiceover::start(state, args, actor)),
+        DispatchTarget::VoiceoverTick => verb!(voiceover::tick(state, args, actor)),
+        DispatchTarget::VoiceoverStop => verb!(voiceover::stop(state, args, actor)),
+        DispatchTarget::VoiceoverCancel => verb!(voiceover::cancel(state, args, actor)),
+        DispatchTarget::VoiceoverObservePlayhead => {
+            verb!(voiceover::observe_playhead(state, args, actor))
+        }
+
+        // ------------------------------------------------------------------
+        // ui.* — relayed to the connected UI client over WS (ui_bridge.rs)
+        // ------------------------------------------------------------------
+        DispatchTarget::UiState => verb!(ui_state(state)),
+        DispatchTarget::UiScreenshot => verb!(ui_screenshot(state, args)),
+        DispatchTarget::DebugScreenshot => verb!(debug_screenshot(args)),
+        DispatchTarget::UiOpen
+        | DispatchTarget::UiPlayhead
+        | DispatchTarget::UiSelect
+        | DispatchTarget::UiPreview
+        | DispatchTarget::UiHighlight => verb!(ui_forward(state, name, args)),
+
+        // ------------------------------------------------------------------
+        // system.* — environment doctor + consented tool fetch
+        // ------------------------------------------------------------------
+        DispatchTarget::SystemMcpTest => verb!(crate::mcp::self_test(state)),
+        DispatchTarget::SystemDoctor => verb!(system_doctor(state, args)),
+        DispatchTarget::SystemMotionStatus => verb!(system_motion_status(args)),
+        DispatchTarget::SystemSetFfmpeg => {
+            verb!(crate::ffmpeg_settings::system_set_ffmpeg(state, args))
+        }
+        DispatchTarget::SystemSetSttModel => {
+            verb!(crate::stt_settings::system_set_stt_model(state, args))
+        }
+        DispatchTarget::SystemFetchTool => verb!(system_fetch_tool(state, args, actor)),
+        DispatchTarget::SystemSetupPerception => verb!(system_setup_perception(state, args, actor)),
+        DispatchTarget::SystemSetupMatte => verb!(system_setup_matte(state, args, actor)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +781,12 @@ fn shape_core_result(verb: &str, op: &OpRecord, include_legacy_inverse: bool) ->
                 .filter(|e| e.detail.contains_key("rippled_gap_ms"))
                 .filter_map(|e| e.track.clone())
                 .collect::<Vec<_>>(),
+            // Item 176: how the clip landed, and any clip the overwrite
+            // replaced completely (older logged moves are "insert").
+            "placement": op.args.get("placement").cloned().unwrap_or_else(|| json!("insert")),
+            "removed_clips": op.effects.iter()
+                .filter_map(|e| e.detail.get("removed_clip_ids")?.as_array())
+                .flatten().cloned().collect::<Vec<_>>(),
         }),
         // ripple = the RESOLVED sibling-shift mode (the ripple-sync contract); rippled_tracks
         // lists siblings that received the gap (effects after the first).
@@ -1135,6 +1126,7 @@ pub(crate) fn no_project() -> CutError {
         "no project is open",
         "call project.create or project.open first",
     )
+    .with_requirement("open_project")
 }
 
 /// Parse verb args into a typed struct, mapping serde errors to invalid_args
@@ -1157,7 +1149,6 @@ pub(crate) use safety::{
 };
 mod motion_link_projection;
 mod project_workspace;
-pub(crate) use project_workspace::path_free_project_identity;
 use project_workspace::{
     comment_add, comment_apply, comment_draft, comment_list, comment_resolve, library_add,
     library_add_to_project, library_favorite, library_folder_add, library_folder_remove,
@@ -1169,6 +1160,7 @@ use project_workspace::{
     project_sequence_delete, project_sequence_list, project_sequence_rename,
     project_sequence_switch, project_state, project_undo,
 };
+pub(crate) use project_workspace::{open_at_start, path_free_project_identity};
 mod project_package;
 use project_package::{project_package_create, project_package_plan};
 mod group_review;
@@ -1181,8 +1173,8 @@ mod review_handoff;
 use review_handoff::{comment_export, comment_import};
 mod media;
 pub(crate) use media::{
-    asset_info, media_import, project_paths, spawn_plain_import_chain, update_asset,
-    verify_attested_media_source, ANALYSIS_MAX_RUNNING,
+    asset_info, media_import, project_paths, proxy_binding, spawn_plain_import_chain, update_asset,
+    verify_attested_media_source, PlacementTurns, ANALYSIS_MAX_RUNNING,
 };
 use media::{
     media_bin_delete, media_bin_list, media_bin_save, media_check, media_filmstrip,
@@ -1198,6 +1190,8 @@ const RENDER_QUEUE_MAX_RUNNING: usize = 1;
 
 mod jobs_handlers;
 use jobs_handlers::{jobs_cancel, jobs_list, jobs_retry, jobs_status};
+mod jobs_quit;
+use jobs_quit::{jobs_before_quit, jobs_interrupted, jobs_interrupted_dismiss};
 
 mod media_intelligence;
 use media_intelligence::{
@@ -1229,37 +1223,9 @@ use edit_tools::{
 };
 pub(crate) use edit_tools::{build_shape_spec, build_title_spec, ShapeArgs, TitleArgs};
 
-// ---------------------------------------------------------------------------
-// transcript.* handlers
-// ---------------------------------------------------------------------------
-
-/// Load the word transcript for an asset from its sidecar file (real I/O —
-/// live as soon as a transcribe run has produced the file).
-pub(crate) async fn load_transcript(
-    state: &AppState,
-    asset_id: &str,
-) -> Result<cut_perception::Transcript, CutError> {
-    let guard = state.project.read().await;
-    let store = guard.as_ref().ok_or_else(no_project)?;
-    let asset = store.project.assets.get(asset_id).ok_or_else(|| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            format!("no asset '{asset_id}'"),
-            "unknown asset id",
-        )
-    })?;
-    let rel = asset.transcript.as_ref().ok_or_else(|| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            format!("asset '{asset_id}' has no transcript yet"),
-            "transcription has not completed for this asset",
-        )
-        .with_suggested_action("call media.transcribe{asset} and wait for the job to finish")
-    })?;
-    let bytes = crate::transcript_receipt::read(&store.dir, asset_id, rel)?;
-    let t: cut_perception::Transcript = serde_json::from_slice(&bytes)?;
-    Ok(t)
-}
+// transcript.* handlers live in transcript_load.rs.
+mod transcript_load;
+pub(crate) use transcript_load::load_transcript;
 
 mod speech_text;
 
@@ -1310,6 +1276,7 @@ use recipe_handlers::{poll_sub_job, recipe_describe, recipe_list, recipe_run};
 mod verify_handlers;
 #[cfg(test)]
 use verify_handlers::attach_judge_to_receipt;
+use verify_handlers::receipt_file::render_receipt_bytes;
 use verify_handlers::{
     resolve_receipt_path, verify_brand, verify_captions, verify_checks, verify_delivery,
     verify_judge, verify_loudness, verify_pacing, verify_pregate, verify_rerun, verify_scopes,

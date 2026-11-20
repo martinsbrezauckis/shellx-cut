@@ -2,6 +2,9 @@
 
 mod outcome;
 mod preference;
+mod start_admission;
+pub(crate) use start_admission::source_for_recording_start;
+pub(crate) mod readiness;
 #[cfg(test)]
 mod tests;
 mod tokens;
@@ -152,7 +155,18 @@ pub(crate) fn warm_projection() -> Value {
         }
     };
     let warm = record_capture::warm_microphone(&source, 1_500);
-    json!({"live": warm.live, "peak_dbfs": warm.peak_dbfs, "supported": warm.supported})
+    let mut result =
+        json!({"live": warm.live, "peak_dbfs": warm.peak_dbfs, "supported": warm.supported});
+    if let Some(problem) = warm.problem {
+        // The open itself failed: say why, in the same words as the readiness read.
+        result["reason"] = json!(problem.reason());
+        result["message"] = json!(format!(
+            "{}. {}",
+            problem.message(),
+            problem.suggested_action()
+        ));
+    }
+    result
 }
 
 fn recording_owns_source() -> bool {

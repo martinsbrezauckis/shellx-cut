@@ -232,7 +232,7 @@ pub fn select_backend(
                     "neither a subscription CLI agent (claude/codex/grok) nor the local MT sidecar is set up",
                 )
                 .with_suggested_action(
-                    "install + log in to claude (best quality), or set up the local model (Opus-MT) in the perception venv",
+                    "install + log in to claude (best quality), or choose Install captions to set up the local model (Opus-MT)",
                 ))
             }
         }
@@ -251,6 +251,7 @@ fn no_cli_error() -> CutError {
         "no claude/codex/grok CLI found on PATH",
     )
     .with_suggested_action("install + log in to claude, or use backend:\"local\" / \"auto\"")
+    .with_requirement("chat_cli")
 }
 
 fn no_local_error() -> CutError {
@@ -259,9 +260,11 @@ fn no_local_error() -> CutError {
         "the local MT sidecar is not available for backend:\"local\"",
         "translate_runner.py or its python (perception venv) was not found",
     )
-    .with_suggested_action(
-        "install the perception sidecar (transformers + sentencepiece) in its venv, or use backend:\"cli\" / \"auto\"",
-    )
+    .with_suggested_action(format!(
+        "{} Or use backend:\"cli\" / \"auto\".",
+        cut_perception::captions_setup_action()
+    ))
+    .with_requirement("captions_runtime")
 }
 
 /// The result of running a translation backend (CLI agent or local sidecar) over
@@ -449,7 +452,7 @@ async fn run_translation_once(
                 .with_suggested_action(if rt.native_context {
                     "repair the prepared local model group or its admitted runtime; native runs do not download or fall back to a provider"
                 } else {
-                    "install transformers+sentencepiece in the perception venv and allow the first-use model download, or use the CLI backend"
+                    "choose Install captions (it adds the translation packages), allow the first-use model download, or use the CLI backend"
                 }));
             }
             let stdout = String::from_utf8_lossy(&out.stdout);

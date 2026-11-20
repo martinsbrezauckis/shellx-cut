@@ -58,14 +58,13 @@ the fallback is logged to stderr and visible in words.model provenance.
 
 from __future__ import annotations
 
-from local_media_io import input_args, protect_inputs, video_capture, scene_video, movie_format_options
+from local_media_io import input_args, protect_inputs, video_capture, scene_video, media_tool
 import argparse
 import hashlib
 import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,6 +73,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from native_runtime_models import NativeRuntimeModelError, context_requested, parakeet_directory
+# The review's no-follow file helpers, imported as part of the judge/ folder
+# beside this file (adding judge/ itself to sys.path would hide that package
+# behind judge/judge.py for the rest of the process).
+from judge import judge_files  # noqa: E402
 from ordinary_speech_models import load_ordinary_model
 
 # on a cold install ffmpeg/ffprobe are NOT on
@@ -91,8 +94,8 @@ if _ff_dir:
     if _present:
         os.environ["PATH"] = os.pathsep.join(_present + [os.environ.get("PATH", "")])
 
-FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
-FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
+FFMPEG_BIN = media_tool("ffmpeg")
+FFPROBE_BIN = media_tool("ffprobe")
 
 SCHEMA = "shellx-cut/perception/1"
 
@@ -226,31 +229,6 @@ def has_audio_stream(path: str) -> bool:
         capture_output=True, text=True,
     )
     return proc.returncode == 0 and proc.stdout.strip() != ""
-
-
-def audio_energy_envelope(path: str, step_ms: int = 100) -> list:
-    """CPU-only: RMS energy per step_ms bucket (ffprobe astats).
-
-    Returns a list of floats (RMS dBFS, roughly -inf to 0) at `step_ms` intervals.
-    Used for the floor-heuristic active-speaker gate in the subject instrument:
-    - any bucket < SILENCE_FLOOR (-50 dBFS) means silence; speaking = above.
-    - Zero-cost: a single ffprobe pass, no model/weights, no extra deps.
-    Returns [] if the file has no audio stream or ffprobe fails."""
-    proc = subprocess.run(
-        [FFPROBE_BIN, "-v", "error",
-         "-f", "lavfi",
-         *input_args(f"amovie={path}:{movie_format_options()},astats=metadata=1:reset={max(1, step_ms // 10)}"),
-         "-show_entries", "frame_tags=lavfi.astats.Overall.RMS_level",
-         "-of", "csv=p=0"],
-        capture_output=True, text=True, timeout=60,
-    )
-    if proc.returncode != 0:
-        return []
-    out = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        out.append(finite_float(line, -90.0) if line else -90.0)
-    return out
 
 
 def extract_wav16k(path: str, tmpdir: str) -> str:
@@ -883,7 +861,9 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
             lang_hint = (os.environ.get("SHELLX_CUT_STT_LANG") or "").strip() or None
             log(f"words: whisperx model={model_name} device={device} lang={lang_hint or 'auto'}")
             wmodel = whisperx.load_model(model_name, device, compute_type=compute)
-            audio = whisperx.load_audio(media_path)
+            # Decoded by Cut's own local-only ffmpeg route: whisperX's loader
+            # would open the path with no protocol or format limits.
+            audio = _decode_audio_16k_float(media_path)
             result = wmodel.transcribe(audio, batch_size=8, language=lang_hint)
             # No detectable speech (music/tone/ambient/applause) is a LEGITIMATE
             # input, not an error — return zero words honestly instead of running
@@ -932,7 +912,9 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
 
             log(f"words: faster-whisper model={model_name} device={device}")
             fw = WhisperModel(model_name, device=device, compute_type=compute)
-            segments, info = fw.transcribe(media_path, word_timestamps=True)
+            # Same decoded samples: faster-whisper would otherwise open the
+            # path itself through PyAV with no protocol or format limits.
+            segments, info = fw.transcribe(_decode_audio_16k_float(media_path), word_timestamps=True)
             words = []
             for seg in segments:
                 for w in seg.words or []:
@@ -1082,12 +1064,15 @@ def detect_content_bbox(media_path: str):
     clip and report the content rectangle (non-uniform pixels) + whether a
     baked-in uniform border (letterbox/pillarbox) exists.
 
-    WHY SAMPLED, NOT WHOLE-CLIP: a single cropdetect pass keys on the LAST
-    frame's running bbox, which a transient full-frame flash (a fade, a white
-    splash) can widen wrongly. Sampling a few short windows and taking the
-    INTERSECTION (max x/y, min right/bottom) yields the largest border ALL
-    windows agree is uniform — robust against a single odd frame, and exactly
-    the bands the OBS-capture driver baked in stay detected.
+    A BORDER IS WHAT EVERY SAMPLE AGREES ON. Each window is read frame by
+    frame (cropdetect reset=1) and its most common box taken, so a transient
+    frame (a fade, a white splash) does not decide it. Across windows the
+    content rect is the UNION (smallest x/y, largest right/bottom): a band
+    counts only when every window shows it, as a baked-in letterbox or
+    pillarbox does. A scene whose edge is dark for a while (a dark corner of a
+    set, a vignette in one shot) is content, not a border: one window with a
+    dark edge no longer narrows the rect. (Before, the INTERSECTION was taken,
+    so one dark-edged window made a 48 px "border" on a clip with none.)
 
     Deterministic: fixed sample offsets (fractions of the duration), fixed
     cropdetect params (CROPDETECT_LIMIT/ROUND). Returns the ContentBbox dict
@@ -1106,33 +1091,37 @@ def detect_content_bbox(media_path: str):
         offsets = sorted({round(f * dur_s, 3) for f in body if f * dur_s < dur_s})
     win_s = 1.5
 
-    boxes = []  # (x, y, w, h) per sample that produced a crop line
+    boxes = []  # (x, y, w, h): the most common per-frame box of each window
     for off in offsets:
         log(f"content_bbox: cropdetect @ {off:.2f}s")
         stderr = run_ffmpeg([
             "-ss", f"{off:.3f}", *input_args(media_path), "-an", "-t", f"{win_s}",
-            "-vf", f"cropdetect=limit={CROPDETECT_LIMIT}:round={CROPDETECT_ROUND}:reset=0",
+            "-vf", f"cropdetect=limit={CROPDETECT_LIMIT}:round={CROPDETECT_ROUND}:reset=1",
             "-f", "null", "-",
         ])
-        last = None
-        for m in re.finditer(r"crop=(\d+):(\d+):(\d+):(\d+)", stderr):
-            last = (int(m.group(3)), int(m.group(4)), int(m.group(1)), int(m.group(2)))
-        if last is not None:
-            boxes.append(last)
+        frames = [
+            (int(m.group(3)), int(m.group(4)), int(m.group(1)), int(m.group(2)))
+            for m in re.finditer(r"crop=(\d+):(\d+):(\d+):(\d+)", stderr)
+        ]
+        if frames:
+            # Most common box; ties go to the widest (least border).
+            counts = {}
+            for box in frames:
+                counts[box] = counts.get(box, 0) + 1
+            boxes.append(max(counts, key=lambda b: (counts[b], b[2] * b[3])))
     if not boxes:
         # cropdetect found nothing croppable on every sample → full frame.
         boxes = [(0, 0, w, h)]
 
-    # Intersection = the border ALL samples agree is uniform: the content rect
-    # is the SMALLEST box (largest x/y, smallest right/bottom edge) across
-    # samples, clamped to the frame.
-    x = min(max(b[0] for b in boxes), w)
-    y = min(max(b[1] for b in boxes), h)
-    right = max(min(b[0] + b[2] for b in boxes), x)
-    bottom = max(min(b[1] + b[3] for b in boxes), y)
-    cw = min(right - x, w - x)
-    ch = min(bottom - y, h - y)
-    if cw <= 0 or ch <= 0:  # degenerate intersection — treat as full frame
+    # Union = the content rect every sample's content fits in; what lies
+    # outside it is uniform in EVERY window (a real border). Clamped to the frame.
+    x = max(min(b[0] for b in boxes), 0)
+    y = max(min(b[1] for b in boxes), 0)
+    right = min(max(b[0] + b[2] for b in boxes), w)
+    bottom = min(max(b[1] + b[3] for b in boxes), h)
+    cw = right - x
+    ch = bottom - y
+    if cw <= 0 or ch <= 0:  # degenerate — treat as full frame
         x, y, cw, ch = 0, 0, w, h
 
     # Uniform border = the content is inset by more than the tolerance on any
@@ -1733,38 +1722,118 @@ _SPEAK_MIN = 0.04           # min leading EMA to believe "someone is actually sp
 _MOUTH_GAIN = 6.0           # scales the raw mouth frame-diff into a usable [0,1] range
 
 
-def _audio_energy_envelope(media_path: str, fps: float):
-    """Per-video-frame RMS energy of the MIXED audio, normalized to [0,1] (95th
-    pct), or None when the file has no audio. Drives the active-speaker GATE: it
-    says WHEN someone is speaking, never who. 8 kHz mono is ample for an energy
-    envelope and keeps memory tiny (~16 KB/s). Decoded ONCE before the frame loop;
-    indexed by frame number (audio ≈ video duration on the rendered edit)."""
-    import math
-    if fps <= 0 or not has_audio_stream(media_path):
-        return None
+# Decoded audio is consumed in pieces of this many bytes (16-bit samples), so the
+# working set stays small however long the track is.
+_ENVELOPE_CHUNK_BYTES = 1 << 20
+
+
+def _decode_audio_16k_float(media_path: str):
+    """The file's audio as mono 16 kHz float32 samples in [-1, 1), decoded through
+    the local-only input whitelist (the form whisperX's and faster-whisper's own
+    loaders produce, so the engines see the same signal)."""
     import numpy as np
-    sr = 8000
-    proc = subprocess.run(
+
+    raw = b"".join(_iter_decoded_audio(media_path, 16000))
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def _iter_decoded_audio(media_path: str, sr: int, chunk_bytes: int = _ENVELOPE_CHUNK_BYTES):
+    """Yield the file's audio, decoded by ffmpeg to mono signed 16-bit little-endian
+    PCM at `sr` Hz, as byte strings of at most `chunk_bytes` bytes. The decoder's
+    output is read from its pipe piece by piece and never held whole. Raises
+    RuntimeError after the last piece when ffmpeg exits with an error. The child is
+    always stopped and reaped, also when the consumer stops early."""
+    proc = subprocess.Popen(
         [FFMPEG_BIN, "-v", "error", *input_args(media_path),
          "-vn", "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"],
-        capture_output=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-    if proc.returncode != 0 or not proc.stdout:
-        return None
-    samples = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
-    if samples.size == 0:
-        return None
+    try:
+        while True:
+            piece = proc.stdout.read(chunk_bytes)
+            if not piece:
+                break
+            yield piece
+        if proc.wait() != 0:
+            raise RuntimeError(f"ffmpeg audio decode failed (exit {proc.returncode})")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdout.close()
+        proc.wait()
+
+
+def _rms_envelope(chunks, sr: int, fps: float):
+    """Per-video-frame RMS of mono s16le PCM delivered as an iterable of byte
+    strings, normalized by its 95th percentile and clipped to [0,1]; None when the
+    stream holds no samples. Frame i covers samples [int(i*spf), int((i+1)*spf)) with
+    spf = sr/fps, exactly as if the whole signal were one array, but only the
+    samples of the frames not yet finished are kept, so memory does not grow with the
+    length of the signal (the result holds one float per video frame)."""
+    import math
+    import numpy as np
     spf = sr / fps  # audio samples per video frame
-    n = int(math.ceil(samples.size / spf))
-    env = np.zeros(n, dtype=np.float32)
-    for i in range(n):
-        seg = samples[int(i * spf):int((i + 1) * spf)]
-        if seg.size:
-            env[i] = finite_number(np.sqrt(np.mean(seg * seg)))
+    pending = np.zeros(0, dtype=np.float32)  # samples from global index `offset`
+    offset = 0
+    total = 0
+    frame = 0
+    parts = []
+    leftover = b""
+
+    def drain(final: bool) -> None:
+        nonlocal pending, offset, frame
+        out = []
+        while True:
+            lo, hi = int(frame * spf), int((frame + 1) * spf)
+            if not final and hi > offset + pending.size:
+                break
+            if final and lo >= total:
+                break
+            seg = pending[lo - offset:hi - offset]
+            out.append(finite_number(np.sqrt(np.mean(seg * seg))) if seg.size else 0.0)
+            frame += 1
+        if out:
+            parts.append(np.asarray(out, dtype=np.float32))
+        keep_from = int(frame * spf)
+        if keep_from > offset:
+            pending = pending[keep_from - offset:]
+            offset = keep_from
+
+    for piece in chunks:
+        data = leftover + piece
+        usable = len(data) - (len(data) % 2)
+        leftover = data[usable:]
+        if not usable:
+            continue
+        samples = np.frombuffer(data[:usable], dtype=np.int16).astype(np.float32) / 32768.0
+        total += samples.size
+        pending = np.concatenate([pending, samples]) if pending.size else samples
+        drain(False)
+    if total == 0:
+        return None
+    drain(True)
+    env = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
     p95 = finite_number(np.percentile(env, 95)) if env.size else 0.0
     if p95 > 1e-5:
         env = np.clip(env / p95, 0.0, 1.0)
     return env
+
+
+def _audio_energy_envelope(media_path: str, fps: float):
+    """Per-video-frame RMS energy of the MIXED audio, normalized to [0,1] (95th
+    pct), or None when the file has no audio. Drives the active-speaker GATE: it
+    says WHEN someone is speaking, never who. 8 kHz mono is ample for an energy
+    envelope. The decode is read as a stream in bounded pieces (see _rms_envelope),
+    so memory does not depend on the track length. Decoded ONCE before the frame
+    loop; indexed by frame number (audio ≈ video duration on the rendered edit).
+    A failed or empty decode gives None."""
+    if fps <= 0 or not has_audio_stream(media_path):
+        return None
+    sr = 8000
+    try:
+        return _rms_envelope(_iter_decoded_audio(media_path, sr), sr, fps)
+    except RuntimeError:
+        return None
 
 
 def _mouth_roi_gray(frame_bgr, fb):
@@ -2226,9 +2295,16 @@ def build_contact_sheet(media_path: str, preset: str = "talking_head", out_dir=N
             r, cc = idx // cols, idx % cols
             sheet[r * th:(r + 1) * th, cc * tw:(cc + 1) * tw] = t
         out_dir = out_dir or tempfile.mkdtemp(prefix="cut-contact-")
+        # A link at the folder or at a project folder above it is refused, and
+        # the sheet replaces its name instead of writing through a link there.
+        judge_files.require_plain_directory(out_dir, "sheet folder")
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         sheet_path = str(Path(out_dir) / "contact_sheet.jpg")
-        cv2.imwrite(sheet_path, sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        encoded, jpeg = cv2.imencode(".jpg", sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if encoded:
+            judge_files.write_replacing(sheet_path, jpeg.tobytes(), "contact sheet")
+        else:
+            sheet_path = None
     log(f"contact_sheet: {len(scenes_json)} scene tiles → {sheet_path}")
     return {
         "contact_sheet": sheet_path,
@@ -2358,9 +2434,16 @@ def build_qc_sheet(media_path: str, preset: str = "talking_head", out_dir=None) 
             r, cc = idx // cols, idx % cols
             sheet[r * th:(r + 1) * th, cc * tw:(cc + 1) * tw] = t
         out_dir = out_dir or tempfile.mkdtemp(prefix="cut-qc-")
+        # A link at the folder or at a project folder above it is refused, and
+        # the sheet replaces its name instead of writing through a link there.
+        judge_files.require_plain_directory(out_dir, "sheet folder")
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         sheet_path = str(Path(out_dir) / "qc_sheet.jpg")
-        cv2.imwrite(sheet_path, sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        encoded, jpeg = cv2.imencode(".jpg", sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if encoded:
+            judge_files.write_replacing(sheet_path, jpeg.tobytes(), "qc sheet")
+        else:
+            sheet_path = None
     log(f"qc_sheet: {len(scenes_json)} scenes, {review_count} flagged → {sheet_path}")
     return {
         "qc_sheet": sheet_path,
@@ -2438,6 +2521,11 @@ def main() -> int:
         req, out_path = build_request_from_argv(sys.argv[1:])
     else:
         req, out_path = json.load(sys.stdin), None
+    if out_path:
+        try:
+            judge_files.require_replaceable(out_path, "analysis report")
+        except judge_files.RefusedProjectFile as error:
+            die("sidecar", "analysis report path refused", str(error))
 
     media = req.get("media_path", "")
     if not media or not Path(media).is_file():
@@ -2547,7 +2635,7 @@ def main() -> int:
 
     print(json.dumps(report), file=REAL_STDOUT, flush=True)
     if out_path:
-        Path(out_path).write_text(json.dumps(report, indent=2))
+        judge_files.write_text_replacing(out_path, json.dumps(report, indent=2), "analysis report")
         log(f"report written to {out_path}")
     return 0
 

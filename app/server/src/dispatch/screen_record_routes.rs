@@ -30,6 +30,26 @@ pub(super) async fn dispatch(
         DispatchTarget::ScreenRecordResume => resume(args).await,
         DispatchTarget::ScreenRecordRecoveryStatus => recovery_status(state, args).await,
         DispatchTarget::ScreenRecordStatus => status(args).await,
+        DispatchTarget::ScreenRecordActive => {
+            crate::screen_record::active_capture::active_handler(args)
+                .await
+                .into()
+        }
+        DispatchTarget::ScreenRecordPending => {
+            crate::screen_record::pending_recordings::pending_handler(args)
+                .await
+                .into()
+        }
+        DispatchTarget::ScreenRecordPendingDismiss => {
+            crate::screen_record::pending_recordings::dismiss_handler(args)
+                .await
+                .into()
+        }
+        DispatchTarget::ScreenRecordRecover => {
+            crate::screen_record::recover_take::recover_handler(state, args, actor)
+                .await
+                .into()
+        }
         DispatchTarget::ScreenRecordLiveFrame => live_frame(args),
         DispatchTarget::ScreenRecordPreviewCapability => preview_capability(args),
         DispatchTarget::ScreenRecordPreviewStart => preview_start(args),

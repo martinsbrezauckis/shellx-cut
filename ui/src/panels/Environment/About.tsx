@@ -33,6 +33,7 @@ import {
   type AboutLinkDestination,
 } from '../../lib/tauri'
 import { handleAboutLinkClick } from './aboutLinkClick'
+import ThirdPartyNotices from './ThirdPartyNotices'
 import {
   describeUpdateStatus,
   formatCheckedAgo,
@@ -224,6 +225,7 @@ export default function About({ report }: { report: DoctorReport | null }) {
         <span className="env-about-dot">·</span>
         <span className="env-about-license">MIT</span>
       </div>
+      <ThirdPartyNotices />
       {linkError && <p className="env-about-status env-about-status--error" data-cut-about-link-error role="alert">{linkError}</p>}
     </section>
   )

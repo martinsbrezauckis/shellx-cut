@@ -27,16 +27,9 @@ const DECODE_HZ_USIZE: usize = 4000;
 /// Errors when the asset has no audio (sync needs a common sound).
 pub fn clip_envelope(path: &Path) -> Result<Vec<f32>, CutError> {
     let mut command = Command::new(ffmpeg_bin());
+    command.args(["-v", "error", "-nostdin"]);
+    crate::ffmpeg::push_ffmpeg_literal_input(&mut command, path)?;
     command.args([
-        "-v",
-        "error",
-        "-nostdin",
-        "-protocol_whitelist",
-        crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-        "-format_whitelist",
-        crate::ffmpeg::LOCAL_INPUT_FORMATS,
-        "-i",
-        &path.to_string_lossy(),
         "-vn",
         "-ac",
         "1",

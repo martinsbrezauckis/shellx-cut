@@ -7,8 +7,7 @@ use std::{
 
 use cut_core::{error_codes, CutError};
 use cut_media::ffmpeg::{
-    run_owned_command_with_stdout_lines, OwnedProcessControl, LOCAL_INPUT_FORMATS,
-    LOCAL_INPUT_PROTOCOLS,
+    push_ffprobe_literal_input, run_owned_command_with_stdout_lines, OwnedProcessControl,
 };
 
 use super::types::VerifiedPauseProjectionSource;
@@ -20,22 +19,17 @@ pub(super) fn verify(
     control: &OwnedProcessControl,
 ) -> Result<(), CutError> {
     let mut command = Command::new(ffprobe);
-    command
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            LOCAL_INPUT_FORMATS,
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=time_base:frame=best_effort_timestamp",
-            "-of",
-            "compact=p=1:nk=0",
-        ])
-        .arg(path);
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=time_base:frame=best_effort_timestamp",
+        "-of",
+        "compact=p=1:nk=0",
+    ]);
+    push_ffprobe_literal_input(&mut command, path);
     let state = Arc::new(Mutex::new(SourceTiming::default()));
     let observed = state.clone();
     let output = run_owned_command_with_stdout_lines(

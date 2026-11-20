@@ -29,9 +29,93 @@
 //! shared ProgressFn). Primary caller: dispatch.rs (system.setup_perception).
 
 use crate::fetch::{self, ProgressFn};
+use crate::jobs::JobCancellation;
 use cut_core::{error_codes, CutError};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+mod pe_imports;
+mod windows_runtime;
+
+#[cfg(all(test, unix))]
+mod cancel_tests;
+
+thread_local! {
+    /// The cancellation of the job whose blocking worker is running a setup on
+    /// this thread. Every helper below (uv, pip, the model download) runs on that
+    /// one thread, so a thread-local reaches all of them without threading a
+    /// parameter through each stage.
+    static SETUP_CANCELLATION: RefCell<Option<JobCancellation>> = const { RefCell::new(None) };
+}
+
+/// Makes `cancellation` the one every helper command of this thread obeys until
+/// dropped.
+struct CancellationScope;
+
+impl CancellationScope {
+    fn enter(cancellation: &JobCancellation) -> Self {
+        SETUP_CANCELLATION.with(|slot| *slot.borrow_mut() = Some(cancellation.clone()));
+        Self
+    }
+}
+
+impl Drop for CancellationScope {
+    fn drop(&mut self) {
+        SETUP_CANCELLATION.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+fn setup_cancelled() -> bool {
+    SETUP_CANCELLATION.with(|slot| slot.borrow().as_ref().is_some_and(|c| c.is_cancelled()))
+}
+
+/// The refusal a cancelled setup ends with. Code `job_cancelled`, so the job
+/// record reads cancelled and not failed.
+fn cancelled_error() -> CutError {
+    CutError::new(
+        "job_cancelled",
+        "Install captions was cancelled",
+        "the install was stopped; nothing was left half-installed",
+    )
+    .with_suggested_action("Choose Install captions again whenever you want to retry")
+}
+
+fn check_cancelled() -> Result<(), CutError> {
+    if setup_cancelled() {
+        Err(cancelled_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Run one helper under the shared owned-process contract with this setup's
+/// cancellation: a cancel kills the helper's whole process tree (uv, pip, the
+/// model download and their children) and returns at once.
+fn run_setup_command(command: &mut Command, what: &str) -> Result<std::process::Output, CutError> {
+    let probe = SETUP_CANCELLATION.with(|slot| slot.borrow().clone());
+    let control = cut_media::ffmpeg::OwnedProcessControl::bounded(
+        std::time::Duration::from_secs(30 * 60),
+        move || probe.as_ref().is_some_and(|c| c.is_cancelled()),
+    );
+    cut_media::ffmpeg::run_owned_command(command, &control, what)
+}
+
+/// Removes the venv this setup is building unless the setup finished. The
+/// resolver trusts an existing `.venv` interpreter, so a cancelled or failed
+/// install must not leave one behind that later reads as installed.
+struct PartialVenv<'a> {
+    dir: &'a Path,
+    armed: bool,
+}
+
+impl Drop for PartialVenv<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(self.dir);
+        }
+    }
+}
 
 /// Env override: use an EXISTING uv binary instead of downloading one. Test/dev
 /// seam (the build box already has uv) — never a verb arg.
@@ -41,6 +125,11 @@ pub const ENV_UV: &str = "SHELLX_CUT_UV";
 /// for every dep (onnx-asr/onnxruntime, torch, mediapipe) on win/linux/mac and
 /// satisfies the onnx-asr >=3.10 floor. `uv` selects the latest available 3.12
 /// patch when it has to provision a new managed interpreter.
+/// What the job says while it downloads the uv installer: a cancel cannot
+/// interrupt the download and takes effect right after it.
+const UV_DOWNLOAD_STEP: &str =
+    "downloading the installer, about 20 MB; a cancel stops right after it";
+
 const PYTHON_REQUEST: &str = "3.12";
 
 /// Full-policy readiness requires real imports, not merely a solved dependency
@@ -95,7 +184,18 @@ pub struct SetupOutcome {
 /// actionable; nothing is left half-installed that the resolver would trust
 /// (uv writes the venv atomically enough that a failed pip leaves an obviously
 /// incomplete venv the doctor still reports as "deps missing").
-pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<SetupOutcome, CutError> {
+///
+/// `cancellation` is the job's: a cancel stops the running helper's process tree
+/// at once, ends the setup as `job_cancelled` and removes the unfinished venv.
+pub fn setup_perception(
+    warm_model: bool,
+    progress: &ProgressFn,
+    cancellation: &JobCancellation,
+) -> Result<SetupOutcome, CutError> {
+    let _scope = CancellationScope::enter(cancellation);
+    // Windows: the packages need Microsoft's Visual C++ runtime; refuse before
+    // downloading anything when it is missing (vc_runtime.rs).
+    crate::vc_runtime::require_for("Captions and transcription")?;
     // ---- 0. locate the bundled requirements + the venv target ----------------
     let (_py, script) = cut_perception::sidecar_paths();
     let requirements = script
@@ -132,9 +232,11 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     // ---- 1. uv: env override, else consented download (fetch.rs) ------------
     progress(0.02, "locating uv");
     let uv = resolve_uv(progress)?;
+    check_cancelled()?;
     let uv_version = run_capture(&uv, &["--version"])
         .ok()
         .map(|s| s.trim().to_string());
+    check_cancelled()?;
 
     // ---- 2. standalone CPython (uv-managed; no system python dependency) -----
     progress(0.22, "installing Python runtime");
@@ -144,6 +246,10 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     progress(0.42, "creating venv");
     // A clean rebuild: remove any prior partial venv so pip starts fresh.
     let _ = std::fs::remove_dir_all(&venv_dir);
+    let mut partial_venv = PartialVenv {
+        dir: &venv_dir,
+        armed: true,
+    };
     run_streaming(
         &uv,
         &[
@@ -181,6 +287,7 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     )?;
     verify_perception_dependencies(&uv, vpy, "base transcription engine", progress, 0.60, 0.605)?;
     progress(0.61, "verifying base transcription engine");
+    windows_runtime::check_environment(&venv_dir, &managed_python.path, "base")?;
     verify_base_onnx_asr_import(&venv_python)?;
 
     // ---- 5. install the perception extras (BEST-EFFORT, current wheels) -------
@@ -210,6 +317,9 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     // The extras share this venv. Even an optional-install failure can have
     // changed its resolved graph, so every successful outcome needs a final
     // dependency check and STT import before the actual final package receipt.
+    // A cancel during the optional install must end the whole setup, not be
+    // swallowed as a best-effort extras failure.
+    check_cancelled()?;
     progress(0.865, "checking final perception dependencies");
     verify_perception_dependencies(
         &uv,
@@ -220,22 +330,26 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
         0.88,
     )?;
     progress(0.885, "verifying final transcription engine");
+    let final_runtime =
+        windows_runtime::check_environment(&venv_dir, &managed_python.path, "perception tools");
     verify_final_onnx_asr_import(&venv_python)?;
     let onnx_asr_ready = true;
 
     let (full_perception_ready, extras_note) = match full_install {
-        Some(Ok(())) => match verify_full_perception_imports(&venv_python) {
-            Ok(()) => (true, None),
-            Err(e) => {
-                let note = format!(
+        Some(Ok(())) => {
+            match final_runtime.and_then(|()| verify_full_perception_imports(&venv_python)) {
+                Ok(()) => (true, None),
+                Err(e) => {
+                    let note = format!(
                     "the current compatible perception tools installed but did not pass their module-import check ({}); \
                      the base transcription dependencies are installed",
                     e.message
                 );
-                progress(0.90, &note);
-                (false, Some(note))
+                    progress(0.90, &note);
+                    (false, Some(note))
+                }
             }
-        },
+        }
         Some(Err(e)) => {
             let note = format!(
                 "the current compatible perception tools could not be installed ({}); \
@@ -281,11 +395,15 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
             0.91,
             0.99,
         );
+        // A cancelled model download is a cancelled install, not a warning.
+        check_cancelled()?;
         match warm {
             Ok(()) => model_warmed = true,
             Err(error) => model_warm_error = Some(error),
         }
     }
+    check_cancelled()?;
+    partial_venv.armed = false;
 
     progress(
         1.0,
@@ -437,7 +555,15 @@ pub struct MatanyoneSetupOutcome {
 /// Provision the premium MatAnyone2 venv + checkpoint. BLOCKING — call from a
 /// spawn_blocking task. NON-COMMERCIAL consent is enforced by the caller. Nothing
 /// half-installed is trusted (the doctor re-scan reports the real state).
-pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, CutError> {
+///
+/// `cancellation` is the job's, with the same rules as [`setup_perception`]: a cancel
+/// stops the running helper's process tree at once, ends the setup as
+/// `job_cancelled` and removes the unfinished premium venv.
+pub fn setup_matanyone(
+    progress: &ProgressFn,
+    cancellation: &JobCancellation,
+) -> Result<MatanyoneSetupOutcome, CutError> {
+    let _scope = CancellationScope::enter(cancellation);
     let venv_dir = crate::matte::matanyone_venv_dir().ok_or_else(|| {
         CutError::new(
             error_codes::IO,
@@ -453,9 +579,11 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
     // ---- 1. uv (env override or consented download) --------------------------
     progress(0.02, "locating uv");
     let uv = resolve_uv(progress)?;
+    check_cancelled()?;
     let uv_version = run_capture(&uv, &["--version"])
         .ok()
         .map(|s| s.trim().to_string());
+    check_cancelled()?;
 
     // ---- 2. standalone CPython 3.12 (MatAnyone2 runtime) ---------------------
     progress(0.10, "installing Python runtime");
@@ -464,6 +592,10 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
     // ---- 3. the isolated venv (clean rebuild) --------------------------------
     progress(0.17, "creating premium venv");
     let _ = std::fs::remove_dir_all(&venv_dir);
+    let mut partial_venv = PartialVenv {
+        dir: &venv_dir,
+        armed: true,
+    };
     run_streaming(
         &uv,
         &[
@@ -549,8 +681,20 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
     )?;
 
     // ---- 7. the checkpoint (135 MB, sha-pinned) ------------------------------
+    check_cancelled()?;
     progress(0.80, "downloading the MatAnyone2 checkpoint (135 MB)");
-    let checkpoint = crate::matte::install_matanyone_model(&|f, m| progress(0.80 + f * 0.08, m))?;
+    let checkpoint = crate::matte::install_matanyone_model(&|f, m| {
+        // The download cannot be interrupted: say so while a cancel waits for it.
+        if m.starts_with("downloading") {
+            progress(
+                0.80 + f * 0.08,
+                &format!("{m}; a cancel stops right after it"),
+            )
+        } else {
+            progress(0.80 + f * 0.08, m)
+        }
+    })?;
+    check_cancelled()?;
 
     // ---- 7b. SAM2 (Apache-2.0) — the click-to-pick-subject seed ---------------
     progress(0.88, "installing SAM2 (pick-which-subject)");
@@ -592,6 +736,8 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
         ],
     )?;
     let cuda_available = parse_matanyone_probe(&probe)?;
+    check_cancelled()?;
+    partial_venv.armed = false;
 
     progress(1.0, "premium background removal ready");
     Ok(MatanyoneSetupOutcome {
@@ -655,9 +801,11 @@ fn venv_python_path(venv: &Path) -> PathBuf {
 /// Resolve a uv binary: the SHELLX_CUT_UV override (test/dev), else a consented
 /// download via the fetch allow-list (installs to `<tools>/uv/bin/uv[.exe]`).
 fn resolve_uv(progress: &ProgressFn) -> Result<PathBuf, CutError> {
+    // An override counts only when absolute: a relative value would be read
+    // against the current folder, which may be a received project.
     if let Some(p) = std::env::var_os(ENV_UV) {
         let p = PathBuf::from(p);
-        if !p.as_os_str().is_empty() {
+        if p.is_absolute() {
             return Ok(p);
         }
     }
@@ -670,7 +818,10 @@ fn resolve_uv(progress: &ProgressFn) -> Result<PathBuf, CutError> {
     }
     // Consented download (sha256-verified, staged-then-atomic). Map its 0..1 into
     // our 0.02..0.20 band.
-    fetch::install_tool("uv", &|f, m| progress(0.02 + f * 0.18, m))?;
+    // The download cannot be interrupted, so the step says so: a job_cancel_pending
+    // answer quotes this text while the cancel waits for it.
+    progress(0.02, UV_DOWNLOAD_STEP);
+    fetch::install_tool("uv", &|f, _| progress(0.02 + f * 0.18, UV_DOWNLOAD_STEP))?;
     let tools = cut_media::toolpath::appdata_tools_dir().ok_or_else(|| {
         CutError::new(
             error_codes::IO,
@@ -743,6 +894,7 @@ fn select_managed_python(
 /// must never fall through to venv creation with an alias or an arbitrary path.
 fn find_managed_python(uv: &Path) -> Result<Option<ManagedPython>, CutError> {
     let mut probe = Command::new(uv);
+    windows_runtime::apply_uv_environment(&mut probe, uv);
     probe.args([
         "python",
         "find",
@@ -752,18 +904,19 @@ fn find_managed_python(uv: &Path) -> Result<Option<ManagedPython>, CutError> {
         "--resolve-links",
         PYTHON_REQUEST,
     ]);
-    let output =
-        crate::dispatch::run_bounded_foreground_command(&mut probe, "managed Python lookup")
-            .map_err(|e| {
-                CutError::new(
-                    error_codes::JOB_FAILED,
-                    "could not locate the managed Python runtime",
-                    format!("{}: {e}", uv.display()),
-                )
-                .with_suggested_action(
-                    "Choose Install captions again; if it persists, reinstall the captions runtime",
-                )
-            })?;
+    let output = run_setup_command(&mut probe, "managed Python lookup").map_err(|e| {
+        if setup_cancelled() {
+            return cancelled_error();
+        }
+        CutError::new(
+            error_codes::JOB_FAILED,
+            "could not locate the managed Python runtime",
+            format!("{}: {e}", uv.display()),
+        )
+        .with_suggested_action(
+            "Choose Install captions again; if it persists, reinstall the captions runtime",
+        )
+    })?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -930,10 +1083,23 @@ fn verify_perception_dependencies(
     )
 }
 
-fn onnx_asr_import_ready(python: &Path) -> bool {
-    run_capture(python, &["-c", BASE_STT_IMPORT_PROBE])
-        .map(|output| has_final_stdout_sentinel(&output, ONNX_ASR_IMPORT_SENTINEL))
-        .unwrap_or(false)
+/// Ok when the base modules import; Err carries the interpreter's last error
+/// line (for example "ImportError: DLL load failed ...") for the refusal.
+fn onnx_asr_import_ready(python: &Path) -> Result<(), String> {
+    match run_capture(python, &["-c", BASE_STT_IMPORT_PROBE]) {
+        Ok(output) if has_final_stdout_sentinel(&output, ONNX_ASR_IMPORT_SENTINEL) => Ok(()),
+        Ok(output) => Err(last_line(&output)),
+        Err(error) => Err(last_line(&error.cause)),
+    }
+}
+
+fn last_line(text: &str) -> String {
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("the import check printed nothing")
+        .to_string()
 }
 
 fn has_final_stdout_sentinel(output: &str, sentinel: &str) -> bool {
@@ -959,17 +1125,22 @@ fn verify_final_onnx_asr_import(python: &Path) -> Result<(), CutError> {
 }
 
 fn verify_onnx_asr_import(python: &Path, stage: &str, repair_target: &str) -> Result<(), CutError> {
-    if onnx_asr_import_ready(python) {
-        return Ok(());
-    }
-    Err(transcription_import_failure(python, stage, repair_target))
+    onnx_asr_import_ready(python)
+        .map_err(|reason| transcription_import_failure(python, stage, repair_target, &reason))
 }
 
-fn transcription_import_failure(python: &Path, stage: &str, repair_target: &str) -> CutError {
+fn transcription_import_failure(
+    python: &Path,
+    stage: &str,
+    repair_target: &str,
+    reason: &str,
+) -> CutError {
     CutError::new(
         error_codes::SIDECAR,
-        format!("the {stage} perception environment cannot import the transcription engine"),
-        python.display().to_string(),
+        format!(
+            "the {stage} perception environment cannot import the transcription engine: {reason}"
+        ),
+        format!("{}: {reason}", python.display()),
     )
     .with_suggested_action(format!(
         "Choose Install captions again to rebuild {repair_target}"
@@ -1026,16 +1197,19 @@ fn run_streaming(
     band_hi: f32,
 ) -> Result<(), CutError> {
     let mut command = Command::new(prog);
+    windows_runtime::apply_uv_environment(&mut command, prog);
     command.args(args);
-    let output =
-        crate::dispatch::run_bounded_foreground_command(&mut command, label).map_err(|e| {
-            CutError::new(
-                error_codes::JOB_FAILED,
-                format!("could not run {label}"),
-                format!("{}: {e}", prog.display()),
-            )
-            .with_suggested_action("retry; if it persists, check disk space and network")
-        })?;
+    let output = run_setup_command(&mut command, label).map_err(|e| {
+        if setup_cancelled() {
+            return cancelled_error();
+        }
+        CutError::new(
+            error_codes::JOB_FAILED,
+            format!("could not run {label}"),
+            format!("{}: {e}", prog.display()),
+        )
+        .with_suggested_action("retry; if it persists, check disk space and network")
+    })?;
 
     // The common owner has already drained capped stderr and reaped the whole
     // tree. Replay its retained status lines through the established progress
@@ -1128,7 +1302,25 @@ fn classify_install_failure(tail: &str, exit_code: Option<i32>) -> (String, &'st
              choose \"Install captions\" again.",
         );
     }
-    // 4. Out of disk space.
+    // 4. Cut's own folder could not be written: another program holds a file
+    //    (antivirus, a second setup), access is denied, or something already
+    //    stands where a folder must be created. Name that, not the network.
+    if lower.contains("failed to create directory")
+        || lower.contains("access is denied")
+        || lower.contains("permission denied")
+        || lower.contains("being used by another process")
+        || lower.contains("os error 5)")
+        || lower.contains("os error 32)")
+        || lower.contains("os error 183)")
+    {
+        return (
+            "Captions could not write their files into ShellX Cut's folder.".to_string(),
+            "Make sure no other program (for example an antivirus scan) is using ShellX Cut's \
+             folder, then choose \"Install captions\" again. If it keeps failing, reinstall \
+             ShellX Cut.",
+        );
+    }
+    // 5. Out of disk space.
     if lower.contains("no space left") || lower.contains("not enough space") {
         return (
             "There isn't enough free disk space to finish setting up perception.".to_string(),
@@ -1136,7 +1328,7 @@ fn classify_install_failure(tail: &str, exit_code: Option<i32>) -> (String, &'st
              again.",
         );
     }
-    // 5. Anything else — still avoid raw jargon; nothing partial is trusted.
+    // 6. Anything else — still avoid raw jargon; nothing partial is trusted.
     (
         format!(
             "Setting up perception didn't finish (the installer stopped with code {}).",
@@ -1153,16 +1345,18 @@ fn classify_install_failure(tail: &str, exit_code: Option<i32>) -> (String, &'st
 /// readiness and package receipts must never accept output from a nonzero process.
 fn run_capture(prog: &Path, args: &[&str]) -> Result<String, CutError> {
     let mut command = Command::new(prog);
+    windows_runtime::apply_uv_environment(&mut command, prog);
     command.args(args);
-    let out =
-        crate::dispatch::run_bounded_foreground_command(&mut command, "perception setup probe")
-            .map_err(|e| {
-                CutError::new(
-                    error_codes::JOB_FAILED,
-                    "command failed to run",
-                    e.to_string(),
-                )
-            })?;
+    let out = run_setup_command(&mut command, "perception setup probe").map_err(|e| {
+        if setup_cancelled() {
+            return cancelled_error();
+        }
+        CutError::new(
+            error_codes::JOB_FAILED,
+            "command failed to run",
+            e.to_string(),
+        )
+    })?;
     if !out.status.success() {
         return Err(CutError::new(
             error_codes::JOB_FAILED,
@@ -1306,15 +1500,20 @@ mod tests {
 
     #[test]
     fn transcription_import_failure_identifies_the_install_phase() {
+        let reason = "ImportError: DLL load failed while importing onnxruntime_pybind11_state";
         let base = transcription_import_failure(
             Path::new("/venv/python"),
             "base",
             "the base transcription environment",
+            reason,
         );
         assert_eq!(
             base.message,
-            "the base perception environment cannot import the transcription engine"
+            format!(
+                "the base perception environment cannot import the transcription engine: {reason}"
+            )
         );
+        assert_eq!(base.cause, format!("/venv/python: {reason}"));
         assert_eq!(
             base.suggested_action.as_deref(),
             Some("Choose Install captions again to rebuild the base transcription environment")
@@ -1324,11 +1523,22 @@ mod tests {
             Path::new("/venv/python"),
             "final",
             "the perception environment",
+            "ModuleNotFoundError: No module named 'onnx_asr'",
         );
+        assert!(final_environment.message.starts_with(
+            "the final perception environment cannot import the transcription engine: "
+        ));
+    }
+
+    #[test]
+    fn import_probe_failure_keeps_the_interpreter_error_line() {
         assert_eq!(
-            final_environment.message,
-            "the final perception environment cannot import the transcription engine"
+            last_line(
+                "Traceback (most recent call last):\n  File x\nImportError: DLL load failed\n\n"
+            ),
+            "ImportError: DLL load failed"
         );
+        assert_eq!(last_line(""), "the import check printed nothing");
     }
 
     #[test]
@@ -1430,6 +1640,20 @@ mod tests {
     }
 
     /// Unknown failures still avoid raw jargon and keep a safe next step.
+    #[test]
+    fn a_folder_that_cannot_be_written_is_named_not_the_network() {
+        let raw = "error: failed to create directory `C:\\Users\\p\\AppData\\Local\\ShellX Cut\\perception\\python`: Cannot create a file when that file already exists. (os error 183)";
+        let (msg, action) = classify_install_failure(raw, Some(2));
+        assert!(msg.contains("could not write their files"), "{msg}");
+        assert!(action.contains("Install captions"), "{action}");
+        assert!(!action.to_lowercase().contains("internet"), "{action}");
+        let (msg, _) = classify_install_failure(
+            "error: failed to remove file: Access is denied. (os error 5)",
+            Some(2),
+        );
+        assert!(msg.contains("could not write their files"), "{msg}");
+    }
+
     #[test]
     fn unknown_failure_is_still_actionable_without_jargon() {
         let (msg, action) = classify_install_failure("some totally novel error text", Some(7));

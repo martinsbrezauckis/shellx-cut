@@ -24,7 +24,7 @@
 
 use cut_core::{edl_from_project, Clip, MediaClip, Project, ProjectSettings};
 use cut_perception::{
-    run_all, run_all_with_profile, run_instruments, FootageProfile, InstrumentSet, RenderFacts,
+    run_all_with_profile, run_instruments, FootageProfile, InstrumentSet, RenderFacts,
     FOOTAGE_PROFILE_CHECK,
 };
 use std::path::{Path, PathBuf};
@@ -147,10 +147,21 @@ fn silent_screen_footage_fails_talking_head_passes_screen_demo() {
         duration_ms,
         loudness: report.loudness.clone(),
         output_report: Some(report),
+        // Per-stream lengths, as the server measures them on a real render.
+        streams: cut_media::probe::stream_extents(&media).expect("measure streams"),
     };
 
-    // ---- 3. talking_head (default) must FAIL exactly the 4 by-design checks
-    let th = run_all(&p, &edl, &[], &facts, &[]);
+    // ---- 3. explicit talking_head must FAIL the by-design checks (a plain
+    // export without a profile is not judged against these standards, and
+    // caption_presence does not apply to an export without captions)
+    let th = run_all_with_profile(
+        &p,
+        &edl,
+        &[],
+        &facts,
+        &[],
+        Some(FootageProfile::TalkingHead),
+    );
     let failing: Vec<&str> = th
         .iter()
         .filter(|c| !c.pass)
@@ -158,12 +169,7 @@ fn silent_screen_footage_fails_talking_head_passes_screen_demo() {
         .collect();
     assert_eq!(
         failing,
-        vec![
-            "lufs",
-            "caption_presence",
-            "black_or_frozen_frames",
-            "silence_at_edges"
-        ],
+        vec!["lufs", "black_or_frozen_frames", "silence_at_edges"],
         "the silent-screen regression case must reproduce"
     );
     let meta = th
@@ -195,7 +201,7 @@ fn silent_screen_footage_fails_talking_head_passes_screen_demo() {
         still_failing.is_empty(),
         "screen-demo profile must pass this footage, failing: {still_failing:?}"
     );
-    for name in ["lufs", "caption_presence", "silence_at_edges"] {
+    for name in ["lufs", "silence_at_edges"] {
         let c = sd.iter().find(|c| c.name == name).unwrap();
         assert_eq!(c.details["waived_by_profile"], "silent_screen_demo");
         assert_eq!(
@@ -234,3 +240,5 @@ fn silent_screen_footage_fails_talking_head_passes_screen_demo() {
             .count()
     );
 }
+
+cut_core::isolate_test_process!();

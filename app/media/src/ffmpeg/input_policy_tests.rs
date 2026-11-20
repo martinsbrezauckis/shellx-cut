@@ -16,7 +16,7 @@ fn owned_concat_rejects_a_cached_segment_containing_nested_concat() {
             "ffconcat version 1.0\n{}\n",
             // Relative regular names remain accepted by the nested concat
             // demuxer's independent safe-path check.
-            concat_demuxer_file_line(Path::new("private.mp4"))
+            concat_demuxer_file_line(Path::new("private.mp4")).unwrap()
         ),
     )
     .unwrap();
@@ -39,7 +39,7 @@ fn owned_concat_rejects_a_cached_segment_containing_nested_concat() {
         &list,
         format!(
             "ffconcat version 1.0\n{}\n",
-            concat_demuxer_file_line(&replaced_segment)
+            concat_demuxer_file_line(&replaced_segment).unwrap()
         ),
     )
     .unwrap();
@@ -50,7 +50,7 @@ fn owned_concat_rejects_a_cached_segment_containing_nested_concat() {
         &list,
         format!(
             "ffconcat version 1.0\n{}\n",
-            owned_concat_file_lines(&replaced_segment)
+            owned_concat_file_lines(&replaced_segment).unwrap()
         ),
     )
     .unwrap();
@@ -62,7 +62,7 @@ fn owned_concat_rejects_a_cached_segment_containing_nested_concat() {
         &list,
         format!(
             "ffconcat version 1.0\n{}\n",
-            owned_concat_file_lines(&sample)
+            owned_concat_file_lines(&sample).unwrap()
         ),
     )
     .unwrap();
@@ -161,7 +161,7 @@ fn local_media_rejects_local_playlists_before_opening_segments() {
         &concat,
         format!(
             "ffconcat version 1.0\n{}\n",
-            concat_demuxer_file_line(&sample)
+            concat_demuxer_file_line(&sample).unwrap()
         ),
     )
     .unwrap();

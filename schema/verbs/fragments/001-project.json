@@ -5,7 +5,7 @@
     {
       "name": "project.create",
       "domain": "project",
-      "description": "Create a new project directory with default tracks (v1 video, a1t audio), empty op-log, receipts/ and proxies/ subdirs. Becomes the server's open project. dir defaults to a managed <ShellX Cut Projects>/<name>.cutproj under the OS home (~/Documents/ShellX Cut Projects/ on Windows, ~/ShellX Cut Projects/ on macOS/Linux), falling back to <cwd> only when no home resolves. When settings are omitted, the internal 1920x1080@30 fallback is automatically replaced by the first imported video's source width, height, and frame rate while the format remains untouched. starter:first-edit installs the bundled synthetic tutorial clip inside the new project and returns its path for normal media.import.",
+      "description": "Create a new project directory with default tracks (v1 video, a1t audio), empty op-log, receipts/ and proxies/ subdirs. Becomes the server's open project. dir defaults to a managed <ShellX Cut Projects>/<name>.cutproj under the OS home (~/Documents/ShellX Cut Projects/ on Windows, ~/ShellX Cut Projects/ on macOS/Linux), falling back to <cwd> only when no home resolves. When settings are omitted, the internal 1920x1080@30 fallback is automatically replaced by the first imported video's source width, height, and frame rate while the format remains untouched (odd sides are rounded down to even; a variable-frame-rate clip gives its nominal standard rate, e.g. 60 for a phone clip averaging 58.59; a clip larger than the frame limit of 16 to 8192 px per side and 8192x4320 pixels keeps the fallback). The import job result's `format` says what happened and why. Explicit settings must be within the same frame limit and have even sides. starter:first-edit installs the bundled synthetic tutorial clip inside the new project and returns its path for normal media.import.",
       "args": {
         "type": "object",
         "required": [
@@ -50,10 +50,11 @@
               "first-edit"
             ],
             "description": "Optional bundled project starter. first-edit installs the self-owned synthetic tutorial clip and returns starter_asset_path; it is not imported until media.import is called."
-          }
+          },
+          "cancel_running_jobs": { "type": "boolean", "description": "Set true to cancel the old project's running jobs that someone asked for and change the project anyway. Without it a change that would cancel such a job (any kind except the automatic import follow-ups import_chain, proxy and enrich, the open-time proxy_check and title_remake, and a cache_purge: renders, exports, reviews, generation, analysis asked for by verb, tool downloads) is refused with code jobs_running and nothing is changed; the automatic follow-ups are always cancelled and listed in the result as cancelled_jobs." }
         }
       },
-      "result": "{path, project, starter_asset_path?} plus envelope op_ids/project_revision — absolute .cutproj path, full project.json state, initial project.create op, and optional bundled starter media path",
+      "result": "{path, project, starter_asset_path?} plus envelope op_ids/project_revision — absolute .cutproj path, full project.json state, initial project.create op, and optional bundled starter media path; cancelled_jobs:[{job_id,kind,progress,message?}] when the change cancelled jobs of the previous project (a running job someone asked for needs cancel_running_jobs:true, else error jobs_running)",
       "behavior": {
         "mutation_class": "project_metadata",
         "side_effects": {
@@ -76,7 +77,7 @@
     {
       "name": "project.open",
       "domain": "project",
-      "description": "Open an existing .cutproj directory. Rebuilds project.json from ops.jsonl if the cache is missing or corrupt. Before activation, scans project-local screen-record checkpoint journals: only a dead owner with a contiguous, independently playable finalized checkpoint prefix may be remuxed to recovered.mp4; live or ambiguous owners are never signalled, and corrupt journals fail closed into quarantine. The returned recovery_scan is an immediate report; screen_record.recovery_status is the durable, paginated receipt projection after navigation.",
+      "description": "Open an existing .cutproj directory. A folder that is not a project (no ops.jsonl or project.json) is refused with invalid_args and left untouched: open never creates; call project.create to start a project. Rebuilds project.json from ops.jsonl if the cache is missing or corrupt. After activation, a background job (kind recording_recovery, named by recovery_scan.job_id) scans project-local screen-record checkpoint journals, so opening never waits for that work: only a dead owner with a contiguous, independently playable finalized checkpoint prefix may be remuxed to recovered.mp4; live or ambiguous owners are never signalled, and corrupt journals fail closed into quarantine. The returned recovery_scan names that job (state running, or none when nothing needs preparing); while it runs, screen_record.recover refuses with conflict \"this recording is still being prepared\"; screen_record.recovery_status is the durable, paginated receipt projection after navigation. The open also starts a proxy_check job (proxies this computer made are given back, one without a trust record is encoded again once, missing ones are made; project.state.proxy_check lists the assets waiting meanwhile), and a missing title movie is drawn again by a title_remake job when it is needed.",
       "args": {
         "type": "object",
         "required": [
@@ -87,10 +88,11 @@
           "path": {
             "type": "string",
             "description": "Path to the .cutproj directory"
-          }
+          },
+          "cancel_running_jobs": { "type": "boolean", "description": "Set true to cancel the old project's running jobs that someone asked for and change the project anyway. Without it a change that would cancel such a job (any kind except the automatic import follow-ups import_chain, proxy and enrich, the open-time proxy_check and title_remake, and a cache_purge: renders, exports, reviews, generation, analysis asked for by verb, tool downloads) is refused with code jobs_running and nothing is changed; the automatic follow-ups are always cancelled and listed in the result as cancelled_jobs." }
         }
       },
-      "result": "{path, project, project_revision, recovery_scan:{recovered:[capture_id], deferred:[detail], failed_closed:[detail]}} — the loaded project state and latest durable op id; recovery_scan reports this activation scan only. Query screen_record.recovery_status for durable per-capture receipt/loss state.",
+      "result": "{path, project, project_revision, recovery_scan:{state:\"running\"|\"none\", job_id|null, recovered:[], deferred:[], failed_closed:[]}} — the loaded project state and latest durable op id; the preparation job's result lists recovered/deferred/failed_closed. Query screen_record.recovery_status for durable per-capture receipt/loss state. cancelled_jobs:[{job_id,kind,progress,message?}] is present when the change cancelled jobs of the previous project; a running job someone asked for is only cancelled with cancel_running_jobs:true (otherwise error jobs_running lists them and nothing changes).",
       "behavior": {
         "mutation_class": "navigation",
         "side_effects": {
@@ -283,7 +285,7 @@
           }
         }
       },
-      "result": "full project state with project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name}, project_revision and sync:{mode:'snapshot',reason,...}, or {sync:{mode:'delta',from_revision,project_revision,project_identity,ops,changes,affected,encoded_bytes}}; no_project if no project is open. The identity never includes a raw project path. Linked media clips may carry motion_link.effects:{schema:'shellx-cut/motion-effects-summary@1',available,ownership:'motion',editableInCut:false,keyedLayerCount?,rotoLayerCount?,trackedRotoLayerCount?,truncated?,layers?}",
+      "result": "full project state with project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name}, project_revision and sync:{mode:'snapshot',reason,...}, or {sync:{mode:'delta',from_revision,project_revision,project_identity,ops,changes,affected,encoded_bytes}}; no_project if no project is open. The identity never includes a raw project path. Linked media clips may carry motion_link.effects:{schema:'shellx-cut/motion-effects-summary@1',available,ownership:'motion',editableInCut:false,keyedLayerCount?,rotoLayerCount?,trackedRotoLayerCount?,truncated?,layers?}. While an opened project's proxies are being checked: proxy_check:{state:'checking',job_id,assets} (their proxy is not used yet; read again when that proxy_check job ends). When media clips shorter than one frame exist (made before edits were held to the frame grid): subframe_clips:[{clip,track,at_ms,duration_ms}] (the timeline draws each as a marker; delete one with edit.ripple_delete over its range or the timeline's Delete)",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {

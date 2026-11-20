@@ -48,9 +48,18 @@ const RISK_COPY: Record<string, { title: string; guidance: string; guide: string
   },
 }
 
+// Item 82: memory and disk risks from the render plan carry their own numbers
+// and way out in `detail`, so only the title is fixed here.
+const RESOURCE_TITLES: Record<string, string> = {
+  memory_short: 'Not enough free memory',
+  out_of_memory: 'Too large for this computer',
+  disk_short: 'Output drive almost full',
+  not_enough_space: 'Not enough free space',
+}
+
 const riskCopyFor = (risk: PregateRisk) =>
   RISK_COPY[risk.kind] ?? {
-    title: 'Export warning',
+    title: RESOURCE_TITLES[risk.kind] ?? 'Export warning',
     guidance: risk.detail || 'Review this item before exporting.',
     guide: 'cut.export.preflight',
   }

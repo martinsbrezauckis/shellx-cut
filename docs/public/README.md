@@ -6,8 +6,10 @@ feature descriptions self-contained and usable from a fresh checkout.
 
 - `FEATURES.md` is the public feature inventory.
 - `DEBUG_API.md` documents local Debug API and MCP control.
-- `shellx-cut-threat-model.md` states the local-machine trust contract and
-  residual risk for the unauthenticated loopback API.
+- `shellx-cut-threat-model.md` states the local-machine trust contract, the
+  residual risk for the unauthenticated loopback API, and the accepted risk of
+  opening a project made by someone else.
+- `JUDGE_REVIEW.md` describes the optional visual review of rendered frames.
 - `FEATURE_SURFACE_CONTRACT.md` describes the supported human, agent, internal,
   and rig-only feature surfaces.
 - `BUILDING.md` covers public build and verification steps.

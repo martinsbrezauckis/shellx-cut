@@ -51,6 +51,11 @@ export function useAppSurfaceEvents({
       setEnvOpen(false)
       return true
     }
+    // The Mask drawer hides the left panel, the review rail and the comments
+    // pane so the preview can be its drawing surface. Opening one of those
+    // surfaces must leave it visible, so it closes that drawer first; any other
+    // drawer keeps its place beside them.
+    const leaveMaskDrawer = () => setActiveDrawer((drawer) => (drawer === 'mask' ? null : drawer))
     switch (action.kind) {
       case 'focus':
         if (!showEditor()) return false
@@ -62,10 +67,12 @@ export function useAppSurfaceEvents({
         return true
       case 'left':
         if (!showEditor()) return false
+        leaveMaskDrawer()
         setLayout((layout) => ({ ...layout, workspaceMode: 'edit', leftTab: action.tab, leftCollapsed: false }))
         return true
       case 'find':
         if (!showEditor()) return false
+        leaveMaskDrawer()
         setLayout((layout) => ({
           ...layout,
           workspaceMode: 'edit',
@@ -76,6 +83,7 @@ export function useAppSurfaceEvents({
         return true
       case 'generate':
         if (!showEditor()) return false
+        leaveMaskDrawer()
         setGenerateTab(action.tab)
         setLayout((layout) => ({ ...layout, workspaceMode: 'edit', leftTab: 'generate', leftCollapsed: false }))
         return true
@@ -86,6 +94,7 @@ export function useAppSurfaceEvents({
         return true
       case 'right':
         if (!showEditor()) return false
+        leaveMaskDrawer()
         setLayout((layout) => ({
           ...layout,
           workspaceMode: 'edit',
@@ -95,6 +104,7 @@ export function useAppSurfaceEvents({
         return true
       case 'review':
         if (!showEditor()) return false
+        leaveMaskDrawer()
         setLayout((layout) => ({
           ...layout,
           workspaceMode: 'edit',
@@ -115,6 +125,7 @@ export function useAppSurfaceEvents({
           setWizardOpen(true)
         } else {
           if (!showEditor()) return false
+          leaveMaskDrawer()
           setCommentsOpen(true)
         }
         return true

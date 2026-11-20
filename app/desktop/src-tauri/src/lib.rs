@@ -75,11 +75,20 @@ const WEBDRIVER_TEST_BUILD_MARKER: &str = "shellx-cut/webdriver-test-enabled@1";
 use tauri::Emitter;
 
 mod about_links;
+mod close_guard;
+mod engine_stop;
+mod engine_watch;
 #[cfg(target_os = "macos")]
 mod macos_controller_owner;
+#[cfg(target_os = "macos")]
+mod macos_quit_hook;
+// Driven only on macOS and Windows; other targets compile it for the shared types.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 mod macos_region_bridge;
+mod quit_question;
 mod record_hotkey;
 mod record_indicator;
+mod single_instance;
 mod source_reveal;
 mod tools;
 mod ui_navigation;
@@ -90,8 +99,10 @@ mod update_state;
 #[cfg(desktop)]
 mod updater_key_transition;
 pub mod updater_signature;
+mod window_fit;
 #[cfg(windows)]
 mod windows_controller_placement;
+mod windows_media_feature;
 mod windows_region_bridge;
 #[cfg(windows)]
 mod windows_region_picker;
@@ -204,6 +215,20 @@ fn engine_log_path(
     Some(temp_root.join("shellx-cut-engine.log"))
 }
 
+/// The dynamic loader's "error while loading shared libraries" line from the
+/// engine log, when the engine could not start because a system library is
+/// missing. The loader writes it before any engine code runs, so without this
+/// the window only says that the engine exited. Only that one line is returned.
+fn missing_library_line(log_path: Option<&std::path::Path>) -> Option<String> {
+    let bytes = std::fs::read(log_path?).ok()?;
+    let tail = &bytes[bytes.len().saturating_sub(64 * 1024)..];
+    String::from_utf8_lossy(tail)
+        .lines()
+        .rev()
+        .find(|line| line.contains("error while loading shared libraries"))
+        .map(|line| line.trim().chars().take(300).collect())
+}
+
 /// Handle to the spawned cutd child, kept in Tauri managed state so we can
 /// kill it on app exit. `None` when reusing an external server (mode
 /// "external") or when startup failed — nothing to kill in either case.
@@ -215,7 +240,88 @@ struct EngineProcess(Mutex<Option<Child>>);
 struct ForegroundRegionBridgeState(Mutex<Option<macos_region_bridge::ForegroundRegionBridge>>);
 
 fn stop_owned_engine(app: &tauri::AppHandle) {
+    // From here an engine exit is the shell's own doing, never reported.
+    engine_watch::mark_ending();
     update_handoff::stop_owned_engine_best_effort(app);
+}
+
+/// What restarting the owned engine needs: the same inputs as at launch.
+struct EngineRestart {
+    resource_dir: PathBuf,
+    tools: ToolResolution,
+    portal_parent_window: Option<String>,
+    controller_placement: Option<String>,
+    /// The window may reach only this origin (its capability), so a new
+    /// engine must answer here.
+    url: String,
+    tools_hint: String,
+}
+
+/// One look at the owned engine for the watch. A close or quit in progress
+/// owns the engine's end, so the watch stays out of it.
+fn look_at_owned_engine(app: &tauri::AppHandle) -> engine_watch::Look {
+    if close_guard::closing(app) || quit_question::is_open(app) {
+        return engine_watch::Look::Running;
+    }
+    let state = app.state::<EngineProcess>();
+    let mut slot = state.0.lock().unwrap();
+    let Some(child) = slot.as_mut() else {
+        return engine_watch::Look::Gone;
+    };
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            slot.take();
+            drop(slot);
+            *app.state::<EngineStatus>().0.lock().unwrap() = EngineState::Unwired {
+                reason: format!("engine unavailable: it stopped unexpectedly ({status})"),
+            };
+            engine_watch::Look::Exited(status.to_string())
+        }
+        _ => engine_watch::Look::Running,
+    }
+}
+
+/// Start a new engine at the same address and reload the window from it.
+fn restart_owned_engine(app: &tauri::AppHandle, inputs: &EngineRestart) -> Result<(), String> {
+    let (child, url, ui, engine_version, bridge) = spawn_engine(
+        &inputs.resource_dir,
+        &inputs.tools,
+        inputs.portal_parent_window.as_deref(),
+        inputs.controller_placement.as_deref(),
+    )?;
+    let Some(mut child) = child else {
+        return Err(format!(
+            "another ShellX Cut engine already answers at {url}; quit ShellX Cut and open it again"
+        ));
+    };
+    if url != inputs.url {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "the engine could start only at {url}, not at {} where this window reaches it",
+            inputs.url
+        ));
+    }
+    *app.state::<EngineProcess>().0.lock().unwrap() = Some(child);
+    *app.state::<ForegroundRegionBridgeState>().0.lock().unwrap() = bridge;
+    *app.state::<EngineStatus>().0.lock().unwrap() = EngineState::Wired {
+        url: url.clone(),
+        mode: "spawned",
+        ui,
+        tools_hint: inputs.tools_hint.clone(),
+        engine_version,
+    };
+    if ui {
+        let window = app
+            .get_webview_window("main")
+            .ok_or("the ShellX Cut window is gone")?;
+        let index = inputs.resource_dir.join("ui-dist/index.html");
+        let parsed = ui_navigation::navigation_url(&url, &index, false)?;
+        window
+            .navigate(parsed)
+            .map_err(|error| format!("the window could not reload: {error}"))?;
+    }
+    Ok(())
 }
 
 /// The desktop shell's engine state, exposed to the webview via
@@ -447,8 +553,14 @@ fn is_cutd(addr: &str) -> bool {
 fn coherent_cutd_version(addr: &str) -> Result<String, String> {
     let raw = http_get(addr, "/api/agent", Duration::from_millis(1500))
         .map_err(|e| format!("engine identity unavailable: {e}"))?;
+    // Product name first (another program on the port is never adopted), then
+    // the version rule, then the instance engine.addr records for this address.
     let engine_version = update_identity::engine_version_from_http(&raw)?;
     update_identity::require_coherent_versions(env!("CARGO_PKG_VERSION"), &engine_version)?;
+    update_identity::require_same_instance(
+        engine_stop::recorded_instance_for(addr).as_deref(),
+        update_identity::engine_instance_from_http(&raw).as_deref(),
+    )?;
     Ok(engine_version)
 }
 
@@ -520,8 +632,34 @@ fn pick_engine_addr_for(default_addr: &str) -> Result<(String, bool), String> {
 }
 
 fn pick_engine_addr() -> Result<(String, bool), String> {
+    // An explicit SHELLX_CUT_HOME is an isolated state home: it adopts an engine
+    // on the default port only when its own engine.addr names that engine, never
+    // the person's installed engine that happens to hold the port.
+    let isolated = std::env::var_os("SHELLX_CUT_HOME").is_some_and(|home| !home.is_empty());
+    if isolated && engine_stop::recorded_addr().as_deref() != Some(ENGINE_DEFAULT_ADDR) {
+        if TcpListener::bind(ENGINE_DEFAULT_ADDR).is_ok() {
+            return Ok((ENGINE_DEFAULT_ADDR.to_string(), false));
+        }
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("engine unavailable: no free loopback port ({e})"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("engine unavailable: could not read local addr ({e})"))?
+            .port();
+        drop(listener);
+        return Ok((format!("127.0.0.1:{port}"), false));
+    }
     pick_engine_addr_for(ENGINE_DEFAULT_ADDR)
 }
+
+/// `(child, url, ui_present, engine_version, foreground_region_bridge)`.
+type SpawnedEngine = (
+    Option<Child>,
+    String,
+    bool,
+    String,
+    Option<macos_region_bridge::ForegroundRegionBridge>,
+);
 
 /// Spawn (or adopt) the cutd engine and wait until it answers.
 ///
@@ -541,16 +679,12 @@ fn spawn_engine(
     tools: &ToolResolution,
     portal_parent_window: Option<&str>,
     controller_placement: Option<&str>,
-) -> Result<
-    (
-        Option<Child>,
-        String,
-        bool,
-        String,
-        Option<macos_region_bridge::ForegroundRegionBridge>,
-    ),
-    String,
-> {
+) -> Result<SpawnedEngine, String> {
+    // Each platform hands the child only its own placement facts.
+    #[cfg(not(target_os = "linux"))]
+    let _ = portal_parent_window;
+    #[cfg(not(windows))]
+    let _ = controller_placement;
     if let Some(reason) = tools.native_runtime.error() {
         return Err(format!(
             "engine unavailable: prepared native runtime rejected: {reason}"
@@ -570,6 +704,12 @@ fn spawn_engine(
             "[shellx-cut] reusing external cutd v{engine_version} at {url} (ui: {ui_present})"
         );
         return Ok((None, url, ui_present, engine_version, None));
+    }
+
+    // A Windows N/KN edition without the Media Feature Pack cannot load the
+    // engine; say why here instead of letting the loader show a bare DLL error.
+    if let Some(reason) = windows_media_feature::engine_start_blocker() {
+        return Err(reason);
     }
 
     let program = cutd_program();
@@ -658,20 +798,21 @@ fn spawn_engine(
         // adopted cutd returns before this spawn path and has no marker; scrub
         // inherited values so an external parent cannot become a controller.
         macos_controller_owner::apply_to_spawned_child(&mut cmd, ui_present);
-        // LaunchServices can terminate the shell without delivering Tauri's
-        // exit callbacks. Give the child a narrow parent-liveness contract so
-        // cutd can close itself when this exact desktop process disappears.
-        cmd.env("SHELLX_CUT_PARENT_PID", std::process::id().to_string());
     }
+    // A shell that is terminated, crashes or is quit through LaunchServices gets
+    // no chance to stop its engine. Give the child a narrow parent-liveness
+    // contract on every system so cutd closes itself (removing engine.addr) when
+    // this exact desktop process disappears, instead of lingering for the next
+    // shell to find.
+    cmd.env("SHELLX_CUT_PARENT_PID", std::process::id().to_string());
     let agent_docs_dir = resource_dir.join("agent-docs");
     if agent_docs_dir.join("skill/shellx-cut/SKILL.md").is_file() {
         cmd.env(ENV_AGENT_DOCS_DIR, &agent_docs_dir);
     }
-    // Seamless GPU: let the engine auto-select the best HARDWARE-capable installed
-    // ffmpeg (NVENC/cuda, QSV, VideoToolbox, …) with no user action. A user's
-    // explicit SHELLX_CUT_FFMPEG override still wins; software-only machines stay
-    // on the bundled build. See cut-media toolpath::ffmpeg() auto path.
-    cmd.env(tools::ENV_FFMPEG_AUTO, "1");
+    // The engine picks the best hardware-capable ffmpeg by itself (its own
+    // default, the same when a person or an agent starts it), so the shell sets
+    // nothing here; a SHELLX_CUT_FFMPEG_AUTO=0 in the shell's own environment
+    // still reaches the engine as an opt-out. See cut-media toolpath/selection.rs.
 
     if ui_present {
         cmd.arg("--ui-dist").arg(&ui_dist);
@@ -716,6 +857,7 @@ fn spawn_engine(
         if is_cutd(&addr) {
             match coherent_cutd_version(&addr) {
                 Ok(engine_version) => {
+                    engine_stop::remember_owned_addr(&addr);
                     eprintln!(
                         "[shellx-cut] engine v{engine_version} ready at {url} (ui: {ui_present})"
                     );
@@ -736,8 +878,11 @@ fn spawn_engine(
         }
         // Child died (port race lost, bad args, AV kill…)? Report honestly.
         if let Ok(Some(status)) = child.try_wait() {
+            let loader = missing_library_line(log_path.as_deref())
+                .map(|line| format!(": {line}"))
+                .unwrap_or_default();
             return Err(format!(
-                "engine unavailable: cutd exited during startup ({status}); see {}",
+                "engine unavailable: cutd exited during startup ({status}){loader}; see {}",
                 log_location
             ));
         }
@@ -865,6 +1010,13 @@ fn grant_engine_origin_capability(
         // or shortcut text input.
         .permission("allow-record-hotkey-control");
     let capability = capability.permission("allow-recording-indicator");
+    // A close during a recording is held until the recording is saved, and a
+    // close during an export until the person answers; the UI may only
+    // acknowledge and finish that hold or answer the question, never close
+    // the window.
+    let capability = capability.permission("allow-close-guard");
+    // The window may ask once which project the app was launched with.
+    let capability = capability.permission("allow-launch-project");
     let capability = if allow_foreground_region {
         // This is granted only to the exact selected engine origin while this
         // shell retains a successfully bound child. An adopted/external cutd
@@ -1029,7 +1181,18 @@ pub fn run() {
     // existing toplevel. Tests should size Xvfb before launch, resize the
     // window itself, or run a minimal window manager; the shell needs no
     // geometry workaround.
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let builder = tauri::Builder::default();
+    // One window per user: a second launch focuses this one and ends
+    // (single_instance.rs). Registered first, so it decides before anything
+    // else starts.
+    let builder = if single_instance::applies() {
+        builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            single_instance::on_second_launch(app, argv, &cwd)
+        }))
+    } else {
+        builder
+    };
+    let builder = builder.plugin(tauri_plugin_dialog::init());
 
     // Optional WebDriver support for macOS WKWebView tests. Release packages
     // reject this feature.
@@ -1054,6 +1217,9 @@ pub fn run() {
         .manage(ToolResolutionState(Mutex::new(ToolResolution::default())))
         .manage(record_hotkey::RecordHotkeyState::default())
         .manage(record_indicator::RecordIndicatorState::default())
+        .manage(close_guard::CloseGuardState::default())
+        .manage(quit_question::QuitQuestionState::default())
+        .manage(single_instance::LaunchProject::default())
         // Update-state service: the snapshot the topbar button + Settings>About
         // read over the bridge. Seeded with the installed version; the setup
         // hook spawns the automatic (launch + 6-hourly) check driver.
@@ -1077,8 +1243,23 @@ pub fn run() {
             record_hotkey::disable_gnome_record_hotkey,
             record_indicator::begin_recording_indicator,
             record_indicator::end_recording_indicator,
+            close_guard::acknowledge_close_request,
+            close_guard::finish_close_request,
+            quit_question::acknowledge_quit_question,
+            quit_question::answer_quit_question,
+            single_instance::take_launch_project,
         ])
         .setup(move |app| {
+            // macOS: the menu's Quit, Cmd+Q, Dock Quit, an Apple Event quit and
+            // logout ask the close guard first, as closing the window does.
+            #[cfg(target_os = "macos")]
+            macos_quit_hook::install(app.handle());
+            // The first window fits the screen it opens on, and the project a
+            // launch named is kept for the window to open.
+            if let Some(window) = app.get_webview_window("main") {
+                window_fit::fit_to_work_area(&window);
+            }
+            single_instance::remember_launch_project(app.handle());
             #[cfg(windows)]
             if let Some(data_directory) = &webview_test_data_directory {
                 let main_config = app
@@ -1153,7 +1334,11 @@ pub fn run() {
                 controller_placement,
             ) {
                 Ok((mut child, url, ui, engine_version, foreground_region_bridge)) => {
-                    let mode = if child.is_some() { "spawned" } else { "external" };
+                    let mode = if child.is_some() {
+                        "spawned"
+                    } else {
+                        "external"
+                    };
                     let allow_foreground_region = foreground_region_bridge.is_some();
                     let capability = if ui {
                         grant_engine_origin_capability(app, &url, allow_foreground_region)
@@ -1163,18 +1348,30 @@ pub fn run() {
                     match capability {
                         Ok(()) => {
                             *app.state::<EngineProcess>().0.lock().unwrap() = child;
-                            *app
-                                .state::<ForegroundRegionBridgeState>()
-                                .0
-                                .lock()
-                                .unwrap() = foreground_region_bridge;
+                            *app.state::<ForegroundRegionBridgeState>().0.lock().unwrap() =
+                                foreground_region_bridge;
                             *app.state::<EngineStatus>().0.lock().unwrap() = EngineState::Wired {
                                 url: url.clone(),
                                 mode,
                                 ui,
-                                tools_hint,
+                                tools_hint: tools_hint.clone(),
                                 engine_version,
                             };
+                            if mode == "spawned" {
+                                let restart = EngineRestart {
+                                    resource_dir: resource_dir.clone(),
+                                    tools: tool_res.clone(),
+                                    portal_parent_window: portal_parent_window.clone(),
+                                    controller_placement: controller_placement.map(str::to_owned),
+                                    url: url.clone(),
+                                    tools_hint: tools_hint.clone(),
+                                };
+                                engine_watch::start(
+                                    app.handle().clone(),
+                                    look_at_owned_engine,
+                                    move |app| restart_owned_engine(app, &restart),
+                                );
+                            }
 
                             // Navigate only after the selected origin has its
                             // exact capability. Without a UI bundle we stay on
@@ -1183,11 +1380,17 @@ pub fn run() {
                             if ui {
                                 if let Some(win) = app.get_webview_window("main") {
                                     let index = resource_dir.join("ui-dist/index.html");
-                                    match ui_navigation::navigation_url(&url, &index, mode == "external") {
+                                    match ui_navigation::navigation_url(
+                                        &url,
+                                        &index,
+                                        mode == "external",
+                                    ) {
                                         Ok(parsed) => {
                                             let _ = win.navigate(parsed);
                                         }
-                                        Err(reason) => eprintln!("[shellx-cut] UI navigation refused: {reason}"),
+                                        Err(reason) => eprintln!(
+                                            "[shellx-cut] UI navigation refused: {reason}"
+                                        ),
                                     }
                                 }
                             }
@@ -1250,18 +1453,24 @@ pub fn run() {
                     let record_hotkey = Shortcut::new(None, Code::F9);
                     let plugin = tauri_plugin_global_shortcut::Builder::new()
                         .with_handler(move |app, shortcut, event| {
-                            if shortcut == &record_hotkey && event.state() == ShortcutState::Pressed {
+                            if shortcut == &record_hotkey && event.state() == ShortcutState::Pressed
+                            {
                                 let _ = app.emit("cut:record-hotkey", ());
                             }
                         })
                         .build();
-                    if let Err(error) = app.handle().plugin(plugin) {
-                        eprintln!("[shellx-cut] global-shortcut plugin init failed: {error} — F9 stays focused-window only");
-                    } else if let Err(error) = app.global_shortcut().register(record_hotkey) {
-                        eprintln!("[shellx-cut] could not register global F9 record hotkey: {error} — F9 stays focused-window only");
-                    } else {
-                        record_hotkey::native_registered(app.handle());
-                    }
+                    let outcome = app
+                        .handle()
+                        .plugin(plugin)
+                        .map_err(|error| {
+                            format!("the global-shortcut plugin failed to start: {error}")
+                        })
+                        .and_then(|()| {
+                            app.global_shortcut()
+                                .register(record_hotkey)
+                                .map_err(|error| error.to_string())
+                        });
+                    record_hotkey::publish_native_registration(app.handle(), outcome);
                 }
             }
 
@@ -1271,6 +1480,17 @@ pub fn run() {
         // lingers. An adopted EXTERNAL server is never stored here, so it is
         // never killed — we don't own it.
         .on_window_event(|window, event| {
+            // Never close over a running recording: hold the close until the
+            // recording is stopped and saved (close_guard.rs).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main"
+                    && close_guard::on_close_request(window.app_handle(), false)
+                        == close_guard::Decision::Hold
+                {
+                    api.prevent_close();
+                }
+                return;
+            }
             if let tauri::WindowEvent::Destroyed = event {
                 if window.label() == "main" {
                     record_indicator::reset(window.app_handle());
@@ -1287,12 +1507,23 @@ pub fn run() {
         // delivering the window-destroyed callback before the process exits.
         // Reap the exact child at the exit request as well, so a normal Quit
         // never leaves an owned cutd listener behind on 127.0.0.1:6161.
+        if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+            if close_guard::on_close_request(app_handle, true) == close_guard::Decision::Hold {
+                api.prevent_exit();
+                return;
+            }
+        }
         if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
             record_indicator::reset(app_handle);
             record_hotkey::release_runtime(app_handle);
             stop_owned_engine(app_handle);
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            // An exit the guard was never asked about (Windows ends the
+            // session; macOS terminates without asking): do not cut a running
+            // recording off. The engine saves it and stops by itself once this
+            // shell is gone.
+            close_guard::on_unasked_exit(app_handle);
             record_indicator::reset(app_handle);
             record_hotkey::release_runtime(app_handle);
             stop_owned_engine(app_handle);
@@ -1504,6 +1735,26 @@ mod tests {
             engine_log_path(Some(std::ffi::OsStr::new("relative-home")), &user_temp),
             None
         );
+    }
+
+    #[test]
+    fn missing_system_library_is_named_from_the_engine_log() {
+        let dir = std::env::temp_dir().join(format!("cut-loader-line-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("engine.log");
+        std::fs::write(
+            &log,
+            "noise\n/usr/bin/cutd: error while loading shared libraries: libasound.so.2: cannot open shared object file: No such file or directory\n",
+        )
+        .unwrap();
+        assert_eq!(
+            missing_library_line(Some(&log)).as_deref(),
+            Some("/usr/bin/cutd: error while loading shared libraries: libasound.so.2: cannot open shared object file: No such file or directory")
+        );
+        std::fs::write(&log, "ordinary startup failure\n").unwrap();
+        assert_eq!(missing_library_line(Some(&log)), None);
+        assert_eq!(missing_library_line(None), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

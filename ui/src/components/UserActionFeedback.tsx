@@ -3,8 +3,21 @@ import {
   USER_ACTION_FEEDBACK_EVENT,
   type UserActionFeedbackDetail,
 } from '../lib/userActionFeedback'
+import { usePublishedUiNotices, type UiNotice } from '../lib/uiNotices'
 
 const DISPLAY_MS = 8_000
+
+/** The `ui.state.notices` entry for the shown message (path-free: no text). */
+export function actionFeedbackNotice(feedback: UserActionFeedbackDetail | null): UiNotice[] {
+  if (!feedback) return []
+  return [{
+    kind: 'action_feedback',
+    source: feedback.source ?? 'app',
+    code: feedback.code ?? null,
+    setup_surface: feedback.setupSurface ?? null,
+    ...(typeof feedback.count === 'number' ? { count: feedback.count } : {}),
+  }]
+}
 
 interface UserActionFeedbackNoticeProps {
   feedback: UserActionFeedbackDetail
@@ -56,6 +69,8 @@ export default function UserActionFeedback() {
       clearTimer()
     }
   }, [])
+
+  usePublishedUiNotices('action-feedback', actionFeedbackNotice(feedback))
 
   if (!feedback) return null
   const openSetup = () => {

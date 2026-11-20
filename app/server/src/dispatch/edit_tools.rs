@@ -9,15 +9,16 @@ mod linked_move;
 use linked_move::resolve_linked_media;
 
 mod linked_insert;
-pub(super) use linked_insert::edit_insert_linked;
+
+mod edit_point;
+pub(super) use edit_point::{edit_insert, edit_insert_linked, edit_move, edit_paste, edit_split};
 
 mod timeline;
 pub(super) use timeline::{
     captions_set_range, captions_set_text, edit_crossfade, edit_cut_to_beat, edit_detach_audio,
-    edit_duplicate, edit_fade, edit_fit_to_fill, edit_gain, edit_insert, edit_mark_scenes,
-    edit_move, edit_move_marker, edit_mute_range, edit_nest, edit_paste, edit_replace,
-    edit_ripple_delete, edit_seek_marker, edit_split, edit_split_at_scenes, edit_split_edit,
-    edit_trim, edit_trim_edges, edit_update_marker,
+    edit_duplicate, edit_fade, edit_fit_to_fill, edit_gain, edit_mark_scenes, edit_move_marker,
+    edit_mute_range, edit_nest, edit_replace, edit_ripple_delete, edit_seek_marker,
+    edit_split_at_scenes, edit_split_edit, edit_trim, edit_trim_edges, edit_update_marker,
 };
 
 mod overwrite;
@@ -54,6 +55,14 @@ use title_shape::place_title_overlay;
 #[cfg(test)]
 pub(super) use title_shape::resolve_slide;
 pub(super) use title_shape::{apply_shape_overrides, inherit_split_metadata};
+mod title_movie_path;
+mod title_proof;
+#[cfg(test)]
+pub(crate) use title_proof::hold_open_checks;
+mod title_remake;
+pub(crate) use title_remake::{
+    begin_open_title_check, ensure_overlay_movies, is_drawn_overlay, remake_overlays_at_open,
+};
 mod overlay_metadata;
 pub(super) use overlay_metadata::{split_effect_ids, validate_split_metadata_projection};
 pub(crate) use title_shape::{build_shape_spec, build_title_spec, ShapeArgs, TitleArgs};
@@ -159,6 +168,18 @@ pub(super) async fn captions_kinetic(
     };
     if let Some([r0, r1]) = a.range_ms {
         cues.retain(|(cs, ce, _)| *ce > r0 && *cs < r1);
+    }
+    if cues.is_empty() && a.per_word {
+        let asset_ids: Vec<String> = {
+            let guard = state.project.read().await;
+            let store = guard.as_ref().ok_or_else(no_project)?;
+            store.project.assets.keys().cloned().collect()
+        };
+        let (transcribed, _) =
+            super::transcript_load::assets_with_transcript(state, &asset_ids).await?;
+        if transcribed.is_empty() && !asset_ids.is_empty() {
+            return Err(super::transcript_load::no_transcript_reason(None));
+        }
     }
     if cues.is_empty() {
         return Err(CutError::new(

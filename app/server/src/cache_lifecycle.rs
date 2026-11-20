@@ -16,6 +16,7 @@ pub(crate) use ownership::{
 };
 pub(crate) use purge::{preview, start_purge};
 pub(crate) use rebuild::start_rebuild;
+pub(crate) use rebuild::SourceCheck;
 
 use cut_core::{error_codes, CutError};
 use serde::{Deserialize, Serialize};

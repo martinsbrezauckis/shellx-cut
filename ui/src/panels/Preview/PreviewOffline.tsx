@@ -4,6 +4,7 @@ import { useOfflineMedia } from '../../app/OfflineMediaContext'
 import type { Project } from '../../lib/client'
 import { offlineAssetView, type OfflineAssetView } from '../../lib/offlineMedia'
 import { activeBaseAssetId } from './model'
+import { assetMediaKind } from '../Assets/mediaReadiness'
 import { overlayBoxStyle, type OverlayLayer } from './composite'
 
 export function usePreviewOfflineMedia(
@@ -12,15 +13,26 @@ export function usePreviewOfflineMedia(
   overlays: OverlayLayer[],
 ) {
   const media = useOfflineMedia()
-  const resolved = useMemo(() => ({
-    baseOffline: offlineAssetView(project, media.offlineAssetIds, activeBaseAssetId(project, playheadMs)),
-    onlineOverlays: overlays.filter((overlay) => !media.offlineAssetIds.has(overlay.assetId)),
-    offlineOverlays: overlays.flatMap((overlay) => {
-      const asset = offlineAssetView(project, media.offlineAssetIds, overlay.assetId)
-      return asset ? [{ overlay, asset }] : []
-    }),
-  }), [media.offlineAssetIds, overlays, playheadMs, project])
+  const resolved = useMemo(() => {
+    // A missing title or shape movie is not offline media to relink: Cut draws
+    // it again before the next exact frame (or says, on the picture, why it
+    // cannot), so the stage stays live and asks for that frame.
+    const offline = new Set([...media.offlineAssetIds].filter((id) => !isDrawnTitle(project, id)))
+    return {
+      baseOffline: offlineAssetView(project, offline, activeBaseAssetId(project, playheadMs)),
+      onlineOverlays: overlays.filter((overlay) => !offline.has(overlay.assetId)),
+      offlineOverlays: overlays.flatMap((overlay) => {
+        const asset = offlineAssetView(project, offline, overlay.assetId)
+        return asset ? [{ overlay, asset }] : []
+      }),
+    }
+  }, [media.offlineAssetIds, overlays, playheadMs, project])
   return { ...media, ...resolved }
+}
+
+function isDrawnTitle(project: Project | null, assetId: string): boolean {
+  const asset = project?.assets[assetId]
+  return !!asset && assetMediaKind({ path: asset.path, probe: (asset.probe ?? {}) as { kind?: string } }) === 'title'
 }
 
 export function PreviewOfflineAsset({

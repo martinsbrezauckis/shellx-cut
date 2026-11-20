@@ -6,10 +6,11 @@
 //! the Windows .exe via WSL interop, where ffmpeg lives at a Windows path), else
 //! falls back to `ffmpeg` / `ffprobe` on PATH.
 
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-pub(crate) use cut_media::ffmpeg::{LOCAL_INPUT_FORMATS, LOCAL_INPUT_PROTOCOLS};
+pub(crate) use cut_media::ffmpeg::push_ffprobe_literal_input;
 use record_core::{error_codes, RecordError, Result};
 
 mod camera;
@@ -21,7 +22,9 @@ pub use camera::{
     decode_square, decode_square_with_control, stream_square_with_control, CameraFrameStream,
 };
 pub use pipeline::{
-    encode_frames, mp4_to_gif, mp4_to_gif_with_control, render_pipe, render_pipe_with_control,
+    compose_workers, encode_frames, mp4_to_gif, mp4_to_gif_with_control, render_pipe,
+    render_pipe_parallel_with_control, render_pipe_with_control, X264_EXPORT_PRESET,
+    X264_POLISH_PRESET,
 };
 use process::ManagedChild;
 pub use process::ProcessControl;
@@ -40,6 +43,37 @@ fn ff_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
     RecordError::new(error_codes::FFMPEG, ctx, e.to_string()).with_action(
         "ensure ffmpeg/ffprobe are installed and on PATH (or set SHELLX_RECORD_FFMPEG)",
     )
+}
+
+/// Install this recording operation's cancel signal and remaining deadline for
+/// preparatory media work before its final child is spawned.
+pub fn with_media_process_control<T>(control: &ProcessControl, run: impl FnOnce() -> T) -> T {
+    let media_control = control.media_control();
+    cut_media::ffmpeg::with_render_process_control(&media_control, run)
+}
+
+fn push_literal_input(command: &mut Command, path: &Path, control: &ProcessControl) -> Result<()> {
+    with_media_process_control(control, || {
+        cut_media::ffmpeg::push_ffmpeg_literal_input(command, path)
+    })
+    .map_err(|error| {
+        let action = error.suggested_action.unwrap_or_else(|| {
+            "use a readable copy of the media file and retry recording export".into()
+        });
+        RecordError::new(&error.code, error.message, error.cause).with_action(action)
+    })
+}
+
+fn literal_input_args(path: &Path, control: &ProcessControl) -> Result<Vec<String>> {
+    with_media_process_control(control, || {
+        cut_media::ffmpeg::ffmpeg_literal_input_args(path)
+    })
+    .map_err(|error| {
+        let action = error.suggested_action.unwrap_or_else(|| {
+            "use a readable copy of the media file and retry recording export".into()
+        });
+        RecordError::new(&error.code, error.message, error.cause).with_action(action)
+    })
 }
 
 fn default_control() -> ProcessControl {
@@ -131,24 +165,18 @@ pub fn probe(path: &str) -> Result<Probe> {
 
 pub fn probe_with_control(path: &str, control: &ProcessControl) -> Result<Probe> {
     let mut command = Command::new(ffprobe_bin());
-    command
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            LOCAL_INPUT_FORMATS,
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,r_frame_rate",
-            "-of",
-            "csv=p=0:s=,",
-            path,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,r_frame_rate",
+        "-of",
+        "csv=p=0:s=,",
+    ]);
+    push_ffprobe_literal_input(&mut command, std::path::Path::new(path));
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let out = read_child_output(ManagedChild::spawn(
         &mut command,
         control.clone(),
@@ -206,26 +234,10 @@ pub fn grab_frame_with_control(
     let p = probe_with_control(src, control)?;
     let t = format!("{:.3}", t_ms as f64 / 1000.0);
     let mut command = Command::new(ffmpeg_bin());
+    command.args(["-v", "error", "-ss", &t]);
+    push_literal_input(&mut command, Path::new(src), control)?;
     command
-        .args([
-            "-v",
-            "error",
-            "-ss",
-            &t,
-            "-protocol_whitelist",
-            LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            LOCAL_INPUT_FORMATS,
-            "-i",
-            src,
-            "-frames:v",
-            "1",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-",
-        ])
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
         .stderr(Stdio::piped())
         .stdout(Stdio::piped());
     let want = rgba_frame_bytes(p.w, p.h, "grab frame")?;

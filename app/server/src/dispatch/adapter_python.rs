@@ -85,7 +85,10 @@ fn resolve_adapter_runtime_from_parts(
     })
 }
 
-fn bundled_adapter_path(sidecar_entrypoint: &Path, adapter_relative: &Path) -> Option<PathBuf> {
+pub(super) fn bundled_adapter_path(
+    sidecar_entrypoint: &Path,
+    adapter_relative: &Path,
+) -> Option<PathBuf> {
     if adapter_relative.as_os_str().is_empty()
         || adapter_relative.is_absolute()
         || !adapter_relative
@@ -130,23 +133,25 @@ pub(super) fn adapter_python_for_platform(
 }
 
 pub(super) fn find_python_on_path() -> Option<PathBuf> {
-    find_executable_on_path(&["python3", "python"])
+    find_python_in(&std::env::var_os("PATH")?)
 }
 
-fn find_executable_on_path(names: &[&str]) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        for name in names {
+/// The first `python3`/`python` in `path_var` that really runs as Python. A file
+/// that merely has the name (an extensionless script on Windows, the Store
+/// shortcut, a stub) is skipped, so the next candidate is tried. Relative PATH
+/// entries are skipped too: they would resolve against the current folder.
+fn find_python_in(path_var: &std::ffi::OsStr) -> Option<PathBuf> {
+    for directory in std::env::split_paths(path_var).filter(|dir| dir.is_absolute()) {
+        for name in ["python3", "python"] {
             let candidate = directory.join(name);
-            if candidate.is_file() {
+            #[cfg(windows)]
+            let candidate_exe = directory.join(format!("{name}.exe"));
+            if candidate.is_file() && cut_perception::sidecar::runs_as_python(&candidate) {
                 return Some(candidate);
             }
             #[cfg(windows)]
-            {
-                let executable = directory.join(format!("{name}.exe"));
-                if executable.is_file() {
-                    return Some(executable);
-                }
+            if candidate_exe.is_file() && cut_perception::sidecar::runs_as_python(&candidate_exe) {
+                return Some(candidate_exe);
             }
         }
     }
@@ -271,5 +276,29 @@ mod tests {
             ["-E", "-s", "-B"]
         );
         assert_eq!(cut_perception::sidecar::python_command_args(false), ["-B"]);
+    }
+
+    /// A file that only has the name `python3` (an extensionless script on a
+    /// Windows PATH, a stub) is not a Python: it is skipped and the next real
+    /// one is used.
+    #[test]
+    fn a_file_that_only_has_the_name_python_is_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join("python3"), b"this is not a program").unwrap();
+        let only_fake = std::env::join_paths([&fake]).unwrap();
+        assert_eq!(find_python_in(&only_fake), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let real = temp.path().join("real");
+            std::fs::create_dir_all(&real).unwrap();
+            let python = real.join("python3");
+            std::fs::write(&python, "#!/bin/sh\necho '(3, 12)'\n").unwrap();
+            std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let both = std::env::join_paths([&fake, &real]).unwrap();
+            assert_eq!(find_python_in(&both), Some(python));
+        }
     }
 }

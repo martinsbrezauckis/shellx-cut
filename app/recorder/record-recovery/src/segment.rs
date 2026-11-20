@@ -160,11 +160,15 @@ impl ManifestOwner {
                 "published checkpoint is not a local regular file".into(),
             ));
         }
+        let sha256 = crate::manifest::sha256(&final_path)?;
+        // The origin record (outside the capture folder) is what lets this
+        // engine's own Stop and recovery skip decoding this checkpoint again.
+        cut_media::cache_trust::remember_hash(&final_path, &sha256);
         let checkpoint = Checkpoint {
             sequence,
             file,
             bytes: meta.len(),
-            sha256: crate::manifest::sha256(&final_path)?,
+            sha256,
             facts,
             media: Some(media),
             held_last_frame_ms,

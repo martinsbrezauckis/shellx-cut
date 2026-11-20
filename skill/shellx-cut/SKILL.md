@@ -5,12 +5,26 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
-> **Engine v0.6.115 candidate.** v0.6.114 is the latest published release.
+**Downloading or installing a tool.** Before you download or install a tool,
+tell the person what it is and under which licence, and ask whether you may
+download it and accept the licence; if the person asked for the download
+themselves ("download FFmpeg", "set up captions"), that is the go-ahead: do it,
+and say in your reply which licence applied. Four entries of `system.doctor`'s
+`requirements.tools` name a licence (`license`): FFmpeg and ffprobe (GNU GPL
+version 3, with a link), Microsoft's Visual C++ runtime on Windows (Microsoft's
+own licence terms, linked on its card; its installer runs with progress only and
+Windows asks for administrator permission), and premium background removal
+(non-commercial use only; `accept_noncommercial:true` states the person's yes).
+Example: "FFmpeg is missing. It is free software under the GNU GPL version 3
+(https://www.gnu.org/licenses/gpl-3.0.html). May I download it and accept that
+licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
+
+<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
+> **Engine v0.6.116 candidate.** v0.6.115 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **308 verbs across 34 domains** under the public verb contract.
-> **`reference.md` is the full 308-verb table —
+> the file): **317 verbs across 34 domains** under the public verb contract.
+> **`reference.md` is the full 317-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -27,6 +41,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   key by speaker). For a human, use **Transcript Tools > Label speakers** only
 >   after the Doctor diarize card is ready; it binds the selected current-project
 >   asset and accepts only its returned job and `receipts/<asset>.diarize.json`.
+>   One run takes up to 2 hours of audio: a longer asset (or one with no
+>   readable audio) is refused `invalid_args` with the reason; tell the person to
+>   trim or split it.
 > - **AI dubbing + subtitle translation** — `audio.dub` (re-voice an asset's
 >   speech into another language in a cloned voice, time-fit to the original,
 >   added as a NEW audio track; reuses `transcript.translate` + the OmniVoice TTS
@@ -222,7 +239,8 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `preview_pause` / `preview_resume` / `preview_hide` / `preview_stop` /
 >   `rehearsal_start` / `rehearsal_discard` / `start` /
 >   `screen_record.status` / `screen_record.pause` / `screen_record.resume` / `stop` /
->   `recovery_status` / `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
+>   `recovery_status` / `active` / `pending` / `pending_dismiss` / `recover` /
+>   `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
 >   capture, raw streams, auto-edit plan, content-addressed bake). Use the
 >   returned `plan` path for polish/export. Each take or changed auto-edit result
 >   keeps its own plan; do not predict a shared cache filename. On Windows,
@@ -327,6 +345,13 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `audio_meters` read only the already-admitted mic/system
 >   streams; live, stale, device-lost, stopped, and unavailable are distinct, and
 >   status never opens a device or starts monitoring playback.
+>   When `screen_record.start{audio:true}` asks for microphone sound, a
+>   passive microphone readiness problem refuses Start before capture begins.
+>   This read does not open or test the microphone. Relay
+>   the stable reason from error.cause, plus the existing message and
+>   suggested_action, to the person; retry
+>   only after the stated problem is fixed. A start without microphone sound
+>   does not need microphone readiness.
 >   After `screen_record.start` returns a `capture_id`, retain it. A
 >   non-successful `screen_record.stop` leaves that capture unresolved: do not
 >   start a replacement. Check `screen_record.status{capture_id}`. Offer Retry
@@ -390,6 +415,38 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   trying to inspect cache files or trigger repair from a read. Settings gathers
 >   sequential 100-row lexical pages (at most 4,096 rows) and labels a completed
 >   result as reported in that check; malformed or partial inventory is attention.
+>   A recording is never lost silently. `screen_record.active{}` shows the running
+>   recording (no id needed; the result carries `capture_id`); the app shows a recording an agent started, with
+>   Stop. Closing or quitting the desktop app during a recording stops and saves it
+>   first (`stop{reason:"app_exit"}`). At the next start `screen_record.pending{}`
+>   lists interrupted or close-saved recordings with a `message` for the person and
+>   a `suggested_action`; with the recording's project open,
+>   `screen_record.recover{capture_id}` adds what was saved to the end of the
+>   timeline, and `pending_dismiss{capture_id}` forgets a notice and keeps files.
+>   If the window does not answer a close within 6 seconds the desktop shell
+>   stops the recording itself; an engine that shuts down finishes a running
+>   recording first. Save points come every 15 seconds, so a crash loses the
+>   video after the last one; the sound is kept.
+>   Known limits (tell the person when they ask about a hitch): at each 15 s
+>   save point the picture of a moving screen holds for about 0.5 s on macOS and
+>   about 2 s on Windows while the sound keeps recording; on Windows Stop of a
+>   long moving recording takes several seconds (about 11 s for one minute).
+>   Opening a project with an interrupted recording starts a visible
+>   `recording_recovery` job ("Preparing interrupted recording"); `recover`
+>   refuses with "this recording is still being prepared" until it ends.
+>   `screen_record.polish` is a `screen_record_polish` job with frame progress;
+>   its clip goes only into the recording's own project (`placed:false` with
+>   `waiting_in_project` when another project is open).
+>   A Stop before the first frame returns `nothing was recorded` and leaves no
+>   stuck capture. Start refuses a window absent from the Doctor window list
+>   (`not_found`). While a microphone or system-audio test runs, every start is
+>   refused with `conflict` ("An audio test is still running, so the recording
+>   cannot start yet."): wait a few seconds and start again. A missing folder
+>   says "<label> not found: <path>", an unwritable one "<label> cannot be
+>   written: <path> (access is denied)"; `project.set_output_dir` refuses a
+>   folder it cannot write. Count
+>   a recording timer from `first_screen_frame_unix_ms` (status or active), not
+>   from the Start reply.
 >   On Windows 10 build 20348 or newer, system audio uses native,
 >   endpoint-independent process loopback instead of opening the physical render
 >   driver. Security software may ask to allow audio capture for a new Cut binary;
@@ -397,8 +454,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `system.wav` is reported in the capture log/raw-stream result.
 >   On macOS 14.2 or newer, the installed signed app captures system audio through
 >   a Core Audio process tap alongside ScreenCaptureKit. Approve the separate
->   Screen Recording and Audio Capture prompts on first use, restart Cut if macOS
->   asks, and verify `raw_streams.system` after `screen_record.stop`.
+>   Screen Recording and Audio Capture prompts on first use (they come with the
+>   first `screen_record.doctor{mode:"check"}` or recording start, not when Record
+>   or a project opens), restart Cut if macOS asks, and verify `raw_streams.system` after `screen_record.stop`.
 >   `raw_has_system` is true only when `mux_raw:true` also included that stream
 >   in the optional combined raw output. Stop ends
 >   that tap at the video boundary before checkpoint stitching, and its finite
@@ -419,8 +477,8 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   bytes. Never retry a cancellation, explicit Save As, success, legacy record,
 >   changed input, unowned job kind, or already retried job.
 > - **Timeline voiceover** — `voiceover.start` is human-UI-only and only becomes
->   available after the current `screen_record.doctor` explicitly admits native
->   capture. It binds a current unlocked audio track plus playhead or In/Out and
+>   available when the microphone is ready (`screen_record.doctor`
+>   `{mode:"microphone"}`); it never checks screen capture. It binds a current unlocked audio track plus playhead or In/Out and
 >   a required `request_id`/`expected_revision` before reserving the private
 >   source. It returns a server-issued memory-only owner claim bound to that
 >   caller and request; every tick, Stop, Cancel, and Preview Out must present
@@ -438,6 +496,20 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   transport errors remain retry-ambiguous.
 >   A disabled control or refusal is not evidence that a host has native
 >   microphone readiness; no installed/native qualification is claimed here.
+>   A refusal names a missing prerequisite (microphone permission, a saved
+>   microphone, or the recorder), not a prohibition: tell the person what is
+>   needed and where to provide it, offer to try again, and never work around
+>   it quietly. `microphone_blocked.reason` tells the cases apart: on Windows
+>   `windows_microphone_access_off`, `windows_apps_microphone_off` or
+>   `windows_desktop_apps_microphone_off` (a Windows privacy switch is off; the
+>   action names the switch under Settings > Privacy & security > Microphone),
+>   `no_microphone_device`; on macOS `macos_denied` or `macos_restricted`. A take
+>   that fails after it started returns `failure:{reason,message,suggested_action,detail?}`
+>   in its status (on Windows `microphone_in_use`, `microphone_unavailable`,
+>   `microphone_open_failed` or `windows_microphone_access_denied`); relay the
+>   message and action. The same applies to `screen_record.doctor` cards: use
+>   `{mode:"status"}` to show readiness without a capture or prompt, and run the
+>   full check only when the person asks to check or record.
 > - **Director / reframe / delivery** — `render.reframe` (subject-tracked moving
 >   crop to a platform aspect — the HONEST alternative to a static centre-crop),
 >   `render.direct` (director-model pass: a per-scene contact sheet the foundation
@@ -469,6 +541,23 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   Subject seeds use integer source pixels and source time in milliseconds.
 >   Read applied/cleared intent from the committed `op.effects[]` fields;
 >   applying also returns the immediate alpha-bake quality receipt as `matte`.
+>   Derived files kept in the project (matte, mask and power-window alphas,
+>   stabilization data, nest bakes, segment windows, analysis reports) are
+>   reused only when this computer made them; anything that came with the
+>   project is made again.
+>   Proxies too: at open a `proxy_check` job gives back the proxies this
+>   computer made, encodes once more a proxy it has no record of (made before the
+>   upgrade or on another computer), and makes the proxies its footage lacks;
+>   read `project.state.proxy_check` while it runs. A missing title movie is
+>   drawn again (`title_remake` job) when it is next needed; at open every
+>   present title movie and thumbnail strip this computer did not make for
+>   exactly its asset and settings is drawn again, a proxy counts only for its
+>   own asset and source, and each asset's probe is read again from its file
+>   (`proxy_check.result.proxy_check.probes_unknown` lists the assets whose
+>   file is missing or changed: their probe is shown but is not a fact). A copied project's first render is therefore
+>   slower; `render.final` bakes mattes again itself, while other render verbs
+>   that meet a matte this computer did not bake stop with `not_found`
+>   ("was not made on this computer") and that way out.
 > - **Advanced color** — the `grade` gallery (`grade.save`/`apply`/`list`),
 >   `edit.grade_stack` (layered grades), `edit.grade_window` (power window),
 >   `project.color` / `edit.color_space` (Rec.709, Rec.2020, sRGB, or
@@ -476,6 +565,7 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   four-space path, not camera Log interpretation or HDR mastering/delivery.
 > - **Multicam** — `edit.multicam_sync` (audio-align angles) + `edit.multicam_switch`
 >   (auto-cut the program to the active-speaker angle).
+
 
 ## Current receipt, fix-loop, and repurposing capabilities
 
@@ -607,7 +697,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 308 tools, and same-engine
+the final proof of protocol negotiation, ping, all 317 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -626,9 +716,13 @@ Use its `read_first` links, including
 shipped with that build.
 
 Every verb returns the envelope
-`{ok, result?, op_ids?, project_revision?, warnings?[], error?{code, message, clip_id?, at_ms?, cause, suggested_action?}}`.
+`{ok, result?, op_ids?, project_revision?, warnings?[], error?{code, message, clip_id?, at_ms?, cause, suggested_action?, requirement?}}`.
+When a refusal is about a missing tool or condition, `error.requirement` is
+`{id, name, get}` from the requirements registry: `get` names the Settings
+entry, the button, the verb that sets it up and what only a person can do
+(`system.doctor {feature}` gives the same answer before you call a verb).
 Errors are actionable — they carry the clip, timecode, cause, and a suggested
-next move; read them, don't retry blind. `warnings[]` carries non-fatal
+next move; read them, don't retry blind. A refusal names something the app is missing (a tool, a permission, a shorter file, a running test to finish), not a ban: tell the person what is needed and offer to do it, and do not route around the refusal quietly. `warnings[]` carries non-fatal
 guardrail findings in-band.
 
 For any externally retryable project mutation, generate a unique `request_id`
@@ -646,7 +740,7 @@ read `GET /api/verbs` and correct the JSON value/type rather than retrying with
 string coercions. Handler semantic checks still run after structural validation.
 
 Live events: WebSocket `GET /api/events` →
-`{type: op_applied | job_progress | render_done | receipt_ready | project_changed | ui_state | doctor_updated, ...}`. `op_applied` additionally carries `{revision, from_revision, delta:{kind:"op",count:1}}`; treat events as best effort and pull `project.state{since_revision:last_applied}`. The server returns a bounded applicable delta or an explicit snapshot fallback, so reconnects and missed frames do not require replaying an unbounded log.
+`{type: op_applied | job_progress | render_done | receipt_ready | project_changed | ui_state | doctor_updated | output_folder_changed, ...}`. `job_progress` carries `{job_id, kind, progress, message?, terminal?}`: `terminal:true` marks the event that ENDS the job (done, failed or cancelled), and an ended job keeps the progress it really reached, because progress 1.0 means finished work. Decide that a job ended from `terminal` or the job's `state`, never from the progress value. `op_applied` additionally carries `{revision, from_revision, delta:{kind:"op",count:1}}`; treat events as best effort and pull `project.state{since_revision:last_applied}`. The server returns a bounded applicable delta or an explicit snapshot fallback, so reconnects and missed frames do not require replaying an unbounded log.
 `project_changed` means a REST, CLI, MCP, or UI client created, opened, or
 closed the active project; visible clients refresh their workspace from it.
 After a reconnect, `project.state` returning `no_project` is authoritative
@@ -671,35 +765,62 @@ admission stays `status:"unknown"`; do not infer it from `found` or version.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `SHELLX_CUT_RENDER_MEM_HIGH_PCT` | `75` (clamp 10–95) | Render memory **soft ceiling** as a % of total RAM (Linux). At the ceiling the kernel throttles + spills to swap — the render keeps going, it does NOT die. Lower it on a shared/small box. |
+| `SHELLX_CUT_RENDER_MEM_HIGH_PCT` | `75` (clamp 10–95) | Render memory **soft ceiling** as a % of total RAM (Linux). At the ceiling the kernel throttles + spills to swap and the render keeps going; the hard stop is RAM minus 1 GB. A segment window gets the same budget (N parallel windows share it). A render the system stops for memory fails with code `out_of_memory`, a full output drive with `not_enough_space`; both say what to do. Lower it on a shared/small box. |
 | `SHELLX_CUT_RENDER_NICE` | `10` | CPU niceness applied to every render's ffmpeg (keeps the box responsive during a long encode). |
-| `SHELLX_CUT_RENDER_THREADS` | unset (ffmpeg auto = 1/core) | Cap render `-threads` + `-filter_complex_threads` at N. Each thread carries its own frame buffers, so a lower cap shrinks the footprint on a constrained box (trades speed). Render path only — never caps probe/scrub. Default-off keeps per-machine reproducibility. |
+| `SHELLX_CUT_RENDER_MEMORY_MB` | unset (memory free now) | Plan renders with at most this many MB: the preflight lowers libx264 threads (and warns) as if only this much were free, and says so with the variable's name. A limit of your own for a shared box, and the way to try the small-machine path on a big one. |
+| `SHELLX_CUT_RENDER_THREADS` | unset (libx264 auto, about 1.5 per core; fewer only when the render would not fit the free memory) | Cap render `-threads` + `-filter_complex_threads` at N. Each thread carries its own frame buffers, so a lower cap shrinks the footprint on a constrained box (trades speed). Render path only — never caps probe/scrub. Default-off keeps per-machine reproducibility. |
 | `SHELLX_CUT_RENDER_SEGMENT_SEC` | unset (adaptive) | Override the segmentation gate: a `render.final` longer than this many seconds renders SEGMENTED. Unset = the adaptive gate (segment when overlays exist AND the timeline exceeds one adaptive window, or past a 10-min base-only ceiling). `0` forces segmentation; a large value disables it. |
 | `SHELLX_CUT_RENDER_WINDOW_SEC` | unset (adaptive) | Override the segment window size (clamp 2–300 s). Unset = ADAPTIVE: window shrinks with resolution × overlay count so each window's peak RSS stays near the budget (4K with 2 overlays → ~2 s windows ≈ 1.2 GB, instead of 30 s ≈ 17 GB). Also bounds `render.frame{compose}` (composes only the window holding `at_ms`). |
 | `SHELLX_CUT_RENDER_WINDOW_BUDGET_MB` | `1500` (clamp 256–8192) | Per-window peak-RSS budget the adaptive window targets. Lower it on a small box; raise it on a big one for fewer, faster passes. |
 | `SHELLX_CUT_RENDER_PARALLEL` | `1` (serial) | OPT-IN: render N segment windows concurrently (Linux only; each capped at budget/N via its own cgroup so the box stays bounded). Parallel windows trade substantially more memory for a load- and hardware-dependent speed gain, so serial rendering stays the default. |
 | `SHELLX_CUT_RENDER_RAM_PCT` | unset | OPT-IN alternative to `_PARALLEL`: auto-size the concurrent-window count to about this percentage of RAM (Linux + cgroup only). For example, `60` on a 64 GB machine permits about nine windows, with the same memory and load tradeoffs as `_PARALLEL`. |
 | `SHELLX_CUT_NO_HWENC` | unset | Set `=1` to force the **software encode** tier (skip NVENC/QSV/AMF/VideoToolbox) — for CI / byte-reproducibility / a flaky GPU encoder. Also disables the GPU render fast-track (it needs NVENC). |
-| `SHELLX_CUT_RENDER_GPU` | unset (software) | **EXPERIMENTAL opt-in GPU render fast-track** (`=1`/`true`/`yes`/`on`). NVDEC + `scale_cuda` + `nvenc` keep eligible frames in VRAM, reducing CPU load; speed varies with hardware and system load. GPU output can vary by driver/hardware, so it is OFF by default and the software path stays the receipt-exact baseline. The probe-gated path is limited to a single base video track of hard cuts at matching source aspect on NVIDIA hardware. Overlays/PiP, grade, titles, captions, fades, crop, xfade, or mismatched aspect transparently fall back to software. `RenderOutput.pipeline` records `"gpu"` when used. |
+| `SHELLX_CUT_RENDER_GPU` | unset (software) | **EXPERIMENTAL opt-in GPU render fast-track** (`=1`/`true`/`yes`/`on`). NVDEC + `scale_cuda` + `nvenc` keep eligible frames in VRAM, reducing CPU load; speed varies with hardware and system load. GPU output can vary by driver/hardware, so it is OFF by default and the software path stays the receipt-exact baseline. The probe-gated path is limited to a single base video track of hard cuts at matching source aspect on NVIDIA hardware. Overlays/PiP, grade, titles, captions, fades, crop, xfade, reversed or frozen clips, or mismatched aspect transparently fall back to software. The pixels differ from the software encode, but every output frame shows the same source frame as the software render (the same frame count per clip, cut frames and rate conversion). When the GPU path is asked for, `encode.pipeline` in the job result, receipt and dry run is `gpu` or `standard`; with `standard`, `encode.pipeline_reason` says why in plain words (the Receipts tab shows it). |
 | `SHELLX_CUT_DETECTOR` | CPU-floor | `=high` selects the heavier Faster R-CNN (GPU) for `render.reframe` subject tracking; default is the BSD torchvision SSDlite CPU floor. |
 
 **Render resource governance (Linux).** A heavy/long render cannot wedge the
 machine. On Linux+systemd every render's ffmpeg runs inside a transient cgroup-v2
 scope with `MemoryHigh` (~75% RAM, throttle+spill under memory pressure)
 and a `MemoryMax` backstop (total − 1 GB) that confines any worst-case kill to
-the render's OWN cgroup, never `sshd`/the desktop. The philosophy is **work
-within resources, finish the job** — soft-limit, never a hard kill that abandons
-the render. macOS/Windows have no cgroups (they auto-compress/page), so there the
+the render's OWN cgroup, never `sshd`/the desktop. `MemoryHigh` slows the
+render first; at `MemoryMax` the kernel stops ffmpeg inside its own scope and the
+render fails with `out_of_memory` and the way out. A render whose ffmpeg writes no new output and uses
+under 2% of one core for 120 s (`SHELLX_CUT_RENDER_STALL_SEC`, 0 = off) fails with `render_stalled`, naming the
+timeline part and the clip (`clip_id`, `at_ms`) and, when the kernel held it at `MemoryHigh`, saying so. A reversed
+clip is held in memory whole (source size, about 12 MB a 4K frame), so windows that hold more reversed video than
+`WINDOW_BUDGET_MB` are split and a timeline holding more than 4 GB of it renders in windows. macOS/Windows have no cgroups (they auto-compress/page), so there the
 render is a plain `nice`d spawn. The probe for systemd availability is cached
 once per process. This is the safety net; the real memory *bound* is **segmented
-rendering**: a heavy `render.final` (overlays + length, or 4K) renders the video
+rendering**: a `render.final` with an overlay track that is longer than one
+adaptive window, or any timeline longer than 10 minutes, renders the video
 in adaptive time-windows (each window's filtergraph holds only that window's
 clips → peak RSS bounded near `WINDOW_BUDGET_MB`, not growing with timeline
 length), with a single cheap audio pass muxed on; `render.frame{compose}`
-likewise composes only the window holding the frame. Frame-identical to the
-whole-graph render (verified by PSNR + receipt parity). HW encode auto-selects the
-best working GPU encoder (probe-gated, so a listed-but-broken encoder can never
-produce a bad render) and falls back to software.
+likewise composes only the window holding the frame. The result matches the
+whole-graph render frame for frame: the same frame count, and every output
+frame shows the same source frame (each clip gets exactly its own frame count;
+a clip whose source ends early holds its last frame); only the bytes differ,
+because the parts are encoded separately.
+Before a render starts, `render.final` (and its `dry_run`) estimates memory and
+output size against free memory and disk. libx264 keeps its automatic thread
+count (1.5 per core) when the estimate fits; otherwise the render uses the
+largest of 32, 24, 16, 12, 8, 6, 4 threads that fits, and
+`resources.memory.note`, the job's progress message and the receipt's
+`encode.memory_note` (with `encode.encoder_threads`) say so: relay it, it
+explains a slower export. Still short even at 4 threads: `memory_short`
+warning; larger than memory and swap: refused with `out_of_memory`; disk:
+`disk_short` / `not_enough_space`. The estimate counts a source used several
+times by what ffmpeg really holds (one shared copy when the frames pass
+through unchanged, a copy per later cut when they are scaled or converted),
+and a segmented render by its largest window. Sources larger than DCI 4K
+decode with 8 threads (no measurable speed cost). HW encode auto-selects the best working GPU encoder (probe-gated, so a
+listed-but-broken encoder can never produce a bad render) and falls back to
+software; a frame larger than the hardware encoder takes is named with that
+encoder's limit, and a hardware encoder that fails DURING the render makes the
+whole render run again in software. The receipt, job result and dry run carry
+`encode {encoder, hardware_requested, hardware_used, fallback_reason?,
+fallback_detail?, memory_note?, encoder_threads?}`: relay `fallback_reason`
+and `memory_note` to the person.
 
 ## Workflow
 
@@ -719,6 +840,42 @@ reservation. While the currently open project is that capture's owner,
 `project.delete` may remove only a different closed project. An unbound native
 reservation fails closed for every project transition. Do not use a UI state change
 as proof that the capture has released ownership.
+
+A project change (`project.create`, `project.open`, `project.close`) that would
+cancel running work someone asked for (any job except the automatic import
+follow-ups `import_chain`, `proxy`, `enrich`, the open-time `proxy_check` and
+`title_remake`, and a `cache_purge`) is refused
+with `jobs_running` and changes
+nothing; the cause lists the jobs. Ask the person, then wait, cancel them with
+`jobs.cancel`, or repeat the call with `cancel_running_jobs:true`. Running
+import follow-ups and cache purges are cancelled by a project change and listed
+in the result's `cancelled_jobs`. `project.open` refuses a folder that is not a
+project (`invalid_args`, nothing written); use `project.create` for a new one.
+
+Closing or quitting the desktop app follows the same rule. There is no verb
+that closes the app; `jobs.before_quit{}` tells what a quit would cancel (the
+same `jobs_running` refusal, naming each job). The app asks the person ("An
+export is still running", **Keep working** is the default, **Quit and stop it**
+cancels the work cleanly and then quits); while that question is open,
+`ui.state` shows it as `overlays.quit_question`. A recording is saved first
+and its question comes before this one. When the engine does not answer, the app
+does not take that as nothing running: it asks whether to quit anyway (Keep
+working is the default). Installing an update asks the same way before it
+stops the engine, and asks to stop a running recording first. Work cut off by a kill, crash or power
+cut is listed by `jobs.interrupted{}` (no project needed; a helper of the dead run
+that is still running is stopped first, then the export's unfinished files are
+removed from the project's `exports` folder and from the app-wide export
+folder) and
+forgotten with `jobs.interrupted_dismiss{key}`; the app shows it in the status
+bar at the next start. A stop that arrives after a render has published its
+file ends that job done with its receipt.
+
+Only one desktop window runs per user: opening the app again brings it forward,
+and a `.cutproj` path given on the command line opens in it (a launch with its
+own `SHELLX_CUT_HOME` is separate). When an engine the desktop app started exits
+on its own, the app shows "ShellX Cut engine stopped" with **Restart the
+engine** / **Quit ShellX Cut**; a restarted engine has no project open, so call
+`project.open` again and read `jobs.interrupted{}`.
 
 In the desktop UI, Projects is the initial workspace. Dropping video, audio, or
 an image while no project is open creates a sensibly named project, imports the
@@ -852,8 +1009,28 @@ import). Transcript-driven verbs (captions/cut_words/remove_fillers) need the
 ENRICH job finished — wait on `enrich_job`. Wait by either:
 
 - polling `jobs.status {job_id}` (every 2–5 s, not a hot loop) until
-  `state:"done"`, or
-- watching WS `job_progress` events for that job_id.
+  `state` is `done` or `failed`, or
+- watching WS `job_progress` events for that job_id (`terminal:true` = ended).
+
+**Did the job do what was asked? Read `outcome`.** `succeeded` = yes (with
+`completion:"done_with_warnings"`, read `result.warnings`); `partial` = it ran
+to its end but did NOT fully deliver (`outcome_reason:"checks_failed"`: a
+written file failed its own checks, `result.checks`; `"items_failed"`: some
+batch items failed, `result.failures`); `failed`, `cancelled`, `interrupted`,
+`superseded` = no. The trap: `state:"done"` alone is not success (a render
+queue with 1 of 3 exports failed is `state:"done"`, `outcome:"partial"`).
+
+A job you start that fails is also shown to the person in the status bar (what
+failed, the reason and the suggested action from `jobs.status.error`), so say in
+your own words what is missing and what the person can do. A DOM check reads
+`[data-cut-job-failed-row]` (children `data-cut-job-failed-title`,
+`data-cut-job-failed-text`; controls `data-cut-job-failed-details` and
+`data-cut-job-failed-dismiss`; `data-cut-job-failed-more` counts older ones).
+To see failures you did not start (a person's import, another agent's render),
+read `jobs.list {}`: it is the status bar's own source, every job of this
+server run, newest first, each failed one with its `error`. `ui.state.notices`
+lists the failed-job rows the person still sees (`failed_job {job_id,
+job_kind}`, `failed_jobs_more {count}`).
 
 For a project-owned UI job, include the immutable
 `expected_origin_path_sha256` from `project.state.project_identity` in
@@ -880,8 +1057,10 @@ preserve the old item and use `library.add` to create a new identity.
 muxed video as one system-actor `edit.insert_linked` op on v1/a1t; audio-only,
 video-without-audio, and still placement retain `edit.insert`. Later imports
 (b-roll) are NOT placed; add them with the matching explicit insert verb.
+"First" is the first import REQUESTED, not the first to finish probing, and each
+import job result says `placed` and, when not placed, why (`placement.reason`).
 For human UI placement, Assets **Insert** and normal timeline drops target the
-base story timeline with ripple. Use an explicit overlay path only when the clip
+base story timeline and push later clips right (Insert). Use an explicit overlay path only when the clip
 should sit above the base picture: Alt-drop/new overlay lane, drop on an
 existing overlay lane, or `edit.add_track {kind:"video"}` followed by
 `edit.insert {track:<overlay>, ripple:false}`. For a probed muxed video,
@@ -981,10 +1160,142 @@ Proxy imports, Video tools setup, and CLI agent setup. If FFmpeg is confirmed
 missing, Preview and the Render/Export area show direct setup actions that open
 Settings > Video processing, open the manual guide, or re-check after
 installation.
+When ffmpeg or ffprobe is missing, every media verb that needs them (58 verbs: imports,
+probes, waveforms, previews, frames, renders, exports, transcription and
+analysis) refuses before it changes anything: `ok:false`, code
+`tool_missing`, message `ffmpeg is not installed` (or ffprobe), and a
+`suggested_action` with this platform's way to get them. Relay it to the person
+and wait for their consent (a person's own request to download it is that
+consent); do not retry in a loop. Where a built-in download
+exists (Windows/Linux x86_64 and Apple silicon Macs) show the person the
+consent text (`details.setup.download.consent` on the ffmpeg card: publisher,
+version, size, GNU GPL version 3, source link) and only when they agree call
+`system.fetch_tool {"tool":"ffmpeg","accept_license":true}`; without
+`accept_license` the verb refuses and returns that text in `error.cause`. On an
+Apple silicon Mac the download is Martin Riedl's notarized build, which has no
+vid.stab: Stabilize then needs Homebrew's complete build. On Windows and Linux
+x86_64 it is a pinned FFmpeg-Builds 9.0.2 build; if its publisher has removed
+it the job fails and names the other ways. Linux arm64 has no download: the
+distribution's package (`sudo apt install ffmpeg`; Fedora `sudo dnf install
+ffmpeg-free`). Intel Macs have no
+download (`unsupported_platform`): the person installs Homebrew
+(https://brew.sh, needs their Mac password) and runs `brew install
+ffmpeg-full`. Anywhere you may call `system.set_ffmpeg {path}` with a build
+that has ffprobe beside it. The card's `details.setup` carries the steps and
+copyable commands. Then `system.doctor {"refresh":true}` finds the new tools
+without restarting Cut.
+Which FFmpeg is in use and why: the ffmpeg card's `details.resolved` and
+`details.selection` (`reason`: environment | chosen | automatic_hardware |
+automatic_no_hardware | only_one_found | automatic_off | not_found;
+`automatic`: on | on_by_environment | off_by_environment | off_source_build;
+`found`; `text`, a sentence to relay). The engine picks a hardware-capable
+build by itself, the same when you start `cutd serve` as when the app does. A
+person's choice (`system.set_ffmpeg`) or `SHELLX_CUT_FFMPEG` wins.
+`SHELLX_CUT_FFMPEG_AUTO=0` turns the automatic pick off. A source build in a
+cargo target folder keeps it off unless `SHELLX_CUT_FFMPEG_AUTO=1`.
+A step whose filter no installed FFmpeg has is refused up front the same way
+(`tool_missing`): Stabilize without vid.stab, caption clips burned into an
+export without libass, color management without zimg. The message names the
+feature and library; the cause says what to remove to go on without it.
+A file that exists but is not readable media is `unreadable_media`: an empty
+file is refused by `media.import` itself (`ok:false`); anything else fails the
+import job with that code, a message naming the file, ffprobe's reason in
+`cause` (ending "the import was undone") and a `suggested_action`; the asset is
+removed with a `media.remove` op, so never place it. `media.relink` refuses such
+a target with the same code and keeps the old source. Relay the message; do not
+retry the same file.
+The first video placed in an untouched project sets the project format; the
+import job result's `format` says what happened: `{adopted:true, width, height,
+fps, variable_frame_rate, note?}` or `{adopted:false, reason}` (the format was
+chosen before, or the clip is larger than the frame limit: then the job also
+ends with that warning). Frames are 16 to 8192 px on each side, at most
+8192x4320 pixels, with even sides for the project; `project.format`,
+`project.create` settings, `render.final` width/height and
+`resolution:"match_source"` all refuse beyond it with `invalid_args` naming the
+limit (AV1 also needs at least 64x64). A project whose stored format is beyond
+the limit (made elsewhere or edited by hand) still opens: the format is reduced
+to the largest frame of the same shape within the limit, `project.open` returns
+a `project_format_reduced` warning with `from`/`to`, and `project.health` lists
+the same notice; `export.frame` refuses a still beyond the limit. A variable-frame-rate clip
+(`probe.variable_frame_rate`, `probe.nominal_fps`) gives the timeline its
+nominal standard rate (a phone's 60, not its 58.59 average), and renders place
+its frames by their real timestamps.
+Colour: every export is SDR BT.709 processed in 8 bits. `render.final` (plan,
+job result and receipt) carries `encode.color` = `{output, processing_bit_depth,
+file_bit_depth, sources:[{asset, file, transfer, bit_depth, handling}], note?}`;
+an HDR source (transfer `arib-std-b67` HLG or `smpte2084` PQ) has handling
+`tone_mapped_to_sdr` and the file is tagged BT.709. Keeping HDR in the export is
+not available. The conversion runs before grades and effects. An SD source
+tagged BT.601 (`smpte170m`/`bt470bg`) is converted to BT.709 too (handling
+`converted_bt601_to_bt709`). The tone map needs ffmpeg's zscale (zimg); without
+it every verb that composes the picture (render.final/queue/bundle/direct/
+reframe/preview, export.range/gif/frame/publish, verify.scopes, render.frame and
+render.storyboard with `compose:true`) refuses up front with `tool_missing`
+naming the HDR clips (tagging a clip `rec709` with `edit.color_space` exports it
+unconverted, handling `hdr_tagged_not_converted`). Relay `note` to the person.
+An older project with an odd size (e.g. 641x361) cannot be exported as video
+at that size: `render.final` (and its dry run) at the project size,
+`render.queue` entries without their own size, `render.direct`,
+`render.reframe`, `render.preview`, `export.range`, `export.gif` and
+`autopilot.run` refuse up front with code `odd_project_size`; its
+`suggested_action` is the exact call, e.g. `project.format
+{"width":640,"height":360}`. Tell the person, and make the call only with their
+agreement (it changes the project; Undo does not change the project size back).
+Exports with their own even size (`export.publish`, `render.bundle`,
+`render.final` with aspect/width/height/match_source) and stills
+(`export.frame`, which then returns a `note` that the still is 640x360) are not
+refused. An fps-only `project.format` still works.
+After a video import's proxy job, `probe.decode_check` on the asset says how
+much of the file really decodes (`decodable_picture_ms`, `decodable_sound_ms`
+against the claimed lengths). When that comparison finds a shortfall it carries a
+plain `warning` (also on the proxy job result, and a "File cut off" badge in
+Assets): the clip still edits, but an export stops early where data is
+missing. A file damaged INSIDE (zeroed or corrupt data in the middle) can reach
+its end but lose frames: `code:"decode_gap"`, `claimed_frames` vs
+`decodable_frames`, and a warning that says how many frames cannot be read
+(`code:"decode_short"` is the cut-off case). No `decode_check` means it was not
+checked (`proxy:false` imports). A render receipt then carries
+`sources_decodable`, which fails by file name when a source on the timeline has
+such a warning (an export can hold frames over a gap, so its own streams can
+still look complete). This check counts frames; FFmpeg 6 may repeat frames to
+conceal corrupt pictures, leaving no warning. `sources_decodable` cannot
+certify damage hidden this way.
 Perception/transcription sidecars inherit the same resolved FFmpeg/ffprobe
 directory at `AppState` startup and after doctor re-scans, so captions and
 analysis jobs reuse the engine's selected/Homebrew/app-data video tools instead
 of depending on the sidecar process PATH.
+Captions, transcription and the post-render checks run on Cut's own Python,
+installed by Install captions (`system.setup_perception`); a Python the person
+installed is not used, and the Windows Store `python` shortcut is not a Python.
+Without it a sidecar step is refused with code `sidecar`, message `Captions and
+transcription are not installed` and that action. The background enrich job of
+an import then finishes done (not failed, not warned) with
+`result.skipped:"captions_not_installed"`; a render finishes done too, its
+`result.pass` is `null` (no verdict, not a failure) and its checks read `not
+measured, because captions and transcription are not installed`
+(`result.verification_reason`, receipt `details.reason`). Both results carry
+`setup_needed:{missing, what, setup_verb:"system.setup_perception",
+person_action:"Install captions", suggested_action}`; relay it once, do not
+retry in a loop. Every `suggested_action` names a route of the installed app,
+never a path or command of a source checkout.
+Captions on Windows need the Microsoft Visual C++ Redistributable; ShellX Cut
+tells you when it is missing and gets it from Microsoft for you. It is ONE tool:
+doctor card `vc-runtime` (Windows only; `details`: `installed`, `version`,
+`needed_by`, `official_page`, `download_url`, `about`, `license_url`, `fetch_action`,
+`removed_by_uninstall:false`), shown in Settings > AI & transcription. While it
+is missing, `system.setup_perception` and the premium `system.setup_matte` are
+refused at once (code `tool_missing`, no job) with the entry and the verb in
+`suggested_action`. Ask the person before downloading it and accepting
+Microsoft's licence (`details.license_name`, `details.license_url`), then call
+`system.fetch_tool {tool:"vc-runtime"}` (no `accept_license`). The job downloads
+Microsoft's installer from aka.ms/vc14 (listed on
+learn.microsoft.com/cpp/windows/latest-supported-vc-redist), runs it only after
+Windows' signature check accepts it as Microsoft Corporation's, and Windows then
+asks the PERSON for administrator permission: tell them to approve it; you cannot.
+The job fails with the reason when the prompt was declined, the account cannot
+approve it (ask an administrator), the download or the signature check failed;
+the result says `restart_needed`. Then `system.setup_perception` works without
+restarting Cut. Uninstalling Cut keeps the runtime.
 The human Render button and FFmpeg-backed export choices also run
 `verify.pregate {}` before starting output. All quality predictions show a concise
 warning with collapsible details and an explicit Export anyway or Queue anyway
@@ -1010,6 +1321,16 @@ an uncropped screen demo no longer passes silently. Alternative for one render:
 `render.final {fit:"cover"}` crop-to-fills instead of editing the source.
 
 ### 3. Edit through the transcript
+
+**One frame is the smallest clip.** Every `edit.*` verb is checked after it
+runs: an edit that would leave a media clip shorter than one frame is refused
+with the nearest valid value ("a clip must be at least one frame: 16.7 ms at
+60 fps", "use src_out_ms 5034 or more"). Insert, move and paste points less
+than a frame from a clip edge snap to the edge (the result carries
+`snapped {from, to, why}`); `edit.split` there refuses and names the existing
+cut. Older sub-frame clips do not block other edits: they are listed in
+`project.state.subframe_clips` and drawn in the timeline as an amber marker the
+person can select and delete.
 
 This is the core loop. Read words first: `transcript.get {asset}` → words with
 indices (`idx`) and ms spans.
@@ -1068,6 +1389,10 @@ an offset from a selected clip or range; honor an exact time in the request.
   exact opposite-kind counterpart and mutate the linked pair atomically by
   default. Pass `linked:false` only for a deliberate independent move/trim;
   ambiguity or a locked counterpart is an error rather than a silent desync.
+  A move has two modes, with the standard editors' names: **Overwrite**
+  (`ripple:false`, default; a plain drag in the UI) replaces what is under the
+  clip and moves nothing else; **Insert** (`ripple:true`; Alt-drag) pushes the
+  rest of every media track right. The result's `placement` names the mode.
   In the human UI, Q trims from the playhead to the selected clip's start and W
   trims from the playhead to its end, closing the removed span for both halves.
 - **EQ the voice:** `edit.eq {clip, preset:"voice"}` cleans up a talking-head /
@@ -1195,12 +1520,43 @@ success; a green receipt is. `verify.checks {render_id}` returns the receipt:
 `{render_id, output_path, output_hash, duration_ms, checks, pass}`, each check
 `{name, pass, details, evidence}`:
 
+The receipt and the render job result carry the verdict in one place:
+`outcome` (receipt) / `result.checks` (job) = `{verdict, summary, failed[],
+unmeasured[], action?}`. `verdict:"problems"` means the file was written but is
+NOT the timeline (`duration_matches_edl` or `sources_decodable` failed, e.g. a
+cut-off source): the job ends `completion:"done_with_warnings"`,
+`outcome_reason:"checks_failed"`, message "done, but it did not pass its
+checks", the file is kept, and the status bar lists it until dismissed.
+`verdict:"warnings"` = only quality checks failed (job "done with warnings").
+A quality check with nothing to check on this export is NOT APPLICABLE
+(`details.status:"not_applicable"`, `applies_when`, `reason`; `pass:true`;
+listed in `outcome.not_applicable`), never a failure or a warning:
+`caption_presence` without caption clips on a visible caption track,
+`cut_on_word` without a transcript, `lufs`/`silence_at_edges` without sound;
+`lufs` also without a loudness target (`normalize_loudness`, measured against
+it) or an explicit `profile`, `silence_at_edges` also without an explicit
+`profile` (as in Premiere/Media Encoder, a plain export is not held to a
+delivery standard nobody asked for; `autopilot.run` asks for both),
+`black_or_frozen_frames`/`uniform_border` without picture (frozen frames do not
+apply when every picture is a still). `unmeasured` is different: the check
+applies but could not be measured here (reason given, e.g. captions tools not
+installed). An ordinary export with no captions ends plain "done".
+"No sound" and "only stills" are decided on the engine's own probe of the
+placed sources at render time, never on probe facts stored in the project; a
+loudness target or explicit `profile` is measured even on an export without
+sound (it never reads not applicable).
+`render.queue` ends done when every delivery succeeds; when some fail it ends
+"done, but N of M failed" (`outcome:"partial"`, `outcome_reason:"items_failed"`,
+`result.failures`), when all fail the job fails ("None of the N deliveries was
+written: ..."), and with no failed delivery but one that failed its checks it
+ends `checks_failed`; `autopilot.run` ends "done with warnings" when checks still fail.
+
 `jobs.status.completion:"done_with_warnings"` is terminal and may leave optional
 post-render instrumentation unmeasured. Inspect `result.verification_status`,
 `result.verification_error`, and the actual receipt before judging the media.
-For a terminal `state:"failed"`, inspect `outcome` and `outcome_reason` before
-calling it a failure: cancellation, a project switch, a restart interruption,
-and supersession are distinct from `true_failure`.
+For a terminal `state:"failed"`, `outcome` and `outcome_reason` tell a
+cancellation, a project switch, a restart interruption and supersession apart
+from `true_failure`.
 A missing/unmeasured check is **not a pass and not a content failure**; affected
 rows carry `details.status:"unmeasured"` and `details.measured:false`, preserve
 the runtime cause, and never produce `fix_actions`. Verify independently or
@@ -1216,26 +1572,33 @@ the source RenderReceipt, or infer source/caption/word-cut/current-timeline fact
 | Check | What it proves | How to read it |
 |---|---|---|
 | `cut_on_word` | No EDL boundary lands inside a spoken word (boundaries vs STT word spans) | Any fail names the clip + at_ms — undo the bad op (`edit.restore` if latest, else `project.revert{to}`) + re-cut via transcript verb |
-| `lufs` | Integrated loudness + true peak vs target | The measured number is a fact — report it even on pass (e.g. −16.2 LUFS, TP −1.8 dB) |
+| `lufs` | Integrated loudness + true peak vs target (applies only with `normalize_loudness` or an explicit footage profile) | The measured number is a fact — report it even on pass (e.g. −16.2 LUFS, TP −1.8 dB) |
 | `caption_presence` | Captions exist where speech exists, and cue text is sane (`repeated_word_ratio` catches doubled-word generation) | Fail → re-run `captions.generate` or inspect the caption track |
 | `black_or_frozen_frames` | No dead video in the output | Evidence points at timecodes — eyeball with `render.frame {at_ms}` |
 | `uniform_border` | No baked-in letterbox/pillarbox beyond tolerance | Fix the source with `edit.crop` to its perception `content_bbox`, or use deliberate `fit:"cover"` |
 | `silence_at_edges` | Output doesn't start/end on dead air | Usually a missed trim at timeline edges |
-| `duration_matches_edl` | Output duration == EDL math | Mismatch = engine/render bug, report it, don't ship |
+| `duration_matches_edl` | Every stream spans the timeline: container, each video stream (duration and frame count) and each audio stream, measured on their own; `details.reason` names a short stream; without measured streams it is `unmeasured`, never a pass | A short video stream usually means a source that is cut off (see the asset's `probe.decode_check.warning`); report it, don't ship |
 
 `verify.judge {render_id?, backend?}` is the perceptual visual review — a JOB
 (returns `{job_id}`). Its backend union remains Claude → Codex → Antigravity →
-Grok, but detection is not admission. In v0.6.114, only Claude with restricted
-Read capability at version 2.1.248 or later plus a safe copied-frame workspace,
-and Grok at version 1.0.21 or later with its no-model-tools policy, are
-`judge_ready`. Codex and Antigravity may be found but an explicit render-judge
-request returns `{status:"not_run", reason:"render judge unavailable until
-restricted tool/file access is verified"}` before review work; this does not
+Grok, but detection is not admission. Claude requires restricted Read capability
+at version 2.1.248 or later plus a safe copied-frame workspace; Grok requires
+version 1.0.21 or later with its no-model-tools policy. Codex supports
+direct-frame review
+when Doctor reports `judge.codex.details.judge_ready:true` after image/schema
+and tool-free admission; finding the binary is insufficient. Antigravity
+remains unready for render judging. An explicit unready backend returns
+`status:"not_run"` with its recorded reason before review work; this does not
 alter Agent Chat or generation availability. Auto keeps that configured order,
 skips unready rungs, and may continue after an attempted ready-rung
 infrastructure error. A named backend never falls back. `not_run` means *not
 reviewed*, never *passed*; report its recorded reason and never fabricate
-evidence. Admission does not prove a live provider turn or native behavior.
+evidence. Doctor admission reports readiness; a completed receipt records the
+actual review. A job error starting `review not run` means a project file was
+refused (a linked render, a render outside the project that is not the file
+its receipt recorded, an analysis file that is a link or describes another
+video, or a link at `.scratch/judge/<render_id>/envelope.json`); report it and
+follow its suggested action rather than retrying unchanged.
 
 ### 6. Export
 
@@ -1284,8 +1647,19 @@ evidence. Admission does not prove a live provider turn or native behavior.
   folder where default-named exports + renders land when a verb has no explicit
   `path` (UI: Export ▾ → **Choose folder…**, native OS picker). The folder must
   already exist; it is canonicalized and becomes an allowed output-fence root.
-  Empty `dir` clears it (back to `<project>/exports`). A SESSION preference —
-  NOT a timeline op, never logged/replayed.
+  Empty `dir` clears it (back to `<project>/exports`). An APP-WIDE remembered
+  preference held by the engine (it survives a restart and applies to every
+  project until cleared; NOT a timeline op, never logged/replayed).
+  `project.get_output_dir {}` reads it (`{dir, destination: chosen |
+  project_exports, usable, problem, suggested_action}`), the status bar shows the
+  same value, and the `output_folder_changed` event announces each change. If
+  the chosen folder is deleted or becomes unwritable, an export that would use
+  it is refused BEFORE it starts (folder named, way forward: choose another or
+  clear it); an explicit `path` is never blocked by it. The engine re-checks the
+  folder about every 10 s and sends `output_folder_changed` when it becomes
+  unusable (the chip then says "unavailable"). On Linux and macOS a folder
+  everyone can write to is refused ("export folder can be written by anyone on
+  this computer: <path>") unless it has the sticky bit; group-writable is fine.
 
 Exports are derived artifacts — render receipts stay the proof of the edit
 itself. Explicit `path` args are fenced to the project / outputs dir.
@@ -1298,9 +1672,12 @@ PiP layers at their `edit.transform` geometry + opacity, caption clips as live
 text, and per-clip `edit.grade` as an approximate CSS filter — all over the
 stable first non-empty base track, played smoothly (the base `<video>` is the
 master clock; overlays sync to it). A hidden or gapped base stays black; hidden
-overlay and caption tracks are omitted. It is deliberately APPROXIMATE (grade
-is CSS-approximated; gamma + 3D LUT
-are not shown live) — exact verification stays `render.frame {compose:true}` and
+overlay and caption tracks are omitted. While playing it is deliberately
+APPROXIMATE (grade is CSS-approximated; gamma + 3D LUT are not shown live);
+while paused the monitor shows the EXACT composed frame by default (COMPOSED on;
+`ui.preview {composed}` switches it), so read `ui.state.preview` (`mode`,
+`showing`, `hidden_elements`, `composed_frame`) to know which picture a
+screenshot shows — exact verification stays `render.frame {compose:true}` and
 `render.final`. The agent's frame-exact eyes are still `render.frame`; the live
 composite is the human's editing feedback. A **"◆ Section"** monitor button (or
 `export.range {range_ms, to_asset:false}`) renders the EXACT composite over the
@@ -1321,16 +1698,15 @@ exporter (add a layer over a span → render it → save the clip).
   It never calls Undo or adds an operation. It refuses instead of guessing when
   no earlier timeline state, compatible sequence format, or frame exists; the pair
   also closes if the playhead or durable head changes while it is open.
-- `render.preview {draft: true}` — **Incremental draft preview:** a fast
-  proxy-grade preview of the WHOLE timeline that re-renders only the segments
-  whose inputs changed since the last preview and reuses the rest. The
-  result names `rendered[]` / `reused[]`. Works on timelines with intro/outro
-  **still-image cards** (regression behavior): a still has no proxy (its import stops after
-  probe), so it is conformed straight from the source image (looped for the clip
-  duration) instead of requiring one — a card no longer blocks the whole draft
-  preview. DERIVED state — never a receipt; the render receipt still comes only
-  from `render.final`. Window mode remains available as
-  `render.preview {at_ms, duration_ms?}` for a fast low-res clip.)
+- `render.preview {draft: true}` — **Incremental draft preview:** the WHOLE
+  timeline at draft size (the project's aspect inside 960x540) showing the
+  export's frames: the same source frame at every output frame as `render.final`,
+  the same length, speed, reversed clips, captions and overlays. It is made of
+  pieces cut at the base track's clip boundaries; after an edit only the pieces
+  whose content changed are remade (a piece moved by a whole number of frames is
+  reused). The result names `rendered[]` / `reused[]`. DERIVED state — never a
+  receipt; the render receipt still comes only from `render.final`. Window mode
+  remains available as `render.preview {at_ms, duration_ms?}` for a fast low-res clip.
 - `ui.screenshot {}` — the connected UI client captures its own DOM and returns
   a PNG: your eyes on the *app*. Errors `no_ui_client` if no UI is connected
   (headless is fine — call `system.doctor {}` for the live loopback address and
@@ -1350,7 +1726,29 @@ exporter (add a layer over a span → render it → save the clip).
   already-current no-ops, disconnects, and timeouts fail explicitly.
   `ui.state` returns `shellx-cut/ui-state/2` with active workspace/tabs,
   overlays/dialogs, available surface ids, selection, playhead, and path-safe
-  project identity.
+  project identity. It also says what the person faces outside the panels:
+  `overlays.native_dialogs` (an OS Save/Open/confirm dialog the app waits
+  behind, with `opened_by` and `title`: you cannot press it, so use the verb
+  that takes the path or the answer), `record_hotkey` (why global F9 is not
+  registered), `export_folder {destination, usable, folder}` (where exports go,
+  as the status bar shows it; `folder` is a name, `project.get_output_dir` has
+  the path), `preview.media_problem` (the monitor cannot decode the video;
+  its message names the package), and `notices` (what the person is being told right now:
+  `action_feedback` with the `source` verb and `code` of a refusal they saw,
+  `odd_project_size`, `recording_recovery`, `failed_job`). Read the wording
+  from the verb or record an entry names, and say it to the person in your
+  own words.
+- `ui.preview {composed}` sets the preview monitor's COMPOSED mode (the
+  COMPOSED button; ON by default): `true` draws the exact composed frame
+  (titles, effects, fades, grades) over the paused live preview, `false` shows
+  the live preview only. `ui.state.preview` says what the monitor shows:
+  `mode`, `showing` (`composed_frame` | `live_preview` | `source_frame` |
+  `none`), `hidden_elements` (what the shown picture leaves out at the
+  playhead, e.g. `titles`, `fades`), `media` (`proxy` | `original` | null:
+  the file the live preview plays for the clip at the playhead) and
+  `composed_frame` (`state` off | waiting | pending | shown | failed, `at_ms`,
+  `reason`, `latency_ms`, `requests`).
+  Read it before judging a `ui.screenshot` of the preview.
 - `ui.highlight {selector|clip|panel|clear:true}` confirms that a registered
   target is visibly highlighted. Give the human a stable selector, clip, or
   panel; `duration_ms:0` leaves the dismissible overlay open for guidance.
@@ -1376,8 +1774,8 @@ curl -s $V/project.create -d '{"name":"launch"}'
 curl -s $V/media.import -d '{"path":"/home/example/footage/take3.mp4","rationale":"raw take"}'
 # {"ok":true,"result":{"asset_id":"a1","job_id":"job_001","op":{…}},"op_ids":["op_000002"]}
 
-curl -s $V/jobs.status -d '{"job_id":"job_001"}'   # poll 2-5s until state=done
-# {"ok":true,"result":{"job_id":"job_001","kind":"import_chain","state":"done","progress":1.0}}
+curl -s $V/jobs.status -d '{"job_id":"job_001"}'   # poll 2-5s until state is done or failed
+# {"ok":true,"result":{"job_id":"job_001","kind":"import_chain","state":"done","outcome":"succeeded","progress":1.0}}
 
 curl -s $V/project.checkpoint -d '{"name":"pre-edit"}'
 # {"ok":true,"result":{"checkpoint":{"id":"cp_001","name":"pre-edit","at_op":"op_000004","ts":"…"}},"op_ids":["op_000005"]}
@@ -1463,3 +1861,43 @@ Honest completion report: *"Rendered render_001.mp4 — all 7 receipt checks PAS
 ## Reference
 
 Full verb table (args, returns, op emission, job behavior): see `reference.md`.
+
+<!-- generated:requirements:start (node scripts/generate-requirements-docs.mjs) -->
+## What needs what
+
+Every verb needs only what the requirements registry lists for it (an open project follows the verb's
+`project_state`). Before a verb, `system.doctor {feature:"<verb>"}` says whether it can run and what blocks it;
+a refusal for something missing carries `error.requirement {id, name, get}`. A person's licence, sign-in or
+system permission is theirs: tell them what `get.person` says and never do it for them.
+
+| Tool or condition | Needed for | Get it |
+|---|---|---|
+| Video processing (FFmpeg) `ffmpeg` | Import and relink media; Transcription; Silences, scenes, beats and loudness; Word edits, transcript search, chapters and generated captions; Speaker labels; Dubbing; Motion tracking and the visual search index; Remove background; Color match, auto balance and multicam audio sync; Titles, shapes and Generate templates on the timeline; Generate templates, previews and plans; Preview frames, comparisons, storyboards and scopes; Export and render; Smart reframe and directed cuts; Output checks; Render review; Stock media and b-roll; Generated media; ShellX Motion templates and tracking; Recording results and recovery | `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`; Download (`ui.open {panel:"settings-video-performance"}`); before downloading, tell the person it is FFmpeg under the GNU General Public License version 3 (the consent text in system.doctor's ffmpeg card names publisher, version and size) and ask whether you may download it and accept that licence; if the person asked for the download themselves, that is the go-ahead, and your reply says which licence applied. In the app the person chooses Download or Choose ffmpeg; an ffmpeg they already have works through system.set_ffmpeg {path}; licence: GNU General Public License version 3 (https://www.gnu.org/licenses/gpl-3.0.html) |
+| Media inspection (ffprobe) `ffprobe` | Import and relink media; Word edits, transcript search, chapters and generated captions; Color match, auto balance and multicam audio sync; Titles, shapes and Generate templates on the timeline; Preview frames, comparisons, storyboards and scopes; Export and render; Smart reframe and directed cuts; Output checks; Render review; Stock media and b-roll; Generated media; ShellX Motion templates and tracking; Recording results and recovery | `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`; Download (`ui.open {panel:"settings-video-performance"}`); comes with FFmpeg: the same download, licence and question as FFmpeg; licence: GNU General Public License version 3 (https://www.gnu.org/licenses/gpl-3.0.html) |
+| Stabilization in FFmpeg (vid.stab) `ffmpeg_vidstab` | Stabilize | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); a complete FFmpeg build is needed (on a Mac: Homebrew's ffmpeg-full); the steps are in system.doctor's ffmpeg card, details.setup |
+| Caption burn-in in FFmpeg (libass) `ffmpeg_libass` | Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); a complete FFmpeg build is needed; the steps are in system.doctor's ffmpeg card, details.setup |
+| Color management in FFmpeg (zimg) `ffmpeg_zimg` | Project color management (optional); Preview frames, comparisons, storyboards and scopes (optional); Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); a complete FFmpeg build is needed; the steps are in system.doctor's ffmpeg card, details.setup |
+| Faster exports (GPU encoder) `gpu_encoder` | Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); needs a supported graphics card, its driver and an FFmpeg built with its encoder; the steps are in system.doctor's gpu-encode card, details.enable_help |
+| GPU render path (CUDA) `cuda_render` | Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); needs an NVIDIA GPU with its driver and an FFmpeg with CUDA filters |
+| Captions and transcription `captions_runtime` | Transcription; Silences, scenes, beats and loudness; Translation of captions and transcripts; Speaker labels; Dubbing; Motion tracking and the visual search index; Smart reframe and directed cuts; Output checks; Import and relink media (optional); Redaction (blur or cover a region, faces, text) (optional); Visual search (optional); Export and render (optional) | `system.setup_perception`; Install captions (`ui.open {panel:"settings-ai-transcription"}`); a download of several hundred MB that needs no Python of the person's own. On macOS and Linux it needs no administrator permission; on Windows Microsoft's Visual C++ runtime must be installed first (its own Install in the same Settings page), and Windows asks for administrator permission for that step |
+| Speech-to-text model `speech_model` | Transcription | `system.setup_perception`; Install captions (`ui.open {panel:"settings-ai-transcription"}`); comes with Install captions; system.set_stt_model chooses the model |
+| Microsoft Visual C++ Redistributable `vc_runtime` (windows) | Transcription; Silences, scenes, beats and loudness; Motion tracking and the visual search index; Smart reframe and directed cuts; Setup and environment | `system.fetch_tool {"tool":"vc-runtime"}`; Install (`ui.open {panel:"settings-ai-transcription"}`); Microsoft's own installer from Microsoft (aka.ms/vc14), checked for Microsoft's signature; Windows asks a person for administrator permission, which an agent cannot give; or install it from https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist; licence: Microsoft Software License Terms for the Microsoft Visual C++ Redistributable (https://aka.ms/VCRedistLicense) |
+| Background removal `matte_runtime` | Remove background | `system.setup_matte`; Install (`ui.open {panel:"settings-ai-transcription"}`) |
+| Premium background removal `matte_premium` | Remove background (optional) | `system.setup_matte {"model":"matanyone","accept_noncommercial":true}`; Install premium (`ui.open {panel:"settings-ai-transcription"}`); the premium model is licensed for non-commercial use only (NTU S-Lab License 1.0): tell the person and ask before installing; accept_noncommercial:true states their yes. It needs an NVIDIA GPU; about 3 GB; licence: NTU S-Lab License 1.0 (non-commercial) |
+| Render review (a signed-in agent CLI) `review_judge` | Render review | the person installs the CLI and signs in to it themselves; Cut never signs in for anyone. Then Re-scan (system.doctor {refresh:true}) |
+| Agent CLI for chat and translation `chat_cli` | Translation of captions and transcripts; Agent Chat | the person installs the CLI and signs in to it themselves; Cut never signs in for anyone. Then Re-scan (system.doctor {refresh:true}) |
+| Media generation provider `generation_provider` | Generated media; Generate templates, previews and plans (optional) | the person installs the provider's CLI and signs in themselves; Cut never signs in for anyone |
+| Dubbing service `dub_service` | Dubbing | start the dubbing service and set its address (CUT_DUB_ENDPOINT); see system.doctor's dub card |
+| Speaker labelling service `diarize_service` | Speaker labels | start the speaker labelling service and set its address (CUT_DIARIZE_ENDPOINT); see system.doctor's diarize card |
+| ShellX Motion `motion_runtime` | ShellX Motion templates and tracking | `system.motion_status`; ShellX Motion is installed separately |
+| An open project `open_project` | Project, sequences, history and timeline edits; Project color management; Import and relink media; Transcription; Silences, scenes, beats and loudness; Edits from the analysis (scenes, beats, silences, emphasis, speaker energy); Word edits, transcript search, chapters and generated captions; Translation of captions and transcripts; Speaker labels; Dubbing; Motion tracking and the visual search index; Redaction (blur or cover a region, faces, text); Visual search; Remove background; Color match, auto balance and multicam audio sync; Stabilize; Titles, shapes and Generate templates on the timeline; Generate templates, previews and plans; Preview frames, comparisons, storyboards and scopes; Export and render; Smart reframe and directed cuts; Output checks; Render review; Stock media and b-roll; ShellX Motion templates and tracking; Screen recording; Recording results and recovery; Voiceover | `project.open`; open or create a project (project.open {path} or project.create {name}) |
+| A usable export folder `export_folder` | Export and render; Recording results and recovery | `project.set_output_dir`; choose another export folder, or clear the choice to use the project's exports folder |
+| Free disk space `disk_space` | Setup and environment; Export and render (optional) | `project.cache_purge`; free space on the drive; Settings > Health & recovery can preview and remove Cut's aged cache files (Preview cache cleanup) |
+| A transcript of the asset `transcript` | Word edits, transcript search, chapters and generated captions; Translation of captions and transcripts; Dubbing; Output checks | `media.transcribe`; a transcript is made after a clip is imported while Captions and transcription is installed. For a clip imported before that, a person can run a recipe that starts with a transcript (Recipes > Add captions, which also adds captions); there is no separate Transcribe button |
+| An analysis of the asset `analysis` | Edits from the analysis (scenes, beats, silences, emphasis, speaker energy) | `media.perception`; silences, scenes, beats and loudness are measured after a clip is imported while Captions and transcription is installed. For a clip imported before that, the recipes First edit and Edit for clarity measure it; there is no separate button |
+| Screen recording permission `screen_permission` | Screen recording | a person must allow it: macOS System Settings > Privacy & Security > Screen & System Audio Recording, then reopen ShellX Cut; on Linux the screen-sharing portal asks |
+| Microphone access `microphone_permission` | Voiceover; Screen recording (optional) | a person must allow it in the system's privacy settings (Windows: Settings > Privacy & security > Microphone; macOS: Privacy & Security > Microphone) |
+| System sound capture `system_audio` | Screen recording (optional) | a person must allow it (macOS asks separately for Audio Capture) |
+| The editor window `ui_client` | Driving the editor window | open the app; system.doctor gives the local address to open in a browser |
+| Internet connection `network` | Stock media and b-roll; Setup and environment; Visual search (optional) | connect to the internet and retry |
+<!-- generated:requirements:end -->

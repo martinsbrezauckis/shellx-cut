@@ -32,14 +32,19 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No later step pushes or fetches private refs; keep the token out of .git.
+          persist-credentials: false
 
       - name: Setup node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 22
+          node-version: 22.16.0
 
-      - name: Install Rust stable for exact public MCP coverage
+      - name: Install Rust 1.99.0 for exact public MCP coverage
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
 
       - name: Install Linux build deps for exact cutd
         env:
@@ -68,7 +73,7 @@ jobs:
       - name: Install Playwright Chromium
         id: playwright_install
         continue-on-error: true
-        # package-command-contract runs the real layout verifier. A fresh
+        # The mounted-browser library tests need a Chromium binary. A fresh
         # runner has the Playwright package after npm ci, but no browser binary.
         run: npx playwright install --with-deps chromium
         working-directory: ui
@@ -76,6 +81,13 @@ jobs:
       - name: UI library tests
         id: ui_library_tests
         continue-on-error: true
+        env:
+          # These mounted-browser tests skip themselves unless asked. The runner
+          # has the Playwright Chromium installed above, so ask for them.
+          SHELLX_CUT_RUN_ASSEMBLE_NUMERIC_BROWSER_TEST: '1'
+          SHELLX_CUT_RUN_LOCAL_MANUAL_BROWSER_TEST: '1'
+          SHELLX_CUT_RUN_RIGHT_BODY_BROWSER_TEST: '1'
+          SHELLX_CUT_RUN_SETTINGS_CATEGORY_BROWSER_TEST: '1'
         run: npm run test:lib -- --no-bail
         working-directory: ui
 
@@ -96,6 +108,10 @@ jobs:
       - name: Published test inventory and tests
         id: published_test_inventory
         continue-on-error: true
+        env:
+          # The manual packaging test builds the manual with Vite and checks it
+          # in Chromium (installed above); without this it skips itself.
+          SHELLX_CUT_RUN_VITE_MANUAL_PACKAGE_TEST: '1'
         run: node scripts/check-published-test-inventory.mjs --run --no-bail
 
       - name: Dependency audit
@@ -147,14 +163,18 @@ jobs:
       matrix:
         platform:
           - ubuntu-24.04
-          - windows-latest
-          - macos-latest
+          - windows-2025-vs2026
+          - macos-26
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No later step pushes or fetches private refs; keep the token out of .git.
+          persist-credentials: false
 
-      - name: Install Rust stable
+      - name: Install Rust 1.99.0
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Rust cache
@@ -185,7 +205,7 @@ jobs:
       # blocks in app/server/Cargo.toml. Only ffmpeg is missing: the media
       # crate shells out to it, and neither runner image ships it.
       - name: Install macOS test deps
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-26'
         run: |
           # Homebrew's STANDARD ffmpeg formula omits vidstab (and other optional
           # filters), so it cannot run the stabilise/subtitle/colour paths.
@@ -198,7 +218,7 @@ jobs:
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Install Windows test deps
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2025-vs2026'
         run: choco install ffmpeg --no-progress -y
 
       # Cut's render path uses ass (subtitles), vidstab (stabilisation) and zscale
@@ -212,10 +232,14 @@ jobs:
         shell: bash
         run: |
           echo "ffmpeg on PATH: $(command -v ffmpeg)"
-          ffmpeg -hide_banner -version | head -1
+          # Read each answer whole before searching it: under pipefail a reader that stops
+          # at its first match ends ffmpeg with a broken pipe, and the step then fails falsely.
+          version=$(ffmpeg -hide_banner -version)
+          echo "${version%%$'\n'*}"
+          filters=$(ffmpeg -hide_banner -filters 2>/dev/null)
           missing=""
           for f in ass vidstabdetect zscale; do
-            ffmpeg -hide_banner -filters 2>/dev/null | grep -qw "$f" || missing="$missing $f"
+            grep -qw "$f" <<<"$filters" || missing="$missing $f"
           done
           if [ -n "$missing" ]; then
             echo "::error::ffmpeg is missing required filter(s):$missing" >&2

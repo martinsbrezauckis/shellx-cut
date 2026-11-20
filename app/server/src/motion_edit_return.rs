@@ -264,21 +264,37 @@ fn parse_ready(
     })
 }
 
+/// Keep at most `limit` items in `order`, trimming as the listing goes so a
+/// folder from a received project with any number of entries holds at most
+/// twice `limit` in memory.
+fn keep_first<T>(items: &mut Vec<T>, limit: usize, order: impl Fn(&T, &T) -> std::cmp::Ordering) {
+    if items.len() >= limit.saturating_mul(2).max(1) {
+        items.sort_by(&order);
+        items.truncate(limit);
+    }
+}
+
 fn bounded_directories(root: &Path, limit: usize) -> Result<Vec<PathBuf>, CutError> {
+    let newest_first = |a: &PathBuf, b: &PathBuf| b.file_name().cmp(&a.file_name());
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let info = entry.file_type()?;
         if info.is_dir() && !info.is_symlink() {
             paths.push(entry.path());
+            keep_first(&mut paths, limit, newest_first);
         }
     }
-    paths.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    paths.sort_by(newest_first);
     paths.truncate(limit);
     Ok(paths)
 }
 
 fn bounded_ready_files(root: &Path, limit: usize) -> Result<Vec<PathBuf>, CutError> {
+    let newest_first = |a: &(std::time::SystemTime, PathBuf),
+                        b: &(std::time::SystemTime, PathBuf)| {
+        b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1))
+    };
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
@@ -295,9 +311,10 @@ fn bounded_ready_files(root: &Path, limit: usize) -> Result<Vec<PathBuf>, CutErr
                 .and_then(|metadata| metadata.modified())
                 .unwrap_or(UNIX_EPOCH);
             paths.push((modified, entry.path()));
+            keep_first(&mut paths, limit, newest_first);
         }
     }
-    paths.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    paths.sort_by(newest_first);
     paths.truncate(limit);
     Ok(paths.into_iter().map(|(_, path)| path).collect())
 }
@@ -357,6 +374,28 @@ fn required_link_id<'a>(link: &'a Value, field: &str) -> Result<&'a str, CutErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listings_keep_the_newest_entries_while_holding_only_a_few() {
+        let root = tempfile::tempdir().unwrap();
+        for n in 0..50 {
+            std::fs::create_dir(root.path().join(format!("session-{n:03}"))).unwrap();
+            std::fs::write(root.path().join(format!("ready-{n:03}.json")), b"{}").unwrap();
+        }
+        let sessions = bounded_directories(root.path(), 4).unwrap();
+        let names: Vec<_> = sessions
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["session-049", "session-048", "session-047", "session-046"]
+        );
+        assert_eq!(bounded_ready_files(root.path(), 3).unwrap().len(), 3);
+        let mut items: Vec<u32> = (0..100).collect();
+        keep_first(&mut items, 4, |a, b| b.cmp(a));
+        assert!(items.len() <= 8);
+    }
 
     #[test]
     fn creates_and_resolves_latest_ready_return_without_exposing_it_elsewhere() {

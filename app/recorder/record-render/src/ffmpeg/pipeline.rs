@@ -1,79 +1,31 @@
 //! Streaming encode/decode pipelines owned by bounded ffmpeg children.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use record_core::Result;
 
 use super::process::{finish_reader, read_capped};
 use super::{default_control, ff_err, ffmpeg_bin, fps_str, probe_with_control, rgba_frame_bytes};
-use super::{ManagedChild, ProcessControl};
 
-/// Encode `nframes` RGBA frames produced by `frame` into an MP4 (libx264).
-pub fn encode_frames<F: FnMut(u64) -> Vec<u8>>(
-    out: &str,
-    w: u32,
-    h: u32,
-    fps: f64,
-    nframes: u64,
-    mut frame: F,
-) -> Result<u64> {
-    let mut command = Command::new(ffmpeg_bin());
-    command
-        .args([
-            "-v",
-            "error",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-s",
-            &format!("{w}x{h}"),
-            "-r",
-            &fps_str(fps),
-            "-i",
-            "-",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "20",
-            "-preset",
-            "medium",
-            out,
-        ])
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = ManagedChild::spawn(&mut command, default_control(), "ffmpeg encode spawn")?;
-    let write = {
-        let mut stdin = child.take_stdin()?;
-        let stderr_reader = read_capped(child.take_stderr()?);
-        let mut result = Ok(());
-        for i in 0..nframes {
-            if let Err(error) = stdin.write_all(&frame(i)) {
-                result = Err(ff_err("write encode frame", error));
-                break;
-            }
-        }
-        (result, stderr_reader)
-    };
-    if write.0.is_err() {
-        child.kill_and_reap();
-    }
-    let status = child.wait();
-    let stderr = finish_reader(write.1, &mut child, "read encode stderr");
-    write.0?;
-    let status = status?;
-    let stderr = stderr?;
-    if !status.success() {
-        return Err(ff_err(
-            "ffmpeg encode failed",
-            String::from_utf8_lossy(&stderr),
-        ));
-    }
-    Ok(nframes)
+mod encode;
+mod parallel;
+use super::{ManagedChild, ProcessControl};
+pub use encode::encode_frames;
+pub use parallel::compose_workers;
+
+/// Audio filter for the normalized encode: loudness-normalize, then pad and cut
+/// the audio to the video length (rounded up to a whole frame). `-shortest` with
+/// an endless pad could keep FFmpeg encoding silence forever once the video
+/// input had ended, so the length is stated instead of left to the muxer.
+fn normalize_audio_args(video_ms: u64, fps: f64) -> Vec<String> {
+    let frames = (video_ms as f64 * fps / 1000.0).ceil().max(1.0);
+    let span_ms = (frames * 1000.0 / fps).ceil() as u64;
+    let span = format!("{}.{:03}", span_ms / 1_000, span_ms % 1_000);
+    vec![
+        "-af".to_string(),
+        format!("loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={span},atrim=duration={span}"),
+    ]
 }
 
 /// Stream-render a source through `compose`, then encode the output MP4.
@@ -114,6 +66,60 @@ pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Result<Vec<u8>>>(
     control: &ProcessControl,
     mut compose: F,
 ) -> Result<u64> {
+    // One worker: the whole frame is made in the in-order step.
+    render_pipe_parallel_with_control(
+        src,
+        out,
+        out_w,
+        out_h,
+        fps,
+        audio_input,
+        normalize,
+        control,
+        1,
+        X264_EXPORT_PRESET,
+        |frame, time_ms| compose(&frame, time_ms),
+        |composed, _| Ok(composed),
+    )
+}
+
+/// x264 speed of the default render (the recording export).
+pub const X264_EXPORT_PRESET: &str = "medium";
+/// x264 speed of the polished editable clip. A 62 s 4K take spent 38 s in
+/// `medium` encoding alone on a 10-core Mac; `veryfast` at the same
+/// quality target took 27 s (the floor set by moving RGBA frames through the
+/// pipe) and made a smaller file of that synthetic source. The clip is an
+/// editing intermediate: its export is encoded again.
+pub const X264_POLISH_PRESET: &str = "veryfast";
+
+/// Stream-render a source with `workers` frames composed at once.
+///
+/// `prepare` runs on the reading thread in frame order (it may hold stream
+/// state, such as a camera reader) and receives the decoded RGBA frame;
+/// `compose` runs for up to `workers` frames at the same time; the composed
+/// frames are written to the encoder in order. A compose error or panic stops
+/// the render with that error after every child is reaped.
+#[allow(clippy::too_many_arguments)]
+pub fn render_pipe_parallel_with_control<P, Prep, C>(
+    src: &str,
+    out: &str,
+    out_w: u32,
+    out_h: u32,
+    fps: f64,
+    audio_input: &str,
+    normalize: bool,
+    control: &ProcessControl,
+    workers: usize,
+    preset: &str,
+    mut prepare: Prep,
+    compose: C,
+) -> Result<u64>
+where
+    P: Send,
+    Prep: FnMut(Vec<u8>, u64) -> Result<P>,
+    C: Fn(P, u64) -> Result<Vec<u8>> + Sync,
+{
+    let workers = workers.max(1);
     let probe = probe_with_control(src, control)?;
     let frame_bytes = rgba_frame_bytes(probe.w, probe.h, "decode source frames")?;
     // Rawvideo has no timestamps. Normalize the source's timestamped frames to
@@ -122,16 +128,10 @@ pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Result<Vec<u8>>>(
     // `r_frame_rate` and the encoder writes those duplicated frames at `fps`.
     let decode_filter = format!("fps={}", fps_str(fps));
     let mut decode = Command::new(ffmpeg_bin());
+    decode.args(["-v", "error"]);
+    super::push_literal_input(&mut decode, std::path::Path::new(src), control)?;
     decode
         .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            super::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            super::LOCAL_INPUT_FORMATS,
-            "-i",
-            src,
             "-vf",
             &decode_filter,
             "-f",
@@ -144,44 +144,34 @@ pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Result<Vec<u8>>>(
         .stderr(Stdio::null());
     let mut decoder = ManagedChild::spawn(&mut decode, control.clone(), "ffmpeg decode spawn")?;
 
+    let audio_filter_args = if normalize {
+        let source_ms = cut_media::probe(std::path::Path::new(src))
+            .ok()
+            .and_then(|probe| probe.duration_ms)
+            .filter(|duration_ms| *duration_ms > 0)
+            .ok_or_else(|| {
+                ff_err(
+                    "recording video has no measurable duration",
+                    "cannot bound the normalized audio to the video length",
+                )
+            })?;
+        normalize_audio_args(source_ms, fps)
+    } else {
+        Vec::new()
+    };
     let size = format!("{out_w}x{out_h}");
     let rate = fps_str(fps);
-    let mut args = vec![
-        "-v",
-        "error",
-        "-y",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgba",
-        "-s",
-        &size,
-        "-r",
-        &rate,
-        "-i",
+    let audio_input_args = super::literal_input_args(std::path::Path::new(audio_input), control)?;
+    let mut args: Vec<&str> = vec![
+        "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &rate, "-i",
         "-",
-        "-protocol_whitelist",
-        super::LOCAL_INPUT_PROTOCOLS,
-        "-format_whitelist",
-        super::LOCAL_INPUT_FORMATS,
-        "-i",
-        audio_input,
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0?",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-crf",
-        "20",
-        "-preset",
-        "medium",
     ];
-    if normalize {
-        args.extend(["-af", "loudnorm=I=-16:TP=-1.5:LRA=11,apad", "-shortest"]);
-    }
+    args.extend(audio_input_args.iter().map(String::as_str));
+    args.extend([
+        "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+        "-preset", preset,
+    ]);
+    args.extend(audio_filter_args.iter().map(String::as_str));
     args.extend(["-c:a", "aac", out]);
     let mut encode = Command::new(ffmpeg_bin());
     encode
@@ -193,38 +183,28 @@ pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Result<Vec<u8>>>(
     let mut stdout = decoder.take_stdout()?;
     let mut stdin = encoder.take_stdin()?;
     let stderr_reader = read_capped(encoder.take_stderr()?);
-    let result = (|| {
-        let mut frame = vec![0; frame_bytes];
-        let mut count = 0;
-        loop {
-            control.check("render recorder frames")?;
-            let mut filled = 0;
-            while filled < frame.len() {
-                match stdout.read(&mut frame[filled..]) {
-                    Ok(0) => break,
-                    Ok(n) => filled += n,
-                    Err(error) => return Err(ff_err("read decode frame", error)),
-                }
-            }
-            if filled == 0 || filled != frame.len() {
-                break;
-            }
-            let time_ms = (count as f64 * 1000.0 / fps) as u64;
-            let composed = compose(&frame, time_ms)?;
-            control.check("compose recorder frame")?;
-            if let Err(error) = stdin.write_all(&composed) {
-                if error.kind() == std::io::ErrorKind::BrokenPipe {
-                    break;
-                }
-                return Err(control
-                    .check("write encode frame")
-                    .err()
-                    .unwrap_or_else(|| ff_err("write encode frame", error)));
-            }
-            count += 1;
-        }
-        Ok(count)
-    })();
+    let mut frames_read = 0_u64;
+    let result = parallel::stream(
+        workers,
+        control,
+        || {
+            let Some(frame) = parallel::read_frame(&mut stdout, frame_bytes)? else {
+                return Ok(None);
+            };
+            let time_ms = (frames_read as f64 * 1000.0 / fps) as u64;
+            frames_read += 1;
+            Ok(Some((prepare(frame, time_ms)?, time_ms)))
+        },
+        &compose,
+        &mut |frame: Vec<u8>| match stdin.write_all(&frame) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
+            Err(error) => Err(control
+                .check("write encode frame")
+                .err()
+                .unwrap_or_else(|| ff_err("write encode frame", error))),
+        },
+    );
     drop(stdin);
     drop(stdout);
     if result.is_err() {
@@ -271,23 +251,10 @@ pub fn mp4_to_gif_with_control(
         "[0:v] fps={fps},scale={width}:-1:flags=lanczos,split [a][b];[a] palettegen=stats_mode=diff [p];[b][p] paletteuse=dither=bayer:bayer_scale=3"
     );
     let mut command = Command::new(ffmpeg_bin());
+    command.args(["-v", "error", "-y"]);
+    super::push_literal_input(&mut command, std::path::Path::new(src), control)?;
     command
-        .args([
-            "-v",
-            "error",
-            "-y",
-            "-protocol_whitelist",
-            super::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            super::LOCAL_INPUT_FORMATS,
-            "-i",
-            src,
-            "-filter_complex",
-            &filter,
-            "-loop",
-            "0",
-            out,
-        ])
+        .args(["-filter_complex", &filter, "-loop", "0", out])
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     let mut child = ManagedChild::spawn(&mut command, control.clone(), "ffmpeg gif spawn")?;

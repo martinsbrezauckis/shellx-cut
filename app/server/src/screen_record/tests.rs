@@ -283,3 +283,39 @@ fn stop_capture_unknown_id_is_a_noop() {
         "an unknown capture id returns false (file-poll fallback path)"
     );
 }
+
+// Readiness displays use the status read. It must never run the short
+// screen-capture check that can make the OS show a prompt, and the
+// microphone read must not touch screen capture at all.
+#[tokio::test]
+async fn status_and_microphone_doctor_never_run_a_screen_capture_check() {
+    record_capture::forbid_native_capture_access();
+    let probes = record_capture::screen_probe_attempts();
+    let status = screen_record_doctor(json!({"mode": "status"}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        record_capture::screen_probe_attempts(),
+        probes,
+        "a status read ran the screen-capture check"
+    );
+    assert!(status["screen_check"].is_string());
+    assert!(status["cards"].is_array());
+
+    let access = record_capture::native_screen_access_attempts();
+    let microphone = screen_record_doctor(json!({"mode": "microphone"}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        record_capture::native_screen_access_attempts(),
+        access,
+        "the microphone read touched screen capture"
+    );
+    assert!(microphone.get("cards").is_none());
+    assert!(microphone["start_allowed"].is_boolean());
+    assert!(microphone["microphones"].is_array());
+}

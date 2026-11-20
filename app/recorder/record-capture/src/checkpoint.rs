@@ -95,6 +95,79 @@ impl Checkpoints {
         self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe, None)
     }
 
+    /// macOS rotation: publish after reading the closed file's container
+    /// facts without decoding it. A full decode of a 15 s 4K segment took about
+    /// 3.9 s, and the next segment cannot start before this publication, so
+    /// every rotation froze the take for that long. The frames are decoded
+    /// anyway when the constant-rate part is made (during the recording or at
+    /// Stop); a segment that cannot be decoded then is reported in the take's
+    /// notes and the picture before it is held.
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "capture-macos")),
+        allow(dead_code)
+    )]
+    pub(crate) fn publish_without_decode(
+        &mut self,
+        sequence: u64,
+        staging: &Path,
+        facts: CheckpointFacts,
+    ) -> Result<record_recovery::Checkpoint> {
+        let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
+        if !record_recovery::is_plain_regular_file(staging).map_err(|e| error(&e.to_string()))? {
+            return Err(error(
+                "native checkpoint result is not a local regular file",
+            ));
+        }
+        let media = record_recovery::probe_media_without_decode(&ffprobe, staging)
+            .map_err(|e| error(&e.to_string()))?;
+        if media.has_audio {
+            return Err(error("native checkpoint unexpectedly carries audio"));
+        }
+        self.owner
+            .publish(sequence, staging, facts, media)
+            .map_err(|e| error(&e.to_string()))
+    }
+
+    /// Close a segment whose output received no picture (a still screen) or
+    /// could not be finished, by holding the last frame of the checkpoint
+    /// before it. One frame is enough: the stitch repeats it over `facts`'
+    /// whole span, exactly as a recorder repeats the last picture while the
+    /// screen does not change.
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "capture-macos")),
+        allow(dead_code)
+    )]
+    pub(crate) fn publish_held_frame(
+        &mut self,
+        sequence: u64,
+        staging: &Path,
+        facts: CheckpointFacts,
+    ) -> Result<record_recovery::Checkpoint> {
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
+        materialize_held_frame(
+            &self.root,
+            self.owner.manifest(),
+            sequence,
+            staging,
+            &ffmpeg,
+        )?;
+        let media = record_recovery::verify_media(&ffmpeg, &ffprobe, staging)
+            .map_err(|e| error(&e.to_string()))?;
+        self.owner
+            .publish_held_tail(sequence, staging, facts, media)
+            .map_err(|e| error(&e.to_string()))
+    }
+
+    /// Checkpoints published so far, for a constant-rate part made ahead of Stop.
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "capture-macos")),
+        allow(dead_code)
+    )]
+    pub(crate) fn published(&self) -> (PathBuf, Vec<record_recovery::Checkpoint>) {
+        (self.root.clone(), self.owner.manifest().checkpoints.clone())
+    }
+
     /// Ordinary WGC owns an independent observation of each accepted native
     /// frame. Use it only to correct a proven encoder-generated terminal tail.
     #[cfg_attr(not(all(windows, feature = "capture-windows")), allow(dead_code))]
@@ -171,7 +244,7 @@ impl Checkpoints {
         ffmpeg: &str,
         ffprobe: &str,
         source_name: &str,
-    ) -> Result<(PathBuf, MediaFacts)> {
+    ) -> Result<(PathBuf, MediaFacts, Vec<String>)> {
         let stitched = record_recovery::stitch_complete_with_media(
             &self.root,
             &self.owner.manifest().checkpoints,
@@ -180,7 +253,7 @@ impl Checkpoints {
             source_name,
         )
         .map_err(|e| error(&e.to_string()))?;
-        Ok((stitched.path, stitched.media))
+        Ok((stitched.path, stitched.media, stitched.notes))
     }
 }
 
@@ -217,22 +290,39 @@ fn materialize_empty_wgc_tail(
     let held = PrivateStaging::create(root, "held-wgc-tail", "segment.mp4")
         .map_err(|cause| error(&format!("reserve held WGC tail: {cause}")))?;
     let last_frame = prior_media.decoded_video_frames - 1;
+    // The held picture is cloned at the recording's own cadence. Without the
+    // fps step it inherits the prior segment's average rate, which a still
+    // screen makes sparse (three frames in 15 s is 0.2 fps): its one frame then
+    // lasts about 5 s, `-t` cannot shorten it, and the duration check below
+    // refuses the tail, failing Stop.
+    let cadence = manifest
+        .start
+        .output_cadence
+        .filter(|rate| rate.den != 0 && rate.num != 0)
+        .map_or_else(
+            || "30/1".to_string(),
+            |rate| format!("{}/{}", rate.num, rate.den),
+        );
     let filter = format!(
-        "select=eq(n\\,{last_frame}),setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={:.3}",
+        "select=eq(n\\,{last_frame}),setpts=PTS-STARTPTS,fps={cadence},tpad=stop_mode=clone:stop_duration={:.3}",
         span_ms as f64 / 1000.0
     );
     let duration = format!("{:.3}", span_ms as f64 / 1000.0);
     let control =
         cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(120), || false);
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-n"]);
+    cut_media::ffmpeg::with_render_process_control(&control, || {
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, &prior_path)
+    })
+    .map_err(literal_checkpoint_error)?;
+    cmd.args([
+        "-map", "0:v:0", "-vf", &filter, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t",
+        &duration,
+    ])
+    .arg(held.path());
     let output = cut_media::ffmpeg::run_owned_command(
-        Command::new(ffmpeg)
-            .args(["-v", "error", "-n", "-i"])
-            .arg(&prior_path)
-            .args([
-                "-map", "0:v:0", "-vf", &filter, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-t", &duration,
-            ])
-            .arg(held.path()),
+        &mut cmd,
         &control,
         "hold last verified frame for WGC tail without native frames",
     )
@@ -267,6 +357,91 @@ fn materialize_empty_wgc_tail(
     install.map_err(|cause| error(&format!("install held WGC tail: {cause}")))
 }
 
+/// Write one frame, the last one of the checkpoint before `sequence`, into the
+/// open segment's staging path (replacing whatever an unfinished native output
+/// left there).
+#[cfg_attr(
+    not(all(target_os = "macos", feature = "capture-macos")),
+    allow(dead_code)
+)]
+fn materialize_held_frame(
+    root: &Path,
+    manifest: &record_recovery::CaptureManifest,
+    sequence: u64,
+    staging: &Path,
+    ffmpeg: &str,
+) -> Result<()> {
+    let prior = manifest
+        .checkpoints
+        .last()
+        .filter(|checkpoint| checkpoint.sequence.checked_add(1) == Some(sequence))
+        .ok_or_else(|| error("a segment without pictures has no earlier checkpoint to hold"))?;
+    let frames = prior
+        .media
+        .as_ref()
+        .map(|media| media.decoded_video_frames)
+        .filter(|frames| *frames > 0)
+        .ok_or_else(|| error("the earlier checkpoint has no video frame to hold"))?;
+    let prior_path = root.join(format!("checkpoints/segment-{:06}.mp4", prior.sequence));
+    if prior.file != format!("checkpoints/segment-{:06}.mp4", prior.sequence)
+        || !record_recovery::is_plain_regular_file(&prior_path)
+            .map_err(|cause| error(&cause.to_string()))?
+    {
+        return Err(error("the earlier checkpoint is not a local regular file"));
+    }
+    let held = PrivateStaging::create(root, "held-frame", "segment.mp4")
+        .map_err(|cause| error(&format!("reserve held frame: {cause}")))?;
+    let filter = format!("select=eq(n\\,{}),setpts=PTS-STARTPTS", frames - 1);
+    let control =
+        cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(120), || false);
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-n"]);
+    cut_media::ffmpeg::with_render_process_control(&control, || {
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, &prior_path)
+    })
+    .map_err(literal_checkpoint_error)?;
+    cmd.args([
+        "-map",
+        "0:v:0",
+        "-vf",
+        &filter,
+        "-frames:v",
+        "1",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+    ])
+    .arg(held.path());
+    let output = cut_media::ffmpeg::run_owned_command(
+        &mut cmd,
+        &control,
+        "hold the last picture for a segment without new frames",
+    )
+    .map_err(|cause| error(&cause.to_string()))?;
+    let installed = if !output.status.success() {
+        Err(error(
+            "ffmpeg could not hold the last picture of the earlier segment",
+        ))
+    } else {
+        match std::fs::symlink_metadata(staging) {
+            Ok(meta) if meta.file_type().is_file() => {
+                record_recovery::replace_file_synced(held.path(), staging)
+                    .map_err(|cause| error(&format!("install held frame: {cause}")))
+            }
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+                record_recovery::publish_new_synced(held.path(), staging)
+                    .map_err(|cause| error(&format!("install held frame: {cause}")))
+            }
+            Ok(_) => Err(error("the open segment is not a local regular file")),
+            Err(cause) => Err(error(&format!("inspect the open segment: {cause}"))),
+        }
+    };
+    let _ = held.cleanup();
+    installed
+}
+
 fn trim_extrapolated_wgc_tail(
     staging: &Path,
     facts: &CheckpointFacts,
@@ -292,12 +467,16 @@ fn trim_extrapolated_wgc_tail(
     let duration = format!("{:.3}", span_ms as f64 / 1000.0);
     let control =
         cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(60), || false);
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-n"]);
+    cut_media::ffmpeg::with_render_process_control(&control, || {
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, staging)
+    })
+    .map_err(literal_checkpoint_error)?;
+    cmd.args(["-map", "0:v:0", "-an", "-t", &duration, "-c:v", "copy"])
+        .arg(clipped.path());
     let output = cut_media::ffmpeg::run_owned_command(
-        Command::new(ffmpeg)
-            .args(["-v", "error", "-n", "-i"])
-            .arg(staging)
-            .args(["-map", "0:v:0", "-an", "-t", &duration, "-c:v", "copy"])
-            .arg(clipped.path()),
+        &mut cmd,
         &control,
         "clip WGC encoder tail to observed Stop",
     )
@@ -349,16 +528,17 @@ fn normalize_video_only_checkpoint(
         .map_err(|cause| error(&format!("reserve video-only checkpoint: {cause}")))?;
     let control =
         cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(60), || false);
-    let output = cut_media::ffmpeg::run_owned_command(
-        Command::new(ffmpeg)
-            .args(["-v", "error", "-n", "-i"])
-            .arg(staging)
-            .args(["-map", "0:v:0", "-an", "-c:v", "copy"])
-            .arg(normalized.path()),
-        &control,
-        "strip native checkpoint audio",
-    )
-    .map_err(|cause| error(&cause.to_string()))?;
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-n"]);
+    cut_media::ffmpeg::with_render_process_control(&control, || {
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, staging)
+    })
+    .map_err(literal_checkpoint_error)?;
+    cmd.args(["-map", "0:v:0", "-an", "-c:v", "copy"])
+        .arg(normalized.path());
+    let output =
+        cut_media::ffmpeg::run_owned_command(&mut cmd, &control, "strip native checkpoint audio")
+            .map_err(|cause| error(&cause.to_string()))?;
     if !output.status.success() {
         return Err(error("ffmpeg could not strip native checkpoint audio"));
     }
@@ -382,5 +562,16 @@ fn error(cause: &str) -> RecordError {
         .with_action("keep the capture directory writable and retry recording")
 }
 
+fn literal_checkpoint_error(cause: impl std::fmt::Display) -> RecordError {
+    RecordError::new(
+        error_codes::FFMPEG,
+        "cannot safely read checkpoint media",
+        cause.to_string(),
+    )
+    .with_action("use a readable capture source and retry recording")
+}
+
+#[cfg(all(test, unix))]
+mod held_frame_tests;
 #[cfg(all(test, unix))]
 mod tests;

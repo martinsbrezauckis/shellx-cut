@@ -1,0 +1,6 @@
+/* "Needed for" under a tool in Settings: quiet, like the card's own facts. */
+.env-card-needed {
+  margin-top: var(--space-1, 4px);
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-2);
+}

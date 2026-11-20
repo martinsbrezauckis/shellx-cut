@@ -34,6 +34,8 @@ const ROWS: Array<[scope: string, keys: string[], action: string]> = [
   ['global', ['Alt+Del', 'Shift+Del'], 'lift-delete selected clip (leave the gap)'],
   ['global', ['Ctrl/Cmd+click'], 'add / remove a clip from the selection'],
   ['global', ['drag empty lane', 'Shift+drag'], 'marquee select the clips inside the rectangle / add them to the selection'],
+  ['global', ['drag a clip'], 'move it as Overwrite: replaces what is under it, nothing else moves'],
+  ['global', ['Alt+drag a clip'], 'move it as Insert: pushes the rest of every track right'],
   ['global', ['Ctrl/Cmd+A'], 'select all clips (then delete / speed / grade as one)'],
   ['global', ['Ctrl/Cmd+T'], 'default transition (500ms dissolve) at the selected / nearest cut'],
   ['global', ['Ctrl/Cmd+Alt+V'], 'paste ATTRIBUTES of the copied clip onto the selection (dialog)'],

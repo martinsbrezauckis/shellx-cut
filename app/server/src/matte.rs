@@ -23,6 +23,9 @@ use std::path::{Path, PathBuf};
 
 #[path = "matte_cache_bake.rs"]
 mod cache_bake;
+#[cfg(test)]
+#[path = "matte_http_stream_tests.rs"]
+mod http_stream_tests;
 #[path = "matte_native_runtime.rs"]
 pub(crate) mod native_runtime;
 #[path = "matte_output.rs"]
@@ -34,6 +37,8 @@ pub(crate) mod prepared;
 #[cfg(test)]
 #[path = "matte_seed_output_tests.rs"]
 mod seed_output_tests;
+#[path = "matte_trust.rs"]
+pub(crate) mod trust;
 
 use cut_core::{error_codes, ClipMatte, CutError, MatteModel, MatteQuality, MatteSeed};
 use native_runtime::{
@@ -184,8 +189,9 @@ fn bake_local(
             "the local Background Removal runtime could not be started",
         )
         .with_suggested_action(
-            "install or re-point the Background Removal tool (system.doctor / system.fetch_tool)",
+            "install Background removal again (Settings > AI & transcription, or system.setup_matte), then retry",
         )
+        .with_requirement("matte_runtime")
         })?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -253,10 +259,20 @@ pub(crate) fn cache_matches_prepared_runtime(
 }
 
 /// Bake via the HTTP sidecar (`matte_service.py` at `CUT_MATTE_ENDPOINT`) — the
-/// dev / remote-GPU path. POSTs the whole asset, writes the returned FFV1 alpha
-/// to `alpha`, parses the `X-Matte-Stats` header.
+/// dev / remote-GPU path. POSTs the whole asset, streamed from the file (a
+/// clip can be many gigabytes and is never held in memory), writes the
+/// returned FFV1 alpha to `alpha`, parses the `X-Matte-Stats` header.
 fn bake_http(asset_path: &Path, alpha: &Path, m: &ClipMatte) -> Result<MatteStats, CutError> {
-    let bytes = std::fs::read(asset_path).map_err(|e| {
+    bake_http_at(&endpoint(), asset_path, alpha, m)
+}
+
+fn bake_http_at(
+    endpoint: &str,
+    asset_path: &Path,
+    alpha: &Path,
+    m: &ClipMatte,
+) -> Result<MatteStats, CutError> {
+    let source = std::fs::File::open(asset_path).map_err(|e| {
         CutError::new(
             error_codes::NOT_FOUND,
             format!(
@@ -266,13 +282,13 @@ fn bake_http(asset_path: &Path, alpha: &Path, m: &ClipMatte) -> Result<MatteStat
             "the clip's source file must exist to bake its matte",
         )
     })?;
-    let mut url = format!("{}/video/matte", endpoint());
+    let mut url = format!("{endpoint}/video/matte");
     if matches!(m.quality, MatteQuality::Fast) {
         url.push_str("?downsample_ratio=0.25");
     }
     let resp = ureq::post(&url)
         .header("content-type", "application/octet-stream")
-        .send(&bytes[..])
+        .send(source)
         .map_err(|e| {
             CutError::new(
                 error_codes::IO,
@@ -280,8 +296,9 @@ fn bake_http(asset_path: &Path, alpha: &Path, m: &ClipMatte) -> Result<MatteStat
                 "no local Background Removal runtime is installed and the HTTP sidecar was unreachable",
             )
             .with_suggested_action(
-                "install the Background Removal tool (system.fetch_tool), or set CUT_MATTE_ENDPOINT to a running sidecar",
+                "install Background removal (Settings > AI & transcription, or system.setup_matte), or set CUT_MATTE_ENDPOINT to a running sidecar",
             )
+            .with_requirement("matte_runtime")
         })?;
     let stats_hdr = resp
         .headers()
@@ -648,7 +665,9 @@ fn sam2_seed_mask(
             error_codes::SIDECAR,
             "the SAM2 click-to-pick-subject runner is not installed",
             "re-run system.setup_matte{model:\"matanyone\", accept_noncommercial:true} (it installs SAM2)",
-        ));
+        )
+        .with_suggested_action("ask the person to install Premium background removal again (system.setup_matte {model:\"matanyone\", accept_noncommercial:true} after they accept its non-commercial licence), then retry")
+        .with_requirement("matte_premium"));
         }
         let mut cmd = std::process::Command::new(&rt.python);
         cmd.arg(&script)
@@ -710,6 +729,7 @@ fn rvm_seed_mask(
             "MatAnyone2 needs the RVM model to seed its first-frame subject mask, but RVM is not installed",
             "run system.setup_matte to install the default RVM model — the premium tier seeds its mask from it",
         )
+        .with_requirement("matte_runtime")
     })?;
         let mut command = std::process::Command::new(&rvm.python);
         command
@@ -749,6 +769,8 @@ fn bake_matanyone(
             "the premium MatAnyone2 background-removal runtime is not installed",
             "run system.setup_matte{model:\"matanyone\"} to install it (opt-in, NVIDIA, non-commercial)",
         )
+        .with_suggested_action("use the standard model (quality other than premium), or ask the person to install Premium background removal (system.setup_matte {model:\"matanyone\", accept_noncommercial:true} after they accept its non-commercial licence)")
+        .with_requirement("matte_premium")
     })?;
     let seed = resolve_seed_mask(cache_dir, in_path, asset_hash, m, &rt)?;
     // VRAM/quality: Good = up to 1080-px min side, Fast = 720. The alpha is always

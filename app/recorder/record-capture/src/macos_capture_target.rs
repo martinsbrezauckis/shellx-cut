@@ -77,8 +77,7 @@ pub(super) fn prepare_capture_target(
             .iter()
             .find(|window| window.window_id() == want_id)
             .ok_or_else(|| {
-                cap_err(
-                    "find the window to capture",
+                crate::window_target::window_unavailable(
                     "the selected window is no longer available; reopen the source picker",
                 )
             })?;

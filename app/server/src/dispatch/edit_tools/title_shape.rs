@@ -182,6 +182,11 @@ async fn render_title_asset(
     let store = guard.as_mut().ok_or_else(no_project)?;
     let (id, op) =
         store.record_import(None, asset, Actor::system(), Some("generated title".into()))?;
+    // This engine drew it for exactly this spec: a later open reuses it.
+    cut_media::cache_trust::remember_bound(
+        &mov_path,
+        &super::title_proof::title_binding(&id, spec),
+    );
     state.events.publish(Event::OpApplied { op });
     Ok(id)
 }
@@ -687,7 +692,7 @@ pub(in crate::dispatch) fn inherit_split_metadata<T: Clone>(
 /// editable field), and a clip with no title origin can't have its spec
 /// reconstructed. This is the boundary that keeps `title.update` from silently
 /// producing a wrong render.
-fn recover_title_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
+pub(super) fn recover_title_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
     use std::collections::{BTreeMap, HashSet};
 
     overlay_metadata::validate_split_metadata_projection(ops)?;
@@ -1190,7 +1195,7 @@ pub(in crate::dispatch) fn apply_shape_overrides(base: &mut Value, overrides: &V
 /// `title*` tracks, but a shape clip has an `edit.add_shape` creating op while a
 /// title clip has a `title.add` one. A title clip (or any non-shape clip) reaches
 /// no shape ancestry here → a clean, actionable error instead of a wrong render.
-fn recover_shape_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
+pub(super) fn recover_shape_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
     use std::collections::BTreeMap;
 
     overlay_metadata::validate_split_metadata_projection(ops)?;

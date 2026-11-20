@@ -7,7 +7,9 @@ async fn create(state: &AppState, name: &str, root: &std::path::Path) {
     let result = dispatch(
         state,
         "project.create",
-        json!({"name":name,"dir":root.join(format!("{name}.cutproj"))}),
+        // The switch is the point of these tests: a running job that someone
+        // asked for (item 135) is cancelled on purpose, not asked about.
+        json!({"name":name,"dir":root.join(format!("{name}.cutproj")),"cancel_running_jobs":true}),
         test_actor(),
     )
     .await;

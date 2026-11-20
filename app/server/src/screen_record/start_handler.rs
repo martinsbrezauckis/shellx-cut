@@ -35,6 +35,7 @@ pub(crate) async fn screen_record_start(
         rationale: Option<String>,
     }
     let a: Args = parse_args(args)?;
+    audio_test_gate::refuse_start_during_audio_test()?;
     // Project replacement and native-capture admission share one linearization
     // order. Hold this before selecting the project directory and retain it
     // through reservation/worker admission, so a switch cannot retarget a
@@ -53,6 +54,7 @@ pub(crate) async fn screen_record_start(
     let capture_quality = record_capture::admit_capture_quality(a.quality).map_err(record_err)?;
     let cadence = cadence::from_server_fps(fps)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
+    let microphone_source = microphone::source_for_recording_start(a.audio)?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
     let monitor_target = monitor_start_admission::admit(
@@ -60,6 +62,11 @@ pub(crate) async fn screen_record_start(
         a.monitor_id.as_deref(),
         a.window.is_some(),
         &recorder_doctor.monitors,
+    )?;
+    monitor_start_admission::admit_window(
+        a.window.as_deref(),
+        recorder_doctor.window_capture_supported,
+        &recorder_doctor.windows,
     )?;
     let pause_enabled = recording_controls::admit_public_start(
         a.pause,
@@ -71,11 +78,6 @@ pub(crate) async fn screen_record_start(
         a.camera_id.is_some(),
         a.scenes.is_some(),
     )?;
-    let microphone_source = if a.audio {
-        microphone::source_for_start()?
-    } else {
-        record_capture::MicrophoneSource::SystemDefault
-    };
     if let Some(camera_id) = a.camera_id.as_deref() {
         camera_public::admit_selected(camera_id)?;
     }
@@ -89,7 +91,9 @@ pub(crate) async fn screen_record_start(
 
     let capture_id = new_capture_id();
     windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
-    let recovery_scan = recovery::scan_recovery_for_project(&dir)?;
+    // Earlier interrupted captures are prepared in the background; a new
+    // recording never waits for that work.
+    let recovery_job = recovery::background::start(state, &dir)?;
     let out_dir = create_capture_dir(&dir, &capture_id)?;
     recovery::begin(&out_dir, &capture_id, &cadence)?;
     let project_path = capture_file(&dir, &capture_id, "project.json")?;
@@ -175,11 +179,7 @@ pub(crate) async fn screen_record_start(
         "scenes": recording_scene_start,
         "pause": { "enabled": pause_enabled },
         "studio_events": crate::screen_record_studio::studio_events_path(&out_dir),
-        "recovery_scan": {
-            "recovered": recovery_scan.recovered,
-            "deferred": recovery_scan.deferred,
-            "failed_closed": recovery_scan.failed_closed,
-        },
+        "recovery_scan": recovery::background::started_report(recovery_job),
         "note": if duration_ms.is_none() {
             "OPEN-ENDED capture: runs until screen_record.stop. The platform may show its one-time screen or camera permission prompt on the desktop."
         } else {
@@ -273,6 +273,10 @@ pub(crate) async fn readiness_status_handler(args: Value) -> Result<VerbResult, 
         "ready": ready,
         "terminal": terminal,
         "state": state,
+        "first_screen_frame_unix_ms": status.first_screen_frame_unix_ms,
+        "since_first_screen_frame_ms": status
+            .first_screen_frame_unix_ms
+            .map(|first| super::active_capture::unix_ms_now().saturating_sub(first)),
         "audio_meters": audio_meters,
         "input_hook": control.input_hook_startup(),
         "source_lifecycle": source_lifecycle_status(status, source_lifecycle),
@@ -280,7 +284,28 @@ pub(crate) async fn readiness_status_handler(args: Value) -> Result<VerbResult, 
             "state": controller_placement.state.as_str(),
             "reason": controller_placement.reason,
         },
+        // After Stop: which part of the take is being saved, so the app can
+        // show progress instead of a bare "stopping".
+        "saving": saving_progress(&args.capture_id, control.stop_requested()),
     })))
+}
+
+fn saving_progress(capture_id: &str, stop_requested: bool) -> Value {
+    let progress = stop_requested
+        .then(|| capture_registry::active_capture_project_dir(capture_id))
+        .flatten()
+        .and_then(|project| {
+            super::existing_capture_dir(&project, capture_id)
+                .ok()
+                .flatten()
+        })
+        .and_then(|capture| record_recovery::stitch_progress(&capture));
+    match progress {
+        Some((parts_done, parts_total)) => {
+            json!({"parts_done": parts_done, "parts_total": parts_total})
+        }
+        None => Value::Null,
+    }
 }
 
 #[cfg(test)]
@@ -410,3 +435,7 @@ mod readiness_status_tests {
         drop(reservation);
     }
 }
+
+#[cfg(test)]
+#[path = "start_microphone_tests.rs"]
+mod microphone_tests;

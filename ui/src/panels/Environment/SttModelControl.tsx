@@ -26,7 +26,7 @@ export function SttModelControl({ card, onChanged }: { card: DoctorCard; onChang
         : STT_MODELS.find((entry) => entry.id === STT_DEFAULT_MODEL)?.label ?? STT_DEFAULT_MODEL
       setSttNote(
         `${model ? 'Caption model set to' : 'Caption model reset to'} ${label}. ` +
-        'Applies to the next transcription — re-run it on a clip to re-transcribe.',
+        'Applies to transcripts made from now on; existing transcripts stay as they are.',
       )
       onChanged()
     } else {

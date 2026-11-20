@@ -148,9 +148,8 @@ pub(crate) async fn media_diarize(state: &AppState, args: Value) -> Result<VerbR
             "the diarization bridge is not available",
             "diarize_runner.py or its python (perception sidecar) was not found",
         )
-        .with_suggested_action(
-            "install the perception sidecar, or set DIARIZE_RUNNER_PY / DIARIZE_RUNNER_SCRIPT (dev)",
-        )
+        .with_suggested_action(cut_perception::captions_setup_action())
+        .with_requirement("captions_runtime")
     })?;
     let endpoint = endpoint();
     let secret = secret();
@@ -246,7 +245,8 @@ pub(crate) async fn media_diarize(state: &AppState, args: Value) -> Result<VerbR
                     return;
                 }
             };
-            if let Err(e) = std::fs::write(&receipt_path, receipt_bytes) {
+            // Replaces the name: never writes through a link or shared file.
+            if let Err(e) = cut_core::store::replace_project_file(&receipt_path, &receipt_bytes) {
                 st.jobs.fail(
                     &job.job_id,
                     CutError::new(
@@ -442,14 +442,10 @@ pub async fn run_diarize(
     }
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CutError::new(
-            error_codes::SIDECAR,
-            format!("speaker diarization failed: {}", stderr.trim()),
-            format!("the diarization service ({endpoint}) could not diarize the asset"),
-        )
-        .with_suggested_action(
-            "verify the service is reachable at <CUT_DIARIZE_ENDPOINT>/health, or set \
-             CUT_DIARIZE_ENDPOINT to the running diarization service URL",
+        return Err(classify_runner_failure(
+            out.status.code(),
+            &stderr,
+            endpoint,
         ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -460,6 +456,51 @@ pub async fn run_diarize(
             format!("got: {}", stdout.trim()),
         )
     })
+}
+
+/// Exit status of `diarize_runner.py` when the asset's audio is longer than one run
+/// accepts. Mirrors `EXIT_AUDIO_TOO_LONG` in the runner (a test keeps them equal).
+const RUNNER_EXIT_AUDIO_TOO_LONG: i32 = 3;
+/// Exit status when the asset has no audio the runner can read. Mirrors
+/// `EXIT_NO_USABLE_AUDIO` in the runner.
+const RUNNER_EXIT_NO_USABLE_AUDIO: i32 = 4;
+
+/// Turn a failed runner run into the error the person and the agent see.
+///
+/// The runner refuses some assets on its own, before it sends anything to the
+/// service, and says so with a dedicated exit status. Those refusals are about the
+/// asset, so the message is the runner's plain reason and the suggested action is
+/// the matching next step. Every other failure (service unreachable, model still
+/// loading, a bad answer) keeps the service advice. The status decides, never the
+/// wording of stderr.
+fn classify_runner_failure(status: Option<i32>, stderr: &str, endpoint: &str) -> CutError {
+    let detail = stderr.trim();
+    match status {
+        Some(RUNNER_EXIT_AUDIO_TOO_LONG) => CutError::new(
+            error_codes::INVALID_ARGS,
+            detail,
+            "the asset's audio is longer than one speaker-labelling run accepts",
+        )
+        .with_suggested_action("Trim or split the asset and run speaker labelling on the parts."),
+        Some(RUNNER_EXIT_NO_USABLE_AUDIO) => CutError::new(
+            error_codes::INVALID_ARGS,
+            detail,
+            "the asset has no audio that can be read",
+        )
+        .with_suggested_action(
+            "Choose an asset that contains speech audio, or import the file again if it is damaged.",
+        ),
+        _ => CutError::new(
+            error_codes::SIDECAR,
+            format!("speaker diarization failed: {detail}"),
+            format!("the diarization service ({endpoint}) could not diarize the asset"),
+        )
+        .with_suggested_action(
+            "verify the service is reachable at <CUT_DIARIZE_ENDPOINT>/health, or set \
+             CUT_DIARIZE_ENDPOINT to the running diarization service URL",
+        )
+        .with_requirement("diarize_service"),
+    }
 }
 
 /// Merge diarization results into an asset's perception receipt (blocking IO).
@@ -502,23 +543,37 @@ pub(crate) fn merge_diarization(
     let labeled = cut_perception::apply_diarization(&mut report, receipt.turns, prov);
 
     require_live_receipts_dir(receipts)?;
+    // Both files are replaced by name, never written through a link or a
+    // file shared with another path.
     let perc_path = receipts.join(format!("{asset_id}.perception.json"));
-    std::fs::write(
+    cut_core::store::replace_project_file(
         &perc_path,
-        serde_json::to_string_pretty(&report).map_err(CutError::from)?,
+        serde_json::to_string_pretty(&report)
+            .map_err(CutError::from)?
+            .as_bytes(),
     )?;
+    cut_media::cache_trust::remember(&perc_path); // item 155: this engine's report
     if let Some(t) = report.words.as_ref() {
         let words_path = receipts.join(format!("{asset_id}.words.json"));
-        std::fs::write(
+        cut_core::store::replace_project_file(
             &words_path,
-            serde_json::to_string_pretty(t).map_err(CutError::from)?,
+            serde_json::to_string_pretty(t)
+                .map_err(CutError::from)?
+                .as_bytes(),
         )?;
     }
     Ok(labeled)
 }
 
 fn require_live_receipts_dir(receipts: &Path) -> Result<(), CutError> {
-    if receipts.is_dir() {
+    // Item 162: the folder itself, never followed (see the perception
+    // sidecar's twin): a link here would send both writes outside the project.
+    let plain = std::fs::symlink_metadata(receipts).is_ok_and(|meta| {
+        meta.is_dir()
+            && !meta.file_type().is_symlink()
+            && !cut_core::reparse::names_another_entry(&meta)
+    });
+    if plain {
         return Ok(());
     }
     Err(CutError::new(
@@ -534,6 +589,19 @@ fn require_live_receipts_dir(receipts: &Path) -> Result<(), CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 162: a receipts folder that became a link is not written through.
+    #[cfg(unix)]
+    #[test]
+    fn linked_receipts_folder_is_not_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let receipts = dir.path().join("receipts");
+        std::os::unix::fs::symlink(&outside, &receipts).unwrap();
+        assert!(require_live_receipts_dir(&receipts).is_err());
+        assert!(require_live_receipts_dir(&outside).is_ok());
+    }
 
     #[test]
     fn native_selection_uses_bundled_diarize_and_normal_selection_keeps_overrides() {
@@ -578,6 +646,77 @@ mod tests {
         assert_eq!(normal.python, override_python);
         assert_eq!(normal.script, override_script);
         assert!(!normal.native_context);
+    }
+
+    const TOO_LONG_STDERR: &str = "this asset's audio is too long to label speakers (about 2h 01m 40s); the limit is 2h 00m 00s of audio per run.\n";
+
+    #[test]
+    fn a_too_long_asset_is_refused_with_the_plain_reason_and_a_trim_action() {
+        let e = classify_runner_failure(Some(3), TOO_LONG_STDERR, "http://127.0.0.1:9002");
+        assert_eq!(e.code, error_codes::INVALID_ARGS);
+        assert_eq!(e.message, TOO_LONG_STDERR.trim());
+        assert!(!e.message.starts_with("speaker diarization failed"));
+        let action = e.suggested_action.expect("a next step");
+        assert!(action.starts_with("Trim or split the asset"), "{action}");
+        assert!(!action.contains("CUT_DIARIZE_ENDPOINT"), "{action}");
+        assert!(!e.cause.contains("service"), "{}", e.cause);
+    }
+
+    #[test]
+    fn an_asset_without_readable_audio_is_refused_with_its_own_action() {
+        let msg = "this asset has no audio that can be read; speaker labelling needs an asset with speech.\n";
+        let e = classify_runner_failure(Some(4), msg, "http://127.0.0.1:9002");
+        assert_eq!(e.code, error_codes::INVALID_ARGS);
+        assert_eq!(e.message, msg.trim());
+        let action = e.suggested_action.expect("a next step");
+        assert!(action.contains("speech audio"), "{action}");
+        assert!(!action.contains("CUT_DIARIZE_ENDPOINT"), "{action}");
+    }
+
+    #[test]
+    fn a_service_failure_keeps_the_reachability_advice() {
+        let stderr =
+            "diarize_runner: diarization service unreachable (http://127.0.0.1:9002): refused\n";
+        for status in [Some(1), Some(2), None] {
+            let e = classify_runner_failure(status, stderr, "http://127.0.0.1:9002");
+            assert_eq!(e.code, error_codes::SIDECAR);
+            assert_eq!(
+                e.message,
+                format!("speaker diarization failed: {}", stderr.trim())
+            );
+            assert!(e.cause.contains("http://127.0.0.1:9002"), "{}", e.cause);
+            let action = e.suggested_action.expect("a next step");
+            assert!(action.contains("CUT_DIARIZE_ENDPOINT"), "{action}");
+        }
+    }
+
+    #[test]
+    fn the_status_decides_not_the_wording() {
+        // A service failure whose text happens to mention a long asset stays a
+        // service failure, and a refusal keeps its class whatever it says.
+        let e = classify_runner_failure(Some(1), "the audio is too long", "http://x");
+        assert_eq!(e.code, error_codes::SIDECAR);
+        let e = classify_runner_failure(Some(3), "anything at all", "http://x");
+        assert_eq!(e.code, error_codes::INVALID_ARGS);
+    }
+
+    #[test]
+    fn the_exit_statuses_match_the_runner() {
+        // Compared line by line, so a checkout with Windows line endings reads the same.
+        let script = include_str!("../../perception/py/diarize_runner.py");
+        let has_line = |wanted: String| script.lines().any(|line| line.trim_end() == wanted);
+        assert!(
+            has_line(format!(
+                "EXIT_AUDIO_TOO_LONG = {RUNNER_EXIT_AUDIO_TOO_LONG}"
+            )),
+            "runner and engine disagree on the too-long status"
+        );
+        assert!(
+            has_line(format!(
+                "EXIT_NO_USABLE_AUDIO = {RUNNER_EXIT_NO_USABLE_AUDIO}"
+            )),
+            "runner and engine disagree on the no-audio status"
+        );
     }
 
     #[test]

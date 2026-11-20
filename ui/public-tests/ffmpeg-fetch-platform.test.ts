@@ -22,6 +22,11 @@ for (const [os, arch] of [
 }
 
 assert.equal(hasFetchAction({ ...missingFfmpeg, status: 'unknown' }, 'windows', 'x86_64'), false, 'an unverified Doctor result never advertises Install')
-assert.equal(hasFetchAction({ ...missingFfmpeg, id: 'ffprobe' }, 'windows', 'x86_64'), false, 'only the ffmpeg card can start the FFmpeg installer')
+// A missing ffprobe is repaired by the same download (the archive carries both
+// programs); a degraded ffprobe is not, and no other card starts the installer.
+assert.equal(hasFetchAction({ ...missingFfmpeg, id: 'ffprobe' }, 'windows', 'x86_64'), true, 'a missing ffprobe offers the same FFmpeg download')
+assert.equal(hasFetchAction({ ...missingFfmpeg, id: 'ffprobe', status: 'degraded' }, 'windows', 'x86_64'), false, 'a degraded ffprobe is not repaired by the download')
+assert.equal(hasFetchAction({ ...missingFfmpeg, id: 'ffprobe' }, 'macos', 'x86_64'), false, 'ffprobe follows the same platform rule as ffmpeg')
+assert.equal(hasFetchAction({ ...missingFfmpeg, id: 'python' }, 'windows', 'x86_64'), false, 'only the ffmpeg and ffprobe cards can start the FFmpeg installer')
 
 console.log('PASS FFmpeg fetch platform availability')

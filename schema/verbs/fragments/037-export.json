@@ -5,7 +5,7 @@
     {
       "name": "export.frame",
       "domain": "export",
-      "description": "Extract a STILL FRAME: render the composed frame at at_ms at FULL project resolution and save it to the default export folder as frame_<ms>.jpg. By default (to_asset) ALSO imports the saved image as a new asset, so the frame shows in the Assets tray (draggable / insertable) AND is a real file on disk importable into another project. NON-DESTRUCTIVE — nothing on the timeline changes. The agent/UI passes at_ms (e.g. the playhead).",
+      "description": "Extract a STILL FRAME: render the composed frame at at_ms at FULL project resolution and save it to the default export folder as frame_<ms>.jpg. By default (to_asset) ALSO imports the saved image as a new asset, so the frame shows in the Assets tray (draggable / insertable) AND is a real file on disk importable into another project. NON-DESTRUCTIVE — nothing on the timeline changes. The agent/UI passes at_ms (e.g. the playhead). Stills are composed with even sides: for an older project with an odd size (e.g. 641x361) the still is 640x360 and the result carries a `note` saying so; it is not refused (video exports at an odd project size are, with code odd_project_size).",
       "args": {
         "type": "object",
         "required": [
@@ -24,11 +24,11 @@
           },
           "path": {
             "type": "string",
-            "description": "Optional explicit .jpg or .jpeg output path for the still frame (FENCED). Default: the session output dir (project.set_output_dir) or <project>/exports/frame_<ms>.jpg."
+            "description": "Optional explicit .jpg or .jpeg output path for the still frame (FENCED). Default: the app-wide export folder chosen with project.set_output_dir or <project>/exports/frame_<ms>.jpg."
           }
         }
       },
-      "result": "{path, asset_id?, job_id?} — the saved JPG; asset_id/job_id present when to_asset",
+      "result": "{path, asset_id?, job_id?, note?} — the saved JPG; asset_id/job_id present when to_asset; note when an odd project size made the still 1 px smaller",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -79,7 +79,7 @@
           },
           "path": {
             "type": "string",
-            "description": "Explicit .mp4 output file path (fenced). Default: the session output dir (project.set_output_dir) or <project>/exports/range_<in>_<out>.mp4."
+            "description": "Explicit .mp4 output file path (fenced). Default: the app-wide export folder chosen with project.set_output_dir or <project>/exports/range_<in>_<out>.mp4."
           }
         }
       },
@@ -137,6 +137,11 @@
             "type": "boolean",
             "default": false,
             "description": "Also import the exported audio as a project asset (Assets tray — reusable as a music bed etc.). Adds {asset_id, job_id} to the result. Default false = just write the file."
+          },
+          "scratch": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}$",
+            "description": "The app's own playback audio (Preview monitor mix, Mixer meter stems, track Listen): a slot name such as monitor_a or stem_a1t. The file goes to the engine's own private working folder (under the app data, never inside the project) as monitor/<slot>.<ext> instead of exports/, replaces the previous file of that slot, is readable through /api/export-file at the returned path, and is removed when the project closes or another project uses scratch audio, and with the whole folder when the engine shuts down (a crashed engine's folder is removed after 12 hours by the next engine). Not combinable with path or to_asset (invalid_args). Omit it for audio you keep."
           },
           "rationale": {
             "type": "string"
@@ -213,7 +218,7 @@
               "silent_screen_demo"
             ],
             "default": "talking_head",
-            "description": "Footage profile passthrough to render.final's auto-run check battery: talking_head = the full strict battery; silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
+            "description": "Footage profile passthrough to render.final's auto-run check battery: talking_head = the full strict battery (without an explicit profile, lufs applies only when a loudness target is set and silence_at_edges does not apply); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
           },
           "path": {
             "type": "string",
@@ -296,7 +301,7 @@
           },
           "path": {
             "type": "string",
-            "description": "Explicit .gif output file path (fenced). Default: the session output dir (project.set_output_dir) or <project>/exports/gif_<in>_<out>.gif."
+            "description": "Explicit .gif output file path (fenced). Default: the app-wide export folder chosen with project.set_output_dir or <project>/exports/gif_<in>_<out>.gif."
           }
         }
       },

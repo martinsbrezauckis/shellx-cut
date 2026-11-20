@@ -5,6 +5,10 @@ ShellX Cut itself is licensed under the MIT License in LICENSE. This file
 records third-party assets distributed inside ShellX Cut installers. The
 licenses below apply only to their named assets.
 
+The libraries compiled into the programs and bundled into the user interface
+(Rust crates and npm packages), with their copyright lines and licence texts,
+are listed in THIRD-PARTY-NOTICES.txt, which is installed next to this file.
+
 
 MediaPipe BlazeFace short-range model
 -------------------------------------
@@ -299,9 +303,28 @@ FFmpeg runtime boundary
 
 ShellX Cut installers do not contain FFmpeg or FFprobe. A user may provide a
 compatible system installation or explicitly ask ShellX Cut to download a
-separate BtbN GPL build on supported platforms. That runtime remains under its
-own license; it is stored in the user's app-data tools directory and invoked as
-a separate process. BtbN build sources and license information are available at:
+separate GPL build from its publisher. ShellX Cut does not redistribute these
+builds: the download comes from the publisher's own server, which distributes
+it under the GNU GPL version 3. The runtime is stored in the user's app-data
+tools directory and invoked as a separate process.
 
-  https://github.com/BtbN/FFmpeg-Builds
+Windows and Linux (x86_64): FFmpeg 9.0.2 (n9.0.2-39-g7adfbe40dc), the GPL
+9.0 build published by FFmpeg-Builds in its monthly release
+autobuild-2026-10-31-12-59. ShellX Cut pins the exact files by size and
+SHA-256. The publisher keeps the last build of each month for two years; once
+it removes that release, the download is refused and the other ways are
+named. FFmpeg's source for this build and the build scripts are at:
+
+  https://github.com/FFmpeg/FFmpeg/commit/7adfbe40dc
+  https://github.com/FFmpeg-Builds/FFmpeg-Builds
+
+macOS (Apple silicon): FFmpeg 9.0.2 built and published by Martin Riedl at
+https://ffmpeg.martin-riedl.de. FFmpeg's source for this version and the
+build script are available at:
+
+  https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+  https://git.martin-riedl.de/ffmpeg/build-script
+
+FFmpeg licensing:
+
   https://ffmpeg.org/legal.html

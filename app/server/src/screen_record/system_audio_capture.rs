@@ -42,7 +42,10 @@ pub(crate) async fn probe_handler(args: Value) -> Result<VerbResult, CutError> {
 
     let args: Args = parse_args(args)?;
     let max_ms = args.max_ms.unwrap_or(record_capture::DEFAULT_WINDOW_MS);
-    let worker = tokio::task::spawn_blocking(move || record_capture::probe_system_audio(max_ms));
+    let worker = tokio::task::spawn_blocking(move || {
+        let _test = super::audio_test_gate::AudioTestGuard::enter();
+        record_capture::probe_system_audio(max_ms)
+    });
     let probe = match tokio::time::timeout(PROBE_WORKER_TIMEOUT, worker).await {
         Ok(Ok(Ok(probe))) => probe,
         Ok(Ok(Err(error))) => return Err(super::record_err(error)),

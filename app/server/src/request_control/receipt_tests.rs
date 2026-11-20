@@ -189,3 +189,23 @@ fn attached_linked_root_cannot_publish_a_new_request_receipt() {
         assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"keep");
     }
 }
+
+#[test]
+fn an_oversized_request_receipt_is_refused_unread() {
+    let (_temp, store, actor, response) = fixture(false);
+    write(&store, &actor, &response, false).unwrap();
+    let root = store.dir.join("request-receipts");
+    let path = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .expect("the receipt was written");
+    // The same valid receipt followed by whitespace, one byte over the limit:
+    // before the limit it was read whole and replayed.
+    let mut body = std::fs::read(&path).unwrap();
+    body.resize(16 * 1024 * 1024 + 1, b' ');
+    std::fs::write(&path, &body).unwrap();
+    let error = receipt::replay_without_ops(&store, "edit.add_marker", &actor).unwrap_err();
+    assert!(error.message.contains("larger than 16 MiB"), "{error:?}");
+    assert!(error.suggested_action.is_some(), "{error:?}");
+}

@@ -551,6 +551,18 @@ pub(super) async fn captions_generate(
     // Gather (timeline_start, timeline_end, word) triples via the EDL.
     let words = harvest_timeline_words(state).await?;
     if words.is_empty() {
+        // Nothing transcribed at all: the reason (captions not installed, or
+        // never transcribed), not "no words".
+        let asset_ids: Vec<String> = {
+            let guard = state.project.read().await;
+            let store = guard.as_ref().ok_or_else(no_project)?;
+            store.project.assets.keys().cloned().collect()
+        };
+        let (transcribed, _) =
+            super::transcript_load::assets_with_transcript(state, &asset_ids).await?;
+        if transcribed.is_empty() && !asset_ids.is_empty() {
+            return Err(super::transcript_load::no_transcript_reason(None));
+        }
         return Err(CutError::new(
             error_codes::NOT_FOUND,
             "no transcribed words on the timeline",

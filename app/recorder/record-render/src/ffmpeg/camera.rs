@@ -167,24 +167,10 @@ pub fn stream_square_with_control(
         fps.round() as u32
     );
     let mut command = Command::new(ffmpeg_bin());
+    command.args(["-v", "error"]);
+    super::push_literal_input(&mut command, std::path::Path::new(src), control)?;
     command
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            super::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            super::LOCAL_INPUT_FORMATS,
-            "-i",
-            src,
-            "-vf",
-            &vf,
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-",
-        ])
+        .args(["-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
         .stderr(Stdio::piped())
         .stdout(Stdio::piped());
     let child = ManagedChild::spawn(&mut command, control.clone(), "webcam decode spawn")?;

@@ -4,22 +4,27 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::integrity::verified_prefix;
-use crate::manifest::{
-    checkpoint_path, is_local_checkpoint_file, is_plain_dir, is_plain_regular_file, read_manifest,
-};
-use crate::media::{bounded_status, verify_media};
+use crate::manifest::{is_plain_dir, is_plain_regular_file, read_manifest};
+use crate::media::{bounded_status, probe_own_output, verify_media};
 use crate::{Checkpoint, ManifestError, MediaFacts};
 
+mod cfr;
+mod concat;
+mod encoder;
+mod frames;
+mod notes;
+mod plan;
+#[cfg(all(test, unix))]
+mod provenance_tests;
 mod workspace;
+pub use cfr::prepare_cfr_segment;
+use concat::MAX_CONCAT_ENTRIES;
+pub use notes::stitch_progress;
+use plan::{plan_segments, SegmentPlan};
 use workspace::StitchWorkspace;
 
 const CONCAT_TOLERANCE_MS: u64 = 120;
 const ELAPSED_TOLERANCE_MS: u64 = 1_120;
-// A native encoder can drain a few already-captured frames after the Stop clock
-// is sampled. Keep this separate from concat/output tolerance: the PC2
-// GStreamer capture measured 7_033 ms while its verified 25 fps file held
-// 7_160 ms (179 frames). Larger overruns still indicate inconsistent input.
-const CAPTURE_DRAIN_TOLERANCE_MS: u64 = 200;
 
 /// A final source path coupled to the exact facts already verified before its
 /// no-replace publication. Consumers must carry these facts forward instead of
@@ -28,6 +33,10 @@ const CAPTURE_DRAIN_TOLERANCE_MS: u64 = 200;
 pub struct StitchedMedia {
     pub path: PathBuf,
     pub media: MediaFacts,
+    /// What is wrong with the saved take, in words for the person. Empty when
+    /// it matches the recording exactly. A stitch that finds a problem still
+    /// saves what was captured and says so here; it never discards the take.
+    pub notes: Vec<String>,
 }
 
 /// Stitch verified segments after materializing every observed capture-clock gap as
@@ -54,6 +63,24 @@ pub fn stitch_complete_with_media(
     ffprobe: &str,
     output_name: &str,
 ) -> Result<StitchedMedia, ManifestError> {
+    stitch_complete_with_media_bounded(
+        root,
+        segments,
+        ffmpeg,
+        ffprobe,
+        output_name,
+        MAX_CONCAT_ENTRIES,
+    )
+}
+
+pub(crate) fn stitch_complete_with_media_bounded(
+    root: &Path,
+    segments: &[Checkpoint],
+    ffmpeg: &str,
+    ffprobe: &str,
+    output_name: &str,
+    max_concat_entries: u64,
+) -> Result<StitchedMedia, ManifestError> {
     if segments.is_empty() || !safe_name(output_name) || !is_plain_dir(root)? {
         return Err(ManifestError::Invalid(
             "no segments, unsafe output, or unsafe root".into(),
@@ -68,14 +95,26 @@ pub fn stitch_complete_with_media(
     // Both normal Stop and interrupted recovery consume the same durable
     // admission. Container nominal rates describe native packets, not intent.
     let output_cadence = read_manifest(root)?.start.output_cadence;
-    let duration_tolerance_ms = cadence_duration_tolerance_ms(output_cadence);
+    let source_media = usable
+        .iter()
+        .map(|segment| checkpoint_media(root, segment, ffmpeg, ffprobe))
+        .collect::<Result<Vec<_>, _>>()?;
+    let grid = grid(output_cadence, &source_media);
+    let elapsed_ms = usable.last().map_or(0, |segment| segment.facts.end_ms);
     let final_path = root.join(output_name);
     if is_plain_regular_file(&final_path)? {
         let media = verify_media(ffmpeg, ffprobe, &final_path)?;
-        return existing_stitch_matches(root, &usable, ffmpeg, ffprobe, &media, output_cadence)?
-            .then_some(StitchedMedia {
+        let plans = plan_segments(&usable, &source_media)?;
+        let strict = existing_matches(&plans, &source_media, &media, &grid, elapsed_ms);
+        // Notes this engine saved for this exact file win: a take saved with a
+        // problem keeps saying so on every later stitch of the same capture.
+        // Without that proof the take must pass the checkpoint contract.
+        let notes = notes::recorded_for(root, &final_path).or(strict.then(Vec::new));
+        return notes
+            .map(|notes| StitchedMedia {
                 path: final_path,
                 media,
+                notes,
             })
             .ok_or_else(|| {
                 ManifestError::Invalid(
@@ -85,101 +124,80 @@ pub fn stitch_complete_with_media(
             });
     }
     let mut workspace = StitchWorkspace::new(root)?;
-    let mut transcodes = Vec::new();
-    let mut rows = String::new();
-    let mut expected_duration_ms = 0u64;
-    let mut expected_frames = 0u64;
-    let source_media = usable
-        .iter()
-        .map(|segment| checkpoint_media(root, segment, ffmpeg, ffprobe))
-        .collect::<Result<Vec<_>, _>>()?;
-    // Native display capture may deliver very few frames while the screen is
-    // static. Its final packet can still occupy hundreds of milliseconds. A
-    // VFR tpad alone then starts cloning at that packet's presentation time,
-    // earlier than the verified container end, and loses capture-clock time.
-    // Normalize all segments to one bounded cadence before extending them.
-    let fps = output_cadence
-        .map(|rate| format!("{}/{}", rate.num, rate.den))
-        .unwrap_or_else(|| stitch_frame_rate(&source_media).to_string());
-    // A sparse native segment can be shorter than one admitted frame interval.
-    // Retain its final frame so tpad can still preserve the measured span.
-    let fps_filter = if output_cadence.is_some() {
-        format!("fps={fps}:eof_action=pass")
-    } else {
-        format!("fps={fps}")
+    let mut notes = Vec::new();
+    // Segments whose part could not be made drop out; the gap they leave holds
+    // the picture before them, exactly like a restart gap.
+    let mut kept: Vec<usize> = (0..usable.len()).collect();
+    let mut made: Vec<Option<(SegmentPlan, cfr::Made)>> = vec![None; usable.len()];
+    let mut unit_seconds = 1;
+    let parts = loop {
+        let segments: Vec<Checkpoint> = kept.iter().map(|&i| usable[i].clone()).collect();
+        let media: Vec<MediaFacts> = kept.iter().map(|&i| source_media[i].clone()).collect();
+        let plans = plan_segments(&segments, &media)?;
+        let selected_seconds = frames::compact_unit_seconds(
+            &plans,
+            grid.num,
+            grid.den,
+            max_concat_entries,
+        )
+        .ok_or(ManifestError::StitchLimit(
+            "too many parts to join safely; keep the original capture folder and contact support for recovery",
+        ))?;
+        if selected_seconds != unit_seconds {
+            made.fill(None);
+            unit_seconds = selected_seconds;
+        }
+        let mut failed = None;
+        for (done, (&index, plan)) in kept.iter().zip(&plans).enumerate() {
+            notes::write_progress(root, done, kept.len());
+            if made[index].as_ref().is_some_and(|(done, _)| done == plan) {
+                continue;
+            }
+            let segment = &usable[index];
+            if let Some(part) = cfr::cached_with_unit(root, segment, plan, &grid, unit_seconds) {
+                made[index] = Some((*plan, part));
+                continue;
+            }
+            let name = format!("segment-{:06}-{}", segment.sequence, plan.target_ms());
+            let output = workspace.reserve(&format!("{name}.mp4"))?;
+            let unit_output = workspace.reserve(&format!("{name}.unit.mp4"))?;
+            let result = cfr::transcode(
+                ffmpeg,
+                ffprobe,
+                root,
+                segment,
+                &source_media[index],
+                plan,
+                &grid,
+                &output,
+                &unit_output,
+                unit_seconds,
+            );
+            match result {
+                Ok(part) => made[index] = Some((*plan, part)),
+                Err(error) => {
+                    failed = Some((index, error));
+                    break;
+                }
+            }
+        }
+        match failed {
+            None => {
+                break kept
+                    .iter()
+                    .map(|&index| made[index].clone().expect("every kept part was made"))
+                    .collect::<Vec<_>>()
+            }
+            Some((index, error)) => {
+                notes.push(notes::lost_segment(&usable[index], &error));
+                kept.retain(|&kept_index| kept_index != index);
+                if kept.is_empty() {
+                    return Err(error);
+                }
+            }
+        }
     };
-    for (index, (segment, source_media)) in usable.iter().zip(&source_media).enumerate() {
-        let leading_gap_ms = leading_gap(&usable, index)?;
-        if !is_local_checkpoint_file(root, segment.sequence)? {
-            return Err(ManifestError::Invalid("checkpoint became unsafe".into()));
-        }
-        let source = checkpoint_path(root, segment.sequence);
-        if source_media.has_audio {
-            return Err(ManifestError::Invalid(
-                "checkpoint media contains embedded audio".into(),
-            ));
-        }
-        let capture_span_ms = capture_span_ms(segment, source_media)?;
-        let transcode = workspace.reserve(&format!("segment-{:06}.mp4", segment.sequence))?;
-        let start_padding = format!("{:.3}", leading_gap_ms as f64 / 1000.0);
-        // The extra second guarantees cloned frames beyond the desired end;
-        // trim then fixes the segment to its measured capture-clock span.
-        let stop_padding = format!(
-            "{:.3}",
-            capture_span_ms
-                .saturating_sub(source_media.duration_ms)
-                .saturating_add(1_000) as f64
-                / 1000.0
-        );
-        let target_duration = format!(
-            "{:.3}",
-            capture_span_ms.saturating_add(leading_gap_ms) as f64 / 1000.0
-        );
-        let status = bounded_status(
-            Command::new(ffmpeg)
-                .args([
-                    "-v", "error", "-y",
-                    "-protocol_whitelist", cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                    "-format_whitelist", "mov", "-f", "mov", "-i",
-                ])
-                .arg(&source)
-                .args([
-                    "-vf",
-                    &format!(
-                        "{fps_filter},tpad=start_mode=clone:start_duration={start_padding}:stop_mode=clone:stop_duration={stop_padding},trim=duration={target_duration},setpts=PTS-STARTPTS"
-                    ),
-                    "-an",
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                ])
-                .arg(&transcode),
-            "materialize checkpoint restart gap",
-        )?;
-        let media = verify_media(ffmpeg, ffprobe, &transcode).ok();
-        if !status.success() || media.is_none() {
-            return Err(ManifestError::Invalid(
-                "ffmpeg could not materialize checkpoint gap".into(),
-            ));
-        }
-        let media = media.expect("checked above");
-        let expected_segment_ms = capture_span_ms.saturating_add(leading_gap_ms);
-        if media.duration_ms.abs_diff(expected_segment_ms) > duration_tolerance_ms
-            || media.has_audio
-            || !matches_output_cadence(&media, output_cadence)
-        {
-            return Err(ManifestError::Invalid(
-                "transcoded checkpoint does not preserve duration/audio/cadence contract".into(),
-            ));
-        }
-        expected_duration_ms = expected_duration_ms.saturating_add(media.duration_ms);
-        expected_frames = expected_frames.saturating_add(media.decoded_video_frames);
-        rows.push_str("file '");
-        rows.push_str(&transcode.to_string_lossy().replace('\'', "'\\\\''"));
-        rows.push_str("'\noption format_whitelist mov\n");
-        transcodes.push(transcode);
-    }
+    let (rows, expected_duration_ms, expected_frames) = concat::rows(&parts, max_concat_entries)?;
     let list = workspace.write("concat.txt", rows.as_bytes())?;
     let part = workspace.reserve("output.part.mp4")?;
     let status = bounded_status(
@@ -203,35 +221,48 @@ pub fn stitch_complete_with_media(
             .arg(&part),
         "concat finalized checkpoints",
     )?;
-    let final_media = verify_media(ffmpeg, ffprobe, &part).ok();
-    if !status.success() || final_media.is_none() {
-        return Err(ManifestError::Invalid(
-            "ffmpeg could not produce a playable stitched checkpoint".into(),
-        ));
-    }
-    let final_media = final_media.expect("checked above");
-    let elapsed_ms = usable
-        .last()
-        .map(|segment| segment.facts.end_ms)
-        .unwrap_or(0);
-    if final_media.has_audio
-        || !matches_output_cadence(&final_media, output_cadence)
-        || final_media.decoded_video_frames.abs_diff(expected_frames) > 1
-        || final_media.duration_ms.abs_diff(expected_duration_ms) > duration_tolerance_ms
-        || final_media.duration_ms.abs_diff(elapsed_ms) > ELAPSED_TOLERANCE_MS
-    {
-        return Err(ManifestError::Invalid(
-            "stitched media does not match verified frame/duration/audio/cadence contract".into(),
-        ));
-    }
+    let final_media = status
+        .success()
+        .then(|| probe_own_output(ffprobe, &part).ok())
+        .flatten()
+        .ok_or_else(|| {
+            ManifestError::Invalid("ffmpeg could not produce a playable stitched checkpoint".into())
+        })?;
+    notes.extend(notes::contract_mismatches(
+        &final_media,
+        grid.admitted,
+        (expected_duration_ms, expected_frames),
+        elapsed_ms,
+        (grid.tolerance_ms, ELAPSED_TOLERANCE_MS),
+    ));
+    let notes_hash = if notes.is_empty() {
+        None
+    } else {
+        Some(notes::record(root, &part, output_name, &notes)?)
+    };
     crate::atomic::publish_new_synced(&part, &final_path).map_err(|source| ManifestError::Io {
         path: final_path.clone(),
         source,
     })?;
+    if let Some(hash) = notes_hash {
+        notes::remember_take(&final_path, &hash);
+    }
     Ok(StitchedMedia {
         path: final_path,
         media: final_media,
+        notes,
     })
+}
+
+pub(crate) fn grid(cadence: Option<record_core::FrameRate>, sources: &[MediaFacts]) -> cfr::Grid {
+    let (num, den) = cadence.map_or((stitch_frame_rate(sources), 1), |rate| (rate.num, rate.den));
+    cfr::Grid {
+        rate: format!("{num}/{den}"),
+        num,
+        den,
+        admitted: cadence,
+        tolerance_ms: cadence_duration_tolerance_ms(cadence),
+    }
 }
 
 fn stitch_frame_rate(sources: &[MediaFacts]) -> u64 {
@@ -245,7 +276,10 @@ fn stitch_frame_rate(sources: &[MediaFacts]) -> u64 {
         .clamp(30, 240) as u64
 }
 
-fn matches_output_cadence(media: &MediaFacts, cadence: Option<record_core::FrameRate>) -> bool {
+pub(crate) fn matches_output_cadence(
+    media: &MediaFacts,
+    cadence: Option<record_core::FrameRate>,
+) -> bool {
     cadence
         .is_none_or(|rate| media.avg_frame_rate == Some(rate) && media.r_frame_rate == Some(rate))
 }
@@ -259,24 +293,6 @@ fn cadence_duration_tolerance_ms(cadence: Option<record_core::FrameRate>) -> u64
     })
 }
 
-fn leading_gap(segments: &[Checkpoint], index: usize) -> Result<u64, ManifestError> {
-    let segment = &segments[index];
-    if segment.facts.event_offset_ms != segment.facts.start_ms {
-        return Err(ManifestError::Invalid(
-            "checkpoint event offset differs from capture start".into(),
-        ));
-    }
-    if index == 0 {
-        return Ok(segment.facts.event_offset_ms);
-    }
-    let previous = &segments[index - 1];
-    segment
-        .facts
-        .event_offset_ms
-        .checked_sub(previous.facts.end_ms)
-        .ok_or_else(|| ManifestError::Invalid("checkpoint facts overlap".into()))
-}
-
 fn checkpoint_media(
     root: &Path,
     segment: &Checkpoint,
@@ -286,60 +302,30 @@ fn checkpoint_media(
     if let Some(media) = &segment.media {
         return Ok(media.clone());
     }
-    if !is_local_checkpoint_file(root, segment.sequence)? {
+    if !crate::manifest::is_local_checkpoint_file(root, segment.sequence)? {
         return Err(ManifestError::Invalid("checkpoint became unsafe".into()));
     }
-    verify_media(ffmpeg, ffprobe, &checkpoint_path(root, segment.sequence))
+    verify_media(
+        ffmpeg,
+        ffprobe,
+        &crate::manifest::checkpoint_path(root, segment.sequence),
+    )
 }
 
-/// Return the capture-clock span this segment must occupy. A closed native encoder
-/// can deliver fewer frames than elapsed wall time; stitching must preserve that
-/// loss as cloned trailing video, not erase it. Media that materially exceeds its
-/// independently measured span remains inconsistent and is refused.
-fn capture_span_ms(segment: &Checkpoint, media: &MediaFacts) -> Result<u64, ManifestError> {
-    let observed = segment
-        .facts
-        .end_ms
-        .checked_sub(segment.facts.start_ms)
-        .ok_or_else(|| ManifestError::Invalid("checkpoint capture span is negative".into()))?;
-    if media.duration_ms > observed.saturating_add(CAPTURE_DRAIN_TOLERANCE_MS) {
-        return Err(ManifestError::Invalid(format!(
-            "checkpoint media exceeds its observed capture span: segment={} media={}ms observed={}ms tolerance={}ms",
-            segment.sequence, media.duration_ms, observed, CAPTURE_DRAIN_TOLERANCE_MS,
-        )));
-    }
-    Ok(observed.max(media.duration_ms))
-}
-
-fn existing_stitch_matches(
-    root: &Path,
-    segments: &[Checkpoint],
-    ffmpeg: &str,
-    ffprobe: &str,
+fn existing_matches(
+    plans: &[SegmentPlan],
+    sources: &[MediaFacts],
     media: &MediaFacts,
-    output_cadence: Option<record_core::FrameRate>,
-) -> Result<bool, ManifestError> {
-    let mut expected_duration_ms = 0u64;
-    let mut expected_frames = 0u64;
-    for (index, segment) in segments.iter().enumerate() {
-        let facts = checkpoint_media(root, segment, ffmpeg, ffprobe)?;
-        if facts.has_audio {
-            return Ok(false);
-        }
-        expected_duration_ms = expected_duration_ms
-            .saturating_add(capture_span_ms(segment, &facts)? + leading_gap(segments, index)?);
-        expected_frames = expected_frames.saturating_add(facts.decoded_video_frames);
-    }
-    let elapsed_ms = segments
-        .last()
-        .map(|segment| segment.facts.end_ms)
-        .unwrap_or(0);
-    Ok(!media.has_audio
-        && matches_output_cadence(media, output_cadence)
-        && (output_cadence.is_some() || media.decoded_video_frames >= expected_frames)
-        && media.duration_ms.abs_diff(expected_duration_ms)
-            <= cadence_duration_tolerance_ms(output_cadence)
-        && media.duration_ms.abs_diff(elapsed_ms) <= ELAPSED_TOLERANCE_MS)
+    grid: &cfr::Grid,
+    elapsed_ms: u64,
+) -> bool {
+    let expected_duration_ms: u64 = plans.iter().map(SegmentPlan::target_ms).sum();
+    let expected_frames: u64 = sources.iter().map(|facts| facts.decoded_video_frames).sum();
+    !media.has_audio
+        && matches_output_cadence(media, grid.admitted)
+        && (grid.admitted.is_some() || media.decoded_video_frames >= expected_frames)
+        && media.duration_ms.abs_diff(expected_duration_ms) <= grid.tolerance_ms
+        && media.duration_ms.abs_diff(elapsed_ms) <= ELAPSED_TOLERANCE_MS
 }
 
 fn safe_name(name: &str) -> bool {

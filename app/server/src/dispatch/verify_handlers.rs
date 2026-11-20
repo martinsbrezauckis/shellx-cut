@@ -4,13 +4,18 @@ use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 
 #[path = "verify_handlers/adapter_result.rs"]
 mod adapter_result;
+mod judge_files;
+mod judge_inputs;
+use judge_files::RenderReport;
+pub(super) mod receipt_file;
 mod rerun;
 mod scope_outputs;
 pub(super) use rerun::{retry_verify_rerun, verify_rerun};
 
 /// Resolve `receipts/<render_id>.json` — the explicit id, or the LATEST
-/// render receipt when omitted (zero-padded render_NNN names → lexical max =
-/// numeric max). Shared by verify.checks and verify.judge.
+/// render receipt when omitted (highest render_NNN number). Shared by every
+/// render-receipt consumer; read the file with
+/// [`receipt_file::render_receipt_bytes`].
 pub(super) fn resolve_receipt_path(
     receipts: &Path,
     render_id: Option<&str>,
@@ -34,27 +39,17 @@ pub(super) fn resolve_receipt_path(
             validate_receipt_id(id)?;
             receipts.join(format!("{id}.json"))
         }
-        None => {
-            let mut names: Vec<String> = std::fs::read_dir(receipts)?
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| {
-                    n.starts_with("render_") && n.ends_with(".json") && !n.contains(".output")
-                })
-                .collect();
-            names.sort();
-            match names.last() {
-                Some(n) => receipts.join(n),
-                None => {
-                    return Err(CutError::new(
-                        error_codes::NOT_FOUND,
-                        "no render receipts exist yet",
-                        "verify reads the receipt render.final produces",
-                    )
-                    .with_suggested_action("run render.final first"))
-                }
+        None => match receipt_file::latest_render_receipt_name(receipts)? {
+            Some(n) => receipts.join(n),
+            None => {
+                return Err(CutError::new(
+                    error_codes::NOT_FOUND,
+                    "no render receipts exist yet",
+                    "verify reads the receipt render.final produces",
+                )
+                .with_suggested_action("run render.final first"))
             }
-        }
+        },
     };
     if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file()) {
         return Err(CutError::new(
@@ -98,8 +93,10 @@ pub(super) async fn verify_checks(state: &AppState, args: Value) -> Result<VerbR
     let a: Args = parse_args(args)?;
     let guard = state.project.read().await;
     let store = guard.as_ref().ok_or_else(no_project)?;
-    let path = resolve_receipt_path(&store.receipts_dir(), a.render_id.as_deref())?;
-    let receipt: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let receipts = store.receipts_dir();
+    let path = resolve_receipt_path(&receipts, a.render_id.as_deref())?;
+    let receipt: Value =
+        serde_json::from_slice(&receipt_file::render_receipt_bytes(&receipts, &path)?)?;
     Ok(VerbResult::ok(receipt))
 }
 
@@ -303,6 +300,12 @@ pub(super) async fn verify_delivery(state: &AppState, args: Value) -> Result<Ver
             per_asset.push(t.words);
         }
     }
+    // No transcript in scope: say why, never a delivery report of nothing.
+    if per_asset.is_empty() {
+        return Err(super::transcript_load::no_transcript_reason(
+            a.asset.as_deref(),
+        ));
+    }
     let slices: Vec<&[cut_perception::WordSpan]> = per_asset.iter().map(|v| v.as_slice()).collect();
     Ok(VerbResult::ok(cut_perception::delivery(
         &slices, &lexicon, opts,
@@ -445,6 +448,8 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
                 src.to_string_lossy().into_owned(),
                 "-frames:v".into(),
                 "1".into(),
+                "-update".into(),
+                "1".into(),
                 frame_path.to_string_lossy().into_owned(),
             ])?;
         } else {
@@ -526,14 +531,13 @@ const JUDGE_SCHEMA: &str = "shellx-cut/judge-review/1";
 const JUDGE_ADAPTER_REL: &str = "judge/adapters/ladder_judge.py";
 
 fn judge_adapter_from(explicit: Option<PathBuf>, sidecar_entrypoint: &Path) -> Option<PathBuf> {
-    if let Some(path) = explicit {
-        // An explicit override is authoritative. A typo must not silently fall
-        // through to a different bundled implementation.
-        return path.is_file().then_some(path);
-    }
-    let perception_dir = sidecar_entrypoint.parent()?;
-    let bundled = perception_dir.join(JUDGE_ADAPTER_REL);
-    bundled.is_file().then_some(bundled)
+    // An explicit override is authoritative (a typo must not silently fall
+    // through to a different bundled implementation) and must be absolute.
+    super::adapter_location::configured_or_bundled_adapter_from(
+        explicit,
+        sidecar_entrypoint,
+        Path::new(JUDGE_ADAPTER_REL),
+    )
 }
 
 /// Locate the installed/source-tree judge adapter. Installed builds ship it
@@ -541,9 +545,12 @@ fn judge_adapter_from(explicit: Option<PathBuf>, sidecar_entrypoint: &Path) -> O
 /// find that payload through cut-perception's normal dev-checkout rung. The env
 /// override remains the deterministic test and operator seam.
 pub(super) fn find_judge_adapter() -> Option<PathBuf> {
+    // Absolute only: a relative script path would be read against the current
+    // folder, which may be a received project.
     let explicit = std::env::var_os("CUTD_JUDGE_ADAPTER")
         .filter(|p| !p.is_empty())
-        .map(PathBuf::from);
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute());
     let (_, sidecar_entrypoint) = cut_perception::sidecar_paths();
     judge_adapter_from(explicit, &sidecar_entrypoint)
 }
@@ -667,9 +674,10 @@ mod judge_adapter_contract_tests {
 }
 
 pub(super) fn judge_cli_path() -> Option<std::ffi::OsString> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
-        .unwrap_or_default();
+    // The judge's own PATH: absolute folders only (a relative entry would be
+    // searched against the current folder by the judge and its children).
+    let mut dirs: Vec<PathBuf> =
+        cut_media::toolpath::absolute_entries(std::env::var_os("PATH").as_deref());
     for binary in ["claude", "codex", "agy", "grok"] {
         let Some(parent) =
             crate::gen::resolve_agent(binary).and_then(|path| path.parent().map(Path::to_path_buf))
@@ -697,15 +705,23 @@ fn judge_intent(
     // (op ids are zero-padded, so lexical compare == numeric compare).
     let mut since: Option<String> = None;
     if let Ok(rd) = std::fs::read_dir(receipts_dir) {
-        for e in rd.flatten() {
+        // A crowded folder is walked only as far as the latest-receipt lookup
+        // would walk it, and at most a fixed total of receipt text is read;
+        // the intent is advisory, so the search just stops.
+        let mut budget = receipt_file::MAX_EARLIER_RECEIPTS_TOTAL_BYTES;
+        for e in rd.take(receipt_file::MAX_RECEIPT_FOLDER_ENTRIES).flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if !name.starts_with("render_") || !name.ends_with(".json") || name.contains(".output")
-            {
+            if !receipt_file::is_render_receipt_name(&name) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(e.path()) else {
+            // Ordinary files only: a planted link, pipe or huge file is skipped.
+            let Some(text) = receipt_file::earlier_receipt_text(&e.path()) else {
                 continue;
             };
+            let Some(left) = budget.checked_sub(text.len() as u64) else {
+                break;
+            };
+            budget = left;
             let Ok(r) = serde_json::from_str::<cut_core::RenderReceipt>(&text) else {
                 continue;
             };
@@ -820,7 +836,9 @@ struct JudgeRun {
 }
 
 /// Spawn the subscription-CLI judge adapter on a render and collect its
-/// envelope. Blocking-free: tokio::process + outer wall-clock timeout
+/// envelope. `bundle_dir` is the run folder the caller has just created; the
+/// adapter writes its frames, temporary files and result only there.
+/// Blocking-free: tokio::process + outer wall-clock timeout
 /// (CUTD_JUDGE_TIMEOUT_S, default 360 s — a global review measures ~2.5 min;
 /// the adapter's own inner CLI timeout is set 60 s shorter so the adapter
 /// reports its timeout itself where possible). Both process streams are
@@ -856,17 +874,6 @@ async fn run_judge_adapter(
             fail_cause: None,
         };
     };
-    if let Err(e) = std::fs::create_dir_all(bundle_dir) {
-        let cause = format!(
-            "cannot create judge bundle dir {}: {e}",
-            bundle_dir.display()
-        );
-        return JudgeRun {
-            envelope: synth_judge_envelope("error", cause.clone()),
-            status: "error".into(),
-            fail_cause: Some(cause),
-        };
-    }
     let outer_s: u64 = std::env::var("CUTD_JUDGE_TIMEOUT_S")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -977,8 +984,8 @@ async fn run_judge_adapter(
     }
     // Envelope: prefer --out (stdout also carries it, but the file survives
     // any stray prints); fall back to stdout.
-    let text = std::fs::read_to_string(&out_file)
-        .unwrap_or_else(|_| String::from_utf8_lossy(&output.stdout).to_string());
+    let text = judge_files::read_review_result(&out_file)
+        .unwrap_or_else(|| String::from_utf8_lossy(&output.stdout).to_string());
     match serde_json::from_str::<Value>(&text) {
         Ok(envelope) => {
             let status = match validate_judge_envelope(&envelope) {
@@ -1070,14 +1077,33 @@ pub(super) fn attach_judge_to_receipt(
         "render receipt",
         "use a render id from the current project's receipts directory",
     )?;
-    let mut receipt: cut_core::RenderReceipt =
-        serde_json::from_str(&std::fs::read_to_string(receipt_path)?)?;
+    let bytes = receipt_file::render_receipt_bytes(receipts_dir, receipt_path)?;
+    // A rewrite never raises trust: the receipt stays this engine's own only
+    // when the bytes just read were this engine's own. A receipt that came with
+    // the project still gets the verdict (the review is of the rendered file),
+    // but a re-check will not rely on its decisions.
+    let written_here = cut_media::cache_trust::trusted_bytes(receipt_path, &bytes);
+    let mut receipt: cut_core::RenderReceipt = serde_json::from_slice(&bytes)?;
     receipt.judge = Some(envelope);
-    write_output_atomic(receipt_path, serde_json::to_string_pretty(&receipt)?)?;
+    let text = serde_json::to_string_pretty(&receipt)?;
+    receipt_file::ensure_receipt_fits(receipts_dir, receipt_path, text.len())?;
+    write_output_atomic(receipt_path, text)?;
+    if written_here {
+        cut_media::cache_trust::remember(receipt_path);
+    }
     state.events.publish(Event::ReceiptReady {
-        receipt: receipt.clone(),
+        receipt: Box::new(receipt.clone()),
     });
     Ok(receipt)
+}
+
+/// The refusal for a render whose check did not finish.
+fn unchecked_render(error: impl std::fmt::Display) -> judge_files::JudgeRefusal {
+    judge_files::JudgeRefusal {
+        message: "review not run: the render file could not be checked".into(),
+        cause: error.to_string(),
+        action: "render again, then review the new render".into(),
+    }
 }
 
 /// verify.judge{render_id?, backend?} — IS a job (the background-job contract; ~2.5 min per
@@ -1146,13 +1172,23 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
     }
     // Resolve everything the job needs UNDER the read lock, then release it —
     // the review takes minutes and must not block the verb loop (the background-job contract).
-    let (receipts_dir, receipt_path, render_id, render_abs, perception_arg, intent, bundle_dir) = {
+    let (
+        receipts_dir,
+        receipt_path,
+        render_id,
+        render_abs,
+        render_proof,
+        admission,
+        intent,
+        bundle_dir,
+    ) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
         let receipts = store.receipts_dir();
         let receipt_path = resolve_receipt_path(&receipts, a.render_id.as_deref())?;
-        let receipt: cut_core::RenderReceipt =
-            serde_json::from_str(&std::fs::read_to_string(&receipt_path)?)?;
+        let receipt: cut_core::RenderReceipt = serde_json::from_slice(
+            &receipt_file::render_receipt_bytes(&receipts, &receipt_path)?,
+        )?;
         if !safe_receipt_id(&receipt.render_id) {
             return Err(CutError::new(
                 error_codes::INVALID_ARGS,
@@ -1169,28 +1205,39 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
             )
             .with_suggested_action("re-run render.final, then verify.judge the new render_id"));
         }
-        // The render's own instrument facts (render.final writes
-        // <render_id>.output.perception.json) — passed explicitly so the
-        // judge reasons in RENDER coordinates; the
-        // adapter hash-verifies it. Missing → adapter auto-resolves by
-        // content hash from the receipts dir / regenerates via the sidecar.
-        let pcept = receipts.join(format!("{}.output.perception.json", receipt.render_id));
-        let perception_arg = pcept.is_file().then_some(pcept);
+        let placement = judge_files::admit_render(&store.dir, &receipt.output_path)?;
+        let output_hash = receipt.output_hash.clone();
         let intent = judge_intent(store, &receipts, &receipt);
         // Bundle retains the sampled frames and envelope for audit. Providers
         // stage their own execution root when required (for example Claude's
         // restricted copied-frame root); keep this caller-owned directory
-        // project-local, never /tmp.
+        // project-local, never /tmp. Each run gets its own fresh folder inside.
         let bundle_dir = super::rendering::checked_internal_dir(
             &store.dir,
             Path::new(&format!(".scratch/judge/{}", receipt.render_id)),
         )?;
+        // The render's own instrument facts (render.final writes
+        // <render_id>.output.perception.json) — passed explicitly so the
+        // judge reasons in RENDER coordinates, and only when this engine made
+        // it for this render's content hash. Missing or not made here → the
+        // adapter analyses the render itself.
+        // A refusal is reported through the job and the receipt below.
+        let admission = judge_files::admit_render_report(
+            &store.dir,
+            &receipts,
+            &receipt.render_id,
+            &receipt.output_hash,
+        )
+        .and_then(|report| {
+            judge_files::admit_review_file(&store.dir, &bundle_dir).map(|saved| (report, saved))
+        });
         (
             receipts,
             receipt_path,
             receipt.render_id,
             render_abs,
-            perception_arg,
+            (placement, output_hash),
+            admission,
             intent,
             bundle_dir,
         )
@@ -1213,16 +1260,134 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
             0.05,
             Some("judge: subscription-CLI review (frames + instrument facts)".into()),
         );
-        let run = run_judge_adapter(
-            runtime,
-            &render_abs,
-            perception_arg.as_deref(),
-            &intent,
-            &bundle_dir,
-            &provider,
-            provider_launches.as_ref(),
-        )
-        .await;
+        let mut admission = admission;
+        // The adapter reopens files by name in a detached process, so it gets
+        // copies, in this run's new folder, of exactly what was checked.
+        let run_dir = match &admission {
+            Ok(_) => Some(judge_files::create_run_dir(&bundle_dir)),
+            Err(_) => None,
+        };
+        let mut staged_render = None;
+        if let (Ok(_), Some(Ok(run))) = (&admission, &run_dir) {
+            if render_proof.0 == judge_files::RenderPlacement::Elsewhere {
+                let (render, hash, run) = (render_abs.clone(), render_proof.1.clone(), run.clone());
+                let staged = tokio::task::spawn_blocking(move || {
+                    judge_inputs::stage_render(&render, &run, &hash)
+                })
+                .await;
+                match staged {
+                    Ok(Ok(copy)) => staged_render = Some(copy),
+                    Ok(Err(refusal)) => admission = Err(refusal),
+                    Err(error) => admission = Err(unchecked_render(error)),
+                }
+            } else {
+                // A verdict is attached only to the bytes the receipt names.
+                let (render, hash) = (render_abs.clone(), render_proof.1.clone());
+                let checked = tokio::task::spawn_blocking(move || {
+                    judge_inputs::check_render(&render, &hash, "before the review")
+                })
+                .await;
+                match checked {
+                    Ok(Ok(())) => {}
+                    Ok(Err(refusal)) => admission = Err(refusal),
+                    Err(error) => admission = Err(unchecked_render(error)),
+                }
+            }
+        }
+        let run = match (&admission, run_dir) {
+            (Err(refusal), _) => JudgeRun {
+                envelope: synth_judge_envelope("error", refusal.reason()),
+                status: "error".into(),
+                fail_cause: Some(refusal.reason()),
+            },
+            (Ok((report, saved)), run_dir) => {
+                let staged_report = match (&run_dir, &report.bytes) {
+                    (Some(Ok(run)), Some(bytes)) => {
+                        Some(judge_inputs::stage_report(run, bytes))
+                    }
+                    _ => None,
+                };
+                let run = match (run_dir, staged_report) {
+                    (Some(Ok(_)), Some(Err(error))) => {
+                        let cause = format!("cannot write the review's analysis copy: {error}");
+                        JudgeRun {
+                            envelope: synth_judge_envelope("error", cause.clone()),
+                            status: "error".into(),
+                            fail_cause: Some(cause),
+                        }
+                    }
+                    (Some(Ok(run_dir)), staged_report) => {
+                        let reviewed = run_judge_adapter(
+                            runtime,
+                            staged_render.as_deref().unwrap_or(&render_abs),
+                            staged_report.and_then(Result::ok).as_deref(),
+                            &intent,
+                            &run_dir,
+                            &provider,
+                            provider_launches.as_ref(),
+                        )
+                        .await;
+                        // The render copy can be large; the frames and the
+                        // envelope stay in the run folder for audit.
+                        if let Some(copy) = &staged_render {
+                            let _ = std::fs::remove_file(copy);
+                            reviewed
+                        } else {
+                            // The render in the project was read by name: its
+                            // verdict counts only if it is still the receipt's.
+                            let (render, hash) = (render_abs.clone(), render_proof.1.clone());
+                            let after = tokio::task::spawn_blocking(move || {
+                                judge_inputs::check_render(&render, &hash, "after the review")
+                            })
+                            .await
+                            .unwrap_or_else(|error| Err(unchecked_render(error)));
+                            match after {
+                                Ok(()) => reviewed,
+                                Err(refusal) => {
+                                    let cause = format!(
+                                        "{}; the reviewer's verdict was discarded",
+                                        refusal.reason()
+                                    );
+                                    JudgeRun {
+                                        envelope: synth_judge_envelope("error", cause.clone()),
+                                        status: "error".into(),
+                                        fail_cause: Some(cause),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (Some(Err(error)), _) => {
+                        let cause = format!(
+                            "cannot create a review folder in {}: {error}",
+                            bundle_dir.display()
+                        );
+                        JudgeRun {
+                            envelope: synth_judge_envelope("error", cause.clone()),
+                            status: "error".into(),
+                            fail_cause: Some(cause),
+                        }
+                    }
+                    // An admitted review always has a run folder (made above).
+                    (None, _) => {
+                        let cause = "the review folder was not created".to_string();
+                        JudgeRun {
+                            envelope: synth_judge_envelope("error", cause.clone()),
+                            status: "error".into(),
+                            fail_cause: Some(cause),
+                        }
+                    }
+                };
+                if let Err(error) = judge_files::save_review_copy(saved, &run.envelope) {
+                    tracing::warn!(
+                        path = %saved.display(),
+                        error = %error.message,
+                        "review copy not saved; the receipt holds the review"
+                    );
+                }
+                run
+            }
+        };
         st.jobs
             .progress(&jid, 0.9, Some("judge: attaching review to receipt".into()));
         let attached =
@@ -1273,18 +1438,36 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
                     result["outcome_reason"] =
                         json!("no judge available — render NOT reviewed (advisory)");
                 }
+                if let Ok((RenderReport { note: Some(note), .. }, _)) = &admission {
+                    result["warnings"] = json!([note]);
+                }
                 st.jobs.finish(&jid, result);
             }
             (Ok(_receipt), Some(cause)) => {
                 // Attempted and failed: the error envelope IS on the receipt
                 // (honest history); the job fails with the actionable cause.
-                st.jobs.fail(
-                    &jid,
-                    CutError::new(error_codes::JOB_FAILED, "judge adapter failed", cause)
+                // A refused project file names that file and what to do.
+                let error = match &admission {
+                    Err(refusal) => CutError::new(
+                        error_codes::JOB_FAILED,
+                        refusal.message.clone(),
+                        refusal.cause.clone(),
+                    )
+                    .with_suggested_action(refusal.action.clone()),
+                    Ok(_) if cause.contains("review refused: ") => CutError::new(
+                        error_codes::JOB_FAILED,
+                        "review not run: the reviewer refused a project file",
+                        cause,
+                    )
+                    .with_suggested_action(
+                        "receipt.judge.not_run_reason names the file; delete it from the project folder or render again, then re-run verify.judge",
+                    ),
+                    Ok(_) => CutError::new(error_codes::JOB_FAILED, "judge adapter failed", cause)
                         .with_suggested_action(
                             "receipt.judge.not_run_reason has the full reason; check the selected provider's admission and the Python adapter runtime, then re-run verify.judge",
                         ),
-                );
+                };
+                st.jobs.fail(&jid, error);
             }
             (Err(e), cause) => {
                 // Receipt update itself failed — that error wins (the review,

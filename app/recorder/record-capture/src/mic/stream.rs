@@ -87,7 +87,10 @@ pub(super) fn run_stream(
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = match hound::WavWriter::new(staging, spec) {
+    // Buffered: unbuffered, every 16-bit sample was its own write call (about
+    // 96,000 a second for stereo 48 kHz), which costs CPU while recording and
+    // time at Stop. A crash loses at most the buffer, about 40 ms of microphone.
+    let mut writer = match hound::WavWriter::new(std::io::BufWriter::new(staging), spec) {
         Ok(writer) => writer,
         Err(error) => {
             let _ = std::fs::remove_file(&temp_path);

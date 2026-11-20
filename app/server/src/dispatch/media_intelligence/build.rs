@@ -169,6 +169,9 @@ pub(super) fn build_index(
     cancellation: crate::jobs::JobCancellation,
 ) -> Result<MediaEvidenceIndex, CutError> {
     let mut entries = Vec::new();
+    // (asset, receipt) pairs whose bound receipt could not be read or parsed:
+    // their kinds are NOT ready, whatever the binding says.
+    let mut unread: BTreeSet<(String, &'static str)> = BTreeSet::new();
     for binding in &bindings {
         if cancellation.is_cancelled() {
             return Err(CutError::new(
@@ -203,37 +206,42 @@ pub(super) fn build_index(
                 receipt_path(snapshot, asset.transcript.as_deref()),
                 binding.transcript_sha256.as_deref(),
             ) {
-                if let Ok(bytes) =
-                    crate::vissearch::read_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES)
+                match crate::vissearch::read_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                 {
-                    if let Ok(transcript) = serde_json::from_slice(&bytes) {
-                        transcript_entries(
-                            &mut entries,
-                            &binding.asset_id,
-                            &transcript,
-                            provenance,
-                        );
+                    Some(transcript) => {
+                        transcript_entries(&mut entries, &binding.asset_id, &transcript, provenance)
+                    }
+                    None => {
+                        unread.insert((binding.asset_id.clone(), "transcript"));
                     }
                 }
             }
         }
         if kinds.contains("scene") || kinds.contains("beat") {
-            if let (Some(path), Some(provenance)) = (
-                receipt_path(snapshot, asset.perception.as_deref()),
-                binding.perception_sha256.as_deref(),
-            ) {
-                if let Ok(bytes) =
-                    crate::vissearch::read_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES)
+            if let Some(provenance) = binding.perception_sha256.as_deref() {
+                // Index exactly the bytes checked now, and only when they are
+                // the ones the binding was made from.
+                match asset_report(
+                    &snapshot.dir,
+                    &binding.asset_id,
+                    asset.perception.as_deref(),
+                    &binding.asset_hash,
+                )
+                .filter(|report| report.sha256 == provenance)
+                .and_then(|report| serde_json::from_slice(&report.bytes).ok())
                 {
-                    if let Ok(report) = serde_json::from_slice(&bytes) {
-                        perception_entries(
-                            &mut entries,
-                            &binding.asset_id,
-                            &report,
-                            duration_ms(asset),
-                            &kinds,
-                            provenance,
-                        );
+                    Some(report) => perception_entries(
+                        &mut entries,
+                        &binding.asset_id,
+                        &report,
+                        duration_ms(asset),
+                        &kinds,
+                        provenance,
+                    ),
+                    None => {
+                        unread.insert((binding.asset_id.clone(), "perception"));
                     }
                 }
             }
@@ -264,10 +272,12 @@ pub(super) fn build_index(
     for binding in &bindings {
         let mut ready = Vec::new();
         for kind in &kinds {
+            let read =
+                |receipt: &'static str| !unread.contains(&(binding.asset_id.clone(), receipt));
             let source_ready = match kind.as_str() {
-                "transcript" => binding.transcript_sha256.is_some(),
+                "transcript" => binding.transcript_sha256.is_some() && read("transcript"),
                 "visual" => binding.visual_sha256.is_some(),
-                "scene" | "beat" => binding.perception_sha256.is_some(),
+                "scene" | "beat" => binding.perception_sha256.is_some() && read("perception"),
                 "marker" | "metadata" => true,
                 _ => false,
             };

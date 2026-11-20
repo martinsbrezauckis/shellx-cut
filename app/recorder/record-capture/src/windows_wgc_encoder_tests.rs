@@ -149,3 +149,45 @@ fn normal_cadence_stop_needs_no_extra_queued_sample() -> Result<(), Error> {
     assert!(media.decoded_video_frames >= 2);
     Ok(())
 }
+
+#[test]
+#[ignore = "requires Windows D3D/MF; run in native gate"]
+fn stop_before_the_first_frame_closes_an_empty_segment() -> Result<(), Error> {
+    // A checkpoint reopened just before Stop can close before WGC delivers a
+    // frame. Media Foundation reports MF_E_SINK_NO_SAMPLES_PROCESSED; that
+    // must reach the checkpoint verifier as an empty segment, not fail Stop.
+    crate::windows_runtime::pin_process_mta()?;
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("empty.mp4");
+    let encoder = WgcVideoEncoder::new(640, 480, 30, &path)?;
+    assert_eq!(encoder.finish_after_control_stop(Instant::now())?, None);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Windows D3D/MF and SHELLX_RECORD_FFMPEG/FFPROBE; run in native gate"]
+fn one_frame_just_before_stop_is_a_playable_part() -> Result<(), Error> {
+    use std::time::Duration;
+
+    // A checkpoint opened after a rollover can get its first frame only a
+    // few tens of milliseconds before Stop. That part must still verify.
+    crate::windows_runtime::pin_process_mta()?;
+    let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG")?;
+    let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE")?;
+    for gap_ms in [10_u64, 40, 88, 200] {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("late.mp4");
+        let mut encoder = WgcVideoEncoder::new(1920, 1080, 30, &path)?;
+        let stop_at = Instant::now();
+        encoder.send_snapshot(
+            solid_surface(1920, 1080)?,
+            5_112_895_216_850,
+            stop_at - Duration::from_millis(gap_ms),
+        )?;
+        encoder.finish_after_control_stop(stop_at)?;
+        let media = record_recovery::verify_media(&ffmpeg, &ffprobe, &path)
+            .map_err(|error| format!("{gap_ms} ms before Stop: {error}"))?;
+        assert!(media.decoded_video_frames >= 1, "{gap_ms} ms: {media:?}");
+    }
+    Ok(())
+}

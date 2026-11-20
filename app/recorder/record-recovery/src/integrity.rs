@@ -43,6 +43,20 @@ pub(crate) fn verified_prefix(
             }
             return Ok((usable, Some(PrefixIssue::MissingEvidence)));
         }
+        // A checkpoint this engine published here (its origin record, kept
+        // outside the capture folder, holds these exact bytes) was verified
+        // before publication, and the journal holds the facts of that check:
+        // decoding it again cost Stop and recovery two full decodes of every
+        // segment. A journal and segment that merely agree prove nothing (a
+        // received folder carries both), so any other file is decoded below.
+        let hash = sha256(&path)?;
+        if segment.media.is_some()
+            && hash == segment.sha256
+            && cut_media::cache_trust::trusted_hash(&path, &hash)
+        {
+            usable.push(segment.clone());
+            continue;
+        }
         // Tool failures are deliberately propagated. No hash, rename, output, or
         // receipt mutation is safe until playback verification is available.
         let media = verify_checkpoint_media(ffmpeg, ffprobe, &path)?;
@@ -53,7 +67,7 @@ pub(crate) fn verified_prefix(
                 .map(|expected| matches_expected(expected, &actual))
                 .unwrap_or(true)
         });
-        if !media_matches || sha256(&path)? != segment.sha256 {
+        if !media_matches || hash != segment.sha256 {
             return Ok((usable, Some(PrefixIssue::Corrupt(segment.sequence))));
         }
         usable.push(segment.clone());

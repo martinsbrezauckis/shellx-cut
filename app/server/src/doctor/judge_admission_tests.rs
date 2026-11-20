@@ -282,6 +282,41 @@ fn resolve_keeps_installed_but_unready_provider_out_of_ok() {
 }
 
 #[test]
+fn resolve_accepts_affirmative_codex_capability_without_promoting_antigravity() {
+    let admissions = parse_detect_output(
+        br#"{"rungs":[
+            {"provider":"codex","found":true,"judge_ready":true},
+            {"provider":"antigravity","found":true,"judge_ready":false,
+             "availability_reason":"native broker admission pending"}
+        ]}"#,
+    )
+    .expect("valid capability response");
+
+    let codex = resolve(
+        "codex",
+        true,
+        true,
+        &JudgeAdmissions::Verified(admissions.clone()),
+    );
+    assert_eq!(codex.status, CardStatus::Ok);
+    assert!(codex.judge_ready);
+    assert_eq!(codex.availability_reason, None);
+
+    let agy = resolve(
+        "antigravity",
+        true,
+        true,
+        &JudgeAdmissions::Verified(admissions),
+    );
+    assert_eq!(agy.status, CardStatus::Degraded);
+    assert!(!agy.judge_ready);
+    assert_eq!(
+        agy.availability_reason.as_deref(),
+        Some("native broker admission pending")
+    );
+}
+
+#[test]
 fn rejects_missing_or_duplicate_provider_protocol_entries() {
     assert!(parse_detect_output(br#"{"rungs":[{"found":true}]}"#).is_err());
     assert!(parse_detect_output(

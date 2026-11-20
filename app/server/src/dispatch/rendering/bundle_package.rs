@@ -23,6 +23,8 @@ pub(super) fn write_thumbnail(
         "1".into(),
         "-q:v".into(),
         "3".into(),
+        "-update".into(),
+        "1".into(),
         thumbnail.display().to_string(),
     ])
 }

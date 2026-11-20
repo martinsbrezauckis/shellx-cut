@@ -13,6 +13,27 @@ struct NativeEndpoint {
 unsafe extern "C" {
     fn shellx_cut_mic_endpoints_json() -> *mut c_char;
     fn shellx_cut_free_mic_endpoints_json(value: *mut c_char);
+    fn shellx_cut_microphone_authorization() -> i32;
+    fn shellx_cut_request_microphone_access();
+}
+
+/// Microphone authorization read without showing a prompt.
+#[cfg(feature = "capture-macos")]
+pub(super) fn access() -> super::MicrophoneAccess {
+    // SAFETY: the shim only reads AVFoundation's authorization state.
+    match unsafe { shellx_cut_microphone_authorization() } {
+        2 => super::MicrophoneAccess::Granted,
+        0 => super::MicrophoneAccess::NotDetermined,
+        1 => super::MicrophoneAccess::Denied,
+        _ => super::MicrophoneAccess::Restricted,
+    }
+}
+
+/// Show the macOS microphone prompt if the person has not answered yet.
+#[cfg(feature = "capture-macos")]
+pub(super) fn request_access() {
+    // SAFETY: the shim starts an asynchronous AVFoundation request and returns.
+    unsafe { shellx_cut_request_microphone_access() }
 }
 
 /// Enumerate Core Audio devices that publish at least one input stream. The UID

@@ -94,7 +94,7 @@ pub fn autoedit(events: &EventTrack, cfg: &EngineConfig) -> EditPlan {
     );
     plan.zoom = build_zoom(events, cfg);
     plan.cursor = CursorStyle {
-        smoothed: cursor_with_exact_clicks(events, cfg.cursor_window),
+        smoothed: cursor_with_validated_clicks(events, cfg.cursor_window),
         ..CursorStyle::default()
     };
     plan.clicks = build_clicks(events);
@@ -292,16 +292,18 @@ pub fn smooth_cursor(cursor: &[CursorSample], window: usize) -> Vec<CursorSample
         .collect()
 }
 
-fn cursor_with_exact_clicks(events: &EventTrack, window: usize) -> Vec<CursorSample> {
+fn cursor_with_validated_clicks(events: &EventTrack, window: usize) -> Vec<CursorSample> {
     let mut cursor = smooth_cursor(&events.cursor, window);
     if cursor.is_empty() {
         return cursor;
     }
-    for click in events
-        .clicks
-        .iter()
-        .filter(|click| click.down && click.position_quality == ClickPositionQuality::Exact)
-    {
+    for click in events.clicks.iter().filter(|click| {
+        click.down
+            && matches!(
+                click.position_quality,
+                ClickPositionQuality::Exact | ClickPositionQuality::Held
+            )
+    }) {
         let sample = CursorSample {
             t_ms: click.t_ms,
             x: click.x,
@@ -591,6 +593,33 @@ mod tests {
         assert_eq!(plan.clicks.len(), events.click_downs().count());
         assert!(!plan.clicks.is_empty());
         assert!(plan.zoom.keys.iter().any(|key| key.scale > 1.0));
+    }
+
+    #[test]
+    fn held_stationary_click_restores_ring_and_zoom_at_validated_position() {
+        let mut events = fixtures::generate("click-walkthrough").unwrap();
+        for click in &mut events.clicks {
+            click.position_quality = ClickPositionQuality::Approximate;
+        }
+        let first_down = events.clicks.iter().position(|click| click.down).unwrap();
+        events.clicks[first_down].position_quality = ClickPositionQuality::Held;
+        events.clicks[first_down].x = 2522.0;
+        events.clicks[first_down].y = 791.0;
+        events.screen_w = 3840;
+        events.screen_h = 2160;
+        let plan = autoedit(&events, &cfg());
+        assert_eq!(plan.clicks.len(), 1);
+        assert_eq!(
+            (plan.clicks[0].x, plan.clicks[0].y),
+            (2522.0 / 3840.0, 791.0 / 2160.0)
+        );
+        assert!(plan.zoom.keys.iter().any(|key| key.scale > 1.0));
+        assert!(plan
+            .cursor
+            .smoothed
+            .iter()
+            .any(|sample| sample.t_ms == events.clicks[first_down].t_ms
+                && (sample.x, sample.y) == (2522.0, 791.0)));
     }
 
     #[test]

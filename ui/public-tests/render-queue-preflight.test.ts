@@ -6,7 +6,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PregateReport } from '../src/lib/client'
 import PreflightWarning from '../src/topbar/PreflightWarning'
-import { runVideoPreflightAction } from '../src/topbar/videoPreflight'
+import { resourceRisks, runVideoPreflightAction, withResourceRisks } from '../src/topbar/videoPreflight'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const topbar = readFileSync(resolve(here, '../src/topbar/index.tsx'), 'utf8')
@@ -66,4 +66,25 @@ assert.equal(enqueued.length, 2, 'missing FFmpeg refuses without a queue submiss
 assert.match(notes.at(-1) ?? '', /Install FFmpeg/)
 assert.equal(await run({ pass: true, risks: [] }), 'started')
 assert.equal(enqueued.length, 3, 'clean preflight submits once without warning')
-console.log('queue preflight: two-profile explicit high-risk override, acknowledgment, FFmpeg guard, clean path')
+
+// Item 82: the render plan's memory/disk warnings and a refusal become risks
+// with their numbers, so the person sees them before the render starts.
+const plan = {
+  resources: { warnings: [{ code: 'memory_short', message: 'This render needs about 11.0 GB of memory and about 6.0 GB is free now.' }] },
+  refused: { code: 'not_enough_space', message: 'not enough free space for this render on /vol: it needs about 9.0 GB, 1.0 GB is free', suggested_action: 'Free at least 8.5 GB on that drive.' },
+}
+assert.deepEqual(resourceRisks(plan).map((r) => r.kind), ['memory_short', 'not_enough_space'])
+assert.match(resourceRisks(plan)[1].detail ?? '', /Free at least 8.5 GB/)
+assert.deepEqual(resourceRisks({ resources: { warnings: [] } }), [])
+const merged = withResourceRisks({ pass: true, risks: [] }, plan)
+assert.equal(merged?.pass, false)
+const resourceHtml = renderToStaticMarkup(React.createElement(PreflightWarning, {
+  report: merged as PregateReport, actionLabel: 'rendering video', onCancel: () => {}, onContinue: () => {},
+}))
+assert.match(resourceHtml, /Not enough free memory/)
+assert.match(resourceHtml, /about 11.0 GB of memory/)
+assert.match(resourceHtml, /Not enough free space/)
+const topbarRender = topbar.slice(topbar.indexOf('const onRender'))
+assert.match(topbarRender, /aspect !== 'project' \? undefined : renderArgs/, 'a single render passes its plan args to the preflight')
+assert.match(topbar, /callVerb\('render.final', \{ \.\.\.renderPlanArgs, dry_run: true \}\)/)
+console.log('queue preflight: two-profile explicit high-risk override, acknowledgment, FFmpeg guard, clean path, render resources')

@@ -69,6 +69,14 @@ pub fn microphone_preference_path() -> Option<PathBuf> {
     shellx_cut_home().map(|h| h.join("microphone-preference.json"))
 }
 
+/// `~/.shellx-cut/export-folder.json` — the remembered export folder (an app-wide
+/// preference). It lives in the state home like every other per-user state file,
+/// so `SHELLX_CUT_HOME` (tests, a second instance, a portable install) moves it
+/// with the rest and never touches the person's real setting.
+pub fn export_folder_path() -> Option<PathBuf> {
+    shellx_cut_home().map(|h| h.join("export-folder.json"))
+}
+
 /// `~/.shellx-cut/library` — the global asset library dir.
 pub fn library_dir() -> Option<PathBuf> {
     shellx_cut_home().map(|h| h.join("library"))

@@ -10,7 +10,7 @@ use crate::vissearch::{
 };
 use cut_core::{Asset, Clip, Marker, Project, ProjectSettings};
 
-fn fixture() -> (tempfile::TempDir, ProjectSnapshot) {
+pub(super) fn fixture() -> (tempfile::TempDir, ProjectSnapshot) {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(directory.path().join("receipts")).unwrap();
     let source = directory.path().join("interview.mp4");
@@ -74,7 +74,7 @@ fn fixture() -> (tempfile::TempDir, ProjectSnapshot) {
     (directory, snapshot)
 }
 
-fn kinds(values: &[&str]) -> BTreeSet<String> {
+pub(super) fn kinds(values: &[&str]) -> BTreeSet<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
 
@@ -166,11 +166,14 @@ fn prepared_visual_status_and_query_reject_a_legacy_embedding_index() {
 #[test]
 fn unavailable_prepared_siglip_keeps_nonvisual_intelligence_ready() {
     let (directory, mut snapshot) = fixture();
+    // A readable analysis report (one that cannot be read is not "ready").
     std::fs::write(
         directory.path().join("receipts/a1.perception.json"),
-        br#"{"asset":"a1","scenes":[]}"#,
+        br#"{"schema":"shellx-cut/perception/1","asset_hash":"sha256:fixture-a1","source_path":"interview.mp4","scenes":[]}"#,
     )
     .unwrap();
+    // Stands in for this engine's own analysis write (item 155).
+    cut_media::cache_trust::remember(&directory.path().join("receipts/a1.perception.json"));
     snapshot.project.assets.get_mut("a1").unwrap().perception =
         Some("receipts/a1.perception.json".into());
     crate::vissearch::save_index(&snapshot.dir, &legacy_visual_index()).unwrap();

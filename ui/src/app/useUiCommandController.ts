@@ -6,6 +6,7 @@ import type { HighlightSpec } from '../HighlightOverlay'
 import type { UiObservableState } from './uiControlState'
 import { waitForCommittedState } from './uiCommandCommit'
 import { uiSurface } from './uiSurfaceRegistry'
+import { handlePreviewModeCommand } from './previewModeCommand'
 import { handleVoiceoverPlaybackCommand } from './voiceoverPlaybackCommand'
 
 export {
@@ -17,7 +18,7 @@ export type { UiCommitScheduler } from './uiCommandCommit'
 interface UiCommandControllerArgs {
   stateRef: MutableRefObject<UiObservableState>
   project: Project | null
-  setPlayheadMs: Dispatch<SetStateAction<number>>
+  setPlayheadMs: (atMs: number) => void
   setSelectedClipIds: Dispatch<SetStateAction<string[]>>
   setHighlight: Dispatch<SetStateAction<HighlightSpec | null>>
   highlightNonce: MutableRefObject<number>
@@ -188,6 +189,10 @@ export function useUiCommandController({
           )
           if (state) answer(command, true, requested, state)
           else reject(command, requested, { code: 'conflict', message: 'selection state did not commit before the confirmation deadline' })
+          return
+        }
+        case 'ui.preview': {
+          await handlePreviewModeCommand({ command, before, stateRef, answer: (requested, state) => answer(command, true, requested, state), reject: (requested, error) => reject(command, requested, error) })
           return
         }
         case 'ui.open': {

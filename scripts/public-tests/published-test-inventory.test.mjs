@@ -11,6 +11,7 @@ import {
   loadPublishedTestInventory,
   resolvePublishedPrerequisites,
   verifyPublishedTestResources,
+  verifyPublishedNodeTestMembership,
   verifyPublishedUiLibraryMembership,
 } from '../lib/published-test-inventory.mjs'
 
@@ -62,7 +63,7 @@ function fixture(t, { tests = ['scripts/public-tests/fixture.test.mjs'], resourc
 test('published test inventory names the exact public CI scope and every declared resource', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
   assert.equal(inventory.version, JSON.parse(readFileSync(resolve(ROOT, 'ui/package.json'), 'utf8')).version)
-  assert.deepEqual(inventory.contract, { node_test_count: 12, ui_library_test_count: 40 })
+  assert.deepEqual(inventory.contract, { node_test_count: 17, ui_library_test_count: inventory.uiLibraryTests.tests.length })
   assert.deepEqual(inventory.tests.map((entry) => entry.path), [
     'scripts/public-tests/cross-host-media.test.mjs',
     'scripts/public-tests/dependency-audit.test.mjs',
@@ -76,6 +77,11 @@ test('published test inventory names the exact public CI scope and every declare
     'scripts/public-tests/safe-data.test.mjs',
     'scripts/public-tests/third-party-notice.test.mjs',
     'scripts/public-tests/windows-capture-lifecycle-contract.test.mjs',
+    'scripts/public-tests/coverage-audit-timeout-contract.test.mjs',
+    'scripts/public-tests/manual-ui-assets-contract.test.mjs',
+    'scripts/public-tests/record-camera-contract.test.mjs',
+    'scripts/public-tests/requirements-contract.test.mjs',
+    'scripts/public-tests/v06112-source-doc-coverage.test.mjs',
   ])
   verifyPublishedTestResources(inventory)
 })
@@ -138,7 +144,20 @@ test('published UI library membership is compared with the maintained runner dis
   verifyPublishedTestResources(inventory)
   await verifyPublishedUiLibraryMembership(inventory)
   await verifyPublishedUiLibraryMembership(inventory, async () => ({ included: ['alpha.test.ts', 'beta.test.ts'] }))
-  await verifyPublishedUiLibraryMembership(inventory, async () => ({ included: ['alpha.test.ts', 'beta.test.ts', 'canonical-only.test.ts'] }))
+  // The canonical source may hold tests that are private by the export policy: not an error there.
+  await verifyPublishedUiLibraryMembership(inventory, async () => ({ included: ['alpha.test.ts', 'beta.test.ts', 'canonical-only.test.ts'] }), { exact: false })
+  // By default a public test the inventory does not list fails.
+  await assert.rejects(
+    () => verifyPublishedUiLibraryMembership(inventory, async () => ({ included: ['alpha.test.ts', 'beta.test.ts', 'unlisted.test.mjs'] })),
+    new RegExp(`${PUBLISHED_TEST_INVENTORY_GUARD}: public UI library tests exist that the inventory does not list .*unlisted\\.test\\.mjs`),
+  )
+  verifyPublishedNodeTestMembership(inventory)
+  writeFileSync(join(root, 'scripts/public-tests/unlisted.test.mjs'), 'export {}\n')
+  assert.throws(
+    () => verifyPublishedNodeTestMembership(inventory),
+    new RegExp(`${PUBLISHED_TEST_INVENTORY_GUARD}: public Node tests exist that the inventory does not list .*unlisted\\.test\\.mjs`),
+  )
+  verifyPublishedNodeTestMembership(inventory, { exact: false })
   await assert.rejects(
     () => verifyPublishedUiLibraryMembership(inventory, async () => ({ included: ['alpha.test.ts'] })),
     new RegExp(`${PUBLISHED_TEST_INVENTORY_GUARD}: declared UI library test membership differs from maintained discovery`),
@@ -178,7 +197,7 @@ test('published runner executes only the declared tests and collects every decla
 
   const environment = { ...process.env }
   delete environment.NODE_TEST_CONTEXT
-  const result = spawnSync(process.execPath, [RUNNER, '--root', root, '--run', '--no-bail'], {
+  const result = spawnSync(process.execPath, [RUNNER, '--root', root, '--run', '--no-bail', '--allow-unlisted'], {
     encoding: 'utf8',
     env: environment,
   })
@@ -278,4 +297,31 @@ test('published test inventory forwards a verified Python command through CUTD_A
     probe: (command) => ({ ok: command === 'python' }),
   })
   assert.equal(resolved.get('python').command, 'python')
+})
+
+test('published check refuses a public test the inventory does not list', (t) => {
+  const listed = 'scripts/public-tests/listed.test.mjs'
+  const unlisted = 'scripts/public-tests/unlisted.test.mjs'
+  const root = fixture(t, {
+    tests: [listed, unlisted],
+    inventory: {
+      schema: 'shellx-cut/published-test-inventory@1',
+      version: '0.0.1',
+      contract: { node_test_count: 1, ui_library_test_count: 1 },
+      prerequisites: [{ id: 'python', environment: 'CUTD_ADAPTER_PYTHON', candidates: ['python3'], probe: ['-c', 'import sys'] }],
+      tests: [{ path: listed, resources: [listed], requires: [] }],
+      ui_library_tests: {
+        root: 'ui/public-tests',
+        runner: 'ui/public-tests/lib/runLibraryTests.mjs',
+        discovery: 'ui/public-tests/lib/libraryTestDiscovery.mjs',
+        exclusions: 'ui/public-tests/library-test-exclusions.json',
+        tests: ['fixture.test.ts'],
+      },
+    },
+  })
+  const environment = { ...process.env }
+  delete environment.NODE_TEST_CONTEXT
+  const refused = spawnSync(process.execPath, [RUNNER, '--root', root], { encoding: 'utf8', env: environment })
+  assert.equal(refused.status, 1, `${refused.stdout}${refused.stderr}`)
+  assert.match(refused.stderr, /public Node tests exist that the inventory does not list.*unlisted\.test\.mjs/)
 })

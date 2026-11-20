@@ -232,11 +232,12 @@ fn open_existing_nofollow(path: &Path, append: bool) -> Result<File, SessionJour
 
 fn ensure_open_regular(file: &File, path: &Path) -> Result<(), SessionJournalError> {
     let metadata = file.metadata().map_err(|source| io_error(path, source))?;
-    if metadata.file_type().is_file() && !is_reparse(&metadata) {
+    let single = crate::has_single_name(file).map_err(|source| io_error(path, source))?;
+    if metadata.file_type().is_file() && !is_reparse(&metadata) && single {
         Ok(())
     } else {
         Err(invalid(
-            "opened recording session journal is not a local regular file",
+            "opened recording session journal is not a local regular file with one name",
         ))
     }
 }
@@ -455,18 +456,11 @@ fn sync_parent(_path: &Path) -> Result<(), SessionJournalError> {
     Ok(())
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry, and the standard library reports exactly those as symlinks; cloud
+/// placeholders and other reparse points are the file or folder itself.
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    metadata.file_type().is_symlink()
 }
 
 fn manifest_error(error: ManifestError) -> SessionJournalError {

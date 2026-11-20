@@ -9,19 +9,20 @@ import { macosScreenCaptureKitBridgeContract } from './screencapturekit-bridge-c
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
 
-const REVIEW_BY = '2026-10-15'
+// Reviewed 2026-11-05 against the exact locked graph. These are warning-only
+// maintenance/compatibility dispositions; vulnerability entries still fail.
+const REVIEW_BY = '2026-12-05'
 const RELEASE_OWNER = 'ShellX Cut release'
 
-const exception = (advisoryId, packageName, version, reason) => Object.freeze({
+const exception = (advisoryId, packageName, version, reason, kind = 'unmaintained') => Object.freeze({
   advisoryId,
   package: packageName,
   version,
+  kind,
   owner: RELEASE_OWNER,
   expires: REVIEW_BY,
   reason,
 })
-
-const UNIC_REASON = 'Tauri 2 urlpattern still inherits the archived UNIC crates.'
 
 /**
  * The optional installed-UI test harness is currently zero-tolerance too. Keep
@@ -36,13 +37,37 @@ export const RUST_WARNING_EXCEPTIONS = Object.freeze({
       'RUSTSEC-2026-0206',
       'rustybuzz',
       '0.20.1',
-      'Locked resvg/usvg 0.47 inherit rustybuzz; upstream 0.48 migrated to harfrust, requiring separate title-rendering qualification.',
+      'Unmaintained through locked usvg 0.47; resvg/usvg 0.48+ require coordinated harfrust/fontdb migration and title-rendering qualification.',
     ),
     exception(
       'RUSTSEC-2026-0192',
       'ttf-parser',
       '0.25.1',
-      'resvg/usvg still inherit ttf-parser; direct Cut font parsing uses swash.',
+      'Unmaintained through fontdb 0.23/usvg 0.47; replacing with fontdb 0.24 and resvg/usvg 0.48+ requires font/title-rendering qualification.',
+    ),
+    exception(
+      'RUSTSEC-2026-0371',
+      'zbus_names',
+      '4.3.2',
+      'Standalone crate merged into zbus 6; capture-linux uses ashpd 0.13/zbus 5. ashpd 0.14 migration needs portal/capture qualification.',
+    ),
+    exception(
+      'RUSTSEC-2026-0370',
+      'zvariant',
+      '5.12.0',
+      'Standalone crate merged into zbus 6; locked ashpd 0.13 requires zbus 5 wire types. Qualify portal/capture before migrating.',
+    ),
+    exception(
+      'RUSTSEC-2026-0372',
+      'zvariant_derive',
+      '5.12.0',
+      'Build-time derive for the same ashpd 0.13/zbus 5 wire types; upstream replacement is part of the coordinated zbus 6 migration.',
+    ),
+    exception(
+      'RUSTSEC-2026-0543',
+      'chrono',
+      '0.4.45',
+      'Unmaintained notice without a known vulnerability, and no successor release exists. The engine uses it for RFC 3339 timestamps; replacement with the time crate is planned and this entry is reviewed until then.',
     ),
   ]),
   desktop: Object.freeze([
@@ -52,16 +77,59 @@ export const RUST_WARNING_EXCEPTIONS = Object.freeze({
       '1.0.4',
       'The inherited GTK3 macro stack still uses this build-time helper.',
     ),
-    exception('RUSTSEC-2025-0081', 'unic-char-property', '0.9.0', UNIC_REASON),
-    exception('RUSTSEC-2025-0075', 'unic-char-range', '0.9.0', UNIC_REASON),
-    exception('RUSTSEC-2025-0080', 'unic-common', '0.9.0', UNIC_REASON),
-    exception('RUSTSEC-2025-0100', 'unic-ucd-ident', '0.9.0', UNIC_REASON),
-    exception('RUSTSEC-2025-0098', 'unic-ucd-version', '0.9.0', UNIC_REASON),
     exception(
       'RUSTSEC-2024-0429',
       'glib',
       '0.18.5',
-      'Tauri 2 Linux dependencies pin glib 0.18; Cut does not call VariantStrIter.',
+      'Existing GLib compatibility deferral: Linux Tauri/GTK selects 0.18.5. Cut and the inspected normal dependency graph contain no VariantStrIter calls; GNOME Settings::strv uses g_settings_get_strv. Other feature/target paths remain unproven; upstream fixed >=0.20 needs GTK-stack migration.',
+      'unsound',
+    ),
+    exception(
+      'RUSTSEC-2026-0371',
+      'zbus_names',
+      '4.3.4',
+      'Standalone crate merged into zbus 6; Tauri opener 2.5.5 selects zbus 5 and stable opener 2.7.2 still requires zbus 5. Revisit with upstream migration.',
+    ),
+    exception(
+      'RUSTSEC-2026-0370',
+      'zvariant',
+      '5.15.0',
+      'Standalone crate merged into zbus 6; the maintained Tauri opener line still requires zbus 5 wire types. No compatible replacement edge is available.',
+    ),
+    exception(
+      'RUSTSEC-2026-0372',
+      'zvariant_derive',
+      '5.15.0',
+      'Build-time derive for the Tauri opener/zbus 5 wire types; replacement follows upstream opener migration to zbus 6.',
+    ),
+    exception(
+      'RUSTSEC-2026-0543',
+      'chrono',
+      '0.4.45',
+      'Lockfile-only entry: optional dependency of serde_with (through tauri-utils) that no target enables; chrono is not compiled into this graph.',
+    ),
+  ]),
+  // The optional installed-UI harness lock: only the desktop entries for the
+  // same crate and version, with the same reason text.
+  harness: Object.freeze([
+    exception(
+      'RUSTSEC-2024-0370',
+      'proc-macro-error',
+      '1.0.4',
+      'The inherited GTK3 macro stack still uses this build-time helper.',
+    ),
+    exception(
+      'RUSTSEC-2024-0429',
+      'glib',
+      '0.18.5',
+      'Existing GLib compatibility deferral: Linux Tauri/GTK selects 0.18.5. Cut and the inspected normal dependency graph contain no VariantStrIter calls; GNOME Settings::strv uses g_settings_get_strv. Other feature/target paths remain unproven; upstream fixed >=0.20 needs GTK-stack migration.',
+      'unsound',
+    ),
+    exception(
+      'RUSTSEC-2026-0543',
+      'chrono',
+      '0.4.45',
+      'Lockfile-only entry: optional dependency of serde_with (through tauri-utils) that no target enables; chrono is not compiled into this graph.',
     ),
   ]),
 })
@@ -83,6 +151,14 @@ export function dependencyAuditPlan(repo = REPO, platform = process.platform) {
       label: 'Rust desktop',
       command: 'cargo',
       args: ['audit', '--file', resolve(repo, 'app', 'desktop', 'src-tauri', 'Cargo.lock'), '--json'],
+      cwd: repo,
+    },
+    {
+      kind: 'rust',
+      scope: 'harness',
+      label: 'Rust test harness',
+      command: 'cargo',
+      args: ['audit', '--file', resolve(repo, 'app', 'desktop', 'src-tauri', 'test-support', 'tauri-plugin-wdio-webdriver', 'Cargo.lock'), '--json'],
       cwd: repo,
     },
     {
@@ -117,8 +193,8 @@ function reportWarningKey(warning) {
 }
 
 function reportWarnings(report) {
-  return Object.values(report.warnings || {}).flatMap((warnings) => (
-    Array.isArray(warnings) ? warnings : []
+  return Object.entries(report.warnings || {}).flatMap(([kind, warnings]) => (
+    Array.isArray(warnings) ? warnings.map((warning) => ({ ...warning, kind })) : []
   ))
 }
 
@@ -127,6 +203,7 @@ function validException(policy) {
     && typeof policy.advisoryId === 'string'
     && typeof policy.package === 'string'
     && typeof policy.version === 'string'
+    && ['unmaintained', 'unsound'].includes(policy.kind)
     && typeof policy.owner === 'string'
     && policy.owner.trim() !== ''
     && /^\d{4}-\d{2}-\d{2}$/.test(policy.expires)
@@ -203,6 +280,10 @@ export function evaluateRustAudit({
       continue
     }
     seen.add(key)
+    if (warning.kind !== policy.kind) {
+      failures.push(`${label}: warning kind changed ${key} (expected ${policy.kind}, observed ${warning.kind})`)
+      continue
+    }
     if (today > policy.expires) {
       failures.push(`${label}: warning exception expired ${key} (review was due ${policy.expires})`)
       continue

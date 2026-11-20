@@ -38,14 +38,11 @@ async fn timeline_fix_count_uses_real_dispatch_operations() {
         .as_str()
         .unwrap();
 
+    // Without a transcript trim_edges is refused with the reason (it is no
+    // longer an ok that reads like "no dead air"), and is not a fix either.
     let no_words = dispatch(&state, "edit.trim_edges", json!({}), actor()).await;
-    assert!(
-        no_words.ok,
-        "trim_edges without words: {:?}",
-        no_words.error
-    );
+    assert!(!no_words.ok, "trim_edges without a transcript must refuse");
     assert!(no_words.op_ids.as_ref().is_none_or(Vec::is_empty));
-    assert_eq!(no_words.result.as_ref().unwrap()["leading_trimmed_ms"], 0);
     assert!(!autopilot_timeline_fix_applied(&no_words));
 
     let missing_captions = dispatch(&state, "captions.reflow", json!({}), actor()).await;

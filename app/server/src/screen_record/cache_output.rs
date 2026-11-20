@@ -104,16 +104,26 @@ impl StagedOutput {
     }
 }
 
+/// Whether the bake at `path` may be reused: a safe, non-empty file that this
+/// engine baked here and that is unchanged. Its name is a hash of the source
+/// and plan, so a project from elsewhere can carry a file at exactly that name
+/// with any picture; without the origin record (outside the project, see
+/// `cut_media::cache_trust`) it is baked again.
+pub(crate) fn reusable_bake(path: &Path) -> Result<bool, CutError> {
+    Ok(cache_hit(path)? && cut_media::cache_trust::trusted(path))
+}
+
 pub(crate) fn bake_seed(
     final_path: &Path,
     bake: impl FnOnce(&Path) -> Result<(), CutError>,
 ) -> Result<PathBuf, CutError> {
-    if cache_hit(final_path)? {
+    if reusable_bake(final_path)? {
         return Ok(final_path.to_owned());
     }
     let stage = StagedOutput::new(final_path)?;
     bake(stage.path())?;
     stage.publish()?;
+    cut_media::cache_trust::remember(final_path);
     Ok(final_path.to_owned())
 }
 

@@ -2,6 +2,7 @@ import type { Project } from '../../lib/client'
 import type { ActiveVideo } from './model'
 import PreviewComparison from './PreviewComparison'
 import PreviewMonitorBadges from './PreviewMonitorBadges'
+import type { PosterChip } from './posterChip'
 
 interface PreviewMonitorOverlayProps {
   project: Project | null
@@ -14,8 +15,9 @@ interface PreviewMonitorOverlayProps {
   overlaysDropped: number
   posterActive: boolean
   showSpinner: boolean
-  composed: boolean
-  liveComposedPlayback: boolean
+  posterChip: PosterChip | null
+  /** Plain notice while the live picture leaves out titles/effects at the playhead. */
+  livePreviewNotice: string | null
 }
 
 /** Keeps monitor-only status and review affordances out of Preview/index.tsx. */
@@ -30,8 +32,8 @@ export default function PreviewMonitorOverlay({
   overlaysDropped,
   posterActive,
   showSpinner,
-  composed,
-  liveComposedPlayback,
+  posterChip,
+  livePreviewNotice,
 }: PreviewMonitorOverlayProps) {
   return (
     <>
@@ -42,8 +44,8 @@ export default function PreviewMonitorOverlay({
         overlaysDropped={overlaysDropped}
         posterActive={posterActive}
         showSpinner={showSpinner}
-        composed={composed}
-        liveComposedPlayback={liveComposedPlayback}
+        posterChip={posterChip}
+        livePreviewNotice={livePreviewNotice}
       />
       <PreviewComparison project={project} playheadMs={playheadMs} revision={revision} onPause={onPause} />
     </>

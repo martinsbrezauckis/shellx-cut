@@ -575,6 +575,11 @@ async fn install_pending(app: &tauri::AppHandle) -> Result<serde_json::Value, St
     if !install {
         return Ok(json!({ "ok": false, "cancelled": true }));
     }
+    // The update stops the engine (Windows, before the installer) or restarts
+    // the app: running work is stopped only when the person says so.
+    if !crate::close_guard::update_may_stop_engine(app) {
+        return Ok(json!({ "ok": false, "cancelled": true, "reason": "work is running" }));
+    }
 
     state.update_and_broadcast(app, |snap| {
         snap.installing = true;

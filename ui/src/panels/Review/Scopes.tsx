@@ -1,3 +1,4 @@
+import { engineMediaUrl } from '../../lib/mediaUrl'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { callVerb, exportUrl } from '../../lib/client'
 import { Icon } from '../../icons'
@@ -42,7 +43,7 @@ function fmt(value: unknown, suffix = ''): string {
 }
 
 function imageHref(path: string): string {
-  return path.startsWith('/api/') || path.startsWith('http') ? path : exportUrl(path)
+  return path.startsWith('/api/') ? engineMediaUrl(path) ?? '' : exportUrl(path)
 }
 
 export default function Scopes({ playheadMs }: { playheadMs: number }) {

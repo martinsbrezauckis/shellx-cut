@@ -29,7 +29,9 @@ fn write_video(path: &std::path::Path) {
     assert!(status.success(), "lavfi asset generation failed");
 }
 
-async fn create_nested_project(root: &std::path::Path) -> (AppState, std::path::PathBuf) {
+pub(super) async fn create_nested_project(
+    root: &std::path::Path,
+) -> (AppState, std::path::PathBuf) {
     let project_dir = root.join("nested.cutproj");
     let source = root.join("source.mp4");
     write_video(&source);

@@ -141,6 +141,10 @@
    as "building". */
 .pv-chip--source { color: var(--cut-soft); }
 .pv-chip--source .pv-chip-dot { background: var(--cut-soft); }
+/* A quiet note on the still frame (end of timeline, no clip here, live playback
+   failed): informational, so no accent dot. */
+.pv-chip--note { color: var(--ink-3); }
+.pv-chip--note .pv-chip-dot { background: var(--ink-3); }
 /* Decode-cap note: some overlay layers hidden past MAX_OVERLAYS. Top-LEFT so it
    never collides with the SOURCE / COMPOSED chips at top-right. */
 .pv-chip--warn { left: 8px; right: auto; color: var(--warn, #e6b450); }
@@ -160,7 +164,10 @@
   container-type: size;     /* enables cqh units for caption sizing */
   background: #000;          /* letterbox/pad shows as black, mirrors the render */
 }
+/* The base track is a deck of two stacked elements (on-screen + parked next
+   clip, see BaseVideoDeck.tsx); both fill the stage. */
 .pv-stage .pv-base {
+  position: absolute; inset: 0;
   width: 100%; height: 100%; object-fit: contain; display: block;
 }
 /* The base frame is display-only. Let the monitor receive secondary gestures
@@ -536,3 +543,23 @@
 }
 .pv-root:fullscreen .pv-monitor,
 .pv-root[data-cut-fullscreen='true'] .pv-monitor { flex: 1; }
+
+/* Exact composed frame over the paused live preview (ComposedFrameOverlay). */
+.pv-composed-frame {
+  position: absolute; inset: 0;
+  pointer-events: none;
+}
+.pv-composed-frame > img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: contain; display: block;
+}
+.pv-composed-frame-error {
+  top: auto; right: auto; left: 50%; bottom: 10px; transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  white-space: normal;
+}
+/* Notice on the playing picture when it leaves elements out. */
+.pv-live-notice {
+  max-width: calc(100% - 24px);
+  white-space: normal;
+}

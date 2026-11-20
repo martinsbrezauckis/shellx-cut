@@ -21,6 +21,7 @@ sys.path.insert(0, _JUDGE_DIR)
 _PY_ROOT = os.path.dirname(_JUDGE_DIR)
 sys.path.insert(0, _PY_ROOT)
 import judge  # noqa: E402
+import judge_files  # noqa: E402
 import provider_child_launch  # noqa: E402
 
 _ADAPTERS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -135,12 +136,17 @@ def main() -> int:
     if args.command == "detect":
         print(json.dumps(detect(launch), indent=2))
         return 0
+    if args.command == "review" and args.out:
+        try:
+            judge_files.require_replaceable(args.out, "review result")
+        except judge_files.RefusedProjectFile as error:
+            print(f"review refused: {error}", file=sys.stderr)
+            return 2
 
     envelope = _not_run_envelope(args)
     text = json.dumps(envelope, indent=2)
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as output:
-            output.write(text + "\n")
+        judge_files.write_text_replacing(args.out, text + "\n", "review result")
     print(text)
     return 0
 

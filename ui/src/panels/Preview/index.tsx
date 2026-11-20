@@ -15,7 +15,7 @@ import PreviewMonitorOverlay from './PreviewMonitorOverlay'
 import PreviewTransport, { type Rate } from './PreviewTransport'
 import PreviewContextMenu from './PreviewContextMenu'
 import { monitorAudioResyncTarget } from './audioSync'
-import { activeVideo, previewFrameMs, RVFC_SUPPORTED, videoFrameCallbacks } from './model'
+import { activeBaseAssetId, activeVideo, canPlayPreviewVideo, previewFrameMs, RVFC_SUPPORTED, videoFrameCallbacks } from './model'
 import { PreviewFrameError, PreviewOfflineOverlays, PreviewOfflineStage, usePreviewOfflineMedia } from './PreviewOffline'
 import { usePreviewExportActions } from './usePreviewExportActions'
 import { usePreviewAudioMeter } from './usePreviewAudioMeter'
@@ -29,14 +29,24 @@ import {
   openVideoToolsSettings,
   recheckVideoTools,
 } from '../../lib/videoToolsSetup'
-import { timelineMsAtSourcePosition } from '../../lib/mediaTime'
+import { playbackVideoKey, PlaybackSeekTracker } from './playbackClock'
+import { runFreeRunClock } from './freeRunClock'
+import { posterChip } from './posterChip'
+import { BaseVideoDeck } from './BaseVideoDeck'
+import { ComposedFrameOverlay } from './ComposedFrameOverlay'
+import { hiddenInLivePreview, livePreviewNotice } from './livePreviewCoverage'
+import { EMPTY_DECK, nextDeck, upcomingBaseVideo, type DeckState } from './baseDeckPlan'
+import { PreviewDecodeNotice, usePreviewDecodeHealth } from './usePreviewDecodeHealth'
 import { useTimeDisplay } from '../../lib/timedisplay'
 import { contentExtentMs, imageAssetIds, timecode } from '../Timeline/layout'
 import {
   baseGradeAt,
+  composedFrameOnTop,
   gradeFilter,
+  liveBaseGap,
   resolveCaptions,
   resolveOverlays,
+  resolveUpcomingOverlays,
   stageAspect,
   shouldUseLivePreviewSurface,
 } from './composite'
@@ -47,6 +57,9 @@ export interface PreviewProps {
   playheadMs: number
   /** Playhead change from transport/playback → App dispatches ui.playhead. */
   onSeek: (atMs: number) => void
+  /** Playback clock position; ignored when an explicit seek newer than `observedSeekRevision` exists. */
+  onPlaybackSeek: (atMs: number, observedSeekRevision: number) => boolean
+  seekRevision: number
   /**
    * The latest applied op id, used as a cache-bust token on the /api/frame
    * poster. The composed frame at a given at_ms changes whenever the timeline
@@ -68,16 +81,14 @@ const isObject = (v: unknown): v is object => v !== null && typeof v === 'object
 const isTitleAlign = (v: unknown): v is 'left' | 'center' | 'right' => v === 'left' || v === 'center' || v === 'right'
 const isRedactMode = (v: unknown): v is 'blur' | 'pixelate' | 'box' => v === 'blur' || v === 'pixelate' || v === 'box'
 const isMaskShape = (v: unknown): v is MaskShape => v === 'rect' || v === 'ellipse' || v === 'polygon'
-export default function Preview({ project, doctor = null, playheadMs, onSeek, headOpId, selectedClipIds, exportRange }: PreviewProps) {
+export default function Preview({ project, doctor = null, playheadMs, onSeek, onPlaybackSeek, seekRevision, headOpId, selectedClipIds, exportRange }: PreviewProps) {
   const [rate, setRate] = useState<Rate>(0)
   const [posterStale, setPosterStale] = useState(false)
   const [showSpinner, setShowSpinner] = useState(false)
-  // COMPOSED mode: show the engine's composed frame (/api/frame?compose=1 —
-  // grade, titles, kinetic overlays, crop, fades all applied) instead of the raw
-  // proxy <video>, which shows NONE of those. The PROXY/COMPOSED toggle drives
-  // it; a visual edit (grade/title/kinetic) also flips it on via cut:show-composed
-  // so the drawers' "see it in the preview" receipt is actually TRUE.
-  const [composed, setComposed] = useState(false)
+  // COMPOSED mode (usePreviewViewOptions, ON by default and remembered): while
+  // paused the engine's exact composed frame (/api/frame?compose=1: titles,
+  // effects, fades, grades) covers the live proxy preview. The transport toggle,
+  // ui.preview (agents) and a visual edit (cut:show-composed) set it.
   // #193b: a DRAGGABLE ghost of the title the Title drawer is placing (free mode). The
   // drawer broadcasts {x,y,text,align}; we render it on the frame and send back x/y as the
   // user drags — so a title is positioned directly on the picture, not an abstract pad.
@@ -110,7 +121,10 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   useEffect(() => {
     setFailedSources(new Set())
   }, [projectKey])
-  const videoRef = useRef<HTMLVideoElement>(null)
+  // A system that cannot decode the H.264 proxies at all is named on the monitor.
+  const { problem: decodeProblem, reporter: decodeReporter } = usePreviewDecodeHealth(doctor?.os, projectKey)
+  // The ON-SCREEN base element (the deck's front; null in a base-track gap).
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   // --- timeline audio monitoring --------------------------------------------
   // The base + overlay <video>s are MUTED (a single proxy clip's embedded track
   // is NOT the timeline mix), so the live preview was silent while
@@ -129,17 +143,12 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // Double-buffer the monitor mix across two files. The pre-warm re-renders the
   // mix as edits land; export.audio writes a FIXED path, so re-rendering the
   // SAME file the <audio> is mid-fetch races (on Windows the write-lock makes the
-  // in-flight read 404 — caught by console-clean). Alternating _monitor_a/_b.mp3
+  // in-flight read 404 — caught by console-clean). Alternating scratch slots monitor_a/_b
   // means a re-render never overwrites the file the element is currently reading.
   const mixBuf = useRef<'a' | 'b'>('a')
   const { meterAnalyser, setupMeter } = usePreviewAudioMeter(audioRef)
   const ffmpegMissing = isFfmpegMissing(doctor)
   const openVideoToolsSetup = useCallback(openVideoToolsSettings, [])
-  useEffect(() => {
-    const onShow = () => setComposed(true)
-    document.addEventListener('cut:show-composed', onShow)
-    return () => document.removeEventListener('cut:show-composed', onShow)
-  }, [])
   useEffect(() => {
     const onFocus = () => {
       rootRef.current?.scrollIntoView({ block: 'nearest' })
@@ -294,7 +303,10 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     return events.onEvent((ev) => {
       if (ev.type !== 'job_progress') return
       const m = ev.message ?? ''
-      if (m === 'proxy') setProxyBuilding(true)
+      // A proxy-building job that ENDS (done, failed or cancelled) ends the dot:
+      // the engine's terminal flag says so, not the wording of its last message.
+      if (ev.terminal && (ev.kind === 'import_chain' || ev.kind === 'proxy')) setProxyBuilding(false)
+      else if (m === 'proxy') setProxyBuilding(true)
       else if (m === 'transcribe' || m === 'perception' || m.startsWith('done')) setProxyBuilding(false)
     })
   }, [])
@@ -314,7 +326,20 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   const monitorRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLElement>(null)
-  const { isFullscreen, toggleFullscreen, guides, cycleGuides } = usePreviewViewOptions(rootRef)
+  const { isFullscreen, toggleFullscreen, guides, cycleGuides, composed, setComposed } = usePreviewViewOptions(rootRef)
+  useEffect(() => {
+    const onShow = () => setComposed(true)
+    // ui.preview {composed} relayed by the UI command controller.
+    const onSet = (e: Event) => {
+      if (e instanceof CustomEvent && typeof e.detail?.composed === 'boolean') setComposed(e.detail.composed)
+    }
+    document.addEventListener('cut:show-composed', onShow)
+    document.addEventListener('cut:set-preview-composed', onSet)
+    return () => {
+      document.removeEventListener('cut:show-composed', onShow)
+      document.removeEventListener('cut:set-preview-composed', onSet)
+    }
+  }, [setComposed])
   // While dragging an overlay's on-canvas handles, the LIVE transform (so the
   // overlay <video> + the handle box move together before the edit.transform commit).
   const [dragOverride, setDragOverride] = useState<{ clipId: string; transform: Required<ClipTransform> } | null>(null)
@@ -337,8 +362,48 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   )
   const { baseOffline, onlineOverlays, offlineOverlays, refresh: refreshOfflineMedia,
     relinkAsset, relinkingAssetId } = usePreviewOfflineMedia(project, playheadMs, overlays)
-  const showVideo = !baseOffline && shouldUseLivePreviewSurface(!!video && !imageAssets.has(video.assetId), composed, rate)
-  const liveComposedPlayback = composed && showVideo
+  // The live stage stays mounted, paused or playing (see composite.ts); a gap in
+  // the base track is live while playing and while overlay clips show there.
+  // The exact composed frame is drawn on top while COMPOSED is on and paused.
+  const baseGap = liveBaseGap(hasAssets && !video && activeBaseAssetId(project, playheadMs) === null, rate, overlays.length)
+  const showVideo = !baseOffline && shouldUseLivePreviewSurface((!!video && !imageAssets.has(video.assetId)) || baseGap)
+  const composedOnTop = composedFrameOnTop(composed, rate, showVideo) && hasAssets
+  // Whether the exact frame is on screen right now (not while it is waited
+  // for or failed): what ui.state reports as shown and what is hidden.
+  const [composedShown, setComposedShown] = useState(false)
+  const exactOnScreen = composedOnTop && composedShown
+  // Elements the live picture leaves out at the playhead; said on the picture
+  // whenever the live picture is what the person sees.
+  // Overlay clips whose element has really shown a picture in this webview.
+  const [liveDrawn, setLiveDrawn] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => { setLiveDrawn(new Set()) }, [projectKey]) // clip ids repeat across projects
+  const onLiveDrawn = useCallback((clipId: string, drawn: boolean) => setLiveDrawn((current) => {
+    if (current.has(clipId) === drawn) return current
+    const next = new Set(current)
+    if (drawn) next.add(clipId)
+    else next.delete(clipId)
+    return next
+  }), [])
+  const hiddenLive = useMemo(() => hiddenInLivePreview(project, playheadMs, imageAssets, liveDrawn), [project, playheadMs, imageAssets, liveDrawn])
+  const liveBaseVideo = showVideo && !!video && !imageAssets.has(video.assetId) ? video : null
+  const upcoming = useMemo(
+    () => (showVideo ? upcomingBaseVideo(project, playheadMs, failedSources) : null),
+    [showVideo, project, playheadMs, failedSources],
+  )
+  const deckRef = useRef<DeckState>(EMPTY_DECK)
+  // Pure and idempotent for the same inputs (returns the previous deck when
+  // nothing changed), so recomputing it during render is safe.
+  const deck = showVideo ? nextDeck(deckRef.current, liveBaseVideo, upcoming, frameMs) : EMPTY_DECK
+  deckRef.current = deck
+  const upcomingOverlays = useMemo(
+    () => (showVideo ? resolveUpcomingOverlays(project, playheadMs, primaryTrackId, imageAssets, overlays) : []),
+    [showVideo, project, playheadMs, primaryTrackId, imageAssets, overlays],
+  )
+  const onSourceError = useCallback((id: string) => {
+    setFailedSources((s) => (s.has(id) ? s : new Set(s).add(id)))
+    void refreshOfflineMedia()
+  }, [refreshOfflineMedia])
+  const liveComposedPlayback = composed && showVideo && rate !== 0
   const captions = useMemo(() => resolveCaptions(project, playheadMs), [project, playheadMs])
   const baseGrade = useMemo(
     () => baseGradeAt(project, playheadMs, primaryTrackId, imageAssets),
@@ -349,15 +414,15 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // primary clock; a watchdog below falls back to currentTime when a source codec
   // plays but does not deliver frame callbacks. Reverse/shuttle and composed/
   // poster modes use the seek-driven rAF clock below.
-  const canFreeRun = rate === 1 && showVideo && RVFC_SUPPORTED && !video?.reverse
+  const canFreeRun = showVideo && RVFC_SUPPORTED && !!video && canPlayPreviewVideo(rate, video.reverse, video.freezeAtMs)
 
   // cfg ref: the playback clock + key handler read current values without
   // re-binding (same configRef pattern as the Timeline gestures). `video`
   // carries the active clip placement so the rVFC clock maps presented source
   // time → timeline position without re-subscribing each frame.
   const { playback: voiceoverPlayback, outUnconfirmed } = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
-  const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, rate, video, voiceoverPlayback })
-  cfg.current = { playheadMs, durationMs, frameMs, onSeek, rate, video, voiceoverPlayback }
+  const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback })
+  cfg.current = { playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback }
   // --- playback clock --------------------------------------------------------
   // FREE-RUN (forward 1×, <video> mounted): the element plays itself, hardware-
   // decoded + vsync-timed; we read the presented frame back via rVFC when it is
@@ -368,85 +433,22 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // effect when the clip under the playhead changes (proxy src swap at a cut),
   // so play resumes on the new source.
   const playbackSrcKey = canFreeRun && video
-    ? `${video.clipId}:${video.src}:${video.srcInMs}:${video.srcOutMs}:${video.speed}`
+    ? playbackVideoKey(video)
     : null
   useEffect(() => {
     if (rate === 0) return
     const v = videoRef.current
+    const tracker = new PlaybackSeekTracker(cfg.current.playheadMs, cfg.current.seekRevision)
+    const publish = (position: number) => { cfg.current.onPlaybackSeek(tracker.published(position), cfg.current.seekRevision) }
 
     const callbacks = v ? videoFrameCallbacks(v) : null
     if (canFreeRun && v && callbacks) {
-      let rafId = 0
-      let fallbackRaf = 0
-      let stopped = false
-      let handedOff = false
-      let lastDispatch = 0
-      let lastFrameAt = performance.now()
-      const startPlay = () => {
-        const c = cfg.current
-        const want = c.video ? c.video.srcMs / 1000 : v.currentTime
-        if (Math.abs(v.currentTime - want) > c.frameMs / 1000) v.currentTime = want
-        v.playbackRate = c.video?.speed ?? 1
-        void v.play().catch(() => {})
-      }
-      // Cross the clip's out point → jump the playhead to the next clip start;
-      // the src swap re-arms this effect, which reseeks + plays the next proxy.
-      const advance = (toMs: number) => {
-        if (handedOff) return
-        handedOff = true
-        const c = cfg.current
-        c.onSeek(previewPlaybackClockPosition(toMs, c.durationMs, c.voiceoverPlayback).positionMs)
-      }
-      const syncFromMediaTime = (now: number, mediaTime: number) => {
-        if (stopped) return
-        const c = cfg.current
-        const vid = c.video
-        if (vid) {
-          const timelineMs = timelineMsAtSourcePosition(vid, mediaTime * 1000)
-          const clipEndMs = vid.startMs + vid.durMs
-          if (timelineMs >= c.durationMs - 1) {
-            c.onSeek(previewPlaybackClockPosition(c.durationMs, c.durationMs, c.voiceoverPlayback).positionMs)
-            if (!c.voiceoverPlayback) setRate(0)
-            return
-          }
-          if (timelineMs >= clipEndMs - 1) advance(Math.min(c.durationMs, clipEndMs))
-          else if (now - lastDispatch >= 100) {
-            lastDispatch = now
-            c.onSeek(previewPlaybackClockPosition(timelineMs, c.durationMs, c.voiceoverPlayback).positionMs)
-          }
-        }
-      }
-      const onFrame = (now: number, meta: { mediaTime: number }) => {
-        if (stopped) return
-        lastFrameAt = now
-        syncFromMediaTime(now, meta.mediaTime)
-        rafId = callbacks.request(onFrame)
-      }
-      const fallbackTick = (now: number) => {
-        if (stopped) return
-        if (!v.paused && v.readyState >= 2 && now - lastFrameAt > 250) syncFromMediaTime(now, v.currentTime)
-        fallbackRaf = requestAnimationFrame(fallbackTick)
-      }
-      const onReady = () => startPlay()
-      const onEnded = () => {
-        const c = cfg.current
-        if (c.video) advance(Math.min(c.durationMs, c.video.startMs + c.video.durMs))
-      }
-      v.addEventListener('canplay', onReady)
-      v.addEventListener('ended', onEnded)
-      if (v.readyState >= 2) startPlay()
-      rafId = callbacks.request(onFrame)
-      fallbackRaf = requestAnimationFrame(fallbackTick)
+      const stopClock = runFreeRunClock({ video: v, callbacks, expectedKey: playbackSrcKey, state: cfg, tracker, publish, stop: () => setRate(0) })
       return () => {
-        stopped = true
-        v.removeEventListener('canplay', onReady)
-        v.removeEventListener('ended', onEnded)
-        callbacks.cancel(rafId)
-        cancelAnimationFrame(fallbackRaf)
-        v.pause()
+        stopClock()
         const c = cfg.current
         const position = previewPlaybackCleanupPosition(c.playheadMs, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
-        if (position !== null) c.onSeek(position)
+        if (position !== null) c.onPlaybackSeek(position, c.seekRevision)
       }
     }
 
@@ -457,17 +459,18 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     let lastDispatch = 0
     const tick = (now: number) => {
       const c = cfg.current
+      if (tracker.external(c.playheadMs, c.seekRevision)) acc = c.playheadMs
       acc += (now - last) * c.rate
       last = now
       const position = previewPlaybackClockPosition(acc, c.durationMs, c.voiceoverPlayback)
       if (position.stop) {
-        c.onSeek(position.positionMs)
+        publish(position.positionMs)
         setRate(0)
         return
       }
       if (now - lastDispatch >= 100) {
         lastDispatch = now
-        c.onSeek(position.positionMs)
+        publish(position.positionMs)
       }
       raf = requestAnimationFrame(tick)
     }
@@ -475,8 +478,8 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     return () => {
       cancelAnimationFrame(raf)
       const c = cfg.current
-      const position = previewPlaybackCleanupPosition(acc, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
-      if (position !== null) c.onSeek(position)
+      const position = previewPlaybackCleanupPosition(tracker.external(c.playheadMs, c.seekRevision) ? c.playheadMs : acc, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
+      if (position !== null) c.onPlaybackSeek(position, c.seekRevision)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rate, playbackSrcKey, voiceoverPlayback])
@@ -570,9 +573,10 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
       // Render to the OTHER buffer than the one the <audio> is currently reading,
       // then flip — so an edit-driven re-render never overwrites the live file.
       const buf = mixBuf.current === 'a' ? 'b' : 'a'
+      // Private working audio, not a delivery: never in exports/ (item 98).
       const r = await callVerb('export.audio', {
         format: 'mp3',
-        path: `exports/_monitor_${buf}.mp3`,
+        scratch: `monitor_${buf}`,
         rationale: 'timeline audio monitor',
       })
       const path = r.ok ? (r.result as { path?: string })?.path : undefined
@@ -615,8 +619,8 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   }, [audioOn, headOpId, mixForOp, ensureMix])
 
   // On project switch, drop the monitor mix immediately. mixUrl points at the OLD
-  // project's exports/_monitor_*.mp3, but /api/export resolves against the CURRENT
-  // project's dir → a console 404 on the stale file until the new mix renders.
+  // project's scratch monitor_*.mp3, removed when that project closed → a
+  // console 404 on the stale file until the new mix renders.
   // Imperatively abort the <audio> first (pause + remove src + load) so an
   // in-flight fetch is cancelled cleanly rather than completing as a late 404,
   // then clear state; the pre-warm above rebuilds the mix for the new project.
@@ -750,7 +754,11 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
 
   const playing = rate !== 0
   return (
-    <section ref={rootRef} tabIndex={-1} className="panel pv-root" data-panel="preview" data-cut-panel="preview" data-cut-playing={playing ? 'true' : 'false'} data-cut-voiceover-playback={voiceoverPlayback ? `${voiceoverPlayback.requestId}:${voiceoverPlayback.bridgeEpoch}` : undefined} data-cut-fullscreen={isFullscreen ? 'true' : 'false'}>
+    <section ref={rootRef} tabIndex={-1} className="panel pv-root" data-panel="preview" data-cut-panel="preview" data-cut-playing={playing ? 'true' : 'false'} data-cut-voiceover-playback={voiceoverPlayback ? `${voiceoverPlayback.requestId}:${voiceoverPlayback.bridgeEpoch}` : undefined} data-cut-fullscreen={isFullscreen ? 'true' : 'false'}
+      data-cut-preview-mode={composed ? 'composed' : 'live'}
+      data-cut-preview-showing={exactOnScreen ? 'composed_frame' : showVideo ? 'live_preview' : posterSrc ? (composed ? 'composed_frame' : 'source_frame') : 'none'}
+      data-cut-preview-hidden={showVideo && !exactOnScreen ? hiddenLive.join(' ') : ''}
+      data-cut-preview-media={liveBaseVideo ? (liveBaseVideo.kind === 'proxy' ? 'proxy' : 'original') : ''}>
       {/* Hidden timeline-audio element: the sole sound source — the preview
           <video>s are muted, so this plays the full mix synced to the playhead. */}
       <audio
@@ -808,6 +816,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
             </div>
           </div>
         )}
+        {decodeProblem && showVideo && <PreviewDecodeNotice problem={decodeProblem} />}
         {baseOffline ? (
           <PreviewOfflineStage stageRef={stageRef} stageBox={stageBox} asset={baseOffline}
             relinking={relinkingAssetId === baseOffline.id} onRelink={relinkAsset} />
@@ -819,42 +828,33 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
             ref={stageRef}
             className="pv-stage"
             data-cut-stage
-            data-cut-preview-surface={liveComposedPlayback ? 'live-composite' : showVideo ? 'live-source' : composed ? 'exact-frame' : 'scrub-frame'}
+            data-cut-preview-surface={exactOnScreen ? 'exact-frame' : liveComposedPlayback ? 'live-composite' : showVideo ? 'live-source' : composed ? 'exact-frame' : 'scrub-frame'}
             style={{ width: stageBox.w || undefined, height: stageBox.h || undefined }}
           >
             {showVideo ? (
               <>
-                <video
-                  ref={videoRef}
-                  className="pv-base"
-                  src={video!.src}
-                  muted
-                  playsInline
-                  data-cut-video
-                  data-cut-video-kind={video!.kind}
+                {/* Base track: on-screen element + the next clip parked behind it. */}
+                <BaseVideoDeck
+                  deck={deck}
+                  frontRef={videoRef}
+                  frameMs={frameMs}
                   // Base clip's color grade, CSS-approximated (exact = COMPOSED / final).
-                  style={baseFilter ? { filter: baseFilter } : undefined}
-                  // If the source cannot be decoded (raw / unsupported
-                  // codec → MediaError DECODE/SRC_NOT_SUPPORTED), stop offering it and
-                  // fall back to the composed poster until the proxy lands. Ignore
-                  // transient ABORTED/NETWORK errors so a blip doesn't disable preview.
-                  onError={(e) => {
-                    if (video!.kind !== 'source') return
-                    const code = e.currentTarget.error?.code
-                    if (code === 3 || code === 4) {
-                      const id = video!.assetId
-                      setFailedSources((s) => (s.has(id) ? s : new Set(s).add(id)))
-                      void refreshOfflineMedia()
-                    }
-                  }}
+                  frontStyle={baseFilter ? { filter: baseFilter } : undefined}
+                  onSourceError={onSourceError}
+                  decode={decodeReporter}
                 />
                 {/* Overlay video tracks above the base (PiP / B-roll / lower-thirds). */}
-                {onlineOverlays.map((o) => (
+                {/* One keyed list: an overlay parked ahead of its start keeps
+                    its element when it becomes active. */}
+                {[...onlineOverlays.map((o) => ({ o, preroll: false })), ...upcomingOverlays.map((o) => ({ o, preroll: true }))].map(({ o, preroll }) => (
                   <OverlayVideo
                     key={o.clipId}
                     layer={o}
                     playheadMs={playheadMs}
                     rate={rate}
+                    preroll={preroll}
+                    decode={decodeReporter}
+                    onLiveDrawn={onLiveDrawn}
                     override={dragOverride?.clipId === o.clipId ? dragOverride.transform : null}
                   />
                 ))}
@@ -864,6 +864,9 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
                 {captions.map((c) => (
                   <CaptionText key={c.id} cap={c} projectHeight={projectHeight} />
                 ))}
+                {/* Exact composed frame over the paused live preview. */}
+                <ComposedFrameOverlay enabled={composedOnTop} playheadMs={playheadMs} headOpId={headOpId}
+                  durationMs={durationMs} frameMs={frameMs} onShownChange={setComposedShown} />
               </>
             ) : posterFailed ? (
               <PreviewFrameError />
@@ -973,8 +976,11 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
           overlaysDropped={overlaysDropped}
           posterActive={!!posterSrc}
           showSpinner={showSpinner}
-          composed={composed}
-          liveComposedPlayback={liveComposedPlayback}
+          posterChip={posterChip({
+            project, playheadMs, durationMs, proxyBuilding, composed, failedSources, imageAssets,
+            overlayCount: overlays.length,
+          })}
+          livePreviewNotice={showVideo && !composedOnTop ? livePreviewNotice(hiddenLive, composed) : null}
         />
 
         {exact && (

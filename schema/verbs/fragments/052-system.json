@@ -34,7 +34,7 @@
     {
       "name": "system.doctor",
       "domain": "system",
-      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, the Settings>Environment panel, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, actionable BtbN hint when missing); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}.",
+      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, the Settings>Environment panel, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, a platform-specific hint when missing, and details.setup = {route: builtin_download|homebrew|package_manager, fetch_available, steps[], commands[{label, command}], help_url, custom_build, download?: {publisher, publisher_url, version, size_bytes, size_is_exact, license, license_url, source_url, limitation, consent}} (steps/commands are the other way when a download exists, e.g. Homebrew on Apple silicon): the same setup guide the engine's tool_missing refusals point to; a refresh notices an ffmpeg installed or chosen since the last scan without restarting Cut); gpu-encode (details.ffmpeg_missing:true when no ffmpeg exists at all: nothing can export yet); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. For Codex direct-frame review, the image/schema and tool-free capability check must pass before details.judge_ready can be true; Antigravity remains unready for render judging. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -42,10 +42,16 @@
           "refresh": {
             "type": "boolean",
             "description": "Re-scan instead of returning the cached report (default false — the cached read is fast and never blocks the verb loop; refresh re-probes ffmpeg/python/judge and re-emits doctor_updated on change)."
+          },
+          "feature": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "A verb name or feature id: what it needs and whether it can run now, without calling it. Returns only that answer: {verb?, feature, feature_name, can_run: yes|no|depends, requires: [{id, name, state, reason?, check?, get?}], any_of?, optional: [{id, name, state, effect}], blocked_by, depends_on, note?}."
           }
         }
       },
-      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok} — essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface",
+      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok, requirements} — essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface. requirements (schema/requirements.json, the one registry of what needs what): {schema: \"shellx-cut/requirements/1\", tools: [{id, kind: tool|condition, name, what, state: ready|missing|needs_attention|not_checked|per_asset|not_applicable, reason?, check?: {verb, args}, get: {settings?, button?, verb?, args?, person?}, doctor_card?, license?: {name, url?}, needed_for: [feature names], improves: [feature names where it is optional], per_asset?}], features: [{id, name, verbs, requires, open_project: all|some|none, any_of?, verb_extra?, optional: [{id, name, state, effect}], can_run: yes|no|depends, blocked_by: [requirement with state, reason and get], depends_on, note?}]}. Tool states are read from these cards; screen, microphone and system-sound permission are not probed here (check names screen_record.doctor); a transcript or analysis is per asset. With feature: only the answer for that verb or feature (see the feature argument).",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -142,7 +148,7 @@
     {
       "name": "system.set_ffmpeg",
       "domain": "system",
-      "description": "Set or clear the user's MANUAL ffmpeg choice (the Settings>Environment 'Change ffmpeg' control). `path` = an absolute path to the ffmpeg executable the user picked; it is VALIDATED here (must answer `ffmpeg -version`) before being persisted to a small file beside the app-data tools dir, and it WINS over auto-selection. Omit `path` (or pass null) to CLEAR the override and go back to automatic (the best hardware-capable installed ffmpeg). The choice is read at the next engine start so the hardware-capability caches stay consistent, hence the result's restart_required:true; the doctor is re-scanned so the gpu-encode card's override_setting reflects the new value immediately (shown as pending until restart). An explicit SHELLX_CUT_FFMPEG env var still takes precedence over this.",
+      "description": "Set or clear the user's MANUAL ffmpeg choice (Settings > Video & performance > Video processing > Choose ffmpeg…). `path` = an absolute path to the ffmpeg executable the user picked; it is VALIDATED here (must answer `ffmpeg -version`) before being persisted to a small file beside the app-data tools dir, and it WINS over auto-selection. Omit `path` (or pass null) to CLEAR the override and go back to automatic (the best hardware-capable installed ffmpeg). The chosen build must have an ffprobe beside it (used for media inspection) unless one already resolves elsewhere; otherwise the call is refused with invalid_args before anything is saved. The choice applies at once: the doctor re-scans, re-probes the hardware encoders of the new build and fires doctor_updated, so restart_required is false (the field is kept for older clients). An explicit SHELLX_CUT_FFMPEG env var still takes precedence over this.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -156,7 +162,7 @@
           }
         }
       },
-      "result": "{override: string|null (the persisted choice after this call), restart_required: true, doctor: DoctorReport (rescanned)}",
+      "result": "{override: string|null (the persisted choice after this call), restart_required: false, doctor: DoctorReport (rescanned)}",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -179,7 +185,7 @@
     {
       "name": "system.fetch_tool",
       "domain": "system",
-      "description": "Consented download + install of a MISSING runtime tool, as a background job (returns {job_id}; progress via the jobs domain + job_progress events). SECURITY (hard, path-fencing model): the tool id comes from a BUILT-IN registry ONLY (v1: \"ffmpeg\") — there is NO caller-supplied URL surface, so this is not a fetch-arbitrary-URL primitive. The URL is an https-pinned BtbN FFmpeg-Builds release asset selected BY OS (linux64-gpl.tar.xz / win64-gpl.zip); the archive's sha256 is verified against the release's checksums.sha256 BEFORE anything is installed; the payload is staged in a temp dir and ATOMICALLY moved into the app-data tools dir (the exact dir the cut-media toolpath resolver checks, rung 3) only after verification. On success the doctor re-scans and a doctor_updated event fires — the ffmpeg card flips missing→bundled-or-appdata. rationale is recorded on the job. OS-aware: the Linux asset is fetched+installed live here; the Windows asset path is selected by OS and documented for the cold-notebook session.",
+      "description": "Consented download + install of a MISSING runtime tool, as a background job (returns {job_id}; progress via the jobs domain + job_progress events). CONSENT (ffmpeg): nothing is downloaded unless accept_license is true; without it the verb answers ok:false, code invalid_args, with the exact consent text in error.cause (publisher, version or size, licence, source): show it to the person and call again with accept_license:true only when they agree (a person's own request for the download is that agreement); never agree without them. Built-in registry ids only, no caller URL; https only (redirects too) with deadlines. tool \"ffmpeg\" (consent also at the doctor's ffmpeg card details.setup.download.consent): Windows and Linux x86_64 get FFmpeg 9.0.2 (n9.0.2-39-g7adfbe40dc) from FFmpeg-Builds (release autobuild-2026-10-31-12-59, github.com/FFmpeg-Builds/FFmpeg-Builds), pinned by URL, size and SHA-256 of the archive and of ffmpeg/ffprobe; the zip must hold no link, absolute or .. path, only those two programs are unpacked and each must be a PE x64 / ELF x86-64 program; Windows on ARM gets the x64 build. macOS on Apple silicon: Martin Riedl's FFmpeg 9.0.2 (ffmpeg.martin-riedl.de; ffmpeg.zip + ffprobe.zip) pinned by version, size and SHA-256, one regular file per zip, a thin arm64 program whose signature verifies against the publisher's Developer ID (Team KU3N25YGLU); it has no vid.stab (Stabilize then needs Homebrew's ffmpeg-full; the job result's limitation says so). Checks run in a private temporary folder; only a verified payload moves into the app-data tools dir; a failed check installs nothing and names the check and the platform's options (retry; Homebrew on a Mac; the publisher's page on Windows; the distribution's package on Linux; or system.set_ffmpeg). Other platforms: ok:false, code unsupported_platform, no job. tool \"vc-runtime\" (Windows only; doctor card vc-runtime): Microsoft's Visual C++ Redistributable, which captions and the other Python features need. No accept_license: ask the person before downloading it and accepting Microsoft's licence (card details.license_name, details.license_url). Downloaded from Microsoft's permalink (aka.ms/vc14/vc_redist.x64.exe or vc_redist.arm64.exe, listed at learn.microsoft.com/cpp/windows/latest-supported-vc-redist) and run only after Windows' signature check accepts it as signed by Microsoft Corporation with a chain to a Microsoft root; started with /install /passive /norestart (visible progress), Windows then asks the PERSON for administrator permission (an agent cannot approve it). A failed job says why: the prompt was declined, this account cannot approve it (ask an administrator), the download failed or the signature check failed, each with Microsoft's page. On success the doctor re-scans (no restart) and doctor_updated fires. rationale is recorded on the job.",
       "args": {
         "type": "object",
         "required": [
@@ -190,16 +196,21 @@
           "tool": {
             "type": "string",
             "enum": [
-              "ffmpeg"
+              "ffmpeg",
+              "vc-runtime"
             ],
-            "description": "Built-in registry id of the tool to download. v1: \"ffmpeg\" (installs both ffmpeg + ffprobe from one BtbN archive). Unknown ids fail fast — there is deliberately no URL arg."
+            "description": "Built-in registry id: \"ffmpeg\" (ffmpeg + ffprobe) or \"vc-runtime\" (Windows: Microsoft's Visual C++ Redistributable). Unknown ids fail fast; there is no URL arg."
           },
           "rationale": {
             "type": "string"
+          },
+          "accept_license": {
+            "type": "boolean",
+            "description": "ffmpeg only: true only after the person agreed to the offer (doctor ffmpeg card details.setup.download.consent; also in error.cause when missing). Required for ffmpeg: without it nothing is downloaded. Not used for vc-runtime."
           }
         }
       },
-      "result": "{job_id, tool} — watch job_progress (download% → verifying → installing) or poll jobs.status; the job result is {tool, installed_dir, version, sha256, source_url, bytes, ffmpeg_ok_after}; doctor_updated fires on completion",
+      "result": "{job_id, tool} — watch job_progress or poll jobs.status. ffmpeg result: {tool, installed_dir, version, sha256 (one per archive, space-separated), source_url, bytes, ffmpeg_ok_after, limitation}. vc-runtime result: {installed, version, restart_needed, installer_exit_code, signer, source_url, bytes, sha256} (or {installed:true, already_installed:true}). doctor_updated fires on completion",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

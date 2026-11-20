@@ -215,3 +215,5 @@ async fn explicit_doctor_request_keeps_headless_lazy_discovery_available() {
         "an explicit system.doctor request must retain lazy discovery: {stderr}",
     );
 }
+
+cut_core::isolate_test_process!();

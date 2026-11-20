@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon } from '../../icons'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
+import { clampPopover } from './TrimPopover'
 import { callVerb, type VerbArgs } from '../../lib/client'
 import {
   activeVoiceoverOwner,
@@ -11,6 +13,7 @@ import {
   type VoiceoverOwnerClaim,
   type VoiceoverReattachIdentity,
 } from '../../app/voiceoverOwnerRuntime'
+import { microphoneProblemText, voiceoverFailureText } from '../../app/microphoneMessages'
 import {
   selectVoiceoverStartIdentity,
   voiceoverStartRetryWasRejected,
@@ -32,6 +35,8 @@ interface VoiceoverStatus {
   countdown_remaining_ms?: number | null
   owner_claim?: VoiceoverOwnerClaim
   terminal?: string | null
+  /** Why a take failed: what is missing and what to do about it. */
+  failure?: { reason?: string; message?: string; suggested_action?: string; detail?: string }
   placement?: { clip_id: string }
 }
 
@@ -66,7 +71,7 @@ function describe(status: VoiceoverStatus): string {
       if (status.terminal === 'cancelled') return 'Voiceover cancelled'
       if (status.terminal === 'zero_samples') return 'Voiceover ended with no samples — no clip was added.'
       if (status.terminal === 'device_lost_no_samples') return 'Microphone was lost before samples — no clip was added.'
-      if (status.terminal === 'failed') return 'Voiceover failed; its private recovery state is retained.'
+      if (status.terminal === 'failed') return voiceoverFailureText(status.failure)
       if (status.terminal === 'cancel_cleanup_failed') return 'Voiceover cancellation cleanup failed; its private recovery state is retained.'
       return 'Voiceover finished'
   }
@@ -78,13 +83,16 @@ function releaseTerminal(status: VoiceoverStatus): boolean {
       && ['cancelled', 'zero_samples', 'device_lost_no_samples'].includes(status.terminal ?? ''))
 }
 
+/** A refusal names a missing prerequisite; show what is needed and what to do. */
+const explainRefusal = microphoneProblemText
+
 function terminalStatus(status: VoiceoverStatus): boolean {
   return status.phase === 'placed' || status.phase === 'finished'
 }
 
-/** Dense Timeline disclosure. It stays disabled until the same explicit Doctor
- * admission that powers Record permits native capture; browser APIs never make
- * this recorder look available on their own. */
+/** Dense Timeline disclosure. It needs only the microphone: it reads microphone
+ * readiness when opened and names any missing permission or device; browser
+ * APIs never make this recorder look available on their own. */
 export function VoiceoverTrackControl({
   trackId,
   locked,
@@ -93,11 +101,39 @@ export function VoiceoverTrackControl({
   exportRange,
 }: VoiceoverTrackControlProps) {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const closePopover = useCallback(() => setOpen(false), [])
   const overlay = useBlockingOverlay<HTMLSpanElement>(closePopover, open)
+  const placePopover = useCallback(() => {
+    const popover = overlay.dialogRef.current
+    const trigger = triggerRef.current
+    if (!popover || !trigger) return
+    const rect = trigger.getBoundingClientRect()
+    const height = popover.getBoundingClientRect().height
+    const below = rect.bottom + 5
+    const y = below + height <= window.innerHeight - 8 ? below : rect.top - height - 5
+    clampPopover(popover, rect.left - 77, y)
+  }, [overlay.dialogRef])
+  useLayoutEffect(() => {
+    if (!open) return
+    placePopover()
+    // Read the live trigger after a resize or any ancestor's scroll. Readiness
+    // and recording messages can also change the popup's height while open.
+    window.addEventListener('resize', placePopover)
+    window.addEventListener('scroll', placePopover, true)
+    const observer = new ResizeObserver(placePopover)
+    if (overlay.dialogRef.current) observer.observe(overlay.dialogRef.current)
+    return () => {
+      window.removeEventListener('resize', placePopover)
+      window.removeEventListener('scroll', placePopover, true)
+      observer.disconnect()
+    }
+  }, [open, placePopover, overlay.dialogRef])
   const [startAllowed, setStartAllowed] = useState<boolean | null>(null)
   const [microphones, setMicrophones] = useState<PublicMicrophone[]>([])
   const [selection, setSelection] = useState<MicrophoneSelection>({ mode: 'system_default', status: 'ready' })
+  const [microphoneBlocked, setMicrophoneBlocked] = useState<string | null>(null)
+  const capabilityRequest = useRef(0)
   const [status, setStatus] = useState<VoiceoverStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const retryIdentity = useRef<VoiceoverReattachIdentity | null>(readVoiceoverReattach())
@@ -134,22 +170,48 @@ export function VoiceoverTrackControl({
   }, [])
 
   const refreshCapability = useCallback(async () => {
-    const response = await callVerb('screen_record.doctor', {})
+    const request = ++capabilityRequest.current
+    let response
+    try {
+      // Voiceover records only the microphone, so it reads only microphone
+      // readiness: no screen read, list, or capture check.
+      response = await callVerb('screen_record.doctor', { mode: 'microphone' })
+    } catch {
+      if (request === capabilityRequest.current) {
+        setStartAllowed(false)
+        setMicrophoneBlocked('ShellX Cut could not read microphone readiness. Check that the app is running, then open these controls again.')
+      }
+      return
+    }
+    if (request !== capabilityRequest.current) return
     if (!response.ok || !response.result) {
       setStartAllowed(false)
+      setMicrophoneBlocked(explainRefusal(response.error) ?? 'ShellX Cut could not read microphone readiness.')
       return
     }
     const result = response.result as {
       start_allowed?: boolean
       microphones?: PublicMicrophone[]
       microphone_selection?: MicrophoneSelection
+      microphone_blocked?: { message?: string; suggested_action?: string } | null
     }
+    const blocked = result.microphone_blocked
+    setMicrophoneBlocked(blocked ? explainRefusal(blocked) : null)
     setStartAllowed(result.start_allowed === true)
     setMicrophones(result.microphones ?? [])
     setSelection(result.microphone_selection ?? { mode: 'system_default', status: 'ready' })
   }, [])
 
-  useEffect(() => { void refreshCapability() }, [refreshCapability])
+  // Every audio track header renders this control. Read microphone readiness
+  // only when the person opens these voiceover controls, or when this tab has
+  // a take it started that must reattach after a reload, so opening a project
+  // never touches a device.
+  const capabilityWanted = open || retryIdentity.current !== null
+  useEffect(() => {
+    if (!capabilityWanted) return
+    void refreshCapability()
+    return () => { capabilityRequest.current += 1 }
+  }, [capabilityWanted, refreshCapability])
 
   useEffect(() => {
     if (!active) return
@@ -236,7 +298,7 @@ export function VoiceoverTrackControl({
           retryIdentity.current = null
           clearVoiceoverOwner()
         }
-        setError(response.error?.suggested_action ?? response.error?.message ?? 'Voiceover start was not confirmed. Record voiceover retries the same request.')
+        setError(explainRefusal(response.error) ?? 'Voiceover start was not confirmed. Record voiceover retries the same request.')
         return
       }
       if (!response.result) {
@@ -291,7 +353,7 @@ export function VoiceoverTrackControl({
     : selectionUnavailable
       ? 'Choose an available microphone or System Default first.'
       : startAllowed === false
-        ? 'Voiceover is unavailable until the Record capability check admits native capture on this host.'
+        ? microphoneBlocked ?? 'The microphone is not ready for voiceover.'
         : !projectRevision
           ? 'Timeline revision is loading.'
           : 'Checking voiceover capability…'
@@ -303,16 +365,17 @@ export function VoiceoverTrackControl({
         type="button"
         className={`tl-voiceover__trigger${active ? ' tl-voiceover__trigger--active' : ''}`}
         data-cut-action="voiceover-controls"
-        data-cut-voiceover-control={active ? status?.phase : startAllowed === true ? 'ready' : 'unavailable'}
+        data-cut-voiceover-control={active ? status?.phase : startAllowed === true ? 'ready' : startAllowed === null ? 'unchecked' : 'unavailable'}
         aria-haspopup="dialog"
         aria-expanded={open}
         title={active ? describe(status!) : 'Record voiceover on this audio track'}
+        ref={triggerRef}
         onMouseDown={(event) => event.stopPropagation()}
         onClick={() => setOpen((value) => !value)}
       >
         <Icon name="record" size={14} />
       </button>
-      {open && (
+      {open && createPortal(
         <span
           ref={overlay.dialogRef}
           className="tl-voiceover__popover"
@@ -364,7 +427,7 @@ export function VoiceoverTrackControl({
           <span className={`tl-voiceover__status${error || terminalError ? ' tl-voiceover__status--error' : ''}`} data-cut-voiceover-status={error || terminalError ? 'error' : active ? status?.phase : startAllowed === true ? 'idle' : 'unavailable'} aria-live="polite">
             {error ?? (status ? describe(status) : startAllowed === true ? 'Ready — no direct mic monitoring.' : unavailableReason)}
           </span>
-        </span>
+        </span>, document.body,
       )}
     </span>
   )

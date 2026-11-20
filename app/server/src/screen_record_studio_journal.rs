@@ -200,6 +200,15 @@ fn append_record(
     };
     let mut file = open_nofollow(path, true)?;
     ensure_same_leaf(&file, path)?;
+    // A second name (hard link) of another file is never truncated or appended
+    // to: a received capture folder can carry one (item 140 sweep).
+    if !record_recovery::has_single_name(&file)
+        .map_err(|error| journal_io_error(path, "stat", error))?
+    {
+        return Err(journal_invalid(
+            "is a second name (hard link) of another file, so nothing is written to it",
+        ));
+    }
     let actual_len = file
         .metadata()
         .map_err(|error| journal_io_error(path, "stat", error))?
@@ -305,17 +314,11 @@ fn plain_regular(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 #[cfg(unix)]
@@ -355,3 +358,36 @@ fn journal_invalid(reason: &str) -> CutError {
 #[cfg(test)]
 #[path = "screen_record_studio_journal_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod reparse_tests {
+    use super::open_nofollow;
+
+    /// A compressed (WOF) journal file has a reparse point that is not a name
+    /// surrogate; it opens as the local regular file it is.
+    #[test]
+    #[ignore = "requires an NTFS volume and compact.exe with /EXE (Windows 10 or later)"]
+    fn windows_compressed_journal_opens_as_a_local_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("studio.journal");
+        std::fs::write(&path, "{\"event\":\"journal\"}\n".repeat(8192)).unwrap();
+        let status = std::process::Command::new("compact.exe")
+            .args(["/C", "/EXE:XPRESS4K"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "compact.exe /EXE failed: {status}");
+        open_nofollow(&path, false).expect("a compressed journal is an ordinary file");
+    }
+
+    #[test]
+    #[ignore = "requires Windows symbolic-link privilege or Developer Mode"]
+    fn windows_symlink_journal_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside.journal");
+        std::fs::write(&outside, b"x").unwrap();
+        let link = temp.path().join("studio.journal");
+        std::os::windows::fs::symlink_file(&outside, &link).unwrap();
+        assert!(open_nofollow(&link, false).is_err());
+    }
+}

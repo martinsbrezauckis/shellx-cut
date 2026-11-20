@@ -18,8 +18,13 @@ use std::time::Instant;
 
 #[cfg(target_os = "macos")]
 mod macos;
+mod privacy;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_consent;
+
+pub use privacy::{MicrophoneProblem, MicrophoneSwitch};
 
 /// A native input identity. This is a private-storage type, not a public API
 /// payload: Windows uses the MMDevice endpoint id and macOS a Core Audio device
@@ -47,6 +52,76 @@ pub enum MicrophoneSource {
 pub struct MicrophoneEndpoint {
     pub reference: MicrophoneEndpointRef,
     pub label: String,
+}
+
+/// Whether this build can record from a microphone at all.
+pub const MICROPHONE_CAPTURE_COMPILED: bool = cfg!(feature = "mic");
+
+/// Microphone permission as the OS reports it, read without asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrophoneAccess {
+    Granted,
+    /// The person has not answered yet; opening the microphone makes the OS ask.
+    NotDetermined,
+    Denied,
+    Restricted,
+    /// This platform has no per-app microphone permission that Cut can read.
+    NotApplicable,
+}
+
+/// Read microphone permission without showing a prompt. macOS reads
+/// `AVCaptureDevice` authorization and Windows reads the privacy switches in the
+/// capability consent store (`Denied` when one is off); other platforms report
+/// `NotApplicable`.
+pub fn microphone_access() -> MicrophoneAccess {
+    #[cfg(all(target_os = "macos", feature = "capture-macos"))]
+    {
+        return macos::access();
+    }
+    #[cfg(windows)]
+    {
+        return privacy::access_from(&windows_consent::Registry);
+    }
+    #[allow(unreachable_code)]
+    MicrophoneAccess::NotApplicable
+}
+
+/// The Windows microphone privacy switch that is off, if one is. `None` on
+/// every other platform and when Windows keeps the microphone on.
+pub fn microphone_privacy_block() -> Option<MicrophoneSwitch> {
+    #[cfg(windows)]
+    {
+        return privacy::blocking_switch(&windows_consent::Registry);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// True when Windows lists no active microphone at all. Other platforms report
+/// `false`: macOS keeps its own readiness and Linux has no endpoint list.
+pub fn no_microphone_device() -> bool {
+    cfg!(windows) && list_microphone_endpoints().is_empty()
+}
+
+/// Rewrite an error raised while resolving or opening the microphone into its
+/// plain problem. Only Windows is rewritten; other platforms keep their text.
+pub fn explain_open_error(error: RecordError) -> RecordError {
+    if cfg!(windows) {
+        privacy::explain_with(error, microphone_privacy_block())
+    } else {
+        error
+    }
+}
+
+/// Ask the OS to show its microphone permission prompt when the person has not
+/// answered yet. It returns at once; the answer arrives later. Call it only for
+/// an action the person asked for, such as starting a voiceover take.
+pub fn request_microphone_access() {
+    #[cfg(all(target_os = "macos", feature = "capture-macos"))]
+    if !crate::screen_access::native_capture_access_forbidden() {
+        macos::request_access();
+    }
 }
 
 /// List active input endpoints on the hosts with a stable native identity.
@@ -149,15 +224,12 @@ pub(crate) struct ReservedMicrophoneCapture {
 pub(crate) fn reserve_microphone_capture(
     source: &MicrophoneSource,
 ) -> Result<ReservedMicrophoneCapture> {
-    resolve_microphone_source(source)?;
+    resolve_microphone_source(source).map_err(explain_open_error)?;
     let reservation = crate::mic::reserve_microphone_capture()?;
-    match cpal_device_for_source(source) {
-        Ok(device) => Ok(ReservedMicrophoneCapture {
-            device,
-            reservation,
-        }),
-        Err(error) => Err(error),
-    }
+    cpal_device_for_source(source).map(|device| ReservedMicrophoneCapture {
+        device,
+        reservation,
+    })
 }
 
 #[cfg(feature = "mic")]
@@ -219,6 +291,7 @@ pub fn warm_microphone(source: &MicrophoneSource, max_ms: u64) -> crate::MicWarm
             live: warm.live,
             peak_dbfs: warm.peak_dbfs,
             supported: true,
+            problem: warm.problem,
         };
     }
     #[allow(unreachable_code)]
@@ -228,12 +301,20 @@ pub fn warm_microphone(source: &MicrophoneSource, max_ms: u64) -> crate::MicWarm
             live: false,
             peak_dbfs: None,
             supported: false,
+            problem: None,
         }
     }
 }
 
+/// Resolve the cpal device for a source; a failure names its plain problem on
+/// Windows (see [`explain_open_error`]).
 #[cfg(feature = "mic")]
 fn cpal_device_for_source(source: &MicrophoneSource) -> Result<cpal::Device> {
+    raw_cpal_device_for_source(source).map_err(explain_open_error)
+}
+
+#[cfg(feature = "mic")]
+fn raw_cpal_device_for_source(source: &MicrophoneSource) -> Result<cpal::Device> {
     use cpal::traits::{DeviceTrait, HostTrait};
 
     let host = cpal::default_host();

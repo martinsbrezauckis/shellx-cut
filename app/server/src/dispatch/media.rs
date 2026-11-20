@@ -8,7 +8,16 @@ use std::io::Read;
 use std::sync::Arc;
 
 mod cache_cleanup;
+mod decode_check;
+mod format_adoption;
+mod placement_turn;
+mod probe_recheck;
+mod proxy_missing;
+mod proxy_trust;
+pub(crate) use proxy_trust::{check_held_proxies, hold_proxies, proxy_binding, proxy_check_status};
+mod unprobed_import;
 use cache_cleanup::{remove_asset_receipts, remove_owned_cache_outputs_locked};
+pub(crate) use placement_turn::PlacementTurns;
 
 fn plain_generated_file(path: &Path) -> bool {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
@@ -17,16 +26,9 @@ fn plain_generated_file(path: &Path) -> bool {
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return false;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes()
-            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-            != 0
-        {
-            return false;
-        }
-    }
+    // Only a name-surrogate reparse point (symbolic link, junction) names
+    // another entry, and `is_symlink` above already reports exactly those;
+    // cloud placeholders and other reparse points are the file itself.
     true
 }
 
@@ -97,7 +99,7 @@ pub(crate) async fn project_paths(
     Ok((store.dir.clone(), receipts, proxies))
 }
 
-/// Look up an asset's source path + hash (job inputs).
+/// Look up an asset's source path + hash (job inputs). The path is absolute.
 pub(crate) async fn asset_info(
     state: &AppState,
     asset_id: &str,
@@ -112,7 +114,55 @@ pub(crate) async fn asset_info(
         )
         .with_suggested_action("call project.state and use an existing asset id")
     })?;
-    Ok((PathBuf::from(&asset.path), asset.hash.clone()))
+    Ok((asset_source_path(&store.dir, asset), asset.hash.clone()))
+}
+
+/// Record that this engine has just read `asset_id`'s probe from its own
+/// source, so decisions may use it (cut_core probe_facts).
+pub(crate) async fn mark_probe_verified(state: &AppState, asset_id: &str) {
+    let recorded = {
+        let mut guard = state.project.write().await;
+        let Some(store) = guard.as_mut() else {
+            return;
+        };
+        store.project.mark_probe_verified(asset_id);
+        let binding = store.project.probe_binding(asset_id);
+        let source = store
+            .project
+            .assets
+            .get(asset_id)
+            .map(|asset| asset_source_path(&store.dir, asset));
+        source.zip(binding)
+    };
+    // The next open takes this probe as read while the file is unchanged.
+    if let Some((source, binding)) = recorded {
+        let _ = run_blocking("probe.record", move || {
+            cut_media::cache_trust::remember_source(&source, &binding);
+            Ok(())
+        })
+        .await;
+    }
+}
+
+/// Whether `asset_id`'s current probe is one this engine established.
+pub(crate) async fn probe_verified(state: &AppState, asset_id: &str) -> bool {
+    let guard = state.project.read().await;
+    guard
+        .as_ref()
+        .is_some_and(|store| store.project.probe_is_verified(asset_id))
+}
+
+/// The stored probe of `asset_id`, when the asset exists and has one.
+async fn asset_probe(state: &AppState, asset_id: &str) -> Option<Value> {
+    let guard = state.project.read().await;
+    guard.as_ref()?.project.assets.get(asset_id)?.probe.clone()
+}
+
+/// The asset's stored decode check record, for a job result.
+async fn current_decode_check(state: &AppState, asset_id: &str) -> Option<Value> {
+    asset_probe(state, asset_id)
+        .await
+        .and_then(|p| p.get("decode_check").cloned())
 }
 
 /// Write back one enrichment field on an asset after a job step completes.
@@ -485,15 +535,25 @@ async fn media_import_admitted(
     }
     let a: Args = parse_args(args.clone())?;
     let src = PathBuf::from(&a.path);
-    if !src.is_file() {
+    if src.is_dir() {
         return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            format!("media file not found: {}", src.display()),
-            "path must point at an existing readable file",
+            error_codes::INVALID_ARGS,
+            format!("{} is a folder, not a media file", src.display()),
+            "media.import takes one file",
         )
-        .with_suggested_action("pass an absolute path to the media file"));
+        .with_suggested_action(
+            "import the video, audio or image files inside the folder one by one",
+        ));
+    }
+    if !src.is_file() {
+        return Err(media_path_error(&src));
     }
     let src = src.canonicalize()?;
+    // An empty file can never be media: refuse it now, before anything is
+    // registered. Everything else is judged by the probe in the import job.
+    if std::fs::metadata(&src).is_ok_and(|m| m.len() == 0) {
+        return Err(cut_media::probe::empty_media_error(&src));
+    }
     let (manifest, warnings) = resolve_capture_manifest(&src, a.capture_manifest.as_deref())?;
     let hash = if let Some(expected_sha256) = a.expected_sha256.as_deref() {
         let expected_byte_length = a.expected_byte_length.ok_or_else(|| {
@@ -542,8 +602,14 @@ async fn media_import_admitted(
                 ));
             }
         }
+        // A person who chose no proxy keeps that choice: a later open does not make one.
+        let choice = if a.proxy == Some(false) {
+            json!({"proxy": false})
+        } else {
+            Value::Null
+        };
         guard_call("media.import", || {
-            store.record_import(None, asset, actor, rationale)
+            store.record_import_with(None, asset, actor, rationale, choice)
         })?
     };
     let op_id = op.op_id.clone();
@@ -889,7 +955,9 @@ pub(super) async fn media_relink(
     let new_hash = cut_core::hash_file(&src)?;
     // Probe the NEW file up front (off the lock): kind guard + duration warning.
     let s = src.clone();
-    let new_probe = run_blocking("media.relink.probe", move || cut_media::probe(&s)).await?;
+    // A target that is not readable media is refused with the same plain
+    // `unreadable_media` error as an import; the asset keeps its old source.
+    let new_probe = run_blocking("media.relink.probe", move || cut_media::probe_source(&s)).await?;
     // See media.remove: acquire before committing the source change so a cache
     // rebuild cannot race from old input bytes into a new asset revision.
     let _cache_lease = state.cache_lifecycle_lease.write().await;
@@ -1030,7 +1098,12 @@ pub(super) async fn media_relink(
     Ok(VerbResult::ok_with_ops(result, vec![op_id]).with_warnings(warnings))
 }
 
-fn asset_source_path(project_dir: &Path, asset: &cut_core::Asset) -> PathBuf {
+/// An asset's stored path as an absolute path. A relative path in a project
+/// is relative to the project folder (the renderer reads it that way too); it
+/// is never handed to a tool as is, where a name such as `-report` would be
+/// read as an option and other names would resolve against the engine's own
+/// working folder.
+pub(crate) fn asset_source_path(project_dir: &Path, asset: &cut_core::Asset) -> PathBuf {
     let p = PathBuf::from(&asset.path);
     if p.is_relative() {
         project_dir.join(p)
@@ -1564,6 +1637,11 @@ pub(super) fn spawn_import_chain(
     let job_id = job.job_id.clone();
     let jid = job_id.clone();
     let jobs = state.jobs.clone();
+    // Take this import's place in line NOW, in the order imports were requested:
+    // the placement decision below is made in that order whatever order the
+    // probes finish in, so the first import requested is the one that becomes the
+    // timeline.
+    let mut placement_turn = allow_auto_place.then(|| state.placement_turns.take());
     jobs.spawn(&job_id, async move {
         let (dir, receipts, proxies) = match project_paths(&state).await {
             Ok(p) => p,
@@ -1572,7 +1650,9 @@ pub(super) fn spawn_import_chain(
         // 1) probe — duration/geometry facts the editor needs first.
         state.jobs.progress(&jid, 0.05, Some("probe".into()));
         let s = src.clone();
-        let probed = match run_blocking("media.probe", move || cut_media::probe(&s)).await {
+        #[cfg(test)]
+        placement_turn::probe_delay(&src).await;
+        let probed = match run_blocking("media.probe", move || cut_media::probe_source(&s)).await {
             Ok(probe) => {
                 let pv = serde_json::to_value(&probe).unwrap_or(Value::Null);
                 persist_probe_file(&state, &asset_id, &pv).await; // survives rebuild
@@ -1584,13 +1664,34 @@ pub(super) fn spawn_import_chain(
                         ),
                     );
                 }
+                mark_probe_verified(&state, &asset_id).await;
                 probe
             }
             Err(e) => {
+                // No facts, so no usable asset: undo the registration whatever
+                // the reason (the tool is missing, or the file is not media),
+                // so nothing half-imported stays in Assets. The error keeps its
+                // own plain message and next step (`tool_missing` names the
+                // tool; `unreadable_media` names the file and what to do).
+                let undone =
+                    unprobed_import::undo_unprobed_import(&state, &dir, &asset_id, &e).await;
+                let cause = if undone {
+                    format!("{}; the import was undone", e.cause)
+                } else {
+                    e.cause.clone()
+                };
+                let suggested_action = e
+                    .suggested_action
+                    .clone()
+                    .or_else(|| Some("Try the import again; if it fails again, check the file in a media player.".into()));
                 return state.jobs.fail(
                     &jid,
-                    e.with_suggested_action("probe failed — later chain steps skipped"),
-                )
+                    CutError {
+                        cause,
+                        suggested_action,
+                        ..e
+                    },
+                );
             }
         };
         // Still images: probe is the whole chain — there is no
@@ -1598,16 +1699,28 @@ pub(super) fn spawn_import_chain(
         // job FINISHES (not fails) with the skipped steps named so the agent
         // knows the asset is ready for edit.insert{duration_ms}.
         if probed.kind == "image" {
+            // A still is never auto-placed: its decision is made, so the imports
+            // behind it need not wait for its thumbnail.
+            if let Some(turn) = placement_turn.as_mut() {
+                turn.finish();
+            }
             // Thumbnail for the timeline clip so the picture is visible (not just a
             // photo icon) — reuses the `filmstrip` field/dir. Non-fatal.
             let film_dir = dir.join("filmstrip");
             let (s, fd, aid) = (src.clone(), film_dir, asset_id.clone());
             let _cache_write = state.cache_lifecycle_lease.read().await;
-            if let Ok(path) = run_blocking("media.image_thumb", move || {
+            let thumb = run_blocking("media.image_thumb", move || {
                 cut_media::filmstrip::make_image_thumb(&s, &fd, &aid)
             })
-            .await
-            {
+            .await;
+            // A thumbnail that could not be made is said, not dropped.
+            let thumb_warning = thumb.as_ref().err().map(|e| {
+                format!(
+                    "no timeline thumbnail: {} (rebuild it with media.filmstrip)",
+                    e.message
+                )
+            });
+            if let Ok(path) = thumb {
                 let rel = format!(
                     "filmstrip/{}",
                     path.file_name().unwrap_or_default().to_string_lossy()
@@ -1646,6 +1759,11 @@ pub(super) fn spawn_import_chain(
                 "asset": asset_id,
                 "kind": "image",
                 "skipped_steps": ["proxy", "transcribe", "perception"],
+                "placed": false,
+                "placement": {
+                    "placed": false,
+                    "reason": "A still image is never placed on the timeline automatically. Place it with edit.insert and a duration_ms.",
+                },
                 "note": "still image: no intrinsic duration/audio — place it with edit.insert{asset, track, at_ms, duration_ms}; the render loops the still for the clip duration",
             });
             if manifest.is_some() {
@@ -1655,6 +1773,10 @@ pub(super) fn spawn_import_chain(
                     "markers_created": 0,
                     "note": "manifest parsed but stills are never auto-placed — capture markers (timeline-absolute) were not created",
                 });
+            }
+            if let Some(warning) = thumb_warning {
+                result["warnings"] = json!([warning]);
+                return state.jobs.finish_with_warnings(&jid, result);
             }
             return state.jobs.finish(&jid, result);
         }
@@ -1669,11 +1791,24 @@ pub(super) fn spawn_import_chain(
         // logged ops must be self-contained (probe write-back is cache, not
         // an op, so replay cannot consult it).
         let mut manifest_summary = Value::Null; // filled by the capture-manifest contract ingestion below
+        let mut format_record = Value::Null; // the first-clip format adoption outcome
+        let mut format_warning: Option<String> = None;
+        let placement: Value;
         {
+            // Every import requested before this one has decided first: that is
+            // what makes "the first import" the first one asked for.
+            if let Some(turn) = placement_turn.as_ref() {
+                turn.wait().await;
+            }
+            // Why nothing was placed, when nothing was: the job result says so.
+            let mut declined: Option<&'static str> = None;
             let targets: Vec<(String, [u64; 2])> = {
                 let guard = state.project.read().await;
                 match guard.as_ref() {
-                    None => vec![],
+                    None => {
+                        declined = Some("No project is open, so nothing was placed.");
+                        vec![]
+                    }
                     Some(store) => {
                         let any_media_clips = !allow_auto_place || store.project.tracks.iter().any(|t| {
                             matches!(
@@ -1689,7 +1824,18 @@ pub(super) fn spawn_import_chain(
                             .unwrap_or(Value::Null);
                         let duration = probe.get("duration_ms").and_then(|v| v.as_u64());
                         match (any_media_clips, duration) {
-                            (true, _) | (_, None) => vec![],
+                            (true, _) => {
+                                declined = Some(if allow_auto_place {
+                                    "The timeline already has media, so this import waits in Assets. Place it with edit.insert."
+                                } else {
+                                    "This kind of import is never placed automatically. Place it with edit.insert."
+                                });
+                                vec![]
+                            }
+                            (_, None) => {
+                                declined = Some("The file has no readable duration, so it was not placed. Place it with edit.insert and a duration_ms.");
+                                vec![]
+                            }
                             (false, Some(d)) => {
                                 let has_video =
                                     probe.get("width").map(|w| !w.is_null()).unwrap_or(false);
@@ -1719,6 +1865,10 @@ pub(super) fn spawn_import_chain(
                 }
             };
             let placed = !targets.is_empty();
+            if !placed && declined.is_none() {
+                declined = Some("The project has no video or audio track to place it on.");
+            }
+            let placed_tracks: Vec<String> = targets.iter().map(|(t, _)| t.clone()).collect();
             for (track, src_range) in targets {
                 // ripple: false EXPLICITLY — auto-place puts the SAME source
                 // on v1 and a1t at the same position; a base-track default
@@ -1738,42 +1888,26 @@ pub(super) fn spawn_import_chain(
                     );
                 }
             }
-            // NEW-TIMELINE-FROM-FILE: when THIS import is
-            // the first clip (the timeline was empty → it was just auto-placed)
-            // AND the project still has the built-in DEFAULT geometry (1920x1080
-            // @30 / 48 kHz — the user has NOT explicitly chosen a format via the
-            // new-project dialog or project.format), adopt the file's resolution +
-            // frame rate. Standard NLE "new sequence from clip" behaviour. An
-            // explicit format choice (settings != default) is respected and never
-            // overridden; a same-as-default file changes nothing (differs guard).
-            // Recorded as a project.format op (system actor) so it replays + shows
-            // in the rail. Only for video (audio-only has no geometry to adopt).
+            // The decision is made (the clips are on the timeline, or this import
+            // stays in Assets): the imports behind this one may decide now.
+            if let Some(turn) = placement_turn.as_mut() {
+                turn.finish();
+            }
+            placement = if placed {
+                json!({"placed": true, "tracks": placed_tracks})
+            } else {
+                json!({"placed": false, "reason": declined.unwrap_or("Not placed.")})
+            };
+            // NEW-TIMELINE-FROM-FILE: when THIS import is the first clip (the
+            // timeline was empty, so it was just auto-placed) and the project
+            // still has the built-in default format, adopt the file's size and
+            // frame rate. An explicit format is never overridden. Every outcome,
+            // including a size beyond the frame limit, is reported as `format`.
             if placed && probed.kind == "video" {
-                if let (Some(w), Some(h)) = (probed.width, probed.height) {
-                    let fps = probed.fps.filter(|f| *f > 0.0 && *f <= 240.0);
-                    let mut g = state.project.write().await;
-                    if let Some(store) = g.as_mut() {
-                        let st = &store.project.settings;
-                        let is_default = st.width == 1920
-                            && st.height == 1080
-                            && (st.fps - 30.0).abs() < 0.01
-                            && st.audio_rate == 48_000;
-                        let target_fps = fps.unwrap_or(st.fps);
-                        let differs =
-                            w != st.width || h != st.height || (target_fps - st.fps).abs() >= 0.01;
-                        if is_default && differs {
-                            if let Ok(op) = store.set_format(
-                                Some(w),
-                                Some(h),
-                                fps,
-                                Actor::system(),
-                                Some("new timeline from file: adopt the first clip's resolution + frame rate".into()),
-                            ) {
-                                state.events.publish(Event::OpApplied { op });
-                            }
-                        }
-                    }
-                }
+                let (record, warning) =
+                    format_adoption::adopt_first_clip_format(&state, &probed).await;
+                format_record = record;
+                format_warning = warning;
             }
             // Capture-manifest ingestion (the capture-manifest contract): events → capture:<type>
             // marker ops (system actor, visible in the review
@@ -1893,10 +2027,36 @@ pub(super) fn spawn_import_chain(
                  place it with edit.insert on an audio track"
             );
         }
+        result["placed"] = placement["placed"].clone();
+        result["placement"] = placement;
         if !manifest_summary.is_null() {
             result["capture_manifest"] = manifest_summary; // the capture-manifest contract ingest outcome
         }
-        state.jobs.finish(&jid, result);
+        if !format_record.is_null() {
+            result["format"] = format_record;
+        }
+        if probed.variable_frame_rate {
+            result["variable_frame_rate"] = json!(true);
+        }
+        // Capture markers the manifest asked for but that could not be made
+        // are a partial import: said as a warning, never a plain "done".
+        let mut warnings: Vec<String> = format_warning.into_iter().collect();
+        if let Some(skipped) = result["capture_manifest"]["skipped"].as_array() {
+            if !skipped.is_empty() {
+                warnings.push(format!(
+                    "{} capture marker{} could not be created: {}",
+                    skipped.len(),
+                    if skipped.len() == 1 { "" } else { "s" },
+                    skipped[0].as_str().unwrap_or("see capture_manifest.skipped")
+                ));
+            }
+        }
+        if warnings.is_empty() {
+            state.jobs.finish(&jid, result);
+        } else {
+            result["warnings"] = json!(warnings);
+            state.jobs.finish_with_warnings(&jid, result);
+        }
     });
     job_id
 }
@@ -1947,6 +2107,8 @@ fn spawn_proxy_chain(
             0.05,
             Some("generating editing proxy (background; you can edit from the source now)".into()),
         );
+        // An HDR source previews tone-mapped to SDR, as it will export.
+        let tone_map = decode_check::proxy_tone_map(&state, &asset_id, &mut warnings).await;
         // Proxy transcode with live progress mapped into the 0.05..0.85 band.
         let total = duration_ms.unwrap_or(0);
         let (s, pd, aid) = (src.clone(), proxies.clone(), asset_id.clone());
@@ -1957,7 +2119,7 @@ fn spawn_proxy_chain(
                     .jobs
                     .progress(&jid_cb, 0.05 + f * 0.80, Some("transcoding proxy".into()));
             };
-            cut_media::make_proxy_with_progress(&s, &pd, &aid, total, &cb)
+            cut_media::make_proxy_with_progress_and_tone_map(&s, &pd, &aid, total, &cb, &tone_map)
         })
         .await
         {
@@ -1965,6 +2127,20 @@ fn spawn_proxy_chain(
                 let rel = format!(
                     "proxies/{}",
                     path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                // Only a proxy this engine made, for this asset's source, is
+                // used by a later preview.
+                let source_hash = {
+                    let guard = state.project.read().await;
+                    guard
+                        .as_ref()
+                        .and_then(|store| store.project.assets.get(&asset_id))
+                        .map(|asset| asset.hash.clone())
+                        .unwrap_or_default()
+                };
+                cut_media::cache_trust::remember_bound(
+                    &path,
+                    &proxy_trust::proxy_binding(&asset_id, &source_hash),
                 );
                 match crate::cache_lifecycle::record_generated(
                     &dir,
@@ -1993,6 +2169,25 @@ fn spawn_proxy_chain(
                 false
             }
         };
+        // Decode check (video only; rides the proxy): the proxy decoded the
+        // whole source, so its length is the source's readable length. A file
+        // cut off part-way gets a plain warning on the asset and on this job.
+        let mut decode_check: Option<Value> = None;
+        if proxy_ok && kind == "video" {
+            let proxy_path = proxies.join(format!("{asset_id}.mp4"));
+            match decode_check::record_decode_check(&state, &asset_id, &proxy_path).await {
+                Ok(warning) => {
+                    if let Some(w) = warning {
+                        warnings.push(w);
+                    }
+                    decode_check = current_decode_check(&state, &asset_id).await;
+                }
+                Err(e) => warnings.push(format!(
+                    "Could not check how much of the file can be read: {} ({})",
+                    e.message, e.cause
+                )),
+            }
+        }
         // Filmstrip — timeline thumbnail strip (video only; rides the proxy).
         if proxy_ok && kind == "video" {
             if let Some(d) = duration_ms.filter(|d| *d > 0) {
@@ -2002,11 +2197,18 @@ fn spawn_proxy_chain(
                 let proxy_path = proxies.join(format!("{asset_id}.mp4"));
                 let film_dir = dir.join("filmstrip");
                 let (pp, fd, aid) = (proxy_path, film_dir, asset_id.clone());
-                if let Ok(path) = run_blocking("media.filmstrip", move || {
+                let strip = run_blocking("media.filmstrip", move || {
                     cut_media::filmstrip::make_filmstrip(&pp, &fd, &aid, d)
                 })
-                .await
-                {
+                .await;
+                if let Err(e) = &strip {
+                    // Said, not dropped: the timeline shows no frames for it.
+                    warnings.push(format!(
+                        "no timeline thumbnails: {} (rebuild them with media.filmstrip)",
+                        e.message
+                    ));
+                }
+                if let Ok(path) = strip {
                     let rel = format!(
                         "filmstrip/{}",
                         path.file_name().unwrap_or_default().to_string_lossy()
@@ -2038,6 +2240,7 @@ fn spawn_proxy_chain(
         let result = json!({
             "asset": asset_id,
             "proxy": proxy_ok,
+            "decode_check": decode_check,
             "warnings": warnings,
             "readiness": {
                 "source": "ready",
@@ -2133,6 +2336,37 @@ fn spawn_enrich_chain(
                     }
                 }
             }
+            Err(e) if cut_perception::is_captions_not_installed(&e) => {
+                // The captions runtime is an optional install, not a fault of this
+                // import. The perception step would stop on the same missing
+                // runtime, so skip it and finish once with the reason and the
+                // setup action (agents read them here; a person sees the Install
+                // captions card). No warning and no failed row on every import.
+                state.jobs.progress(
+                    &jid,
+                    1.0,
+                    Some("captions and transcription are not installed".into()),
+                );
+                return state.jobs.finish(
+                    &jid,
+                    json!({
+                        "asset": asset_id,
+                        "transcript": false,
+                        "perception": false,
+                        "skipped": "captions_not_installed",
+                        "skipped_reason": e.message,
+                        "skipped_cause": e.cause,
+                        "suggested_action": e.suggested_action,
+                        "setup_needed": super::rendering::captions_setup_needed(&e),
+                        "warnings": [],
+                        "readiness": {
+                            "speech": "unavailable",
+                            "perception": "unavailable",
+                            "optional_services": "not_installed",
+                        },
+                    }),
+                );
+            }
             Err(e) => {
                 warnings.push(format!("transcribe: {} ({})", e.message, e.cause));
                 false
@@ -2223,6 +2457,44 @@ fn spawn_enrich_chain(
     job_id
 }
 
+/// Why `media.import` cannot take `path`: say the true reason (a folder, access
+/// denied, or really missing), never "not found" for something that exists.
+fn media_path_error(path: &Path) -> CutError {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("{} is a folder, not a media file", path.display()),
+            "media.import takes one media file per call; folders are not imported",
+        )
+        .with_suggested_action(
+            "list the folder and call media.import for each media file inside it",
+        ),
+        Ok(_) => CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("{} is not a regular media file", path.display()),
+            "the path is not an ordinary file (for example a device or a pipe)",
+        )
+        .with_suggested_action("pass the path of a media file"),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => CutError::new(
+            error_codes::IO,
+            format!(
+                "media file cannot be read: {} (access is denied)",
+                path.display()
+            ),
+            error.to_string(),
+        )
+        .with_suggested_action(
+            "give your user account read access to the file, or choose another file",
+        ),
+        Err(_) => CutError::new(
+            error_codes::NOT_FOUND,
+            format!("media file not found: {}", path.display()),
+            "path must point at an existing readable file",
+        )
+        .with_suggested_action("pass an absolute path to the media file"),
+    }
+}
+
 /// media.probe{asset} — synchronous probe + cache write-back (not an op).
 pub(super) async fn media_probe(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
     // Pin the project through both the probe receipt and asset write-back.
@@ -2245,11 +2517,20 @@ async fn media_probe_admitted(state: &AppState, args: Value) -> Result<VerbResul
     }
     let a: Args = parse_args(args)?;
     let (src, _hash) = asset_info(state, &a.asset).await?;
-    let probe = run_blocking("media.probe", move || cut_media::probe(&src)).await?;
-    let pv = serde_json::to_value(&probe)?;
+    let probe = run_blocking("media.probe", move || cut_media::probe_source(&src)).await?;
+    let fresh = serde_json::to_value(&probe)?;
+    // A refreshed probe keeps the earlier decode check (it reads the index
+    // only), when this engine made that check (a received one is dropped).
+    let old = if probe_verified(state, &a.asset).await {
+        asset_probe(state, &a.asset).await
+    } else {
+        None
+    };
+    let pv = decode_check::keep_decode_check(old.as_ref(), fresh);
     let pv2 = pv.clone();
     persist_probe_file(state, &a.asset, &pv).await; // survives rebuild
     update_asset(state, &a.asset, |x| x.probe = Some(pv2)).await?;
+    mark_probe_verified(state, &a.asset).await;
     Ok(VerbResult::ok(pv))
 }
 
@@ -2602,5 +2883,66 @@ async fn wait_for_media_import_admission_gate(source: &Path) {
     if let Some(gate) = gate {
         gate.admitted.notify_one();
         gate.resume_admitted.notified().await;
+    }
+}
+
+#[cfg(test)]
+mod media_path_error_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_is_named_as_a_folder_not_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = media_path_error(dir.path());
+        assert_eq!(error.code, error_codes::INVALID_ARGS);
+        assert!(error.message.contains("is a folder, not a media file"));
+        assert!(!error.message.contains("not found"));
+        assert!(error
+            .suggested_action
+            .unwrap()
+            .contains("media.import for each media file"));
+        let missing = media_path_error(&dir.path().join("absent.mp4"));
+        assert_eq!(missing.code, error_codes::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod asset_info_path_tests {
+    use super::*;
+
+    /// A relative path stored in a received project reaches tools inside the
+    /// project folder, never as a bare argument such as `-report`.
+    #[tokio::test]
+    async fn a_relative_asset_path_is_given_to_tools_inside_the_project() {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let created = crate::dispatch::dispatch(
+            &state,
+            "project.create",
+            json!({"name":"paths", "dir": root.path().join("paths.cutproj")}),
+            cut_core::Actor::system(),
+        )
+        .await;
+        assert!(created.ok, "project create: {:?}", created.error);
+        let dir = {
+            let mut project = state.project.write().await;
+            let store = project.as_mut().unwrap();
+            store.project.assets.insert(
+                "a1".into(),
+                cut_core::Asset {
+                    path: "-report".into(),
+                    hash: "sha256:test".into(),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+            );
+            store.dir.clone()
+        };
+        let (path, _) = asset_info(&state, "a1").await.unwrap();
+        assert_eq!(path, dir.join("-report"));
+        assert!(path.is_absolute());
     }
 }

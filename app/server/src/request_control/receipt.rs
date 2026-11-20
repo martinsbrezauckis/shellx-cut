@@ -237,8 +237,35 @@ fn path(store: &ProjectStore, actor: &Actor) -> Result<PathBuf, CutError> {
     Ok(path)
 }
 
+/// Largest mutation response receipt read back. A received project may hold
+/// any file at a receipt name; one past this is refused unread.
+const MAX_REQUEST_RECEIPT_BYTES: u64 = 16 * 1024 * 1024;
+
 fn read(path: &Path) -> Result<DurableRequestReceipt, CutError> {
-    serde_json::from_slice(&std::fs::read(path)?).map_err(|error| {
+    let bytes = match cut_core::store::read_bounded_cache(path, MAX_REQUEST_RECEIPT_BYTES) {
+        cut_core::store::BoundedCacheRead::Bytes(bytes) => bytes,
+        cut_core::store::BoundedCacheRead::Oversized => {
+            return Err(CutError::new(
+                error_codes::IO,
+                "mutation response receipt is larger than 16 MiB, so it was not read",
+                path.display().to_string(),
+            )
+            .with_suggested_action(
+                "delete the receipt from the project's request-receipts folder, then retry the request with a new request_id",
+            ))
+        }
+        cut_core::store::BoundedCacheRead::Unavailable => {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "mutation response receipt is not a plain file",
+                path.display().to_string(),
+            )
+            .with_suggested_action(
+                "delete the receipt from the project's request-receipts folder, then retry the request with a new request_id",
+            ))
+        }
+    };
+    serde_json::from_slice(&bytes).map_err(|error| {
         CutError::new(
             error_codes::IO,
             "mutation response receipt is corrupt",

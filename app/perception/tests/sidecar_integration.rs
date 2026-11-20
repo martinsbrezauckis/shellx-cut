@@ -219,3 +219,5 @@ fn render_checks_fall_back_without_optional_python_packages() {
     assert!(log.contains("using ffmpeg silencedetect"), "{log}");
     assert!(log.contains("using ffmpeg"), "{log}");
 }
+
+cut_core::isolate_test_process!();

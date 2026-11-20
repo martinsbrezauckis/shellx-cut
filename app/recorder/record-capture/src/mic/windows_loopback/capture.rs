@@ -169,7 +169,9 @@ fn capture_process_loopback(
             bits_per_sample: PROCESS_LOOPBACK_BITS_PER_SAMPLE,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut writer = match hound::WavWriter::new(staging, spec) {
+        // Buffered (one write call per 16-bit sample cost CPU and Stop time);
+        // a crash loses at most the buffer, about 40 ms of system sound.
+        let mut writer = match hound::WavWriter::new(std::io::BufWriter::new(staging), spec) {
             Ok(writer) => writer,
             Err(error) => {
                 let _ = std::fs::remove_file(&temp_path);

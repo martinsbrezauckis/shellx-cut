@@ -111,3 +111,18 @@ fn microphone_loss_has_an_explicit_safe_outcome() {
         json!({"status": "microphone_lost", "mic_track_saved": false})
     );
 }
+
+#[test]
+fn an_oversized_microphone_outcome_reads_as_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("microphone-outcome.json");
+    let mut body =
+        br#"{"schema":"shellx-cut/microphone-outcome/1","status":"saved","mic_track_saved":true}"#
+            .to_vec();
+    std::fs::write(&path, &body).unwrap();
+    assert_eq!(outcome::projection(dir.path())["status"], "saved");
+    // The same outcome followed by whitespace, one byte over the 64 KiB limit.
+    body.resize(64 * 1024 + 1, b' ');
+    std::fs::write(&path, &body).unwrap();
+    assert_eq!(outcome::projection(dir.path())["status"], "unavailable");
+}

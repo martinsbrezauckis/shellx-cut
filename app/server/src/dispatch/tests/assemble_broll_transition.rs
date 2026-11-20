@@ -93,6 +93,7 @@ async fn assemble_broll_holds_its_owner_through_import_then_records_the_calling_
     let source = source.canonicalize().unwrap();
 
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     create_project(&state, "a", &a_path).await;
     create_project(&state, "b", &b_path).await;
     let reopened_a = dispatch(

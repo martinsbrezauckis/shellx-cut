@@ -74,6 +74,19 @@
 .rec__readiness-summary p { display: none; }
 .rec__readiness-summary strong { color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-sm)/1.2 var(--sans); }
 .rec__readiness-summary p { margin: 2px 0 0; color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.35 var(--sans); }
+/* A screen-capture state that needs the person's action shows its sentence and Check button. */
+.rec__readiness[data-cut-rec-screen-check="permission_needed"] .rec__readiness-summary p,
+.rec__readiness[data-cut-rec-screen-check="not_checked"] .rec__readiness-summary p { display: block; }
+.rec__readiness-check {
+  margin-top: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink, #f2f3f5);
+  font: 600 var(--fs-ui-xs, 11px)/1.2 var(--sans);
+  cursor: pointer;
+}
 .rec__readiness[data-cut-rec-readiness-state="attention"] { border-color: rgba(239, 68, 68, .42); }
 .rec__readiness[data-cut-rec-readiness-state="pending"] { border-color: rgba(245, 196, 81, .42); }
 .rec__readiness[data-cut-rec-readiness-state="unknown"] { border-color: rgba(148, 163, 255, .5); }

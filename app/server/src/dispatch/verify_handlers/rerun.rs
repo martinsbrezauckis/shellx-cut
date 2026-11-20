@@ -45,6 +45,8 @@ struct PreparedVerifyRerun {
     receipts: PathBuf,
     receipt_path: PathBuf,
     receipt: cut_core::RenderReceipt,
+    /// The receipt bytes read were this engine's own record (`cache_trust`).
+    receipt_written_here: bool,
     output: PathBuf,
     profile: cut_perception::FootageProfile,
     project_revision: String,

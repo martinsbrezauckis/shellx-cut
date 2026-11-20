@@ -80,7 +80,7 @@
     {
       "name": "transcript.remove_fillers",
       "domain": "transcript",
-      "description": "Cut filler words (default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words.",
+      "description": "Cut filler words (default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "additionalProperties": false,

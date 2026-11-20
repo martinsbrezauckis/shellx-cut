@@ -280,24 +280,31 @@ fn find_motion_on_path() -> Option<PathBuf> {
         &["shellx-motion"]
     };
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
-        names.iter().map(|name| dir.join(name)).find(|candidate| {
-            candidate.is_file() && motion_program_supported(candidate.to_string_lossy().as_ref())
+    // A relative PATH entry would resolve against the current folder.
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .find_map(|dir| {
+            names.iter().map(|name| dir.join(name)).find(|candidate| {
+                candidate.is_file()
+                    && motion_program_supported(candidate.to_string_lossy().as_ref())
+            })
         })
-    })
 }
 
 #[cfg(any(windows, test))]
 fn command_file(program: &str) -> Option<PathBuf> {
     let direct = PathBuf::from(program);
-    if direct.is_file() {
-        return Some(direct);
+    // Only an absolute path names a file directly; a bare name is looked up
+    // on PATH, never in the current folder.
+    if direct.is_absolute() {
+        return direct.is_file().then_some(direct);
     }
     if direct.components().count() != 1 {
         return None;
     }
     std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
+            .filter(|dir| dir.is_absolute())
             .map(|dir| dir.join(program))
             .find(|path| path.is_file())
     })
@@ -421,28 +428,16 @@ pub(crate) fn motion_available() -> bool {
     find_motion_on_path().is_some()
 }
 
+/// A ShellX Motion source checkout named by `SHELLX_MOTION_ROOT` (absolute).
+/// Never searched for from the current folder: a folder an agent starts
+/// `cutd` in may be a project from someone else, and the checkout's package
+/// scripts are run.
 pub(crate) fn find_motion_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var(ENV_MOTION_ROOT) {
-        let path = PathBuf::from(root);
-        if path.join("package.json").is_file() {
-            return Some(path);
-        }
-    }
-    let cwd = std::env::current_dir().ok()?;
-    for dir in cwd.ancestors().take(8) {
-        for candidate in [
-            dir.to_path_buf(),
-            dir.join("ShellX Motion"),
-            dir.join("shellx-motion"),
-        ] {
-            if candidate.join("package.json").is_file()
-                && candidate.join("packages").join("cli").exists()
-            {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    motion_root_from(std::env::var_os(ENV_MOTION_ROOT).map(PathBuf::from))
+}
+
+fn motion_root_from(configured: Option<PathBuf>) -> Option<PathBuf> {
+    configured.filter(|path| path.is_absolute() && path.join("package.json").is_file())
 }
 
 pub(crate) fn parse_motion_connector_stdout(stdout: &str) -> Result<Value, CutError> {
@@ -537,6 +532,23 @@ pub(crate) fn tail(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_motion_checkout_is_used_only_when_configured_by_absolute_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("ShellX Motion");
+        std::fs::create_dir_all(root.join("packages/cli")).expect("checkout");
+        std::fs::write(root.join("package.json"), b"{}").expect("package.json");
+        assert_eq!(motion_root_from(Some(root.clone())), Some(root));
+        assert_eq!(motion_root_from(Some(PathBuf::from("ShellX Motion"))), None);
+        assert_eq!(motion_root_from(None), None);
+    }
+
+    #[test]
+    fn a_command_shim_is_never_taken_from_a_relative_path() {
+        assert_eq!(command_file("node_modules/.bin/pnpm.cmd"), None);
+        assert_eq!(command_file("./pnpm.cmd"), None);
+    }
 
     #[test]
     fn extracts_last_json_envelope_and_rejects_failed_motion_results() {

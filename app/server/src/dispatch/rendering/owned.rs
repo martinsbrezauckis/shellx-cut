@@ -38,6 +38,7 @@ pub(super) fn output_facts(
             duration_ms,
             loudness: report.loudness.clone(),
             output_report: Some(report),
+            streams: Vec::new(),
         })
     })
 }

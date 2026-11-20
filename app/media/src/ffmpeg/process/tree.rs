@@ -53,6 +53,11 @@ impl ProcessTree {
         Ok(Self { pgid })
     }
 
+    /// The process group every process of this render belongs to.
+    pub(super) fn group(&self) -> i32 {
+        self.pgid
+    }
+
     pub(super) fn exit_ready(&self, child: &mut Child) -> io::Result<bool> {
         let pid = i32::try_from(child.id())
             .map_err(|_| io::Error::other("render worker process id exceeds i32"))?;
@@ -79,7 +84,13 @@ impl ProcessTree {
         if result == -1 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(unsafe { info.si_pid() } != 0)
+            // macOS reports a STOPPED child here too (si_code CLD_STOPPED)
+            // although only WEXITED was asked: a suspended ffmpeg then read as
+            // exited and the render failed with "exited ffmpeg child was
+            // unavailable for reap" (seen on macOS with SIGSTOP). Only
+            // an exit, a kill or a core dump (POSIX CLD_EXITED 1, CLD_KILLED 2,
+            // CLD_DUMPED 3, the same on Linux and macOS) is an exit.
+            Ok(unsafe { info.si_pid() } != 0 && matches!(info.si_code, 1..=3))
         }
     }
 
@@ -229,6 +240,11 @@ impl ProcessTree {
             }
             Ok(Self { handle: job })
         }
+    }
+
+    /// The Job Object every process of this render belongs to.
+    pub(super) fn job(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        self.handle
     }
 
     pub(super) fn exit_ready(&self, child: &mut Child) -> io::Result<bool> {

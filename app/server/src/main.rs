@@ -1,10 +1,12 @@
 //! cutd server entrypoint: serve, MCP stdio, and one-shot verb dispatch.
 mod cache_lifecycle;
 mod chat;
+mod desktop_parent;
 mod diarize;
 mod dispatch;
 mod doctor;
 mod dub;
+mod engine_lifeline;
 mod events;
 mod faces;
 mod fetch;
@@ -17,16 +19,20 @@ mod generate_handlers;
 mod generate_rich_tests;
 mod http;
 mod httpc;
+cut_core::isolate_test_process!();
+
 mod jobs;
 mod library;
 mod matte;
 mod mcp;
+mod media_tool_gate;
 mod motion_artifact;
 mod motion_bridge;
 mod motion_discovery;
 mod motion_discovery_contract;
 mod motion_edit_return;
 mod motion_editable_import;
+mod packaged_resources;
 // Compile the adapter while its authenticated binding remains deferred; expose no verb.
 #[allow(dead_code)]
 mod motion_generic_consumer;
@@ -51,6 +57,7 @@ mod providers;
 mod recipes;
 mod registry;
 mod request_control;
+mod requirements;
 mod review_http;
 mod schema_validation;
 mod screen_record;
@@ -66,6 +73,7 @@ mod transcript_receipt;
 mod translate;
 mod ui_bridge;
 mod userdata;
+mod vc_runtime;
 mod vissearch;
 mod voiceover_timeline_coordinator;
 mod voiceover_timeline_owner;
@@ -132,7 +140,11 @@ fn main() -> anyhow::Result<()> {
     // Keep this synchronous guard ahead of command parsing, child-environment
     // admission, and construction of the Tokio worker runtime.
     std::env::set_var("PYTHONDONTWRITEBYTECODE", "1");
+    // Programs are found only in absolute PATH folders, by us and every child.
+    cut_media::toolpath::harden_process_search_path();
+    engine_lifeline::run_if_requested();
     let cli = Cli::parse();
+    engine_lifeline::begin(matches!(&cli.command, Command::Serve { .. }));
     screen_record::initialize_private_foreground_region_bridge(matches!(
         &cli.command,
         Command::Serve {
@@ -144,10 +156,10 @@ fn main() -> anyhow::Result<()> {
     if matches!(&cli.command, Command::Serve { .. }) {
         return run_macos_serve_with_main_run_loop(cli);
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(cli))
+        .build()?;
+    server_shutdown::block_on_bounded(runtime, run(cli))
 }
 
 // AVCaptureMovieFileOutput may need the process main run loop while a camera
@@ -174,7 +186,7 @@ fn run_macos_serve_with_main_run_loop(cli: Cli) -> anyhow::Result<()> {
                 .enable_all()
                 .build()
                 .map_err(anyhow::Error::from)
-                .and_then(|runtime| runtime.block_on(run(cli)));
+                .and_then(|runtime| server_shutdown::block_on_bounded(runtime, run(cli)));
             let _ = sender.send(result);
             unsafe { CFRunLoopWakeUp(CFRunLoopGetMain()) };
         })?;
@@ -242,7 +254,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let dist = if headless {
                 None
             } else {
-                Some(resolve_ui_dist(ui_dist))
+                Some(packaged_resources::resolve_ui_dist(ui_dist))
             };
             match &dist {
                 Some(d) if d.join("index.html").exists() => {
@@ -275,11 +287,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 .local_addr()
                 .map(|a| a.to_string())
                 .unwrap_or_else(|_| addr.clone());
+            let shutdown = server_shutdown::wait_for_server_shutdown(state.clone());
             httpc::write_discovery(&bound);
             tracing::info!("cutd listening on http://{bound}/ (POST /api/verb/{{name}})");
             let startup_doctor = startup_tasks::spawn_post_ui_doctor(state.clone());
+            drop(output_paths::spawn_folder_watch(state.events.clone()));
+            // An export a kill or power cut stopped left its staging files in
+            // exports/; remove them (only the engine's own names) at start.
+            let _interrupted_cleanup =
+                tokio::task::spawn_blocking(jobs::interrupted::interrupted_after_cleanup);
             let result = axum::serve(listener, router)
-                .with_graceful_shutdown(server_shutdown::wait_for_server_shutdown(state.clone()))
+                .with_graceful_shutdown(shutdown)
                 .await;
             startup_doctor.abort();
             let _ = startup_doctor.await;
@@ -294,7 +312,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             // the single-state-holder contract: one state holder. Proxy when the server runs;
             // standalone (own project) only with the explicit flag AND no
             // running server.
-            let server_up = httpc::server_running();
+            let located = httpc::locate();
+            if let httpc::Located::Mismatch(mismatch) = &located {
+                let error = mismatch.to_error();
+                tracing::warn!(
+                    "{} ({}); {}",
+                    error.message,
+                    error.cause,
+                    error.suggested_action.as_deref().unwrap_or("")
+                );
+            }
+            let server_up = matches!(located, httpc::Located::Engine(_));
             let mode = match (server_up, standalone) {
                 (true, true) => {
                     anyhow::bail!(
@@ -339,23 +367,30 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             // running, the CLI passes the verb through it. `--standalone` is
             // the explicit testing escape hatch for isolated harnesses that
             // need their own project/env while a desktop server is open.
-            let result_json = if !standalone && httpc::server_running() {
-                if project.is_some() {
-                    tracing::warn!("--project ignored — verb proxied to the running server");
-                }
-                httpc::post_verb(&name, &args)
-                    .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e}))
-            } else {
-                let state = AppState::new();
-                open_if_given(&state, project).await?;
-                let actor = Actor {
-                    kind: ActorKind::Agent,
-                    name: "cli".into(),
-                    via: "cli".into(),
-                    request: None,
+            let located = httpc::locate();
+            let result_json =
+                if let (false, httpc::Located::Mismatch(mismatch)) = (standalone, &located) {
+                    // Something answers where the engine should be but is not this
+                    // engine. Do not fall back to a private state silently, and send
+                    // nothing to it: say what is wrong and what to do.
+                    serde_json::json!({"ok": false, "error": mismatch.to_error()})
+                } else if !standalone && matches!(located, httpc::Located::Engine(_)) {
+                    if project.is_some() {
+                        tracing::warn!("--project ignored — verb proxied to the running server");
+                    }
+                    httpc::post_verb(&name, &args)
+                        .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e}))
+                } else {
+                    let state = AppState::new();
+                    open_if_given(&state, project).await?;
+                    let actor = Actor {
+                        kind: ActorKind::Agent,
+                        name: "cli".into(),
+                        via: "cli".into(),
+                        request: None,
+                    };
+                    serde_json::to_value(dispatch::dispatch(&state, &name, args, actor).await)?
                 };
-                serde_json::to_value(dispatch::dispatch(&state, &name, args, actor).await)?
-            };
             println!("{}", serde_json::to_string_pretty(&result_json)?);
             // Nonzero exit on verb failure so shell scripts can `set -e`.
             if !result_json
@@ -380,20 +415,10 @@ async fn open_if_given(state: &AppState, project: Option<PathBuf>) -> anyhow::Re
             .jobs
             .attach_project(&store.dir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        *state.project.write().await = Some(store);
+        // Proxies, strips and title movies are checked as at any open.
+        dispatch::open_at_start(state, store).await;
     }
     Ok(())
-}
-
-/// Locate ui/dist: explicit flag wins; else <repo>/ui/dist relative to the
-/// workspace (CARGO_MANIFEST_DIR = app/server at compile time — dev layout).
-fn resolve_ui_dist(explicit: Option<PathBuf>) -> PathBuf {
-    explicit.unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../ui/dist")
-            .components()
-            .collect() // normalize the ../.. without touching the filesystem
-    })
 }
 
 #[cfg(test)]

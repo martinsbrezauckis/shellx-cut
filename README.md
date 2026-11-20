@@ -10,9 +10,9 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
-> **STATUS — v0.6.115 candidate; v0.6.114 is the latest published release.**
-> The public contract is 308 verbs across 34
+<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
+> **STATUS — v0.6.116 candidate; v0.6.115 is the latest published release.**
+> The public contract is 317 verbs across 34
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -61,10 +61,50 @@ PNG, JPEG, WebP, and TIFF, subject to your installed FFmpeg's codec support.
 Imported HLS and concat playlists are rejected because they can reference
 other files. Cut's internally generated render segment lists remain supported.
 
-> **Installing:** v0.6.114 is the current published installer/package from the
+> **Installing:** v0.6.115 is the current published installer/package from the
 > GitHub release. Users already on 0.6.107 can use the
 > in-app update when it is offered. Versions older than 0.6.107 must install
 > 0.6.107 manually before using the in-app update.
+>
+> **Uninstalling on Windows** removes the app and what it downloaded or made
+> for itself (FFmpeg, the captions environment and models, background-removal
+> files, its work folder); an update keeps the downloaded tools. Ticking
+> "Delete the application data" also removes its settings, the recent-projects
+> list, the microphone choice, the export folder you chose and the notes about
+> interrupted work. Your
+> projects, the Library, recordings and Microsoft's Visual C++ runtime are never
+> removed.
+>
+> **System requirements:**
+>
+> - **Windows:** Windows 10 or 11 on x64. The installer does not need the Visual
+>   C++ runtime to be on the PC. Captions on Windows need the Microsoft Visual C++
+>   Redistributable; ShellX Cut tells you when it is missing and gets it from
+>   Microsoft for you (Windows asks for administrator permission). Windows N and KN
+>   editions need Microsoft's Media Feature Pack: Cut's engine uses Media
+>   Foundation and does not start without it.
+> - **macOS:** an Apple-silicon Mac with macOS 15 or later. Screen recording,
+>   system-audio capture and the engine itself rely on system features that
+>   older macOS versions do not have.
+> - **Linux:** x86_64 with glibc 2.39 or newer: Ubuntu 24.04 or newer, Debian 13
+>   or newer, Fedora 43 or newer (`.deb` and `.rpm`). The `.rpm` names Fedora
+>   packages; other RPM-based distributions such as openSUSE are not supported.
+>   On a heavily loaded machine the picture can hold briefly at a cut while
+>   playing; the paused frame and exports are exact.
+>
+> **FFmpeg** is not included in the installers. When it is missing, the first
+> start opens the Welcome setup window and Preview shows a setup notice; both
+> lead to the Video processing card, which offers a
+> download from FFmpeg's publisher (FFmpeg-Builds on Windows and Linux x86_64,
+> Martin Riedl's signed build on Apple-silicon Macs). The publisher, version,
+> size and licence are shown first, choosing Download is the consent, and each
+> download is pinned by its exact URL, size and SHA-256. On macOS, Homebrew's
+> complete `ffmpeg-full` stays the other way (and the one that can Stabilize);
+> anywhere, **Choose ffmpeg** uses a build you already
+> have. With several FFmpeg builds installed, Cut uses the one that can encode
+> with the graphics hardware, whether the app or an agent started the engine;
+> `system.doctor` says which build is in use and why. Until FFmpeg is installed, every verb that needs it refuses up front
+> with `tool_missing` and the way to get it.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
@@ -169,7 +209,7 @@ Cut. See
 [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
 for the supported deployment and residual risk.
 
-## Verb API (308 verbs, 34 domains — `schema/verbs.json` is the contract)
+## Verb API (317 verbs, 34 domains — `schema/verbs.json` is the contract)
 
 Envelope: `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}`.
 Every mutating verb takes optional `rationale`. Long tasks return `{job_id}`.
@@ -178,11 +218,15 @@ Every verb also advertises shared optional `request_id` and
 reject stale revisions atomically, and return the original durable response for
 an identical lost-response retry; changed payloads conflict.
 Representative verbs per domain below — `skill/shellx-cut/reference.md` is the
-full 308-verb table.
+full 317-verb table.
 
 Color management uses `project.color` and `edit.color_space` for the explicit
 Rec.709, Rec.2020, sRGB, and scene-linear spaces. It is a lightweight
 conversion path, not camera Log interpretation or HDR mastering/delivery.
+Every export is SDR (BT.709 unless `project.color` sets another output space):
+an HDR source (HLG or PQ) is tone-mapped to SDR,
+which needs an FFmpeg with the zscale filter; keeping HDR in an export is not
+available.
 
 | Domain | Verbs | Notes |
 |---|---|---|
@@ -190,7 +234,7 @@ conversion path, not camera Log interpretation or HDR mastering/delivery.
 | **library** | **list · add · remove · move · tag · favorite · use · add_to_project · folder_add · folder_rename · folder_remove** | global cross-project media library (~/.shellx-cut/library/): video/audio/image, folders + tags. HYBRID storage (link original by path, or copy:true → content-addressed stored copy); kind is ffprobe-derived; add_to_project reuses media.import. Assets is project-local; human Assets imports mirror explicitly, while agent imports use `library.add {asset}` only when cross-project reuse is intended. Blobs served fenced via /api/library-blob |
 | **assets** | providers · search · fetch · generate · generated_list | Find media reads the matching server's source catalog (local folders, Openverse, Internet Archive, Wikimedia, NASA, and offline built-in stickers), shows each source's valid kinds plus license/credit before import, and keeps normal project import paths; network sources are contacted when you search or import a result |
 | **media** | import · **remove** · probe · transcribe · perception · waveform · **filmstrip · relink_preview · relink_apply** | import kicks probe→proxy→filmstrip→**ready-to-edit** (fast); transcribe+perception run as a separate background **enrich** job (`enrich_job` in the result) so slow transcription never blocks editing; first import auto-places onto an empty timeline; filmstrip = per-clip timeline thumbnails; **remove = the inverse of import — drop an asset from the open project + unlink its regenerable proxy/thumbnails (source file kept, replay-safe; refuses while clips still use it)**; **relink_preview/relink_apply scan an explicitly selected folder and repair only uniquely exact SHA-256 matches through a preview-bound atomic receipt; a strong metadata hint is disabled and routes to normal one-file Relink**; the Assets tray includes Media Health for missing sources, proxy/source playback state, and one-click relink |
-| **jobs** | status · list · cancel · **retry** | one durable job model for transcribe/perception/render/judge, with explicit cancellation for active tasks; **retry** accepts only source-declared safe descriptors, revalidates the original input fingerprint, preserves lineage, and never guesses arguments from an error record |
+| **jobs** | status · list · cancel · **retry** · **before_quit · interrupted · interrupted_dismiss** | one durable job model for transcribe/perception/render/judge, with explicit cancellation for active tasks; **retry** accepts only source-declared safe descriptors, revalidates the original input fingerprint, preserves lineage, and never guesses arguments from an error record |
 | **edit** | split · ripple_delete · trim · move · insert · **insert_linked** · **overwrite** · gain · **keyframe** · **speed** · **grade** · **grade_stack** · **color_match** · **auto_balance** · crop · transform · fade · crossfade · duck · **auto_zoom** · multicam_sync · **multicam_switch** · add_track · **remove_track** · split_at_scenes · mark_scenes · trim_edges · add/remove/move_marker · restore | **remove_track** removes an empty overlay track (or explicitly removes its clips with `force:true`); optional `group_id` keeps it in the same Undo step as the clip deletion that emptied it. A probed video with audio uses **insert_linked** to validate both typed destinations (or create them), the shared source range, and the paired insertion as one reversible edit; failure leaves no partial picture, sound, or track. Linked imported picture/sound move and trim atomically by default (`linked:false` deliberately separates them); **overwrite** replaces a source-duration interval on explicit video/audio targets without shifting downstream time (both targets are one atomic A/V edit; it is not `insert {ripple:false}`); **keyframe** is the replay-safe clip automation primitive; the audio Inspector exposes volume control points in clip seconds (dispatched as exact ms) while the Layer drawer owns picture motion; the compact point editor is not a full timeline lane, which remains future work; restore = undo/reject (tip or rebase); speed = per-clip retime; grade = color; **grade_stack** = LAYERED grading (a node-stack of grade layers applied in order on one clip — a serial grading workflow; empty/single-layer stays byte-identical to a plain grade); **color_match** = match a clip's colour to a reference clip (derives + applies a grade); **auto_balance** = one-click REFERENCE-FREE auto white-balance + exposure (the "Auto Color" sibling — neutralises the clip's own cast, no reference; derives + applies a grade); **auto_zoom** = emphasis-driven punch-in zooms (loud beats / sentence starts → scale keyframes); multicam_sync = audio-align angles, **multicam_switch** = auto-cut the program to the active-speaker (loudest) angle over time |
 | **effects** | list | read the built-in effect catalog used by Inspector and agent workflows |
 | **transitions** | list | read the supported transition catalog before applying timeline transitions |
@@ -208,18 +252,18 @@ conversion path, not camera Log interpretation or HDR mastering/delivery.
 | **assemble** | repurpose · shorts · from_script · broll | human-visible Assemble workflows for highlight selection, short planning, script-to-footage matching, and b-roll placement; every applied result remains normal timeline ops |
 | **autopilot** | **run** | workflow: render → verify → MECHANICALLY self-fix from the receipt's fix_actions → re-verify, capped, under one auto-checkpoint (one-step revert). policy:preview (plan only) \| auto_low_risk (apply). Never fakes a pass; no-progress guard |
 | **recipe** | **list · describe · run** | declarative pipeline MANIFESTS — named, gated WORKFLOWS over the existing verbs (built-ins in `schema/recipes.json`: a guided first edit; preview-first **Edit for clarity** with intensity; podcast/talking-head/screen-demo/phone cleanup; social bundle; privacy mask; captions; YouTube and TikTok export). list/describe are pure reads; **run is a PURE ORCHESTRATOR** (like autopilot.run/audio.cleanup_voice): no op of its own, ONE auto-checkpoint (one-step revert), dispatches each stage through the normal verb path, polls sub-jobs, evaluates a per-stage gate (receipt checks and/or render-free state facts), and STOPS + reports on the first failed verb or gate. policy:dry_run returns the resolved PLAN without dispatching (pre-render-gate seam) |
-| **screen_record** | doctor · **microphone_selection · system_audio_probe** · **preview_capability · preview_start · preview_status · preview_frame · preview_pause · preview_resume · preview_hide · preview_stop** · **rehearsal_start · rehearsal_discard** · start · **live_frame · status · pause · resume** · stop · **recovery_status · copy_raw · studio_event · scene_activate · scene_timer** · autoedit · polish · export | Recording Studio uses System Default by default; on Windows/macOS a human can select a current opaque microphone, while a compiled Windows, macOS, or Linux camera backend can list current opaque camera choices in Doctor. On Linux, Camera availability depends on a current Doctor choice, required GStreamer plugins, and a real frame at explicit Start. The source preview and active-take live frame use real native pixels, with explicit unavailable/stale/recursion states. A bounded rehearsal can be played and discarded without creating project media. Camera is explicit and Auto-edit-only. Cut retains its separate take with shared-clock metadata on a hidden track, while the camera layout chosen for recording is baked into the polished clip; editing the retained take does not update that bubble. Named Screen and Presenter PiP scenes can switch during capture, with one elapsed/countdown timer whose saved transitions use that same recording clock. Compatible macOS display recordings can pause and resume through the durable native owner. `screen_record.status` is a short-lived, process-local read: readiness follows a real native screen frame; selected-source loss is reported only when an armed exact-source close beats a Cut-owned close; controller placement returns only a confirmed exclusion/hide, refusal, or unavailable conclusion; and mic/system meters observe only already-admitted streams. Missing permission, no first frame, stale or lost audio, and device loss remain explicit rather than falling back or guessing. Both Raw and Polished modes save the unchanged MP4 in the default export folder; optional destination selection occurs only after Stop through Export or Save a copy. If mouse input cannot start, Record warns that pointer animation, click highlights and automatic zoom may be missing while video recording continues. Saved video remains usable; a Window recording can still contain its baked native cursor. Startup registration is not a guarantee of delivered input. A failed Stop retains its capture and offers recovery for that same capture. Acknowledged Stop releases capture ownership, so a later auto-edit or polish error is not a live capture. |
-| **voiceover** | start · tick · stop · cancel · observe_playhead | Timeline-track voiceover remains disabled unless the current Record Doctor admits native capture. The server binds one current unlocked audio track and playhead/In–Out range to a retry identity, then issues a memory-only per-tab owner claim for every tick, Stop, Cancel, and correlated Preview Out. An exact active A retry wins over later ordinary revision changes; a different B remains refused while A is active, and only `voiceover_start_retry_rejected` lets the UI discard its non-secret retry identity. It counts in, correlates exact request/fingerprint/epoch playback, and only places a sealed WAV as one asset-plus-clip operation (one Undo). Direct monitoring is off; Cancel and unplaceable outcomes add no edit. |
+| **screen_record** | doctor · **microphone_selection · system_audio_probe** · **preview_capability · preview_start · preview_status · preview_frame · preview_pause · preview_resume · preview_hide · preview_stop** · **rehearsal_start · rehearsal_discard** · start · **live_frame · status · pause · resume** · stop · **recovery_status · active · pending · pending_dismiss · recover · copy_raw · studio_event · scene_activate · scene_timer** · autoedit · polish · export | Recording Studio uses System Default by default; on Windows/macOS a human can select a current opaque microphone, while a compiled Windows, macOS, or Linux camera backend can list current opaque camera choices in Doctor. On Linux, Camera availability depends on a current Doctor choice, required GStreamer plugins, and a real frame at explicit Start. The source preview and active-take live frame use real native pixels, with explicit unavailable/stale/recursion states. A bounded rehearsal can be played and discarded without creating project media. Camera is explicit and Auto-edit-only. Cut retains its separate take with shared-clock metadata on a hidden track, while the camera layout chosen for recording is baked into the polished clip; editing the retained take does not update that bubble. Named Screen and Presenter PiP scenes can switch during capture, with one elapsed/countdown timer whose saved transitions use that same recording clock. Compatible macOS display recordings can pause and resume through the durable native owner. `screen_record.status` is a short-lived, process-local read: readiness follows a real native screen frame; selected-source loss is reported only when an armed exact-source close beats a Cut-owned close; controller placement returns only a confirmed exclusion/hide, refusal, or unavailable conclusion; and mic/system meters observe only already-admitted streams. Missing permission, no first frame, stale or lost audio, and device loss remain explicit rather than falling back or guessing. Both Raw and Polished modes save the unchanged MP4 in the default export folder; optional destination selection occurs only after Stop through Export or Save a copy. If mouse input cannot start, Record warns that pointer animation, click highlights and automatic zoom may be missing while video recording continues. Saved video remains usable; a Window recording can still contain its baked native cursor. Startup registration is not a guarantee of delivered input. A failed Stop retains its capture and offers recovery for that same capture. Acknowledged Stop releases capture ownership, so a later auto-edit or polish error is not a live capture. Closing or quitting the app during a recording saves it as Stop would before the app closes; a recording interrupted by a crash or power loss (save points every 15 s) is listed by `pending` and offered at the next start with Add to timeline (`recover`, with its sound). `active` shows a recording started elsewhere, which the window displays with Stop. A Stop before the first frame says `nothing was recorded`; a start during a microphone or system-audio test is refused with `conflict`. `doctor{mode:"status"}` reads readiness without a capture or system prompt; on macOS the screen-recording prompt comes only with `mode:"check"` or a recording start. |
+| **voiceover** | start · tick · stop · cancel · observe_playhead | Timeline-track voiceover needs only the microphone: it reads `screen_record.doctor{mode:"microphone"}` and stays disabled, naming the missing permission, Windows privacy switch or device, until the microphone is ready. The server binds one current unlocked audio track and playhead/In–Out range to a retry identity, then issues a memory-only per-tab owner claim for every tick, Stop, Cancel, and correlated Preview Out. An exact active A retry wins over later ordinary revision changes; a different B remains refused while A is active, and only `voiceover_start_retry_rejected` lets the UI discard its non-secret retry identity. It counts in, correlates exact request/fingerprint/epoch playback, and only places a sealed WAV as one asset-plus-clip operation (one Undo). Direct monitoring is off; Cancel and unplaceable outcomes add no edit. |
 | **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = optional visual reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
 | **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** |
 | **import** | otio | hash-bound OTIO preflight and one-operation timeline replacement; the desktop UI owns the native picker/confirmation while agents pass an explicit path |
 | **inspect** | media · range | path-light, cited inspection over the current project and its exact MediaEvidenceIndex; resolves opaque evidence hits to current source ranges and timeline occurrences, and refuses stale, foreign-project, or changed evidence instead of summarizing old prompt context |
 | **comment** | add · list · draft · apply · resolve | editor **Make changes** routes a timecoded note and immutable target through Agent Chat; `draft`/`apply` remain compatibility/debug APIs, never an editor approval flow |
 | **agent** | chat | launch the user's configured subscription CLI against the same MCP-backed live project; direct validated results retain a bounded turn receipt with guarded **Step back** and **Ask replacement** |
-| **ui** | state · screenshot · open · playhead · select · highlight | ui.screenshot is a verification PRIMITIVE — agent sees the app from anywhere; open/playhead/select/highlight return `ok:true` only after the exact UI client commits observable state; no-op/unavailable/disconnected requests fail explicitly; one shared registry covers human and agent surface routes |
+| **ui** | state · screenshot · open · playhead · select · highlight · **preview** | ui.screenshot is a verification PRIMITIVE — agent sees the app from anywhere; open/playhead/select/highlight return `ok:true` only after the exact UI client commits observable state; no-op/unavailable/disconnected requests fail explicitly; one shared registry covers human and agent surface routes |
 | **debug** | screenshot | compatibility screenshot primitive for external harnesses; normal agents should prefer `ui.screenshot` |
 | **plugins** | list · enable · call | agent-only scoped-dispatch fence over the same registry; `plugins.list`, `plugins.enable`, and `plugins.call` expose built-in Openverse-assets and matte-runtime capabilities without creating a parallel API |
-| **system** | **system.mcp_test · system.doctor · system.motion_status · system.fetch_tool · system.setup_perception · system.setup_matte · system.set_ffmpeg · system.set_stt_model** | Agent control plus environment/setup cards: Settings > Agent control discovers the exact installed executable, copies a ready MCP client config, and runs a read-only initialize/ping/tools/list/same-engine proxy check; capability cards cover ffmpeg, perception/STT, matte, dubbing, diarization, judge CLIs, and disk health. `system.motion_status` is a separate fixed read-only runtime/catalog/descriptor check: a discovered checkout, PATH binary, or npm package remains unmanaged and connector execution-unqualified. Install, Repair, Update, and Remove remain unavailable until `MOTION-DIST-01` supplies a verified immutable platform manifest and matching artifact; setup remains consented and local-first |
+| **system** | **system.mcp_test · system.doctor · system.motion_status · system.fetch_tool · system.setup_perception · system.setup_matte · system.set_ffmpeg · system.set_stt_model** | Agent control plus environment/setup cards: Settings > Agent control discovers the exact installed executable, copies a ready MCP client config, and runs a read-only initialize/ping/tools/list/same-engine proxy check; capability cards cover ffmpeg, the Microsoft Visual C++ runtime (Windows), perception/STT, matte, dubbing, diarization, judge CLIs, and disk health; `system.doctor` also lists what each verb needs (`requirements`, or `{feature}` for one verb or feature), and a refusal for a missing tool carries `error.requirement`. `system.motion_status` is a separate fixed read-only runtime/catalog/descriptor check: a discovered checkout, PATH binary, or npm package remains unmanaged and connector execution-unqualified. Install, Repair, Update, and Remove remain unavailable until `MOTION-DIST-01` supplies a verified immutable platform manifest and matching artifact; setup remains consented and local-first |
 
 ### Advanced visual-index API
 
@@ -231,19 +275,23 @@ installed mode uses optional `torch` and `transformers` extras with
 card. Find Moment's **Prepare search** consumes existing visual embeddings and
 never silently starts visual indexing.
 
-WS events: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated`
+WS events: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated · output_folder_changed`
 — `receipt_ready` always follows `render_done`; agents key on `receipt_ready`.
 `project_changed` keeps visible clients synchronized when REST, CLI, or MCP
 creates, opens, or closes the active project.
 `doctor_updated` refreshes setup/status surfaces when detected capabilities
-change.
+change. `output_folder_changed` announces a new export destination (a person's
+choice or an agent's `project.set_output_dir`); `project.get_output_dir` reads it.
 
 ## Network activity
 
 ShellX Cut is local-first. Projects, media, edit history, previews, and normal
 renders stay on the machine. Optional generation, dubbing, review, stock-media,
 or agent-provider workflows make network requests only when the user starts
-them.
+them. Tool setup that you ask for downloads only that tool: FFmpeg from its
+publisher, the captions environment and its speech model, and on Windows
+Microsoft's Visual C++ installer from Microsoft, which runs only after Windows
+confirms Microsoft's signature.
 
 The installed desktop app on Windows and macOS also contacts GitHub by default
 to read the signed release feed: once at launch, then once every 6 hours while
@@ -295,8 +343,10 @@ ui/   Vite + React + TS — an API client, NOTHING more. Zero local mutation:
 ```
 
 Headless-first: `cutd` runs without UI; open the UI at any moment and see live
-state. Renders are deterministic (fixed encoder params, no wall-clock
-metadata): same input + EDL ⇒ same output hash.
+state. Software renders are reproducible on one machine (fixed encoder params,
+no wall-clock metadata): same input + EDL ⇒ same output hash. A hardware
+encoder, a thread count adapted to free memory, or a different core count can
+change the bytes; the receipt's `encode` record names the encoder that ran.
 
 ## The receipts model (the whole point, in 10 lines)
 
@@ -322,7 +372,10 @@ metadata): same input + EDL ⇒ same output hash.
    silences, scenes, beats, LUFS) from local instruments.
 6. `render.final` auto-runs `verify.checks` — deterministic Rust checks over
    EDL × facts × output (cut_on_word, lufs, caption_presence, black/frozen
-   frames, silence_at_edges, duration_matches_edl) → **RenderReceipt**.
+   frames, uniform_border, silence_at_edges, duration_matches_edl per stream,
+   and sources_decodable when a source was decode-checked) → **RenderReceipt**.
+   Loudness is checked only against a target you set (`normalize_loudness`) or
+   an explicit footage profile, and edge silence only with a profile.
 7. `verify.rerun {render_id}` rechecks only facts available from that exact
    persisted output: it re-fences and hashes the bytes, runs loudness,
    black/frozen, border, edge-silence, and receipt-duration checks under one
@@ -331,18 +384,20 @@ metadata): same input + EDL ⇒ same output hash.
 8. `verify.judge` adds an optional visual-review layer over sampled frames and
    deterministic instrument facts (LUFS, silences, and word timings remain the
    measured ground truth; `listened:false`). It accepts Claude, Codex,
-   Antigravity, and Grok backend IDs, but v0.6.114 admits only Claude with a
-   restricted Read-capable version (at least 2.1.248) and a safe copied-frame
-   workspace, or Grok with version 1.0.21 or later and its no-model-tools
-   policy. Codex and Antigravity may be detected as installed yet return the
-   honest `not_run` reason `render judge unavailable until restricted tool/file
-   access is verified`; this affects only render judging, not Agent Chat or
-   generation. Auto keeps the configured Claude → Codex → Antigravity → Grok
+   Antigravity, and Grok backend IDs. Claude requires version 2.1.248 or later,
+   restricted Read capability, and a safe copied-frame workspace; Grok requires
+   version 1.0.21 or later and its no-model-tools policy. Codex offers
+   direct-frame review when Doctor reports
+   `judge.codex.details.judge_ready:true` after its image/schema and tool-free
+   admission checks. A detected CLI alone is not admission. Antigravity remains
+   unready for render judging and an explicit request returns `not_run` before
+   review work; this does not affect Agent Chat or generation. Auto keeps the
+   configured Claude → Codex → Antigravity → Grok
    order while skipping unready rungs; an attempted ready-rung infrastructure
    error may continue to the next ready rung. A named backend never falls back.
    `not_run` is unreviewed, never a pass. An explicit `CUTD_JUDGE_ADAPTER`
-   remains an operator/test override. Provider admission is not a claim of a
-   live model turn or native qualification.
+   remains an operator/test override. Doctor admission reports readiness;
+   the completed review receipt records whether a model reviewed the frames.
 
 ## Repo map
 
@@ -360,11 +415,14 @@ metadata): same input + EDL ⇒ same output hash.
 
 ShellX Cut is MIT licensed (see `LICENSE`). Shipped third-party model and font
 assets use permissive licenses recorded, with source hashes and license texts,
-in `NOTICE`.
+in `NOTICE`. The libraries compiled into ShellX Cut (Rust crates and the UI's
+npm packages) are listed with their licence texts in `THIRD-PARTY-NOTICES.txt`,
+installed next to `NOTICE` and shown in Settings > About > Third-party notices.
 
 FFmpeg is not included in ShellX Cut installers. Users can provide a compatible
-system copy or explicitly ask Cut to download a separate BtbN GPL build on
-supported platforms; that external runtime keeps its own license and runs as a
+system copy or explicitly ask Cut to download a separate GPL build from its
+publisher (FFmpeg-Builds on Windows and Linux, Martin Riedl's build on Apple
+silicon Macs); that external runtime keeps its own license and runs as a
 separate process. See `NOTICE` for the exact boundary and upstream links.
 
 ## Credits
@@ -373,4 +431,5 @@ Created by Martins Brezauckis. ShellX Cut edits locally on your machine and
 can be co-driven by AI agents — Claude Code, Codex, Grok, or any REST/MCP
 client — through the same validated verb surface the UI uses. Third-party
 models and fonts shipped inside installers are credited, with license texts
-and source hashes, in `NOTICE`.
+and source hashes, in `NOTICE`; the compiled libraries are listed in
+`THIRD-PARTY-NOTICES.txt`.

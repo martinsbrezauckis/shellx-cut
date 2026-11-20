@@ -14,6 +14,7 @@
 // flows). Callers: events.ts (screenshot_request handler). Deps: html-to-image.
 
 import { toCanvas } from 'html-to-image'
+import { TOTAL_BUDGET_MS, backgroundNotes, collectBackgrounds, repairBackgrounds } from './captureBackgrounds'
 
 /** What a capture returns — png as raw base64 (no data: prefix) + caveats. */
 export interface CaptureResult {
@@ -152,6 +153,9 @@ export async function captureApp(): Promise<CaptureResult> {
     else notes.push(`poster image not ready/failed (${img.getAttribute('src')}) — region left blank`)
   }
 
+  const backgroundDeadlineAt = performance.now() + TOTAL_BUDGET_MS
+  const backgrounds = collectBackgrounds(root, backgroundDeadlineAt)
+
   // Stage 'dom-rasterize': the html-to-image DOM→SVG→canvas pass. It rejects
   // with the raw resource-load Event on any inlining failure the belt/braces
   // above didn't cover (e.g. a CSS background-image or @font-face fetch) —
@@ -161,6 +165,13 @@ export async function captureApp(): Promise<CaptureResult> {
     canvas = await toCanvas(root, {
       pixelRatio: 1,
       backgroundColor: '#0a0a0a', // --bg; SVG rasterization defaults transparent
+      // html-to-image keeps every fetched resource in a module-level cache keyed
+      // by URL WITHOUT its query string. Project-scoped media URLs differ only
+      // by `?p=<project scope>` (asset ids such as a1 repeat between projects),
+      // so without this the first project's thumbnails would be pasted into
+      // every later capture, and the agent's screenshot would show the wrong
+      // project's pictures while the live window is correct.
+      includeQueryParams: true,
       // Belt: a failed image fetch falls back to a transparent pixel.
       imagePlaceholder: TRANSPARENT_PX,
       // Braces: <video> and EVERY <img> are excluded from the SVG path (their
@@ -175,6 +186,20 @@ export async function captureApp(): Promise<CaptureResult> {
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new CaptureError('canvas-context', '2d context unavailable on capture canvas')
   const rootRect = root.getBoundingClientRect()
+
+  // CSS background images (the media-bin thumbnail, the timeline filmstrip) go
+  // through the same SVG pass, which some web views cannot rasterize: check each
+  // one against the capture, redraw a blank one, and report what was redrawn or
+  // missing (never a silent black box).
+  try {
+    const report = await repairBackgrounds(ctx, backgrounds.elements, { x: rootRect.x, y: rootRect.y }, canvas.width / Math.max(1, rootRect.width), {
+      deadlineAt: backgroundDeadlineAt,
+      collectionPartial: backgrounds.partial,
+    })
+    notes.push(...backgroundNotes(report))
+  } catch (e) {
+    notes.push(`CSS background images could not be checked: ${String(e)}`)
+  }
 
   for (const video of Array.from(root.querySelectorAll('video'))) {
     const rect = video.getBoundingClientRect()

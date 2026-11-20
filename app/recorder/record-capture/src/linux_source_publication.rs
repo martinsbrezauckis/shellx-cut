@@ -81,32 +81,30 @@ pub(crate) fn normalize_and_publish(
         .map_err(|error| format!("reserve normalized source staging: {error}"))?;
     let staged = stage.path().to_path_buf();
     let staged_s = staged.display().to_string();
-    let raw_s = raw.display().to_string();
     let duration_s = format!("{:.3}", duration_ms as f64 / 1000.0);
     let filter = normalized_filter(fps, quality);
     let crf = profile_crf(quality);
-    let status = Command::new(ffmpeg)
-        .args([
-            "-v",
-            "error",
-            "-n",
-            "-i",
-            &raw_s,
-            "-vf",
-            &filter,
-            "-t",
-            &duration_s,
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            crf,
-            "-preset",
-            "medium",
-            &staged_s,
-        ])
-        .status()
+    let mut command = Command::new(ffmpeg);
+    command.args(["-v", "error", "-n"]);
+    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, raw).map_err(|cause| {
+        format!("cannot safely read raw capture: {cause}; use a readable capture source and retry")
+    })?;
+    command.args([
+        "-vf",
+        &filter,
+        "-t",
+        &duration_s,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        crf,
+        "-preset",
+        "medium",
+        &staged_s,
+    ]);
+    let status = cut_media::process_start::retry_busy_start(|| command.status())
         .map_err(|error| format!("spawn CFR normalize: {error}"))?;
     if !status.success() {
         return Err(format!("CFR normalize failed: ffmpeg exit {status}"));
@@ -159,7 +157,7 @@ mod tests {
         fs::write(
             &ffmpeg,
             format!(
-                "#!/bin/sh\nlast=\nfor arg in \"$@\"; do last=\"$arg\"; done\n[ \"$last\" != {} ] || exit 90\n[ \"$last\" != '-' ] || exit 0\nprintf '%s\\n' \"$@\" > {}\nprintf stage > \"$last\"\n",
+                "#!/bin/sh\nlast=\nfor arg in \"$@\"; do last=\"$arg\"; done\n[ \"$last\" != {} ] || exit 90\n[ \"$last\" != '-' ] || {{ printf 'frame=1\\nprogress=end\\n'; exit 0; }}\nprintf '%s\\n' \"$@\" > {}\nprintf stage > \"$last\"\n",
                 shell_quote(final_path),
                 shell_quote(&args),
             ),

@@ -34,7 +34,10 @@ async fn assets_generate_cancel_during_capability_probe_preserves_user_outcome()
     .await;
     assert!(queued.ok, "{:?}", queued.error);
     let id = queued.result.as_ref().unwrap()["job_id"].as_str().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // The fake `--help` child writes its witness file once it runs. Process
+    // start-up can take seconds on a busy machine, so wait for the file itself
+    // and use the limit only to catch a child that never starts.
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
         while !witness.is_file() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -43,7 +46,7 @@ async fn assets_generate_cancel_during_capability_probe_preserves_user_outcome()
     .expect("real --help child must start before cancellation");
     // The test-only worker drain is 500 ms. A real child can still be
     // shutting down at that point, so retry only the explicit pending state.
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut cancellation_pending = false;
         loop {
             let result = dispatch(&state, "jobs.cancel", json!({"job_id":id}), test_actor()).await;
@@ -90,7 +93,7 @@ async fn assets_generate_cancel_during_capability_probe_preserves_user_outcome()
         }
     })
     .await
-    .expect("capability-probe child did not finish stopping within five seconds");
+    .expect("capability-probe child did not finish stopping within a minute");
     let record = state.jobs.get(id).unwrap();
     assert_eq!(record.state, crate::jobs::JobState::Failed);
     assert_eq!(record.outcome, Some(crate::jobs::JobOutcome::Cancelled));
@@ -137,7 +140,7 @@ async fn assets_generate_uncancelled_provider_failure_remains_true_failure() {
     let record = wait_job(
         &state,
         queued.result.as_ref().unwrap()["job_id"].as_str().unwrap(),
-        5,
+        60,
     )
     .await;
     assert_eq!(record.outcome, Some(crate::jobs::JobOutcome::Failed));
@@ -146,4 +149,70 @@ async fn assets_generate_uncancelled_provider_failure_remains_true_failure() {
         Some(crate::jobs::JobOutcomeReason::TrueFailure)
     );
     assert_eq!(record.error.as_ref().unwrap().code, "generation_failed");
+}
+
+/// A probe that only runs out of time is not a verdict on the provider. The
+/// person or agent must be told to try again, and the failure must not read
+/// like "the CLI cannot do this".
+#[tokio::test]
+async fn assets_generate_probe_timeout_is_a_retry_message_not_an_unsupported_cli() {
+    struct ResetProbeLimits;
+    impl Drop for ResetProbeLimits {
+        fn drop(&mut self) {
+            *crate::chat::broker::TEST_PROBE_LIMITS_MS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = (0, 0);
+        }
+    }
+    let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _agent_env = lock_agent_cli_env();
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"probe-timeout","dir":dir.path().join("probe-timeout.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    // The fake `--help` child sleeps 30 s; both attempts are cut after 300 ms.
+    let _cli = generation_cli::FakeGenerationCli::install_as(
+        dir.path(),
+        "agy",
+        generation_cli::FakeGenerationCliConfig::waiting()
+            .with_delayed_probe(dir.path().join("help-started.txt")),
+    );
+    *crate::chat::broker::TEST_PROBE_LIMITS_MS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = (300, 300);
+    let _reset = ResetProbeLimits;
+    let queued = dispatch(
+        &state,
+        "assets.generate",
+        json!({"prompt":"probe timeout","provider":"antigravity","kind":"image","timeout_ms":30000}),
+        test_actor(),
+    )
+    .await;
+    assert!(queued.ok, "{:?}", queued.error);
+    let record = wait_job(
+        &state,
+        queued.result.as_ref().unwrap()["job_id"].as_str().unwrap(),
+        60,
+    )
+    .await;
+    let error = record.error.expect("a timed-out probe fails the job");
+    assert!(
+        error
+            .message
+            .contains("did not answer its readiness check in time")
+            && error.message.contains("Try again"),
+        "message must say it timed out and what to do: {}",
+        error.message
+    );
+    assert!(
+        !error.message.contains("does not meet"),
+        "a timeout must not be reported as an unsupported CLI: {}",
+        error.message
+    );
 }

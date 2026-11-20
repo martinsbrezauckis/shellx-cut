@@ -165,92 +165,108 @@ fn validate_overwrite(
                 "destination tracks must exist in the open project",
             )
         })?;
-        if !matches!(track.kind, TrackKind::Video | TrackKind::Audio) {
-            return Err(CutError::new(
-                codes::INVALID_ARGS,
-                format!("cannot overwrite caption track '{track_id}'"),
-                "caption timing is managed through captions.* verbs",
-            ));
-        }
-        if track
-            .clips
-            .iter()
-            .any(|clip| matches!(clip, Clip::Caption(_)))
-        {
-            return Err(CutError::new(
-                codes::INVALID_ARGS,
-                format!("track '{track_id}' contains a caption clip on a media track"),
-                "the project timeline is malformed; caption clips belong on caption tracks",
-            ));
-        }
-        for edge in [at_ms, overwrite_end] {
-            if let Some((clip_id, feature)) = edge_splits_time_dependent_clip(track, edge) {
-                return Err(CutError::new(
-                    codes::CONFLICT,
-                    format!(
-                        "overwrite edge {edge}ms cuts through {feature} clip '{clip_id}' on '{track_id}'"
-                    ),
-                    format!(
-                        "{feature} is defined across the original clip window; v1 will not split it without an exact remap"
-                    ),
-                )
-                .with_clip(clip_id)
-                .with_suggested_action(format!(
-                    "place the overwrite edge at a clip boundary, or clear {feature} on '{clip_id}' first"
-                ))
-                .with_at_ms(edge));
-            }
-        }
-        if let Some((clip_id, xfade_ms, head_end)) =
-            overwrite_starts_inside_right_owned_crossfade(track, at_ms)
-        {
+        validate_overwrite_track(track, at_ms, overwrite_end, duration_ms, "overwrite")?;
+    }
+    Ok(())
+}
+
+/// The per-track no-ripple guards of an overwrite, shared by `edit.overwrite`
+/// and the overwrite placement of `edit.move` (`move_placement.rs`). `what`
+/// names the edit in the refusal text ("overwrite" or "moved clip") so a
+/// person reads the action they took. Pure: it never mutates the track.
+pub(crate) fn validate_overwrite_track(
+    track: &Track,
+    at_ms: u64,
+    overwrite_end: u64,
+    duration_ms: u64,
+    what: &str,
+) -> Result<(), CutError> {
+    let track_id = track.id.as_str();
+    if !matches!(track.kind, TrackKind::Video | TrackKind::Audio) {
+        return Err(CutError::new(
+            codes::INVALID_ARGS,
+            format!("cannot overwrite caption track '{track_id}'"),
+            "caption timing is managed through captions.* verbs",
+        ));
+    }
+    if track
+        .clips
+        .iter()
+        .any(|clip| matches!(clip, Clip::Caption(_)))
+    {
+        return Err(CutError::new(
+            codes::INVALID_ARGS,
+            format!("track '{track_id}' contains a caption clip on a media track"),
+            "the project timeline is malformed; caption clips belong on caption tracks",
+        ));
+    }
+    for edge in [at_ms, overwrite_end] {
+        if let Some((clip_id, feature)) = edge_splits_time_dependent_clip(track, edge) {
             return Err(CutError::new(
                 codes::CONFLICT,
                 format!(
-                    "overwrite start {at_ms}ms cuts through the first {xfade_ms}ms of right-owned crossfade clip '{clip_id}' on '{track_id}'"
+                    "{what} edge {edge}ms cuts through {feature} clip '{clip_id}' on '{track_id}'"
                 ),
-                "splitting that transition head would shorten its realized overlap and move later rendered timeline coordinates",
+                format!(
+                    "{feature} is defined across the original clip window; v1 will not split it without an exact remap"
+                ),
             )
             .with_clip(clip_id)
-            .with_at_ms(at_ms)
             .with_suggested_action(format!(
-                "place the overwrite start at or after editorial {head_end}ms, or rebuild the transition deliberately in a separate edit"
-            )));
+                "place the {what} edge at a clip boundary, or clear {feature} on '{clip_id}' first"
+            ))
+            .with_at_ms(edge));
         }
-        if let Some((clip_id, xfade_ms)) =
-            overwrite_fully_consumes_right_owned_crossfade(track, at_ms, overwrite_end)
-        {
-            return Err(CutError::new(
-                codes::CONFLICT,
-                format!(
-                    "overwrite [{at_ms}, {overwrite_end})ms fully consumes right-owned crossfade clip '{clip_id}' on '{track_id}'"
-                ),
-                format!(
-                    "removing that {xfade_ms}ms transition would lengthen the rendered timeline and move later coordinates",
-                ),
-            )
-            .with_clip(clip_id)
-            .with_at_ms(at_ms)
-            .with_suggested_action(
-                "place the overwrite edges outside the transition-owning clip, or rebuild the transition deliberately in a separate edit",
-            ));
-        }
-        if let Some((clip_id, xfade_ms)) =
-            truncated_right_owned_crossfade(track, at_ms, overwrite_end, duration_ms)
-        {
-            return Err(CutError::new(
-                codes::CONFLICT,
-                format!(
-                    "overwrite end {overwrite_end}ms would truncate the {xfade_ms}ms right-owned crossfade on '{clip_id}' in '{track_id}'"
-                ),
-                "keeping that transition would require a longer inserted source and surviving right clip; shortening it would move later rendered timeline coordinates",
-            )
-            .with_clip(clip_id)
-            .with_at_ms(overwrite_end)
-            .with_suggested_action(
-                "place the overwrite edge at a clip boundary, or choose a source range that leaves enough material on both sides of the transition",
-            ));
-        }
+    }
+    if let Some((clip_id, xfade_ms, head_end)) =
+        overwrite_starts_inside_right_owned_crossfade(track, at_ms)
+    {
+        return Err(CutError::new(
+            codes::CONFLICT,
+            format!(
+                "{what} start {at_ms}ms cuts through the first {xfade_ms}ms of right-owned crossfade clip '{clip_id}' on '{track_id}'"
+            ),
+            "splitting that transition head would shorten its realized overlap and move later rendered timeline coordinates",
+        )
+        .with_clip(clip_id)
+        .with_at_ms(at_ms)
+        .with_suggested_action(format!(
+            "place the {what} start at or after editorial {head_end}ms, or rebuild the transition deliberately in a separate edit"
+        )));
+    }
+    if let Some((clip_id, xfade_ms)) =
+        overwrite_fully_consumes_right_owned_crossfade(track, at_ms, overwrite_end)
+    {
+        return Err(CutError::new(
+            codes::CONFLICT,
+            format!(
+                "{what} [{at_ms}, {overwrite_end})ms fully consumes right-owned crossfade clip '{clip_id}' on '{track_id}'"
+            ),
+            format!(
+                "removing that {xfade_ms}ms transition would lengthen the rendered timeline and move later coordinates",
+            ),
+        )
+        .with_clip(clip_id)
+        .with_at_ms(at_ms)
+        .with_suggested_action(format!(
+            "place the {what} edges outside the transition-owning clip, or rebuild the transition deliberately in a separate edit"
+        )));
+    }
+    if let Some((clip_id, xfade_ms)) =
+        truncated_right_owned_crossfade(track, at_ms, overwrite_end, duration_ms)
+    {
+        return Err(CutError::new(
+            codes::CONFLICT,
+            format!(
+                "{what} end {overwrite_end}ms would truncate the {xfade_ms}ms right-owned crossfade on '{clip_id}' in '{track_id}'"
+            ),
+            "keeping that transition would require a longer inserted source and surviving right clip; shortening it would move later rendered timeline coordinates",
+        )
+        .with_clip(clip_id)
+        .with_at_ms(overwrite_end)
+        .with_suggested_action(format!(
+            "place the {what} edge at a clip boundary, or choose a source range that leaves enough material on both sides of the transition"
+        )));
     }
     Ok(())
 }
@@ -404,7 +420,6 @@ fn needs_right_split(track: &Track, at_ms: u64, overwrite_end: u64) -> bool {
     }
     false
 }
-#[allow(clippy::too_many_arguments)]
 fn overwrite_track(
     project: &mut Project,
     original: &Track,
@@ -415,6 +430,34 @@ fn overwrite_track(
     split_id: Option<String>,
 ) -> OpEffect {
     let overwrite_end = at_ms + (src_range_ms[1] - src_range_ms[0]);
+    let incoming = Clip::Media(make_media_clip(
+        &added_id,
+        asset,
+        src_range_ms[0],
+        src_range_ms[1],
+    ));
+    let mut detail = place_over_track(project, original, at_ms, overwrite_end, incoming, split_id);
+    detail["added_clip"] = json!(added_id);
+    detail["src_range_ms"] = json!(src_range_ms);
+    fx(Some(&original.id), detail)
+}
+
+/// Replace `[at_ms, overwrite_end)` of `original` with `incoming` and keep
+/// every later timeline coordinate: clips under the slot are trimmed or
+/// removed, a gap pads a slot past the track end. Shared by `edit.overwrite`
+/// (a new clip) and the overwrite placement of `edit.move` (the moved clip,
+/// which keeps its id). The caller validated the slot with
+/// [`validate_overwrite_track`]; `split_id` names the right half when one
+/// original clip spans both edges. Returns the effect detail without the
+/// incoming clip's identity keys, which each caller adds.
+pub(crate) fn place_over_track(
+    project: &mut Project,
+    original: &Track,
+    at_ms: u64,
+    overwrite_end: u64,
+    incoming: Clip,
+    split_id: Option<String>,
+) -> serde_json::Value {
     let old_end = original.duration_ms();
     let mut before = Vec::new();
     let mut after = Vec::new();
@@ -443,7 +486,9 @@ fn overwrite_track(
                 before.push(left_piece(clip, at_ms - cursor));
             }
             if end > overwrite_end {
-                let right_id = if cursor < at_ms {
+                // Only a MEDIA clip spanning both edges needs a fresh id for its
+                // right half; a gap spanning them just splits (gaps carry no id).
+                let right_id = if cursor < at_ms && matches!(clip, Clip::Media(_)) {
                     let id = split_id.clone().expect("single-clip split was planned");
                     used_split = Some(id.clone());
                     Some(id)
@@ -469,12 +514,7 @@ fn overwrite_track(
     if tail_gap_ms > 0 {
         before.push(Clip::Gap(GapClip::new(tail_gap_ms)));
     }
-    before.push(Clip::Media(make_media_clip(
-        &added_id,
-        asset,
-        src_range_ms[0],
-        src_range_ms[1],
-    )));
+    before.push(incoming);
     before.extend(after);
     project
         .track_mut(&original.id)
@@ -483,9 +523,7 @@ fn overwrite_track(
 
     let existing_end = old_end.min(overwrite_end).max(at_ms);
     let mut detail = json!({
-        "added_clip": added_id,
         "added_ms": [at_ms, overwrite_end],
-        "src_range_ms": src_range_ms,
         "overwrite": true,
         "overwritten_existing_ms": [at_ms, existing_end],
         "overlapped_clip_ids": overlapped_clip_ids,
@@ -497,7 +535,7 @@ fn overwrite_track(
     if let Some(id) = used_split {
         detail["split_clip"] = json!(id);
     }
-    fx(Some(&original.id), detail)
+    detail
 }
 
 fn left_piece(clip: &Clip, timeline_ms: u64) -> Clip {

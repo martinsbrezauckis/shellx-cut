@@ -807,10 +807,10 @@ pub(in crate::dispatch) async fn edit_matte(
 
 /// edit.reverse{clip, enabled?=true} — play a media clip BACKWARD (video
 /// `reverse` / audio `areverse`). The timeline duration is unchanged. ffmpeg
-/// `reverse` BUFFERS THE WHOLE CLIP IN RAM (~W·H·1.5·fps bytes per second at the
-/// project resolution), so this FENCES the clip size LIVE — refuse a clip whose
-/// estimated reverse buffer would exceed the cap, with a clear "split it" hint,
-/// rather than letting the render OOM the box. The fence is live-only (replay
+/// `reverse` holds every frame of what it reverses at the SOURCE size and rate;
+/// the render reverses a clip one timeline second at a time, so this FENCES LIVE
+/// only a clip of which even one second cannot fit in the memory a render may
+/// use on this computer (see below). The fence is live-only (replay
 /// never re-checks: a logged reverse was already validated), so core just stores
 /// the flag and replay stays deterministic + filesystem-independent.
 pub(in crate::dispatch) async fn edit_reverse(
@@ -826,37 +826,91 @@ pub(in crate::dispatch) async fn edit_reverse(
     }
     let a: Args = parse_args(args.clone())?;
     // Only fence when ENABLING (clearing a reverse frees memory, never needs it).
+    // `reverse` holds the frames of what it reverses at the SOURCE size and
+    // rate, and a render reverses a clip in parts of one timeline second
+    // (render::reverse_memory, item 170), so the clip's length does not matter:
+    // refuse when even one second needs more than this computer lets a render
+    // use (row 197a). Unknown video facts use the render's conservative bound;
+    // audio keeps the video-size fallback without received probe fields.
+    // Anything admitted can still be refused by render if the source changes.
     if a.enabled != Some(false) {
-        // ~4 GiB: above this a single-clip reverse risks OOM on a 16-GB box once
-        // ffmpeg's own working set + the OS are accounted for (about 40 seconds
-        // at 1080p30 or 20 seconds at 4K30).
-        const REVERSE_RAM_CAP: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
-        let guard = state.project.read().await;
-        let store = guard.as_ref().ok_or_else(no_project)?;
-        if let Some((tr, idx)) = store.project.find_clip(&a.clip) {
-            if let Some(clip @ cut_core::Clip::Media(_)) =
-                store.project.track(tr).and_then(|t| t.clips.get(idx))
-            {
-                let st = &store.project.settings;
-                let dur_s = clip.timeline_duration_ms() as f64 / 1000.0;
-                let est = st.width as f64 * st.height as f64 * 1.5 * st.fps * dur_s;
-                if est > REVERSE_RAM_CAP {
+        let source = {
+            let guard = state.project.read().await;
+            let store = guard.as_ref().ok_or_else(no_project)?;
+            store.project.find_clip(&a.clip).and_then(|(tr, idx)| {
+                let track = store.project.track(tr)?;
+                let clip @ cut_core::Clip::Media(media) = track.clips.get(idx)? else {
+                    return None;
+                };
+                (media.freeze.is_none())
+                    .then(|| store.project.assets.get(&media.asset))
+                    .flatten()
+                    .map(|asset| {
+                        (
+                            asset.clone(),
+                            store.dir.clone(),
+                            store.project.settings.fps,
+                            media.speed,
+                            clip.timeline_duration_ms(),
+                            track.kind == cut_core::TrackKind::Video,
+                        )
+                    })
+            })
+        };
+        if let Some((asset, dir, fps, speed, duration, video)) = source {
+            let (part, unknown_video) = if video {
+                let (part, measured) = run_blocking("edit.reverse.measure", move || {
+                    Ok(cut_media::render::measured_reverse_part_bytes(
+                        &asset, &dir, fps, speed, duration,
+                    ))
+                })
+                .await?;
+                (part, !measured)
+            } else {
+                let mut asset = asset;
+                asset.probe = None;
+                (
+                    cut_media::render::reverse_part_bytes(&asset, fps, speed, duration),
+                    false,
+                )
+            };
+            let total = cut_media::host_memory::host_memory().map(|m| m.total_bytes);
+            if let Some(need) = cut_media::render::reverse_refusal(part, total) {
+                let gb = |b: u64| b as f64 / 1e9;
+                if unknown_video {
                     return Err(CutError::new(
                         error_codes::INVALID_ARGS,
                         format!(
-                            "reversing '{}' would need ~{:.1} GB RAM (cap {:.0} GB)",
+                            "reversing '{}' cannot be admitted: the source could not be measured and even the conservative estimate for its reverse part (~{:.1} GB) exceeds this computer's render budget (~{:.1} GB)",
                             a.clip,
-                            est / 1e9,
-                            REVERSE_RAM_CAP / 1e9
+                            gb(need),
+                            gb(total.unwrap_or(0) / 100 * 75)
                         ),
-                        "ffmpeg `reverse` buffers the whole clip in memory; this clip \
-                         is too long for a single in-memory reverse at the project resolution",
+                        "the source file is missing, unreadable, or did not provide usable video facts",
                     )
+                    .with_clip(a.clip.clone())
                     .with_suggested_action(
-                        "split the clip (edit.split) and reverse the shorter pieces, \
-                         or lower the project resolution",
+                        "make the source file available and readable, restart ShellX Cut, then try reverse again",
                     ));
                 }
+                return Err(CutError::new(
+                    error_codes::INVALID_ARGS,
+                    format!(
+                        "reversing '{}' needs ~{:.1} GB of memory for every second, more than \
+                                 a render may use on this computer (~{:.1} GB)",
+                        a.clip,
+                        gb(need),
+                        gb(total.unwrap_or(0) / 100 * 75)
+                    ),
+                    "ffmpeg `reverse` holds every frame of what it reverses at the source \
+                             size and frame rate; a render reverses a clip one second at a time, \
+                             and one second of this source at this speed does not fit",
+                )
+                .with_clip(a.clip.clone())
+                .with_suggested_action(
+                    "use a lower-resolution or lower-frame-rate copy of the source, lower \
+                             the clip's speed, or reverse it on a computer with more memory",
+                ));
             }
         }
     }
@@ -1337,12 +1391,13 @@ pub(in crate::dispatch) async fn edit_redact(
         // `track_faces:false` opts into the faster static-detect pass.
         let want_track = fa.track_faces.unwrap_or(true);
         let rt = crate::faces::runtime()?.ok_or_else(|| {
-            CutError::new(
+            crate::requirements::refusal(
                 error_codes::NOT_FOUND,
-                "faces needs the perception sidecar (opencv), which is not installed",
-                "run system.doctor; install the perception sidecar in its venv",
+                "captions_runtime",
+                "Face redaction needs Captions and transcription, which are not installed",
+                "faces are found by the captions runtime's computer-vision tools; a drawn region works without it",
             )
-            .with_suggested_action("system.doctor → install the perception sidecar")
+            .with_suggested_action(cut_perception::captions_setup_action())
         })?;
         let res = run_blocking("edit.redact faces", move || {
             crate::faces::run_faces(&rt, &src_path, src_at, want_track)
@@ -1456,12 +1511,13 @@ pub(in crate::dispatch) async fn edit_redact(
     let (src_path, _hash) = asset_info(state, &c.asset.clone()).await?;
 
     let rt = crate::ocr::runtime()?.ok_or_else(|| {
-        CutError::new(
+        crate::requirements::refusal(
             error_codes::NOT_FOUND,
-            "ocr_auto needs the perception sidecar + rapidocr-onnxruntime, which is not installed",
-            "run system.doctor; install the perception sidecar and rapidocr in its venv",
+            "captions_runtime",
+            "Automatic text redaction needs Captions and transcription, which are not installed",
+            "text is found by the captions runtime's text recognition; a drawn region works without it",
         )
-        .with_suggested_action("system.doctor → install the perception sidecar + rapidocr")
+        .with_suggested_action(cut_perception::captions_setup_action())
     })?;
     let res = run_blocking("edit.redact ocr", move || {
         crate::ocr::run_ocr(&rt, &src_path, src_at)

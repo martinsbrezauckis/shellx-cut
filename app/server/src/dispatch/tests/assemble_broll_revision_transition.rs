@@ -20,6 +20,7 @@ async fn assemble_broll_reports_the_latest_origin_revision_after_a_prior_slot() 
     std::fs::copy(&maintained_fixture, &source).expect("copy maintained muxed media fixture");
 
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     create_project(&state, "a", &project_path).await;
     let gate = AssembleBrollSearchGate::new("second-broll");
     install_assemble_broll_search_gate(Some(gate.clone()));

@@ -107,7 +107,7 @@ export default function AssetWords({
       <div className="tx__asset" data-cut-transcript={assetId}>
         <div className="tx__asset-header">{assetId}</div>
         <p className="tx__flow tx__flow--empty" data-cut-transcript-empty={assetId}>
-          No speech detected — run media.transcribe, or this clip has no narration.
+          No speech was found in this clip.
         </p>
       </div>
     )

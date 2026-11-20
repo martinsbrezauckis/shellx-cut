@@ -1,0 +1,72 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "project",
+  "verbs": [
+    {
+      "name": "project.set_output_dir",
+      "domain": "project",
+      "description": "Choose the FOLDER where exports + renders are written when a verb isn't given an explicit `path` (the UI 'Choose folder…' / agent control over the destination). The folder must already exist and accept files, and on Linux and macOS it must not be writable by EVERYONE on the computer unless it has the sticky bit set (a folder only the group can write to is fine; the render stages exports there and refuses an everyone-writable folder, so it is refused now with `export folder can be written by anyone on this computer`); it is canonicalized and becomes an allowed output-fence root. Empty/omitted `dir` clears the choice (back to <project>/exports). It is an APP-WIDE remembered preference held by the engine, not per project: it stays in force for every project opened afterwards until cleared, the status bar and the Export menu show it, and each change publishes the `output_folder_changed` event. If the chosen folder is later deleted or becomes unwritable, an export that would use it is refused BEFORE it starts, with the folder named and the way forward (choose another folder, or clear it). NOT a timeline op, never replayed.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Absolute path to an EXISTING folder for default-named exports. Empty/omitted = clear (revert to <project>/exports)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{dir, destination, usable, problem, suggested_action} — the same status project.get_output_dir returns; {dir:null, destination:\"project_exports\", cleared:true} when cleared",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_set_output_dir",
+        "project_state": "optional",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.get_output_dir",
+      "domain": "project",
+      "description": "Read where exports + renders go when a verb isn't given an explicit `path`: the engine's one truth, the same value the status bar shows. `dir` is the chosen export folder or null; `destination` is `chosen` or `project_exports` (the open project's exports folder); `usable:false` with a plain `problem` and `suggested_action` when the chosen folder no longer exists or cannot be written (an export would be refused before it starts). Read-only; works with or without an open project; the `output_folder_changed` event announces changes.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{dir, destination, usable, problem, suggested_action}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_get_output_dir",
+        "project_state": "optional",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

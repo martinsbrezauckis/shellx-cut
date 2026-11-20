@@ -198,6 +198,23 @@ assert.equal(
   'attention',
   'project-switch cancellation is never called a true failure',
 )
+{
+  // An export written but not passing its checks is listed, with the reason.
+  const problemJob = { job_id: 'job_3', kind: 'render', state: 'done' as const, completion: 'done_with_warnings' as const, progress: 1, created_ts: '', updated_ts: '', outcome: 'partial' as const, outcome_reason: 'checks_failed' as const,
+    result: { checks: { verdict: 'problems', summary: 'The export was written but did not pass its checks (duration_matches_edl).', action: 'Import a complete copy of the cut-off source.' } } }
+  const row = rows(final, { jobs: [problemJob] }).find((r) => r.id === 'jobs')
+  assert.equal(row?.state, 'attention', 'a written-but-failing export is not called healthy')
+  assert.match(row?.summary ?? '', /1 export finished with problems: written, but not passing its checks/)
+  assert.match(row?.detail ?? '', /duration_matches_edl.*Import a complete copy/)
+  const plain = rows(final, { jobs: [{ ...problemJob, completion: 'success' as const, outcome: 'succeeded' as const, outcome_reason: 'completed' as const }] }).find((r) => r.id === 'jobs')
+  assert.equal(plain?.state, 'healthy', 'a plain completed render is not listed')
+  const queue = { ...problemJob, job_id: 'job_4', kind: 'render_queue', outcome_reason: 'items_failed' as const,
+    result: { summary_line: 'render queue: 2/3 delivered, 1 failed', failures: ['delivery 3: folder gone'] } }
+  const queueRow = rows(final, { jobs: [queue] }).find((r) => r.id === 'jobs')
+  assert.equal(queueRow?.state, 'attention', 'a queue with failed deliveries is not healthy')
+  assert.match(queueRow?.summary ?? '', /1 batch export finished with failed items\./)
+  assert.match(queueRow?.detail ?? '', /2\/3 delivered, 1 failed\. delivery 3: folder gone\./)
+}
 assert.equal(rows(final).find((row) => row.id === 'capture')?.state, 'healthy', 'an empty completed capture inventory is healthy only after a successful read')
 assert.equal(rows(final).find((row) => row.id === 'capture')?.detail, undefined, 'absence of an audio receipt never becomes a system-audio claim')
 
@@ -542,5 +559,25 @@ const recordSurface = readFileSync(new URL('../src/panels/Record/index.tsx', imp
 const readinessSurface = readFileSync(new URL('../src/panels/Record/RecordingReadinessSummary.tsx', import.meta.url), 'utf8')
 const recordUiModel = readFileSync(new URL('../src/panels/Record/recordingUiModel.ts', import.meta.url), 'utf8')
 assert.ok(recordSurface.includes('RecordingReadinessSummary') && readinessSurface.includes('recordCardLabel(card.name)') && recordUiModel.includes("system_audio: 'System audio'"), 'Record gives the passive system-audio card a human label through its compact shared readiness summary')
+
+// Opening Health & Recovery only shows readiness: it must use the status read
+// (no capture, no system prompt) and offer the full check as its own button.
+assert.ok(surface.includes("callVerb('screen_record.doctor', { mode: 'status' })"), 'opening the health page uses the non-capturing status read')
+assert.equal(surface.split("callVerb('screen_record.doctor'").length - 1, 1, 'the page itself makes only the status read')
+assert.equal(surface.split("call('screen_record.doctor', { mode: 'check' })").length - 1, 1, 'the explicit check is one request, made by readCaptureCheck')
+assert.ok(/const checkCapture = useCallback[\s\S]{0,400}readCaptureCheck\(callVerb\)/.test(surface), 'the full check runs only from the Check screen capture action')
+for (const [screenCheck, state, words] of [
+  ['not_checked', 'not-checked', 'not checked yet'],
+  ['permission_needed', 'attention', 'Privacy & Security > Screen & System Audio Recording'],
+] as const) {
+  const row = healthRecoveryRows({
+    hasProject: true, projectHealth: null, jobs: null, toolchain: null,
+    captureDoctor: { ready: false, screen_check: screenCheck, cards: [{ name: 'screen_capture', status: 'unknown', detail: 'status read' }] },
+    captureRecovery: captureInventory([]),
+  }).find((candidate) => candidate.id === 'capture')
+  assert.equal(row?.state, state, `capture row for ${screenCheck}`)
+  assert.equal(row?.action, 'check-capture', `capture row for ${screenCheck} offers the explicit check`)
+  assert.ok(row?.summary.includes(words), `capture row for ${screenCheck} says what is missing`)
+}
 
 console.log('health-recovery.test.ts passed')

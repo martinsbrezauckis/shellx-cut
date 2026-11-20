@@ -5,21 +5,21 @@
 //!   run, user-consented" — it keeps our installer ~3 MB and our license open
 //!   (the GPL libx264 binary lands on the USER's disk by the user's action,
 //!   never in our distributed artifact). This module implements the download:
-//!   a verified BtbN FFmpeg build fetched into the app-data tools dir — the
-//!   exact rung-3 directory the cut-media toolpath resolver checks, so a
-//!   successful fetch flips the doctor's ffmpeg card missing → bundled-or-
-//!   appdata with zero other code change.
+//!   a pinned, verified FFmpeg build fetched from its publisher into the
+//!   app-data tools dir — the exact rung-3 directory the cut-media toolpath
+//!   resolver checks, so a successful fetch flips the doctor's ffmpeg card
+//!   missing → bundled-or-appdata with zero other code change.
 //!
 //! SECURITY (HARD — this is a network-write primitive; treat it like the output-fencing contract)
 //!   1. NO caller-supplied URL. The tool id ("ffmpeg") indexes a BUILT-IN
 //!      REGISTRY of https-pinned URLs. A caller can pick WHICH known tool, never
 //!      WHERE from. This is the difference between a feature and an arbitrary-
 //!      download RCE.
-//!   2. https only, with fixed BtbN and astral-sh publisher release bases.
-//!   3. Each install reads the selected publisher's current checksum metadata,
-//!      then verifies the downloaded archive before anything touches the
-//!      install dir. A mismatch aborts safely; this also handles an upstream
-//!      latest-alias rollover between the checksum and archive requests.
+//!   2. https only (redirects included), with deadlines.
+//!   3. FFmpeg: every platform's release is pinned in the source (exact URL,
+//!      size and SHA-256 of each archive and of each program installed from
+//!      it); see `pinned.rs`. uv: the publisher's per-asset checksum is read
+//!      first and the archive is verified against it.
 //!   4. Staged-then-atomic: download + verify + extract happen in a temp dir;
 //!      the verified payload is moved into place by a single rename (atomic on
 //!      the same volume; a copy+swap fallback otherwise). A failure mid-way
@@ -30,9 +30,15 @@
 //!      temp dir.
 //!
 //! OS-AWARENESS
-//!   The registry selects the asset by `std::env::consts::OS`/`ARCH`: Linux and
-//!   Windows fetch BtbN's maintained `latest` FFmpeg asset names and verify
-//!   them against that release's published `checksums.sha256` at install time.
+//!   FFmpeg: cut_media::tool_setup::pinned_release picks the build for
+//!   `std::env::consts::OS`/`ARCH` — Martin Riedl's notarized build on Apple
+//!   silicon, an FFmpeg-Builds monthly 9.0 build on Windows x64 and Linux
+//!   x86_64. Other platforms have no download (`unsupported_platform`).
+//!
+//! CONSENT
+//!   The verb refuses unless the caller passes `accept_license:true` after the
+//!   person agreed to the download offer (publisher, version, size, licence,
+//!   source) that the doctor's ffmpeg card carries.
 //!
 //! TESTABILITY
 //!   `SHELLX_CUT_FETCH_BASE_URL` overrides the registry BASE (the github.com
@@ -54,14 +60,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+mod durable_install;
+mod macos_signature;
+mod pinned;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use pinned::use_release_for_tests;
+mod program_header;
+mod system_programs;
+mod unpack_tools;
+mod zip_member;
+
 /// Env override for the registry base URL — TEST/operator seam only (see header
 /// TESTABILITY). Never a verb arg.
 pub const ENV_FETCH_BASE_URL: &str = "SHELLX_CUT_FETCH_BASE_URL";
-
-/// BtbN's maintained latest-release alias for the consented FFmpeg bootstrap.
-/// The selected archive is verified against the matching publisher manifest at
-/// installation time, so a successful install always has a fresh SHA-256.
-const BTBN_FFMPEG_BASE: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
 
 /// astral-sh's maintained latest-release alias for the uv provisioner.
 const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/latest/download";
@@ -71,12 +82,9 @@ const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/latest/download"
 const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
 const MAX_TOOL_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// How a tool's checksum is published — the two release conventions we support.
+/// How a tool's checksum is published.
 #[derive(Clone, Copy)]
 enum ChecksumSource {
-    /// One manifest file under the base listing every asset (BtbN
-    /// `checksums.sha256`, GNU `sha256sum` lines). The &str is its file name.
-    Manifest(&'static str),
     /// A sibling `<asset>.sha256` next to each asset (astral-sh/uv convention).
     PerAsset,
 }
@@ -112,24 +120,8 @@ struct ToolSpec {
 /// error). This is the ENTIRE allow-list — there is no other way to reach a URL.
 fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
     match (tool, os, arch) {
-        // ── ffmpeg (BtbN current GPL static release; linux64 + win64) ───────
-        ("ffmpeg", "linux", "x86_64") => Some(ToolSpec {
-            id: "ffmpeg",
-            base: BTBN_FFMPEG_BASE,
-            asset: "ffmpeg-master-latest-linux64-gpl.tar.xz",
-            checksum: ChecksumSource::Manifest("checksums.sha256"),
-            kind: "tar.xz",
-            binaries: &["ffmpeg", "ffprobe"],
-        }),
-        ("ffmpeg", "windows", "x86_64") => Some(ToolSpec {
-            id: "ffmpeg",
-            base: BTBN_FFMPEG_BASE,
-            asset: "ffmpeg-master-latest-win64-gpl.zip",
-            checksum: ChecksumSource::Manifest("checksums.sha256"),
-            kind: "zip",
-            binaries: &["ffmpeg", "ffprobe"],
-        }),
-        // macOS ffmpeg: BtbN ships no mac build — follow-on (evermeet/martin-riedl).
+        // ffmpeg is not in this registry: every platform's FFmpeg release is
+        // pinned in cut_media::tool_setup (see pinned.rs).
         // ── uv (astral-sh/uv; the perception-venv provisioner) ───────────────
         ("uv", os, arch) => {
             let asset = match (os, arch) {
@@ -155,6 +147,41 @@ fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
         }
         _ => None,
     }
+}
+
+/// The refusal when the registry has no download for `tool` on this platform.
+/// The tool id is valid; the platform is the reason, and the action says how
+/// to get ffmpeg here instead.
+pub(crate) fn no_builtin_download(tool: &str, os: &str, arch: &str) -> CutError {
+    let error = CutError::new(
+        error_codes::UNSUPPORTED_PLATFORM,
+        format!("ShellX Cut has no built-in {tool} download for {os}/{arch}"),
+        "built-in downloads exist only where a verified publisher build is registered \
+         (ffmpeg: Windows and Linux x86_64, macOS on Apple silicon; uv: Windows, Linux and macOS)",
+    );
+    if tool == "ffmpeg" {
+        let guide = cut_media::tool_setup::ffmpeg_setup_guide_for(os, arch);
+        error.with_suggested_action(cut_media::tool_setup::ffmpeg_setup_action_for(&guide))
+    } else {
+        error
+    }
+}
+
+/// The refusal when `system.fetch_tool` is called without the person's
+/// agreement. The cause carries the exact consent text to show them.
+pub(crate) fn consent_required(offer: Option<&cut_media::tool_setup::DownloadOffer>) -> CutError {
+    let consent = offer
+        .map(|o| o.consent.clone())
+        .unwrap_or_else(|| "Download FFmpeg, a separate GPL program, from its publisher.".into());
+    CutError::new(
+        error_codes::INVALID_ARGS,
+        "downloading FFmpeg needs the person's agreement",
+        consent,
+    )
+    .with_suggested_action(
+        "Show the person the text in cause. Only when they agree, call system.fetch_tool \
+         {\"tool\":\"ffmpeg\",\"accept_license\":true}. Do not agree on their behalf.",
+    )
 }
 
 /// The base URL in effect for a tool: the test/operator override if set, else
@@ -184,6 +211,7 @@ pub struct InstallOutcome {
 /// install. Kept as a plain Fn so this module has no dependency on jobs.rs.
 pub type ProgressFn<'a> = dyn Fn(f32, &str) + Send + Sync + 'a;
 
+/// Waits between attempts after a temporary publisher failure (pinned FFmpeg).
 const LATEST_FETCH_DELAYS: [Duration; 5] = [
     Duration::from_secs(1),
     Duration::from_secs(2),
@@ -195,6 +223,8 @@ const LATEST_FETCH_DELAYS: [Duration; 5] = [
 struct FetchAttemptError {
     error: CutError,
     transient: bool,
+    /// The HTTP status when the server answered with an error status.
+    status: Option<u16>,
 }
 
 impl FetchAttemptError {
@@ -202,6 +232,7 @@ impl FetchAttemptError {
         Self {
             error,
             transient: false,
+            status: None,
         }
     }
     fn network(op: &str, url: &str, error: ureq::Error) -> Self {
@@ -214,9 +245,14 @@ impl FetchAttemptError {
                 | ureq::Error::ConnectionFailed
                 | ureq::Error::Protocol(_)
         );
+        let status = match error {
+            ureq::Error::StatusCode(code) => Some(code),
+            _ => None,
+        };
         Self {
             error: net_err(op, url, error),
             transient,
+            status,
         }
     }
 }
@@ -230,14 +266,10 @@ impl FetchAttemptError {
 pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome, CutError> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let spec = tool_spec(tool, os, arch).ok_or_else(|| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            format!("no built-in download for tool '{tool}' on {os}/{arch}"),
-            "the fetch registry is an allow-list (ffmpeg on linux/windows x86_64; uv on win/linux/mac); there is deliberately no caller-supplied URL",
-        )
-        .with_suggested_action("on macOS run `brew install ffmpeg-full`; Cut detects the keg-only path after restart. Otherwise check the tool id")
-    })?;
+    if let Some(release) = pinned::release_for(tool, os, arch) {
+        return pinned::install(tool, release, progress);
+    }
+    let spec = tool_spec(tool, os, arch).ok_or_else(|| no_builtin_download(tool, os, arch))?;
 
     let base = base_url(spec.base);
     let asset_url = format!("{base}/{}", spec.asset);
@@ -267,15 +299,10 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     let archive_path = staging.join(spec.asset);
     let (bytes, got) = fetch_verified_archive(
         &spec,
-        &base,
         &asset_url,
         &archive_path,
         progress,
-        if spec.id == "ffmpeg" {
-            &LATEST_FETCH_DELAYS
-        } else {
-            &[]
-        },
+        &[],
         std::thread::sleep,
     )?;
 
@@ -285,8 +312,8 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     std::fs::create_dir_all(&extract_root).map_err(io_err("create extract dir"))?;
     extract(spec.kind, &archive_path, &extract_root)?;
 
-    // BtbN archives extract to a single top-level `ffmpeg-.../bin/` dir; find
-    // the dir that actually contains the binaries.
+    // Archives may nest the binaries in a top-level folder; find the dir that
+    // actually contains them.
     let bin_src = find_bin_dir(&extract_root, spec.binaries).ok_or_else(|| {
         CutError::new(
             error_codes::JOB_FAILED,
@@ -323,7 +350,6 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
 /// starts with a new publisher manifest; no archive is ever trusted across attempts.
 fn fetch_verified_archive(
     spec: &ToolSpec,
-    base: &str,
     asset_url: &str,
     archive_path: &Path,
     progress: &ProgressFn,
@@ -338,7 +364,7 @@ fn fetch_verified_archive(
     for attempt in 0..=delays.len() {
         report(0.02, "loading checksum");
         let result = (|| {
-            let expected = expected_sha256(spec, base, asset_url)?;
+            let expected = expected_sha256(spec, asset_url)?;
             report(0.05, "downloading");
             let (bytes, got) = download_hashing(asset_url, archive_path, &|frac, msg| {
                 report(0.05 + frac * 0.75, msg);
@@ -375,16 +401,8 @@ fn fetch_verified_archive(
 ///
 /// The trusted publisher's current release metadata is authoritative for every
 /// request, including the local-fixture/operator override seam.
-fn expected_sha256(
-    spec: &ToolSpec,
-    base: &str,
-    asset_url: &str,
-) -> Result<String, FetchAttemptError> {
+fn expected_sha256(spec: &ToolSpec, asset_url: &str) -> Result<String, FetchAttemptError> {
     let expected = match spec.checksum {
-        ChecksumSource::Manifest(name) => {
-            let manifest = http_get_string(&format!("{base}/{name}"))?;
-            checksum_for(&manifest, spec.asset)
-        }
         ChecksumSource::PerAsset => {
             // `<asset>.sha256` holds a single GNU `sha256sum` line for the asset.
             let text = http_get_string(&format!("{asset_url}.sha256"))?;
@@ -414,7 +432,8 @@ fn http_get_string(url: &str) -> Result<String, FetchAttemptError> {
 
 fn http_get_string_with_limit(url: &str, limit: u64) -> Result<String, FetchAttemptError> {
     require_https(url).map_err(FetchAttemptError::permanent)?;
-    let resp = ureq::get(url)
+    let resp = fetch_agent(url)
+        .get(url)
         .call()
         .map_err(|e| FetchAttemptError::network("fetch checksum manifest", url, e))?;
     reject_oversized_length(&resp, limit, "checksum manifest")?;
@@ -426,6 +445,7 @@ fn http_get_string_with_limit(url: &str, limit: u64) -> Result<String, FetchAtte
         .map_err(|e| FetchAttemptError {
             error: net_err("read checksum manifest", url, e),
             transient: true,
+            status: None,
         })?;
     if bytes.len() as u64 > limit {
         return Err(size_limit_error("checksum manifest", limit));
@@ -442,6 +462,20 @@ fn http_get_string_with_limit(url: &str, limit: u64) -> Result<String, FetchAtte
 /// Stream-download `url` to `dest`, computing sha256 as bytes arrive (never
 /// buffering the whole archive in memory). Reports download fraction when the
 /// server sends a Content-Length. Returns (byte_count, hex_sha256).
+/// Download `url` to `dest` over https (redirects stay on https) with the
+/// same deadlines as every tool download, at most `limit` bytes. Returns
+/// (bytes, sha256). Used for downloads whose trust is checked another way
+/// (Microsoft's signed Visual C++ Redistributable, vc_runtime.rs).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn download_file(
+    url: &str,
+    dest: &Path,
+    limit: u64,
+    progress: &dyn Fn(f32, &str),
+) -> Result<(u64, String), CutError> {
+    download_hashing_with_limit(url, dest, progress, limit).map_err(|failure| failure.error)
+}
+
 fn download_hashing(
     url: &str,
     dest: &Path,
@@ -457,7 +491,8 @@ fn download_hashing_with_limit(
     limit: u64,
 ) -> Result<(u64, String), FetchAttemptError> {
     require_https(url).map_err(FetchAttemptError::permanent)?;
-    let resp = ureq::get(url)
+    let resp = fetch_agent(url)
+        .get(url)
         .call()
         .map_err(|e| FetchAttemptError::network("download", url, e))?;
     reject_oversized_length(&resp, limit, "tool archive")?;
@@ -478,6 +513,7 @@ fn download_hashing_with_limit(
         let n = reader.read(&mut buf).map_err(|e| FetchAttemptError {
             error: net_err("read download stream", url, e),
             transient: true,
+            status: None,
         })?;
         if n == 0 {
             break;
@@ -507,6 +543,20 @@ fn download_hashing_with_limit(
         .map_err(|e| FetchAttemptError::permanent(io_err("flush archive file")(e)))?;
     let hex = hex::encode(hasher.finalize());
     Ok((written, hex))
+}
+
+/// The HTTP client for every tool download: redirects stay on https (plain
+/// http is only ever a loopback test fixture), connects and first bytes are
+/// bounded, and one overall deadline stops a server that trickles forever.
+fn fetch_agent(url: &str) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .https_only(url.starts_with("https://"))
+        .max_redirects(10)
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
+        .timeout_global(Some(Duration::from_secs(60 * 60)))
+        .build();
+    ureq::Agent::new_with_config(config)
 }
 
 fn reject_oversized_length(
@@ -560,8 +610,8 @@ fn require_https(url: &str) -> Result<(), CutError> {
 // Checksum manifest parsing
 // ---------------------------------------------------------------------------
 
-/// Find the hex sha256 for `asset` in a `checksums.sha256` manifest. The BtbN
-/// format is GNU coreutils `sha256sum` output: `<hex>  <filename>` per line
+/// Find the hex sha256 for `asset` in GNU coreutils `sha256sum` output (a
+/// publisher's `<asset>.sha256` file): `<hex>  <filename>` per line
 /// (two spaces; the name may or may not have a leading `*`). We match on the
 /// basename so a manifest that lists `ffmpeg-...tar.xz` matches our asset.
 fn checksum_for(manifest: &str, asset: &str) -> Option<String> {
@@ -606,7 +656,6 @@ fn extract(kind: &str, archive: &Path, dest: &Path) -> Result<(), CutError> {
     match kind {
         // tar handles .tar.xz via -J (xz) or -a (auto); GNU + bsdtar both do.
         "tar.xz" => run_extract(
-            "tar",
             &[
                 "-xJf".as_ref(),
                 archive.as_os_str(),
@@ -617,7 +666,6 @@ fn extract(kind: &str, archive: &Path, dest: &Path) -> Result<(), CutError> {
         ),
         // .tar.gz via -z (gzip); used by the uv release archives.
         "tar.gz" => run_extract(
-            "tar",
             &[
                 "-xzf".as_ref(),
                 archive.as_os_str(),
@@ -640,13 +688,13 @@ fn extract(kind: &str, archive: &Path, dest: &Path) -> Result<(), CutError> {
 /// Zip extraction with a tar.exe-then-Expand-Archive fallback (Windows).
 fn extract_zip(archive: &Path, dest: &Path) -> Result<(), CutError> {
     // Try bsdtar first (handles zip; present on Win10 1803+, mac, many linux).
-    let mut tar = std::process::Command::new("tar");
+    let mut tar = system_programs::tar_command(None);
     tar.arg("-xf").arg(archive).arg("-C").arg(dest);
     let tar_try = crate::dispatch::run_bounded_foreground_command(&mut tar, "archive tar");
     if matches!(tar_try, Ok(output) if output.status.success()) {
         return Ok(());
     }
-    let mut powershell = std::process::Command::new("powershell");
+    let mut powershell = std::process::Command::new(system_programs::windows_powershell());
     powershell.args(powershell_expand_archive_args(archive, dest));
     let status = crate::dispatch::run_bounded_foreground_command(
         &mut powershell,
@@ -681,9 +729,11 @@ fn powershell_expand_archive_args(archive: &Path, dest: &Path) -> Vec<OsString> 
     ]
 }
 
-/// Run an extraction command, mapping failure to an actionable error.
-fn run_extract(prog: &str, args: &[&std::ffi::OsStr], archive: &Path) -> Result<(), CutError> {
-    let mut command = std::process::Command::new(prog);
+/// Run the system tar (absolute path; its decompressor search sees only
+/// absolute PATH folders), mapping failure to an actionable error.
+fn run_extract(args: &[&std::ffi::OsStr], archive: &Path) -> Result<(), CutError> {
+    let prog = "tar";
+    let mut command = system_programs::tar_command(None);
     command.args(args);
     let status =
         crate::dispatch::run_bounded_foreground_command(&mut command, "archive extraction")
@@ -748,11 +798,16 @@ fn find_bin_dir(root: &Path, binaries: &[&str]) -> Option<PathBuf> {
 fn install_atomic(bin_src: &Path, install_dir: &Path, binaries: &[&str]) -> Result<(), CutError> {
     let final_bin = install_dir.join("bin");
     std::fs::create_dir_all(install_dir).map_err(io_err("create install dir"))?;
+    // The programs reach the disk before they get their final names.
+    for stem in binaries {
+        durable_install::sync_file(&bin_src.join(exe_name(stem)))
+            .map_err(io_err("flush verified binary"))?;
+    }
     // Remove any prior bin dir (re-fetch / upgrade) — best effort.
     let _ = std::fs::remove_dir_all(&final_bin);
     // Same-volume rename is atomic; cross-volume falls back to a named copy.
     match std::fs::rename(bin_src, &final_bin) {
-        Ok(()) => Ok(()),
+        Ok(()) => durable_install::sync_dir(install_dir).map_err(io_err("flush install dir")),
         Err(_) => copy_named_binaries(bin_src, &final_bin, binaries),
     }
 }
@@ -761,21 +816,15 @@ fn install_atomic(bin_src: &Path, install_dir: &Path, binaries: &[&str]) -> Resu
 /// fixed leaf filenames — `ffmpeg[.exe]`, `ffprobe[.exe]`) from the verified
 /// `src` bin dir into `dst`. No directory walk: the set of files is determined
 /// entirely by our own `binaries` constant, so nothing from the archive's
-/// directory listing can influence which paths are written. Preserves the
-/// executable bit on unix.
+/// directory listing can influence which paths are written. Each program is
+/// copied under a temporary name, made executable, flushed and closed, then
+/// renamed, so no half-copied program is ever under its final name.
 fn copy_named_binaries(src: &Path, dst: &Path, binaries: &[&str]) -> Result<(), CutError> {
     std::fs::create_dir_all(dst).map_err(io_err("create install bin dir"))?;
     for stem in binaries {
         let name = exe_name(stem); // fixed, code-derived leaf name
-        let from = src.join(&name);
-        let to = dst.join(&name);
-        std::fs::copy(&from, &to).map_err(io_err("copy binary into install dir"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // ffmpeg/ffprobe must be executable.
-            let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755));
-        }
+        durable_install::copy_into_place(&src.join(&name), &dst.join(&name))
+            .map_err(io_err("copy binary into install dir"))?;
     }
     Ok(())
 }
@@ -855,9 +904,15 @@ mod tests {
 
     #[test]
     fn registry_is_an_allowlist() {
-        // Known tool + supported platform resolves.
-        assert!(tool_spec("ffmpeg", "linux", "x86_64").is_some());
-        assert!(tool_spec("ffmpeg", "windows", "x86_64").is_some());
+        // ffmpeg is never in this floating registry: every platform pins it.
+        for (os, arch) in [
+            ("linux", "x86_64"),
+            ("windows", "x86_64"),
+            ("macos", "aarch64"),
+        ] {
+            assert!(tool_spec("ffmpeg", os, arch).is_none(), "{os}");
+            assert!(cut_media::tool_setup::pinned_release("ffmpeg", os, arch).is_some());
+        }
         // uv resolves across the supported os/arch matrix.
         assert!(tool_spec("uv", "windows", "x86_64").is_some());
         assert!(tool_spec("uv", "linux", "x86_64").is_some());
@@ -866,29 +921,50 @@ mod tests {
         // Unknown tool id → None (no URL reachable).
         assert!(tool_spec("curl", "linux", "x86_64").is_none());
         assert!(tool_spec("../../etc/passwd", "linux", "x86_64").is_none());
-        // Unsupported platform → None.
-        assert!(tool_spec("ffmpeg", "macos", "aarch64").is_none());
         assert!(tool_spec("uv", "freebsd", "x86_64").is_none());
     }
 
-    /// The source fixes only trusted publisher routes and current asset names.
-    /// The actual digest is deliberately resolved from BtbN's release manifest
-    /// at installation time, not compiled into a Cut update.
+    /// The setup guidance shown to people and agents must agree with this
+    /// registry about where a built-in FFmpeg download exists.
     #[test]
-    fn ffmpeg_production_assets_use_latest_release_manifest() {
-        for (os, arch, asset) in [
-            ("linux", "x86_64", "ffmpeg-master-latest-linux64-gpl.tar.xz"),
-            ("windows", "x86_64", "ffmpeg-master-latest-win64-gpl.zip"),
-        ] {
-            let spec = tool_spec("ffmpeg", os, arch).expect("supported FFmpeg platform");
-            assert_eq!(spec.base, BTBN_FFMPEG_BASE);
-            assert!(spec.base.ends_with("/releases/download/latest"));
-            assert_eq!(spec.asset, asset);
-            assert!(matches!(
-                spec.checksum,
-                ChecksumSource::Manifest("checksums.sha256")
-            ));
+    fn setup_guidance_matches_the_ffmpeg_registry() {
+        for os in ["linux", "windows", "macos", "freebsd"] {
+            for arch in ["x86_64", "aarch64"] {
+                assert_eq!(
+                    tool_spec("ffmpeg", os, arch).is_some()
+                        || cut_media::tool_setup::pinned_release("ffmpeg", os, arch).is_some(),
+                    cut_media::tool_setup::builtin_ffmpeg_download_for(os, arch),
+                    "{os}/{arch}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_platform_without_a_download_is_refused_with_the_way_forward() {
+        let error = no_builtin_download("ffmpeg", "linux", "aarch64");
+        assert_eq!(error.code, error_codes::UNSUPPORTED_PLATFORM);
+        assert!(error.message.contains("linux/aarch64"));
+        let action = error.suggested_action.expect("an action");
+        assert!(!action.contains("check the tool id"));
+        assert!(action.contains("system.set_ffmpeg"));
+        // Linux arm64: the distribution's packages, never a download.
+        for needle in ["sudo apt install ffmpeg", "sudo dnf install ffmpeg-free"] {
+            assert!(action.contains(needle), "{needle}: {action}");
+        }
+        assert!(!action.contains("fetch_tool"), "{action}");
+        // An arm64 build of Cut for Windows: the publisher's page, never apt.
+        let action = no_builtin_download("ffmpeg", "windows", "aarch64")
+            .suggested_action
+            .expect("an action");
+        assert!(
+            action.contains(cut_media::tool_setup::FFMPEG_BUILDS_RELEASES),
+            "{action}"
+        );
+        assert!(
+            !action.contains("apt") && !action.contains("fetch_tool"),
+            "{action}"
+        );
     }
 
     #[test]

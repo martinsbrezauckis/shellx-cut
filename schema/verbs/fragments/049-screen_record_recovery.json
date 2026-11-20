@@ -1,0 +1,146 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "screen_record",
+  "verbs": [
+    {
+      "name": "screen_record.active",
+      "domain": "screen_record",
+      "description": "Read which recording this cutd process is running right now; the caller needs no capture id (the result carries it). Every client can see a running recording: the app shows recordings it did not start itself (for example one started by an agent) with a visible indicator and Stop, and the desktop app asks it before closing so a recording is finished instead of lost. kind is recording for a project recording and rehearsal for a disposable rehearsal take. ready becomes true only after the first real screen frame; first_screen_frame_unix_ms and since_first_screen_frame_ms say when, so a timer can count from the first captured frame. It never starts, stops or reads a capture file.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{active:false, capture_id:null} | {active:true, capture_id, kind:\"recording\"|\"rehearsal\", project_path|null, ready, stop_requested, first_screen_frame_unix_ms|null, since_first_screen_frame_ms|null}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_active",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.pending",
+      "domain": "screen_record",
+      "description": "List recordings the person has not been told about yet, across all projects, with no project open. A note is kept for every recording from its start until Stop saves it. It remains when the app or computer stopped during a recording (situation interrupted: what was saved can be recovered; nothing_saved: it stopped before any part was saved), when the app was closed during a recording and Stop ran because of that (saved_on_close, with added_to_timeline), when a recording finished but was never added (saved_not_added), when a recording ended with an error after part of it was saved (failed), or when the files are gone (files_missing). message is a sentence for the person; suggested_action says what to do. Recover with project.open{project_path} then screen_record.recover{capture_id}; dismiss with screen_record.pending_dismiss. A recording still running in this process is not listed. Reads file names and sizes only.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{recordings:[{capture_id, project_path, project_name, started_unix_ms, situation:\"interrupted\"|\"nothing_saved\"|\"saved_on_close\"|\"saved_not_added\"|\"failed\"|\"files_missing\", added_to_timeline, can_recover, recovery_state|null, checkpoints|null, files_folder, message, suggested_action, recovered_extent_state?:\"not_measured\"|\"measured\", recovered_ms?, recorded_ms_at_least?, recorded_longer_unknown?}]} — saved checkpoints awaiting preparation have recovered_extent_state not_measured, a message saying the saved amount is not measured yet, and no duration fields. Once measured (recovered_extent_state measured), for an offerable recording the message ends with what can be recovered of what was recorded (\"About 15 s of about 20 s can be recovered; the last 5 s were not saved before the recording stopped.\") and the three optional fields carry the numbers recover will report",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_pending",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.pending_dismiss",
+      "domain": "screen_record",
+      "description": "Forget the notice about one recording listed by screen_record.pending. The recording's files are not touched and stay in files_folder. A recording still running cannot be dismissed.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "The capture id from screen_record.pending."
+          }
+        }
+      },
+      "result": "{dismissed:true, capture_id, files_folder}",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_pending_dismiss",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.recover",
+      "domain": "screen_record",
+      "description": "Turn an interrupted, failed, or not-yet-added recording of the OPEN project into a clip at the end of the timeline. Inputs are only the recording's own folder: the finished source.mp4, or recovered.mp4 stitched from the checkpoints the recorder closes every 15 seconds (an unsealed capture whose recording process is gone is sealed first), plus mic.wav/system.wav or playable copies of the unfinished microphone and system-audio files. Video and sound are joined into recovered-take.mp4 and imported; sound recorded after the saved picture (an interrupted take) is placed right after it from the same files (sound_after_picture); with sound but no video, the microphone and the system sound each go on their own track, starting together as they were recorded. The project is checkpointed first, so the change can be undone. Nothing in the recording folder is deleted. Refused while the recording is still running (stop it), while another running Cut owns it, for a capture that is not in the open project (open project_path first), and when nothing playable exists (the notice can then be dismissed).",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "The capture id from screen_record.pending or screen_record.recovery_status."
+          }
+        }
+      },
+      "result": "{capture_id, clip_ids, take_path, video_recovered, microphone_recovered, system_audio_recovered, recovered_ms, recorded_ms_at_least, lost_tail_lower_bound_ms, recorded_longer_unknown, sound_after_picture, files_folder, message}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_recover",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

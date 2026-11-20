@@ -8,6 +8,8 @@ use cut_native_runtime_context::{
     PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT, SET_CONTEXT_CONTRACT,
 };
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The desktop's independent observation of the generic Runner executable
 /// bundle. Cut selects only its two product-owned names after the shared parser
@@ -55,6 +57,8 @@ impl PinnedExecutableBundleResolution {
 }
 
 const MEDIA_TOOLS_RUNTIME_MEMBER_ID: &str = "media-tools";
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const VERSION_PROBE_POLL: Duration = Duration::from_millis(25);
 
 pub(super) fn resolve(
     context_schema: &Result<Option<String>, String>,
@@ -144,22 +148,86 @@ fn accepted_context(
 }
 
 fn runnable_program(program: &Path, version_flag: &str) -> bool {
-    std::process::Command::new(program)
+    let mut command = Command::new(program);
+    command
         .arg(version_flag)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // ffmpeg/ffprobe are console binaries. Keep the desktop's startup probe
+    // silent just like its cutd child on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+        .spawn()
+        .map(|mut child| probe_exits_successfully(&mut child, VERSION_PROBE_TIMEOUT))
         .unwrap_or(false)
 }
 
-#[cfg(test)]
+fn probe_exits_successfully(child: &mut Child, timeout: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Err(_) => {
+                // A failed wait must not leave this probe's child running.
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) if !remaining.is_zero() => {
+                std::thread::sleep(VERSION_PROBE_POLL.min(remaining));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+// Every test here drives a unix shell script; nothing in this module compiles on Windows.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
     use super::super::{ToolResolution, TEST_ENV_LOCK};
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_retires_a_hung_child_and_preserves_exit_verdicts() {
+        let mut hung = Command::new("sleep").arg("30").spawn().unwrap();
+        let started = Instant::now();
+        assert!(!probe_exits_successfully(
+            &mut hung,
+            Duration::from_millis(100)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            hung.try_wait().unwrap().is_some(),
+            "timed-out probe was not reaped"
+        );
+
+        for (exit_code, expected) in [(0, true), (7, false)] {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(format!("exit {exit_code}"))
+                .spawn()
+                .unwrap();
+            assert_eq!(
+                probe_exits_successfully(&mut child, Duration::from_secs(2)),
+                expected
+            );
+            assert!(child.try_wait().unwrap().is_some());
+        }
+    }
 
     struct EnvRestore(Option<std::ffi::OsString>);
 

@@ -19,6 +19,9 @@ import { Icon } from '../../icons'
 import { TemporalPoint } from '../../components/TemporalNavigation'
 import { fmtDur, fmtTc } from './shared'
 import ReceiptRerunControl from './ReceiptRerunControl'
+import { encodeLine } from './encodeLine'
+import { isNotApplicable, notApplicable } from '../../lib/checkApplicability'
+import { unmeasuredReason } from '../../statusbar/receiptSummary'
 
 /** Map a render's output path to its download URL. Delegates to the shared
  *  cross-platform mapper (lib/clientUrls), like panels/Clips.
@@ -97,7 +100,11 @@ function gatingChecks(r: RenderReceipt): CheckResult[] {
 }
 
 function verdictOf(r: RenderReceipt): { label: string; kind: 'pass' | 'fail' | 'pending' | 'unmeasured' } {
-  const checks = gatingChecks(r)
+  // Checks that do not apply to this export are counted apart, never as a pass.
+  const notApplicableCount = gatingChecks(r).filter(isNotApplicable).length
+  const na = notApplicableCount > 0 ? ` · ${notApplicableCount} N/A` : ''
+  const checks = gatingChecks(r).filter((c) => !isNotApplicable(c))
+  if (checks.length === 0 && notApplicableCount > 0) return { label: `${notApplicableCount} N/A`, kind: 'pending' }
   const pending = checks.filter((c) => typeof c.pass !== 'boolean').length
   const unmeasured = checks.filter(isUnmeasured).length
   const failed = checks.filter((c) => c.pass === false && !isUnmeasured(c)).length
@@ -115,7 +122,7 @@ function verdictOf(r: RenderReceipt): { label: string; kind: 'pass' | 'fail' | '
   if (allWaived) return { label: `${waived} WAIVED`, kind: 'pending' }
   if (waived > 0) return { label: `${checks.length - waived}/${checks.length} PASS · ${waived} waived`, kind: 'pending' }
   return {
-    label: `${checks.length}/${checks.length} PASS`,
+    label: `${checks.length}/${checks.length} PASS${na}`,
     kind: 'pass',
   }
 }
@@ -160,11 +167,32 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const v = verdictOf(receipt)
   const profileEntry = (receipt.checks ?? []).find((c) => c.name === 'footage_profile')
+  const encode = encodeLine(receipt)
+  const notMeasured = unmeasuredReason(gatingChecks(receipt))
 
   return (
     <div className={`rr-rc rr-rc--${v.kind}`} data-cut-receipt={receipt.render_id}>
       {/* banner: the across-the-room verdict */}
       <div className={`rr-rc__banner rr-rc__banner--${v.kind}`}>{v.label}</div>
+      {/* The engine's verdict in words: which checks failed, what that means,
+          the way forward. Shown only when something did not pass. */}
+      {(receipt.outcome?.verdict === 'problems' || receipt.outcome?.verdict === 'warnings') && (
+        <div
+          className="rr-rc__encode-note"
+          role="status"
+          data-cut-receipt-outcome={receipt.render_id}
+          data-cut-receipt-verdict={receipt.outcome.verdict}
+        >
+          {receipt.outcome.summary}
+          {receipt.outcome.action ? ` ${receipt.outcome.action}` : ''}
+        </div>
+      )}
+      {notMeasured && (
+        <div className="rr-rc__encode-note" data-cut-receipt-not-measured={receipt.render_id}>
+          Not measured: {notMeasured}.
+          {/not installed/.test(notMeasured) && ' Choose Install captions in Settings to measure these checks.'}
+        </div>
+      )}
       <div className="rr-rc__meta">
         {receipt.render_id} · {fmtDur(receipt.duration_ms)} · {receipt.preset} ·{' '}
         {receipt.output_hash?.replace(/^sha256:/, '').slice(0, 10)}
@@ -182,21 +210,49 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
           </a>
         )}
       </div>
+      {encode && (
+        <div className="rr-rc__encode" data-cut-receipt-encode={receipt.render_id}>
+          <span>{encode.text}</span>
+          {encode.note && (
+            <span className="rr-rc__encode-note" data-cut-receipt-encode-note={receipt.render_id}>
+              {encode.note}
+            </span>
+          )}
+          {encode.color && (
+            <span className="rr-rc__encode-note" data-cut-receipt-color-note={receipt.render_id}>
+              {encode.color}
+            </span>
+          )}
+          {encode.memory && (
+            <span className="rr-rc__encode-note" data-cut-receipt-memory-note={receipt.render_id}>
+              {encode.memory}
+            </span>
+          )}
+          {encode.detail && (
+            <details className="rr-rc__encode-detail">
+              <summary data-cut-action="receipt-encode-detail-toggle">Technical detail</summary>
+              <code>{encode.detail}</code>
+            </details>
+          )}
+        </div>
+      )}
       <ReceiptRerunControl receipt={receipt} />
       {profileEntry && <ProfileRow entry={profileEntry} />}
       <div className="rr-rc__checks">
         {gatingChecks(receipt).map((c) => {
           const waiver = waiverOf(c)
           const unmeasured = isUnmeasured(c)
+          const na = notApplicable(c)
           // waived wins the visual: pass=true under the profile, but it must
           // never read as a green pass (amber-muted, measured outcome shown).
-          const state = unmeasured ? 'unmeasured' : waiver ? 'waived' : typeof c.pass !== 'boolean' ? 'pending' : c.pass ? 'pass' : 'fail'
+          // Not applicable likewise never reads as a pass: muted, "N/A".
+          const state = na ? 'na' : unmeasured ? 'unmeasured' : waiver ? 'waived' : typeof c.pass !== 'boolean' ? 'pending' : c.pass ? 'pass' : 'fail'
           const metric = keyMetric(c)
           const isOpen = expanded === c.name
           const seeks = isOpen ? collectSeeks(c.evidence) : []
           return (
-            <div key={c.name} className={`rr-check rr-check--${state}`} data-cut-check={c.name}>
-              <button className="rr-check__row" data-cut-receipt-check-toggle={c.name} onClick={() => setExpanded(isOpen ? null : c.name)}>
+            <div key={c.name} className={`rr-check rr-check--${state}`} data-cut-check={c.name} data-cut-check-state={state}>
+              <button className="rr-check__row" data-cut-receipt-check-toggle={c.name} title={na ? `Not applicable: ${na.reason}` : undefined} onClick={() => setExpanded(isOpen ? null : c.name)}>
                 <span className={`rr-dot rr-dot--${state}`} />
                 <span className="rr-check__name">{c.name}</span>
                 {/* a waived row always shows what was actually measured */}
@@ -206,10 +262,16 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
                   </span>
                 )}
                 {metric && <span className="rr-check__metric">{metric}</span>}
-                <span className={`rr-check__state rr-check__state--${state}`}>{state.toUpperCase()}</span>
+                <span className={`rr-check__state rr-check__state--${state}`}>{state === 'na' ? 'N/A' : state.toUpperCase()}</span>
               </button>
               {isOpen && (
                 <div className="rr-check__evidence" data-cut-evidence={c.name}>
+                  {na && (
+                    <div className="rr-check__na-note" data-cut-check-not-applicable={c.name}>
+                      Does not apply to this export: {na.reason}
+                      {na.appliesWhen ? ` It applies when ${na.appliesWhen}.` : ''}
+                    </div>
+                  )}
                   {waiver && (
                     <div className="rr-check__waiver-note">
                       waived by profile {waiver.waived_by_profile}

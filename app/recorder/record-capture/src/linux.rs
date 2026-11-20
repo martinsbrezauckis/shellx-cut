@@ -1,25 +1,16 @@
-//! linux.rs — live screen + input capture on Linux via the XDG Desktop Portal.
+//! Linux screen and input capture through the XDG ScreenCast portal.
 //!
-//! Compiled ONLY for `cfg(target_os = "linux")` + the `capture-linux` feature.
-//! - SCREEN: the **ScreenCast portal** (`ashpd`) grants a PipeWire node (consent
-//!   dialog, with a reusable restore token cached so later runs skip it). The node
-//!   is encoded by shelling to **GStreamer** `pipewiresrc ! videoconvert ! x264enc
-//!   ! mp4mux` — chosen over `pipewire-rs` because gst handles PipeWire buffer /
-//!   DMA-BUF / format negotiation. This is the Wayland-correct path (works on X11
-//!   GNOME too); it replaces the legacy ffmpeg `x11grab`.
-//! - CONSTANT FPS: mutter's screencast is DAMAGE-DRIVEN — a static screen emits a
-//!   tiny burst then nothing. So gst captures sparse (real PTS) and we normalize to
-//!   constant fps + EXACT wall-clock duration with an ffmpeg `fps,tpad=clone` pass
-//!   (holds the last frame across pauses — correct, and matches the constant-fps
-//!   source the renderer expects). Proven on Linux: 7-frame static raw → 180f/6.000s.
-//! - INPUT: the shared rdevin hook (X11). On a Wayland session rdevin can't hook
-//!   globally (by design); Wayland global input requires libei + the RemoteDesktop portal.
-//! - MIC: cpal (shared mic.rs).
+//! Compiled for Linux with the `capture-linux` feature. The portal grants a
+//! PipeWire node and may reuse a cached restore token. Wayland normally captures
+//! frames and absolute cursor metadata with pipewire-rs; X11 and the explicit
+//! GStreamer override use `pipewiresrc`. Wayland input uses the owned evdev
+//! listener, while X11 uses rdevin RECORD. The mic uses shared cpal capture.
+//! Sparse video is normalized to constant FPS and captured wall-clock duration
+//! with ffmpeg `fps,tpad=clone` before publication.
 //!
-//! RUNTIME: needs a logged-in desktop with xdg-desktop-portal + a PipeWire server,
-//! and the user session bus (XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS) — inherited
-//! when run inside the session. gst-launch-1.0 with the pipewire plugin must be
-//! installed (gstreamer1.0-pipewire).
+//! Runtime needs a logged-in desktop, xdg-desktop-portal, PipeWire, and the
+//! session bus. The GStreamer route also needs gst-launch-1.0 and its PipeWire
+//! plugin.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,7 +30,7 @@ use crate::linux_runtime::{cap_err, ffmpeg_bin, ffprobe_bin, shared_runtime};
 use crate::linux_token::{read_token, write_token};
 use crate::{checkpoint::Checkpoints, cursor_correlation, Capture, CaptureConfig, CaptureOutput};
 
-/// Live Linux capture backend (ScreenCast portal + GStreamer + rdevin + cpal).
+/// Live Linux capture backend using the ScreenCast portal and owned input route.
 pub struct LinuxCapture;
 
 impl LinuxCapture {
@@ -347,6 +338,8 @@ impl Capture for LinuxCapture {
                                 && accumulated.frame_height == cur.frame_height =>
                         {
                             accumulated.metadata.extend(cur.metadata);
+                            accumulated.invalidations.extend(cur.invalidations);
+                            accumulated.segments.extend(cur.segments);
                             accumulated.capture_start_ms =
                                 accumulated.capture_start_ms.min(cur.capture_start_ms);
                             accumulated.capture_end_ms =
@@ -430,11 +423,12 @@ impl Capture for LinuxCapture {
                 )
             };
             if let Some(owner) = checkpoints.as_ref() {
-                owner.stitch(&ff_for_async, &ffprobe_bin(), "raw.mp4")?;
+                let (_, _, notes) = owner.stitch(&ff_for_async, &ffprobe_bin(), "raw.mp4")?;
+                crate::capture_notes::publish(std::path::Path::new(&out_dir_async), &notes);
             }
             let (audio, microphone_outcome) =
                 crate::microphone_result::finish(audio_wanted, mic_handle);
-            let (cursor, mut clicks, scrolls, keys) = match sealed_x11_input {
+            let ((cursor, mut clicks, scrolls, keys), evdev_evidence) = match sealed_x11_input {
                 Some(snapshot) => snapshot,
                 None => input
                     .take()
@@ -454,6 +448,7 @@ impl Capture for LinuxCapture {
                     meta_cursor,
                     cursor_geometry,
                     None,
+                    evdev_evidence.as_ref(),
                 );
                 CapturedInput::Correlated(RecordedInput {
                     cursor: correlated.cursor,
@@ -542,6 +537,7 @@ impl Capture for LinuxCapture {
                     None,
                     portal_geometry,
                     finalized_dimensions,
+                    None,
                 );
                 (
                     correlated.cursor,

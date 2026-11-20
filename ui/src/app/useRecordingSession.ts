@@ -1,3 +1,4 @@
+import { watchPolishProgress } from './polishProgress'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type Project } from '../lib/client'
 import { isBlockingOverlayActive, shouldIgnoreGlobalShortcut } from '../lib/dom'
@@ -14,7 +15,10 @@ import type { RecordingOutputSize, RecordingQualityProfile } from '../panels/Rec
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
 import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { recordingInputHook, UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from '../panels/Record/recordingInputHook'
-import { RecordingToggleGate, classifyStopFailure, stopArgs } from './recordingSessionModel'
+import { RecordingToggleGate, classifyStopFailure, isNothingRecorded, nothingRecordedText, refusalText, savingProgressText, stopArgs, withSavedNotes } from './recordingSessionModel'
+import { waitForFirstFrame } from './recordingFirstFrame'
+import { SAVING_BEFORE_CLOSE, useRecordingCloseRequest } from './useRecordingCloseRequest'
+import { useActiveRecordingAdoption, type ActiveRecording } from './useActiveRecordingAdoption'
 
 export type RecordingPhase = 'idle' | 'countdown' | 'starting' | 'recording' | 'finalizing' | 'recovery' | 'done' | 'error'
 export interface RecordingSessionState {
@@ -73,6 +77,8 @@ const INITIAL: RecordingSessionState = {
   source: null, plan: null, clipId: null, startedAt: null, endedAt: null, message: '', indicatorWarning: null, countdownRemaining: 0,
   recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, inputHook: UNOBSERVED_INPUT_HOOK, cursorCorrelation: null, cadence: null, quality: null, rawHasMic: false, rawHasSystem: false,
 }
+const STARTING_MESSAGE = 'Starting recording… waiting for the first screen frame.'
+const ADOPTED_MESSAGE = 'Recording started outside this window (for example by an agent). Stop saves it as an unedited MP4.'
 const UNKNOWN_START = 'The recorder returned an incomplete Start response. Recording ownership is unknown; restart Cut before another capture.'
 
 async function indicator(command: 'begin_recording_indicator' | 'end_recording_indicator', captureId: string): Promise<string | null> {
@@ -177,7 +183,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       if (!preset) {
         publish({ phase: 'starting', message: 'Checking the primary display for your first recording…' })
         const discovery = await callVerb('screen_record.doctor', {})
-        if (!discovery.ok) { showSetup(`Recorder checks failed: ${discovery.error?.message ?? 'unavailable'}`); return }
+        if (!discovery.ok) { showSetup(`Recorder checks failed: ${refusalText(discovery.error, 'unavailable')}`); return }
         preset = firstUseRecordingPreset(discovery.result)
         if (!preset) { showSetup('No current screen source is available. Open Record to check capture setup.'); return }
       }
@@ -196,7 +202,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       // A fallback project may take time to create. Recheck the source again
       // immediately before Start, including on first use.
       const doctor = await callVerb('screen_record.doctor', {})
-      if (!doctor.ok) { showSetup(`Recorder checks failed: ${doctor.error?.message ?? 'unavailable'}`); return }
+      if (!doctor.ok) { showSetup(`Recorder checks failed: ${refusalText(doctor.error, 'unavailable')}`); return }
       const invalid = validateRecordingPreset(preset, doctor.result)
       if (invalid) { showSetup(invalid); return }
       if (!sameProjectIdentity(currentProject.project_identity, projectRef.current?.project_identity)) { showSetup('The open project changed during recording checks. Try again.'); return }
@@ -220,7 +226,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       if (preset.pause) args.pause = preset.pause
       if (preset.studio) args.studio = preset.studio
       const reply = await callVerb('screen_record.start', args)
-      if (!reply.ok) { showSetup(`Could not start recording: ${reply.error?.message ?? 'unknown error'}`); return }
+      if (!reply.ok) { showSetup(`Could not start recording: ${refusalText(reply.error)}`); return }
       const admitted = recordingStartResult(reply.result)
       if (!admitted) {
         unknownStartRef.current = true
@@ -248,11 +254,23 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
           }
         }
       }
-      publish({ phase: 'recording', captureId: admitted.captureId, startResult: admitted, cadence: admitted.cadence, startedAt: Date.now(), projectName: currentProject.name,
-        message: (sameProjectIdentity(currentProject.project_identity, projectRef.current?.project_identity)
-          ? 'Recording' : 'Recording started, but the open project changed. Stop this capture before continuing.') + presetStorageWarning
-          + (initialStudioWarning ? ` ${initialStudioWarning}` : ''),
-        initialStudioWarning, indicatorWarning: warning })
+      const recordingMessage = (sameProjectIdentity(currentProject.project_identity, projectRef.current?.project_identity)
+        ? 'Recording' : 'Recording started, but the open project changed. Stop this capture before continuing.') + presetStorageWarning
+        + (initialStudioWarning ? ` ${initialStudioWarning}` : '')
+      // "Starting…" until the first screen frame is captured; the timer then
+      // counts from that frame. Stop (button or F9) works during this wait.
+      publish({ phase: 'starting', captureId: admitted.captureId, startResult: admitted, cadence: admitted.cadence, startedAt: null, projectName: currentProject.name,
+        message: STARTING_MESSAGE, initialStudioWarning, indicatorWarning: warning })
+      busyRef.current = false
+      toggleGateRef.current.setInFlight(false)
+      const firstFrame = await waitForFirstFrame(admitted.captureId,
+        () => captureRef.current === admitted.captureId && stateRef.current.phase === 'starting', 10 * 60_000)
+      if (firstFrame.state === 'ready') {
+        publish({ phase: 'recording', startedAt: Date.now() - firstFrame.sinceFirstFrameMs, message: recordingMessage })
+      } else if (firstFrame.state === 'ended' && captureRef.current === admitted.captureId) {
+        // The capture ended before any frame: Stop reports what happened.
+        void stopRef.current()
+      }
     } catch (error) {
       showSetup(`Recorder start failed: ${error instanceof Error ? error.message : 'server unavailable'}`)
     } finally { busyRef.current = false; toggleGateRef.current.setInFlight(false) }
@@ -317,7 +335,9 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     if (countdownRef.current !== null) window.clearInterval(countdownRef.current)
   }, [])
 
-  const checkCaptureStatus = useCallback(async (id: string, stopError = 'Stop did not produce a confirmed result.') => {
+  // `endedMessage` replaces the whole text when the capture turns out to have
+  // ended (an early Stop: nothing to recover, so no recovery hint).
+  const checkCaptureStatus = useCallback(async (id: string, stopError = 'Stop did not produce a confirmed result.', endedMessage?: string) => {
     let status
     try { status = await callVerb('screen_record.status', { capture_id: id }) }
     catch {
@@ -335,7 +355,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       captureRef.current = null
       activePresetRef.current = null
       publish({ phase: 'error', captureId: null, recoveryAction: null, indicatorWarning: warning,
-        message: `${stopError} ${disposition.detail}` })
+        message: endedMessage ?? `${stopError} ${disposition.detail}` })
       return
     }
     publish({ phase: 'recovery', recoveryAction: disposition.state === 'live' ? 'retry_stop' : 'check_status',
@@ -356,22 +376,34 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     publish(INITIAL)
   }, [publish])
 
-  const stop = useCallback(async () => {
+  const stop = useCallback(async (reason?: 'app_exit') => {
     const id = captureRef.current
     const preset = activePresetRef.current
     if (!id || !preset || busyRef.current || (stateRef.current.phase === 'recovery' && stateRef.current.recoveryAction !== 'retry_stop')) return
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
-    publish({ phase: 'finalizing', message: 'Stopping and saving the raw MP4…' })
+    const closing = reason === 'app_exit'
+    publish({ phase: 'finalizing', message: closing ? SAVING_BEFORE_CLOSE : 'Stopping and saving the raw MP4…' })
     let terminal = false
     try {
-      const reply = await callVerb('screen_record.stop', stopArgs(id, preset.raw))
+      // Stop can take a few seconds for a long take: show which part is being
+      // saved while it runs (screen_record.status reports it).
+      const plain = closing ? SAVING_BEFORE_CLOSE : 'Stopping and saving the raw MP4…'
+      const progress = setInterval(() => {
+        void callVerb('screen_record.status', { capture_id: id }).then((status) => {
+          const saving = (status.result as { saving?: unknown } | undefined)?.saving
+          if (saving && stateRef.current.phase === 'finalizing') publish({ message: savingProgressText(saving, plain) })
+        }).catch(() => {})
+      }, 1000)
+      const reply = await callVerb('screen_record.stop', stopArgs(id, preset.raw, reason)).finally(() => clearInterval(progress))
       if (!reply.ok) {
-        await checkCaptureStatus(id, `Stop did not complete: ${reply.error?.message ?? 'unknown error'}.`)
+        await checkCaptureStatus(id, `Stop did not complete: ${refusalText(reply.error)}`,
+          isNothingRecorded(reply.error) ? nothingRecordedText(reply.error) : undefined)
         return
       }
       terminal = true
-      const result = reply.result as { capture_id?: string; raw_path?: string | null; source?: string; plan?: string; raw_streams?: StudioRawStreams; input_hook?: unknown; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence; quality?: unknown; raw_has_mic?: boolean; raw_has_system?: boolean }
+      const result = reply.result as { capture_id?: string; raw_path?: string | null; source?: string; plan?: string; raw_streams?: StudioRawStreams; input_hook?: unknown; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence; quality?: unknown; raw_has_mic?: boolean; raw_has_system?: boolean; notes?: unknown }
+      const notes = result.notes
       const warning = await indicator('end_recording_indicator', id)
       captureRef.current = null
       activePresetRef.current = null
@@ -389,34 +421,92 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         rawStreams: result.raw_streams ?? null, inputHook: recordingInputHook(result.input_hook), cursorCorrelation: result.cursor_correlation ?? null, cadence: result.cadence ?? null, quality: result.quality ?? null,
         rawHasMic: Boolean(result.raw_has_mic), rawHasSystem: Boolean(result.raw_has_system) })
       if (preset.raw) {
-        publish({ phase: 'done', message: 'Raw MP4 saved to the recording project’s default export folder.' })
+        publish({ phase: 'done', message: withSavedNotes('Raw MP4 saved to the recording project’s default export folder.', notes) })
         resultRef.current()
         return
       }
       if (stateRef.current.initialStudioWarning) {
-        publish({ phase: 'error', message: `Raw MP4 saved. ${stateRef.current.initialStudioWarning}` })
+        publish({ phase: 'error', message: withSavedNotes(`Raw MP4 saved. ${stateRef.current.initialStudioWarning}`, notes) })
         return
       }
       if (!result.source || !result.plan) {
-        publish({ phase: 'error', message: 'Raw MP4 saved, but the editable plan was not returned. The clip was not added.' })
+        publish({ phase: 'error', message: withSavedNotes('Raw MP4 saved, but the editable plan was not returned. The clip was not added.', notes) })
         return
       }
       if (!sameProjectIdentity(projectIdentityRef.current, projectRef.current?.project_identity)) {
-        publish({ phase: 'error', message: 'Raw MP4 saved, but the open project changed before polish. Reopen the recording project to continue.' })
+        publish({ phase: 'error', message: withSavedNotes('Raw MP4 saved, but the open project changed before polish. Reopen the recording project to continue.', notes) })
         return
       }
-      publish({ phase: 'finalizing', message: 'Raw MP4 saved. Polishing and adding the editable clip…' })
+      const polishing = closing ? `${SAVING_BEFORE_CLOSE} Adding the editable clip…` : 'Raw MP4 saved. Polishing and adding the editable clip…'
+      publish({ phase: 'finalizing', message: polishing })
+      // The bake is a screen_record_polish job: show its progress while the
+      // verb runs (a 4K take takes tens of seconds).
+      const stopWatching = watchPolishProgress((percent) => publish({ message: `${polishing} ${percent}%` }))
       const polished = await callVerb('screen_record.polish', { source: result.source, plan: result.plan, raw: false })
-      if (!polished.ok) { publish({ phase: 'error', message: `Raw MP4 saved; polish failed: ${polished.error?.message ?? 'unknown error'}` }); return }
+        .finally(stopWatching)
+      if (!polished.ok) { publish({ phase: 'error', message: withSavedNotes(`Raw MP4 saved; polish failed: ${polished.error?.message ?? 'unknown error'}`, notes) }); return }
+      const placement = polished.result as { placed?: boolean; message?: string } | undefined
+      // The recording's project was no longer open when the clip was ready:
+      // nothing was added anywhere, and the reply says where it waits.
+      if (placement?.placed === false) { publish({ phase: 'error', message: withSavedNotes(`Raw MP4 saved. ${placement.message ?? 'The editable clip was not added.'}`, notes) }); return }
       const clipId = (polished.result as { clip_id?: string })?.clip_id
-      if (!clipId) { publish({ phase: 'error', message: 'Raw MP4 saved; polish returned no confirmed editable clip.' }); return }
-      publish({ phase: 'done', clipId, message: 'Raw MP4 saved and polished clip added to the current project.' })
+      if (!clipId) { publish({ phase: 'error', message: withSavedNotes('Raw MP4 saved; polish returned no confirmed editable clip.', notes) }); return }
+      publish({ phase: 'done', clipId, message: withSavedNotes('Raw MP4 saved and polished clip added to the current project.', notes) })
       resultRef.current()
     } catch (error) {
       if (terminal) publish({ phase: 'error', recoveryAction: null, message: `Could not complete Stop: ${error instanceof Error ? error.message : 'server unavailable'}. The capture ended; inspect the saved result.` })
       else await checkCaptureStatus(id, `Could not complete Stop: ${error instanceof Error ? error.message : 'server unavailable'}.`)
     } finally { busyRef.current = false; toggleGateRef.current.setInFlight(false) }
   }, [checkCaptureStatus, publish])
+
+  const stopRef = useRef<(reason?: 'app_exit') => Promise<void>>(async () => {})
+  stopRef.current = stop
+
+  useRecordingCloseRequest({
+    isRecording: () => Boolean(captureRef.current),
+    stopForClose: () => stopRef.current('app_exit'),
+    announce: (message) => publish({ message }),
+  })
+
+  // A recording adopted from outside is stopped by whoever started it unless
+  // the person presses Stop here; when it ends elsewhere, just let it go.
+  const adoptedRef = useRef<string | null>(null)
+  const releaseAdopted = useCallback((id: string) => {
+    if (captureRef.current !== id) return
+    captureRef.current = null
+    activePresetRef.current = null
+    adoptedRef.current = null
+    void indicator('end_recording_indicator', id)
+    publish({ ...INITIAL, message: 'The recording started outside this window has ended.' })
+  }, [publish])
+
+  const adopt = useCallback((recording: ActiveRecording) => {
+    if (busyRef.current || captureRef.current) return
+    adoptedRef.current = recording.captureId
+    captureRef.current = recording.captureId
+    // Only `raw` is read for an adopted capture: Stop saves the unedited MP4.
+    activePresetRef.current = { raw: true } as RecordingPreset
+    projectIdentityRef.current = projectRef.current?.project_identity ? { ...projectRef.current.project_identity } : undefined
+    void indicator('begin_recording_indicator', recording.captureId).then((warning) => publish({ indicatorWarning: warning }))
+    publish({ ...INITIAL, raw: true, captureId: recording.captureId, projectName: projectRef.current?.name ?? null,
+      phase: recording.ready ? 'recording' : 'starting',
+      startedAt: recording.ready ? Date.now() - (recording.sinceFirstFrameMs ?? 0) : null,
+      message: recording.ready ? ADOPTED_MESSAGE : STARTING_MESSAGE })
+    if (!recording.ready) {
+      void waitForFirstFrame(recording.captureId,
+        () => captureRef.current === recording.captureId && stateRef.current.phase === 'starting', 10 * 60_000)
+        .then((firstFrame) => {
+          if (firstFrame.state === 'ready') publish({ phase: 'recording', startedAt: Date.now() - firstFrame.sinceFirstFrameMs, message: ADOPTED_MESSAGE })
+          else if (firstFrame.state === 'ended') releaseAdopted(recording.captureId)
+        })
+    }
+  }, [publish, releaseAdopted])
+  useActiveRecordingAdoption({
+    idle: () => !busyRef.current && !captureRef.current && !unknownStartRef.current
+      && countdownRef.current === null && stateRef.current.phase !== 'recovery' && stateRef.current.phase !== 'finalizing'
+      && stateRef.current.phase !== 'starting',
+    adopt,
+  })
 
   useEffect(() => {
     if (state.phase !== 'recording' || !state.captureId) return
@@ -430,16 +520,19 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         if (captureRef.current !== id || busyRef.current) return
         if (reply.ok) {
           const result = reply.result as { capture_id?: string; terminal?: boolean; input_hook?: unknown }
+          // A recording started outside this window ends without a Stop here.
+          if (result.terminal === true && adoptedRef.current === id) { releaseAdopted(id); return }
           if (result.capture_id === id) {
             publish({ inputHook: recordingInputHook(result.input_hook) })
             if (result.terminal === true) void stop()
           } else if (result.capture_id !== id) publish({ phase: 'recovery', message: 'Recorder status returned a different capture ID. Inspect Recording Recovery.' })
-        } else if (reply.error?.code === 'not_found') await checkCaptureStatus(id, 'The native capture ended before Stop returned an output.')
+        } else if (reply.error?.code === 'not_found' && adoptedRef.current === id) releaseAdopted(id)
+        else if (reply.error?.code === 'not_found') await checkCaptureStatus(id, 'The native capture ended before Stop returned an output.')
       } finally { checking = false }
     }
     const timer = window.setInterval(() => { void check() }, 1000)
     return () => window.clearInterval(timer)
-  }, [checkCaptureStatus, publish, state.captureId, state.phase, stop])
+  }, [checkCaptureStatus, publish, releaseAdopted, state.captureId, state.phase, stop])
 
   const toggleRef = useRef<() => void>(() => {})
   toggleRef.current = () => {

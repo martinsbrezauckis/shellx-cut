@@ -157,47 +157,27 @@ impl CaptureExportAudio {
         super::align_ffmpeg_env();
         let mut command = std::process::Command::new(cut_media::toolpath::ffmpeg());
         command.args(["-v", "error", "-y"]);
-        let filter = match (&self.mic, &self.system) {
-            (None, Some(system)) => {
-                command
-                    .args([
-                        "-protocol_whitelist",
-                        cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                        "-format_whitelist",
-                        cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                        "-i",
-                    ])
-                    .arg(system);
-                format!(
-                    "[0:a]aresample=48000,adelay={}:all=1[a]",
-                    self.system_offset_ms
-                )
-            }
-            (Some(mic), Some(system)) => {
-                command
-                    .args([
-                        "-protocol_whitelist",
-                        cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                        "-format_whitelist",
-                        cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                        "-i",
-                    ])
-                    .arg(mic)
-                    .args([
-                        "-protocol_whitelist",
-                        cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                        "-format_whitelist",
-                        cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                        "-i",
-                    ])
-                    .arg(system);
-                format!(
+        let filter = record_render::ffmpeg::with_media_process_control(control, || {
+            let filter = match (&self.mic, &self.system) {
+                (None, Some(system)) => {
+                    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, system)?;
+                    format!(
+                        "[0:a]aresample=48000,adelay={}:all=1[a]",
+                        self.system_offset_ms
+                    )
+                }
+                (Some(mic), Some(system)) => {
+                    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, mic)?;
+                    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, system)?;
+                    format!(
                     "[0:a]aresample=48000[m];[1:a]aresample=48000,adelay={}:all=1[s];[m][s]amix=inputs=2:duration=longest:normalize=0[a]",
                     self.system_offset_ms
                 )
-            }
-            _ => unreachable!("single direct audio source does not need a mix"),
-        };
+                }
+                _ => unreachable!("single direct audio source does not need a mix"),
+            };
+            Ok::<_, CutError>(filter)
+        })?;
         command
             .args([
                 "-filter_complex",
@@ -300,3 +280,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "export_audio_probe_tests.rs"]
+mod probe_tests;

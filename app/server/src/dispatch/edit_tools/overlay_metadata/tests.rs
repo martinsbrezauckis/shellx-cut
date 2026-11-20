@@ -4,7 +4,10 @@ fn overlay_ops(text: &str, split_count: u64) -> Vec<OpRecord> {
     let dir = tempfile::tempdir().expect("temporary project root");
     let mut store =
         ProjectStore::create(dir.path(), "overlay-metadata", None).expect("create project store");
-    let duration_ms = split_count + 2;
+    // Splits one frame (40 ms at 30 fps rounds up) apart: no edit may leave a
+    // piece shorter than a frame.
+    const STEP_MS: u64 = 40;
+    let duration_ms = (split_count + 2) * STEP_MS;
     let (asset_id, _) = store
         .record_import(
             Some("a1".into()),
@@ -50,7 +53,7 @@ fn overlay_ops(text: &str, split_count: u64) -> Vec<OpRecord> {
         store
             .apply(
                 "edit.split",
-                json!({"track": "title1", "at_ms": at_ms}),
+                json!({"track": "title1", "at_ms": at_ms * STEP_MS}),
                 Actor::system(),
                 None,
             )

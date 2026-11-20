@@ -32,8 +32,8 @@ test('render queue keeps exact admission and status across modal, mode, and proj
       })
     } }], server: { host: '127.0.0.1', port: 0 },
   })
-  await server.listen()
   t.after(() => server.close())
+  await server.listen()
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage()
@@ -49,7 +49,7 @@ test('render queue keeps exact admission and status across modal, mode, and proj
     const name = new URL(route.request().url()).pathname.split('/').at(-1)
     if (name === 'render.queue') { submitted.push(route); return }
     if (name === 'jobs.status') { statuses.push(route); statusTimes.push(Date.now()); return }
-    if (name === 'project.set_output_dir' && holdAuthorization) { authorizations.push(route); return }
+    if (name === 'project.get_output_dir' && holdAuthorization) { authorizations.push(route); return }
     if (name === 'verify.pregate') preflights += 1
     const result = name === 'verify.pregate' ? { pass: true, risks: [] }
       : name === 'jobs.list' ? { jobs: [] } : {}

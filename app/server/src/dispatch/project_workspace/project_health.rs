@@ -102,7 +102,8 @@ fn journal_report(
     let open = store.open_health();
     let recovered = open.journal_tail_recovery.is_some()
         || open.cache == cut_core::ProjectCacheHealth::Rebuilt
-        || open.snapshot == cut_core::ProjectSnapshotHealth::Rejected;
+        || open.snapshot == cut_core::ProjectSnapshotHealth::Rejected
+        || !open.format_fits.is_empty();
     let status = if identity_error.is_some() {
         live_status
     } else if recovered {
@@ -132,6 +133,15 @@ fn journal_report(
             "message": "A disposable history snapshot failed verification and was ignored.",
         }));
     }
+    for fit in &open.format_fits {
+        notices.push(json!({
+            "code": "project_format_reduced",
+            "message": fit.message(),
+            "sequence": fit.sequence,
+            "from": {"width": fit.from.0, "height": fit.from.1, "fps": fit.from.2},
+            "to": {"width": fit.to.0, "height": fit.to.1, "fps": fit.to.2},
+        }));
+    }
     if identity_error.is_some() {
         notices.push(json!({
             "code": "identity_revalidation_failed",
@@ -156,3 +166,34 @@ fn journal_report(
 
 #[cfg(test)]
 mod tests;
+
+/// Item 141: one warning per format reduced while the project opened, for
+/// the `project.open` result (the agent) and the app's open message.
+pub(super) fn format_reduced_warnings(
+    open: &cut_core::ProjectOpenHealth,
+) -> Vec<cut_core::VerbWarning> {
+    open.format_fits
+        .iter()
+        .map(|fit| {
+            let mut detail = serde_json::Map::new();
+            detail.insert(
+                "from".into(),
+                json!({"width": fit.from.0, "height": fit.from.1, "fps": fit.from.2}),
+            );
+            detail.insert(
+                "to".into(),
+                json!({"width": fit.to.0, "height": fit.to.1, "fps": fit.to.2}),
+            );
+            detail.insert("sequence".into(), json!(fit.sequence));
+            detail.insert(
+                "suggested_action".into(),
+                json!("keep it, or set another format with project.format {width, height, fps}"),
+            );
+            cut_core::VerbWarning {
+                code: "project_format_reduced".into(),
+                message: fit.message(),
+                detail,
+            }
+        })
+        .collect()
+}

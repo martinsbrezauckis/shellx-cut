@@ -279,18 +279,11 @@ fn open_local(path: &Path) -> Result<File, CutError> {
     .ok_or_else(|| invalid("opened selected private WAV is not regular"))
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 fn read_nofollow(path: &Path) -> Result<Vec<u8>, CutError> {

@@ -196,3 +196,52 @@ fn linked_journal_is_rejected_before_tail_recovery_touches_its_target() {
     assert_eq!(std::fs::read(&outside).unwrap(), torn);
     assert_eq!(std::fs::read_dir(&project).unwrap().count(), 1);
 }
+
+/// Item 140 sweep: a received project's `ops.jsonl` can be a second name
+/// (hard link) of a file outside the project. Opening must neither truncate
+/// it (the torn-tail repair) nor copy it into the project, and an edit must
+/// never append to it.
+#[test]
+fn a_hard_linked_journal_is_refused_and_the_other_file_is_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside-token.txt");
+    // One line without a final newline: the torn-tail repair would copy it
+    // into the project and cut the outside file to zero bytes.
+    std::fs::write(&outside, b"SECRET-TOKEN-ONE-LINE").unwrap();
+    let project = dir.path().join("received.cutproj");
+    std::fs::create_dir(&project).unwrap();
+    let path = project.join("ops.jsonl");
+    std::fs::hard_link(&outside, &path).unwrap();
+
+    let Err(error) = OpLog::open(&path) else {
+        panic!("a journal with a second name is refused");
+    };
+    assert!(
+        error.message.contains("shared with another file"),
+        "{error:?}"
+    );
+    assert!(error
+        .suggested_action
+        .unwrap()
+        .contains("copy the project folder"));
+    assert_eq!(std::fs::read(&outside).unwrap(), b"SECRET-TOKEN-ONE-LINE");
+    let copied: Vec<_> = std::fs::read_dir(&project)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("recovery"))
+        .collect();
+    assert!(
+        copied.is_empty(),
+        "the outside file was copied into the project"
+    );
+
+    // A valid journal shared with an outside file is not appended to either.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&outside, line(&op(0), true)).unwrap();
+    std::fs::hard_link(&outside, &path).unwrap();
+    let before = std::fs::read(&outside).unwrap();
+    if let Ok(log) = OpLog::open(&path) {
+        let _ = log.append(&op(1));
+    }
+    assert_eq!(std::fs::read(&outside).unwrap(), before);
+}

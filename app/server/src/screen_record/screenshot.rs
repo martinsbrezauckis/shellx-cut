@@ -63,22 +63,18 @@ pub fn capture_screenshot_png(
         controller_placement: None,
         source_lifecycle: None,
         active_preview: None,
+        system_audio_lease: None,
     };
     let captured = cap.capture(&cfg, stop);
     let _ = control.terminalize();
     let result = captured.map_err(record_err).and_then(|out| {
         let mut command = std::process::Command::new(cut_media::toolpath::ffmpeg());
+        command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+        cut_media::ffmpeg::push_ffmpeg_literal_input(
+            &mut command,
+            std::path::Path::new(&out.source_video),
+        )?;
         command
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-i",
-            ])
-            .arg(&out.source_video)
             .args(["-frames:v", "1", "-update", "1"])
             .arg(out_png);
         let status = crate::dispatch::run_bounded_foreground_command(
@@ -94,18 +90,17 @@ pub fn capture_screenshot_png(
             ));
         }
         let mut command = std::process::Command::new(cut_media::toolpath::ffprobe());
-        command
-            .args([
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height",
-                "-of",
-                "csv=p=0:s=x",
-            ])
-            .arg(out_png);
+        command.args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+        ]);
+        cut_media::ffmpeg::push_ffprobe_literal_input(&mut command, out_png);
         Ok(crate::dispatch::run_bounded_foreground_command(
             &mut command,
             "probe screen-record screenshot dimensions",

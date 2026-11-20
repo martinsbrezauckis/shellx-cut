@@ -47,16 +47,9 @@ pub fn waveform(path: &Path, duration_ms: u64, buckets: usize) -> Result<Wavefor
         (max_samples * 1000 / dur).clamp(2000, 8000) as u32
     };
     let mut command = Command::new(ffmpeg_bin());
+    command.args(["-v", "error", "-nostdin"]);
+    crate::ffmpeg::push_ffmpeg_literal_input(&mut command, path)?;
     command.args([
-        "-v",
-        "error",
-        "-nostdin",
-        "-protocol_whitelist",
-        crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-        "-format_whitelist",
-        crate::ffmpeg::LOCAL_INPUT_FORMATS,
-        "-i",
-        &path.to_string_lossy(),
         "-vn",
         "-ac",
         "1",

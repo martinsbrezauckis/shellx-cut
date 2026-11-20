@@ -6,6 +6,9 @@
 //     `fullscreenchange` event so the button never lies about the real state).
 //   • guides — framing overlays (rule-of-thirds / safe areas), persisted to
 //     localStorage (the proxyPref pattern) so the choice survives reloads.
+//   • composed — show the exact composed frame (titles, effects, grades) while
+//     paused. ON by default, as large editors show the program picture in the
+//     viewer; the person's OFF is remembered the same way as guides.
 //
 // UI-only by design (no verb): both are pure presentation state of THIS
 // client's monitor — they never touch the project, the op-log, or the render,
@@ -42,6 +45,25 @@ export function guideLabel(mode: GuideMode): string {
     case 'thirds': return 'Rule of thirds'
     case 'safe': return 'Safe areas'
     case 'both': return 'Thirds + safe areas'
+  }
+}
+
+const COMPOSED_KEY = 'cut.previewComposed'
+
+/** COMPOSED is on unless the person turned it off on this machine. */
+export function loadComposedPreference(storage: Pick<Storage, 'getItem'> | null = safeStorage()): boolean {
+  try {
+    return storage?.getItem(COMPOSED_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+
+function safeStorage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
   }
 }
 
@@ -145,5 +167,19 @@ export function usePreviewViewOptions(rootRef: RefObject<HTMLElement | null>) {
     })
   }, [])
 
-  return { isFullscreen, toggleFullscreen, guides, cycleGuides }
+  // --- composed --------------------------------------------------------------
+  const [composed, setComposedState] = useState<boolean>(() => loadComposedPreference())
+  const setComposed = useCallback((next: boolean | ((current: boolean) => boolean)) => {
+    setComposedState((current) => {
+      const value = typeof next === 'function' ? next(current) : next
+      try {
+        safeStorage()?.setItem(COMPOSED_KEY, value ? 'on' : 'off')
+      } catch {
+        /* storage unavailable: the choice holds for this session */
+      }
+      return value
+    })
+  }, [])
+
+  return { isFullscreen, toggleFullscreen, guides, cycleGuides, composed, setComposed }
 }

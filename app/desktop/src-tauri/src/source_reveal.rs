@@ -65,6 +65,12 @@ fn require_regular_file(path: &Path) -> Result<(), SourceRevealReply> {
     }
 }
 
+#[cfg(target_os = "linux")]
+const REVEAL_REFUSED: &str = "The desktop file manager could not reveal the registered source; \
+    revealing needs xdg-open (package xdg-utils: sudo apt install xdg-utils, or sudo dnf install xdg-utils)";
+#[cfg(not(target_os = "linux"))]
+const REVEAL_REFUSED: &str = "The desktop file manager could not reveal the registered source";
+
 /// Ask the platform's file manager to show the resolved file. A successful
 /// spawn means the OS accepted the hand-off, not that every desktop environment
 /// provides an observable selected-row state (Linux file managers vary there).
@@ -82,9 +88,7 @@ pub fn reveal_registered_source(project: &Value, asset_id: &str) -> SourceReveal
         Ok(message) => SourceRevealReply::Revealed {
             message: message.to_string(),
         },
-        Err(()) => SourceRevealReply::refused(
-            "The desktop file manager could not reveal the registered source",
-        ),
+        Err(()) => SourceRevealReply::refused(REVEAL_REFUSED),
     }
 }
 

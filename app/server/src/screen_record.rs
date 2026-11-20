@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod audio_meters;
 #[cfg(test)]
 mod audio_meters_tests;
+mod audio_test_gate;
 mod autoedit_args;
 mod cadence;
 mod camera_capture_sidecar;
@@ -44,6 +45,7 @@ mod plan_output;
 // REC-CAMERA-01d is the private Windows server/project owner. It is not
 // selected by screen_record.start or any verb/UI/Doctor route until installed
 // native proof explicitly admits that separate product surface.
+pub(crate) mod active_capture;
 #[cfg(windows)]
 #[allow(dead_code)]
 mod camera_server_owner;
@@ -59,8 +61,13 @@ mod export_progress;
 pub(crate) mod finalization_budget;
 pub(crate) mod microphone;
 mod monitor_start_admission;
+pub(crate) mod pending_recordings;
+pub(crate) mod polish_job;
 mod raw_copy_job;
 mod record_tool_alignment;
+mod recording_failure;
+pub(crate) mod recover_take;
+pub(crate) mod recovered_extent;
 // The macOS-only Region start path receives a ticket only from the private
 // foreground desktop bridge. It still enters the ordinary capture reservation
 // below and has no schema/verb/UI representation.
@@ -217,6 +224,7 @@ pub(crate) use capture_files::{
 };
 #[cfg(test)]
 pub(crate) use capture_registry::capture_test_lock;
+pub(crate) use capture_registry::is_capture_active;
 pub(crate) use capture_registry::refuse_project_transition_if_active;
 #[cfg(test)]
 pub(crate) use capture_registry::reserve_project_transition_test_capture;
@@ -239,9 +247,11 @@ pub use doctor_projection::WindowInfo;
 pub(crate) use export_audio::{for_source as export_audio_for_source, CaptureExportAudio};
 pub(crate) use export_job::{retry_screen_record_export, screen_record_export};
 #[cfg(test)]
+pub(crate) use polish::render_with_control;
+#[cfg(test)]
 use polish::{autoedit, parse_autoedit_config, read_bounded_json};
 pub(crate) use polish::{
-    gif_with_control, mux_raw_with_control, plan_cache_tag, render_with_control,
+    gif_with_control, mux_raw_with_control, plan_cache_tag, render_polish_with_control_progress,
     render_with_control_progress, screen_record_autoedit,
 };
 pub(crate) use raw_copy_job::screen_record_copy_raw;
@@ -333,13 +343,15 @@ pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
     doctor_projection::screen_record_doctor(args).await
 }
 
-/// Voiceover shares the admitted native capture build/readiness model with the
-/// Record workspace. This deliberately does not warm or open a microphone:
-/// actual input readiness starts only after an authenticated voiceover request
-/// reserves its fixed private source.
+/// Voiceover records only the microphone: admit it from microphone readiness
+/// alone. No screen read, list, or capture check happens on this path, and the
+/// microphone itself opens only after the take is accepted. When macOS has not
+/// asked yet, this start makes it ask and returns what to do next.
 pub(crate) fn ensure_voiceover_ready() -> Result<(), CutError> {
-    let recorder_doctor = doctor();
-    start_readiness::ensure_start_ready(&recorder_doctor.cards)
+    microphone::readiness::admit_voiceover(
+        microphone::readiness::MicrophoneReadiness::current(),
+        record_capture::request_microphone_access,
+    )
 }
 
 /// Resolve a `<cutproj>/cache/screen_record/` path, creating the dir.
@@ -552,6 +564,11 @@ where
         ),
     };
     let clock = record_capture::CaptureClock::new();
+    // Held by the worker until it ends; a backend that stops its native audio
+    // at the capture-end boundary (macOS) releases it there.
+    let system_audio_lease: Option<record_capture::SharedSystemAudioLease> =
+        system_audio_capture::reserve(system_audio)?
+            .map(|lease| std::sync::Arc::new(std::sync::Mutex::new(Some(lease))));
     let cfg = record_capture::CaptureConfig {
         // Pass `None` straight through for OPEN-ENDED ("record until I stop").
         // The backend treats None as "run until the external stop flag is set".
@@ -585,8 +602,8 @@ where
         controller_placement: Some(control.controller_placement()),
         source_lifecycle: Some(control.source_lifecycle()),
         active_preview: Some(control.active_preview()),
+        system_audio_lease: system_audio_lease.clone(),
     };
-    let system_audio_lease = system_audio_capture::reserve(system_audio)?;
     let reservation = capture_registry::reserve_capture_after_preview_release(
         capture_id.clone(),
         control.clone(),
@@ -601,6 +618,10 @@ where
             error.to_string(),
         ));
     }
+    // Written before the native capture opens: if this process dies, the next
+    // start of the app still knows a recording was running.
+    pending_recordings::note_started(&capture_id, &project_dir);
+    let pending_id = capture_id.clone();
     let control_for_thread = control.clone();
     let worker = std::thread::Builder::new()
         .name(format!("cut-capture-{capture_id}"))
@@ -729,7 +750,15 @@ where
                         // older source that still carries embedded SCK audio.
                         #[cfg(target_os = "macos")]
                         if system_audio {
-                            split_mac_system_audio(std::path::Path::new(&out.source_video));
+                            split_mac_system_audio(std::path::Path::new(&out.source_video))
+                                .map_err(|cause| {
+                                    record_core::RecordError::new(
+                                        "ffmpeg",
+                                        "cannot safely read recorded system audio",
+                                        cause.to_string(),
+                                    )
+                                    .with_action("use a readable capture source and retry recording")
+                                })?;
                         }
                         microphone::persist_capture_outcome(&out_dir, out.microphone_outcome)?;
                         let project = out.into_project_with_capture_cadence(capture_cadence);
@@ -793,6 +822,24 @@ where
             // the one terminal state before recovery/error publication.
             let _ = control_for_thread.terminalize();
             if let Err(e) = result {
+                // Seal before reporting: Stop returns as soon as the failure is
+                // published, and the capture must not be left unsealed (it
+                // would show as an unresolved capture until a restart).
+                let kept = recovery::seal_after_failure(&out_dir);
+                let e = recording_failure::explain(
+                    e,
+                    control_for_thread.stop_requested(),
+                    control_for_thread.readiness_status(),
+                    kept.as_ref(),
+                );
+                let e = recording_failure::with_kept_take(e, kept.as_ref());
+                if recording_failure::nothing_recorded(&e) {
+                    pending_recordings::mark_nothing_recorded(&out_dir);
+                }
+                pending_recordings::after_failure(
+                    &capture_id,
+                    recording_failure::nothing_recorded(&e),
+                );
                 if let Err(terminal_error) =
                     capture_terminal::publish_failure(&project_dir, &capture_id, &e)
                 {
@@ -815,6 +862,7 @@ where
             }
         });
     if let Err(error) = worker {
+        pending_recordings::remove(&pending_id);
         let _ = control.terminalize();
         return Err(CutError::new(
             error_codes::IO,
@@ -916,25 +964,22 @@ where
 /// Current Core Audio capture writes `system.wav` beside a video-only source;
 /// this best-effort compatibility path preserves the separate-`a_system` contract.
 #[cfg(target_os = "macos")]
-fn split_mac_system_audio(source_mp4: &Path) {
+fn split_mac_system_audio(source_mp4: &Path) -> Result<(), CutError> {
     use std::process::Command;
     let ffmpeg = cut_media::toolpath::ffmpeg();
     let ffprobe = cut_media::toolpath::ffprobe();
     let mut command = Command::new(&ffprobe);
-    command
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(source_mp4);
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+    ]);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut command, source_mp4);
     let has_audio = crate::dispatch::run_bounded_foreground_command(
         &mut command,
         "probe screen-record system audio",
@@ -942,7 +987,7 @@ fn split_mac_system_audio(source_mp4: &Path) {
     .map(|o| o.stdout.iter().any(u8::is_ascii_digit))
     .unwrap_or(false);
     if !has_audio {
-        return; // no muxed desktop audio — leave the recording as video + mic
+        return Ok(()); // no muxed desktop audio — leave the recording as video + mic
     }
     let dir = source_mp4.parent().unwrap_or_else(|| Path::new("."));
     let system_wav = dir.join("system.wav");
@@ -952,17 +997,9 @@ fn split_mac_system_audio(source_mp4: &Path) {
     //    extracting unconditionally would CLOBBER the handler's file with the muxed copy.
     if !system_wav.is_file() {
         let mut command = Command::new(&ffmpeg);
+        command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+        cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, source_mp4)?;
         command
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-i",
-            ])
-            .arg(source_mp4)
             .args(["-map", "0:a:0", "-ac", "2", "-ar", "48000"])
             .arg(&system_wav);
         let _ = crate::dispatch::run_bounded_foreground_command(
@@ -973,17 +1010,9 @@ fn split_mac_system_audio(source_mp4: &Path) {
     // 2) strip source.mp4 → VIDEO-ONLY (fast remux, no re-encode) via a temp file then rename.
     let tmp = dir.join("source.video.mp4");
     let mut command = Command::new(&ffmpeg);
+    command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, source_mp4)?;
     command
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-i",
-        ])
-        .arg(source_mp4)
         .args(["-map", "0:v:0", "-c", "copy", "-an"])
         .arg(&tmp);
     let stripped = crate::dispatch::run_bounded_foreground_command(
@@ -993,6 +1022,7 @@ fn split_mac_system_audio(source_mp4: &Path) {
     if matches!(stripped, Ok(output) if output.status.success()) && tmp.is_file() {
         let _ = std::fs::rename(&tmp, source_mp4);
     }
+    Ok(())
 }
 
 /// The per-OS ffmpeg loopback source for DESKTOP/SYSTEM audio (the game-recording

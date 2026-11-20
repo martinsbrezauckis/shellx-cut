@@ -5,6 +5,8 @@
 // backward-compatible `state: failed` is never presented as an ordinary error.
 
 import type { JobRecord } from '../../lib/clientModel'
+import { jobFailureText } from '../../lib/jobFailureText'
+import { jobTaskName } from '../../lib/jobPresentation'
 
 export interface JobRetryRecoveryView {
   jobId: string
@@ -16,6 +18,8 @@ export interface JobRetryRecoveryView {
   label: string
   terminalLabel: 'Failed' | 'Cancelled' | 'Superseded' | 'Interrupted'
   canRetry: boolean
+  /** The engine's reason and suggested next step, for a true failure. */
+  failureText?: string
   unavailableReason?: string
   lineage?: string
 }
@@ -25,12 +29,6 @@ function terminalLabel(job: JobRecord): JobRetryRecoveryView['terminalLabel'] {
   if (job.outcome === 'superseded' || job.outcome_reason === 'superseded') return 'Superseded'
   if (job.outcome === 'interrupted' || job.outcome_reason === 'restart_interrupted') return 'Interrupted'
   return 'Failed'
-}
-
-function jobLabel(kind: string): string {
-  if (kind === 'screen_record_export') return 'Recording export'
-  if (kind === 'verify-rerun') return 'Output check'
-  return kind.replaceAll('_', ' ')
 }
 
 function lineage(job: JobRecord): string | undefined {
@@ -67,9 +65,12 @@ export function failedJobRetryViews(records: JobRecord[]): JobRetryRecoveryView[
         eligible: engineEligible,
         rootJobId: job.retry?.root_job_id ?? job.job_id,
         attempt: job.retry?.attempt ?? 0,
-        label: jobLabel(job.kind),
+        label: jobTaskName(job.kind),
         terminalLabel: terminal,
         canRetry,
+        ...(terminal === 'Failed' && (job.error?.message || job.error?.suggested_action)
+          ? { failureText: jobFailureText(job, '') }
+          : {}),
         unavailableReason,
         lineage: lineage(job),
       }

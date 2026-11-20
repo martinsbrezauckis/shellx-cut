@@ -143,8 +143,8 @@ export interface AssemblePlanBinding {
 // ---------------------------------------------------------------------------
 
 export interface VerbArgs {
-  'project.create': { name: string; settings?: Partial<ProjectSettings>; dir?: string; starter?: 'first-edit' }
-  'project.open': { path: string }
+  'project.create': { name: string; settings?: Partial<ProjectSettings>; dir?: string; starter?: 'first-edit'; cancel_running_jobs?: boolean }
+  'project.open': { path: string; cancel_running_jobs?: boolean }
   'project.save': Record<string, never>
   'project.package_plan': { destination: string; name: string; b5_receipt?: PortableB5RelinkReceipt }
   'project.package_create': { destination: string; name: string; plan_hash: string; b5_receipt?: PortableB5RelinkReceipt }
@@ -170,11 +170,12 @@ export interface VerbArgs {
   'project.color': { working?: 'rec709' | 'rec2020' | 'srgb' | 'linear'; output?: 'rec709' | 'rec2020' | 'srgb' | 'linear'; rationale?: string }
   'project.brand': { brand?: BrandKit; clear?: boolean; rationale?: string }
   'project.set_output_dir': { dir?: string; rationale?: string }
+  'project.get_output_dir': Record<string, never>
   'project.revert': { to: string; if_tip?: string; rationale?: string }
   'project.undo': Record<string, never>
   'project.redo': Record<string, never>
   'project.diff': { from: string; to: string }
-  'project.close': Record<string, never>
+  'project.close': { cancel_running_jobs?: boolean }
   // Projects index (discovery): list recent projects + forget one (forget != delete).
   'project.list': { sort?: 'recent' | 'name' | 'created'; q?: string }
   'project.forget': { id?: string; path?: string; missing?: boolean }
@@ -259,6 +260,11 @@ export interface VerbArgs {
   'jobs.list': Record<string, never>
   'jobs.cancel': { job_id: string; expected_origin_path_sha256?: string }
   'jobs.retry': { job_id: string }
+  // What closing the desktop app would cancel (`jobs_running`), and stopping it.
+  'jobs.before_quit': { cancel_running_jobs?: boolean }
+  // Work a kill, crash or power cut stopped; needs no open project.
+  'jobs.interrupted': Record<string, never>
+  'jobs.interrupted_dismiss': { key: string }
 
   // group_id: composite-action tag (store-level meta-arg) — a linked A/V
   // split is two ops sharing one tag so a single Ctrl+Z undoes the whole cut.
@@ -726,7 +732,7 @@ export interface VerbArgs {
   'score.clip': { clip?: string; asset?: string; range_ms?: [number, number] }
   // Integrated Cut recorder (doctor + autoedit + the polish orchestrator
   // + a fenced file export). config (autoedit) is accepted but currently ignored.
-  'screen_record.doctor': { warm_mic?: boolean }
+  'screen_record.doctor': { warm_mic?: boolean; mode?: 'check' | 'status' | 'microphone' }
   'screen_record.microphone_selection': { mode: 'system_default' | 'selected'; microphone_token?: string }
   'screen_record.system_audio_probe': { max_ms?: number }
   'screen_record.recovery_status': { after?: string; limit?: number }
@@ -751,6 +757,12 @@ export interface VerbArgs {
   'screen_record.rehearsal_start': { duration_ms?: number; fps?: number; monitor?: number; monitor_id?: string; window?: string }
   'screen_record.rehearsal_discard': { handle?: string }
   'screen_record.status': { capture_id: string }
+  // Recording visibility and recovery: the running recording without its id,
+  // recordings the person has not been told about, and turning one into a clip.
+  'screen_record.active': Record<string, never>
+  'screen_record.pending': Record<string, never>
+  'screen_record.pending_dismiss': { capture_id: string }
+  'screen_record.recover': { capture_id: string }
   'screen_record.live_frame': { capture_id: string }
   // Recording-scenes API. Record negotiates Doctor support before it ever
   // sends this optional request to a current engine.
@@ -758,7 +770,7 @@ export interface VerbArgs {
   'screen_record.scene_timer': RecordingSceneTimerArgs
   'screen_record.pause': { capture_id: string }
   'screen_record.resume': { capture_id: string }
-  'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string; rationale?: string }
+  'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string; rationale?: string; reason?: 'app_exit' }
   'screen_record.copy_raw': { source: string; path?: string; expected_origin_path_sha256?: string }
   'screen_record.studio_event': {
     capture_id: string
@@ -1039,7 +1051,7 @@ export interface VerbArgs {
   'export.otio': { path?: string; rationale?: string }
   'export.edl': { path?: string; title?: string; rationale?: string }
   'import.otio': { path: string; mode?: 'preview' | 'replace'; expected_hash?: string; rationale?: string }
-  'export.audio': { format?: 'mp3' | 'm4a' | 'aac' | 'wav' | 'flac' | 'opus'; path?: string; track?: string; to_asset?: boolean; rationale?: string }
+  'export.audio': { format?: 'mp3' | 'm4a' | 'aac' | 'wav' | 'flac' | 'opus'; path?: string; track?: string; to_asset?: boolean; scratch?: string; rationale?: string }
   // profile = footage QC profile passthrough to render.final's check battery
   // (silent_screen_demo waives caption/loudness checks); absent = engine default.
   'export.publish': { platform: 'youtube' | 'youtube_4k' | 'tiktok' | 'reels' | 'instagram_feed' | 'x' | 'square'; preset?: 'draft' | 'standard' | 'high'; hardware?: 'auto' | 'off'; profile?: 'talking_head' | 'silent_screen_demo'; path?: string; dry_run?: boolean; rationale?: string }
@@ -1063,6 +1075,8 @@ export interface VerbArgs {
   'ui.open': { panel: UiOpenPanel }
   'ui.playhead': { at_ms: number }
   'ui.select': { clip_ids: string[] }
+  // The preview monitor's COMPOSED mode (exact frame while paused).
+  'ui.preview': { composed: boolean }
   // Agent-driven element highlight overlay (guided demos / debugging). Resolve by
   // ONE of selector|clip|panel; label/description show a chip; duration_ms=0 stays
   // until cleared by clear:true, the close button, or Escape.
@@ -1070,12 +1084,12 @@ export interface VerbArgs {
 
   // System domain — environment doctor + consented tool fetch.
   'system.mcp_test': Record<string, never>
-  'system.doctor': { refresh?: boolean }
+  'system.doctor': { refresh?: boolean; feature?: string }
   'system.motion_status': Record<string, never>
   // Manual ffmpeg override (Change-ffmpeg control); path:null clears → automatic.
   'system.set_ffmpeg': { path?: string | null }
   'system.set_stt_model': { model?: string; language?: string; clear?: boolean; rationale?: string }
-  'system.fetch_tool': { tool: 'ffmpeg'; rationale?: string }
+  'system.fetch_tool': { tool: 'ffmpeg' | 'vc-runtime'; rationale?: string; accept_license?: boolean }
   // Provision the Python perception sidecar (uv + runtime + torch + model).
   // warm_model pulls the model in the same job so first transcription is warm.
   // Long-running (several minutes) — returns {job_id}, polled via jobs.status.
@@ -1144,7 +1158,13 @@ export async function callVerb<N extends VerbName>(
     body: JSON.stringify(args ?? {}),
     signal,
   })
-  return (await res.json()) as VerbResult<VerbResultPayload<N>>
+  const result = (await res.json()) as VerbResult<VerbResultPayload<N>>
+  // An export refused at an odd project size, from whichever surface: the
+  // odd-size notice shows the engine's sentence with its one fix button.
+  if (!result.ok && result.error?.code === 'odd_project_size' && typeof document !== 'undefined') {
+    document.dispatchEvent(new CustomEvent('cut:odd-project-size', { detail: result.error }))
+  }
+  return result
 }
 
 /** Convenience: fetch full project state (the panels' refresh primitive). */

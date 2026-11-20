@@ -358,6 +358,9 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
           }
           if (st === 'failed') {
             activeRunJobRef.current = null
+            // A stopped recipe keeps its report (stages, checkpoint to restore).
+            const stopped = j.result.result as RecipeReport | undefined
+            if (stopped && typeof stopped === 'object' && 'status' in stopped) setReport(stopped)
             setErr(`recipe failed: ${j.result.error?.message ?? 'a stage errored'}`)
             setBusy(false); setPhase('')
             return

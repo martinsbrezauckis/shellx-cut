@@ -110,18 +110,24 @@ pub(in crate::dispatch) async fn media_search(
         // index used) via the indexer's --embed-text mode. Needs the perception
         // runtime; absent → an honest setup pointer (or pass query_vector).
         let rt = crate::vissearch::runtime()?.ok_or_else(|| {
-            CutError::new(
+            crate::requirements::refusal(
                 error_codes::UNIMPLEMENTED,
-                "a TEXT query needs the SigLIP2 text encoder",
-                "set up perception (its venv carries the encoder), or pass `query_vector` for an already-embedded query",
+                "captions_runtime",
+                "Searching by text needs Captions and transcription, which are not installed",
+                "the text is turned into a search vector by the captions runtime's image-text model",
             )
+            .with_suggested_action(format!(
+                "{} Or pass `query_vector` for an already-embedded query.",
+                cut_perception::captions_setup_action()
+            ))
         })?;
         let (rt, q) = (rt, text.to_string());
         let run_rt = rt.clone();
         let outp = tokio::task::spawn_blocking(move || {
             let mut command = std::process::Command::new(&run_rt.python);
             run_rt.configure_command(&mut command);
-            command.arg("--embed-text").arg(&q);
+            // One argument, so a query that starts with `-` stays the query.
+            command.arg(format!("--embed-text={q}"));
             crate::dispatch::run_bounded_foreground_command(&mut command, "SigLIP2 text encoder")
         })
         .await
@@ -327,14 +333,20 @@ pub(in crate::dispatch) async fn media_index(
                 "import the media first (media.import)",
             )
         })?;
-        (store.dir.clone(), PathBuf::from(&asset.path))
+        // Absolute, so the indexer never reads the path as one of its options.
+        (
+            store.dir.clone(),
+            crate::dispatch::media::asset_source_path(&store.dir, asset),
+        )
     };
     let rt = crate::vissearch::runtime()?.ok_or_else(|| {
-        CutError::new(
+        crate::requirements::refusal(
             error_codes::SIDECAR,
-            "the visual-search indexer is not installed",
-            "media.index needs the local perception runtime and a SigLIP2 model. Set up perception and the model, then re-run. Core editing and search of an already-built index work without it.",
+            "captions_runtime",
+            "Building the visual search index needs Captions and transcription, which are not installed",
+            "media.index runs the captions runtime's image model. Core editing and search of an already-built index work without it.",
         )
+        .with_suggested_action(cut_perception::captions_setup_action())
     })?;
     let out = crate::vissearch::prepare_index_output_path(&proj_dir, &a.asset)
         .map_err(|e| CutError::new(error_codes::IO, "prepare embeddings index", e.to_string()))?;
@@ -941,9 +953,17 @@ pub(in crate::dispatch) async fn agent_chat(
     if let Err(reason) =
         crate::chat::broker::verify_installed_agent(agent, &provider_child, &launch_env, &ws).await
     {
+        // A probe that only ran out of time says nothing about the provider:
+        // report it as a timeout with the action "try again", not as a
+        // capability the provider lacks.
+        let category = if reason.timed_out() {
+            "timeout"
+        } else {
+            "unsupported_capability"
+        };
         return fail(
-            "unsupported_capability",
-            reason,
+            category,
+            reason.to_string(),
             Some(agent.into()),
             vec![],
             None,
@@ -1233,7 +1253,7 @@ impl Drop for GenerationScratch {
     }
 }
 
-/// PC4's plain Grok image_gen failed from the deep project-cache cwd and
+/// On Windows a plain Grok image_gen failed from the deep project-cache cwd and
 /// completed from a short cwd in a controlled direct comparison. Keep the
 /// prompt and output in GenerationScratch; move only the provider cwd to an
 /// empty OS temp directory that this guard removes when the scope ends.
@@ -2087,6 +2107,16 @@ pub(in crate::dispatch) async fn assets_generate(
                                 "the provider did not produce reusable media",
                             ),
                         );
+                    } else if result["placement"]["state"] == "failed" {
+                        // Generated, but not placed: never a plain "done".
+                        let mut result = result;
+                        let why = result["placement"]["error"]["message"]
+                            .as_str()
+                            .unwrap_or("the generated asset could not be placed on the timeline")
+                            .to_string();
+                        result["warnings"] =
+                            json!([format!("The asset was generated but not placed: {why}")]);
+                        task_state.jobs.finish_with_warnings(&task_job_id, result);
                     } else {
                         task_state.jobs.finish(&task_job_id, result);
                     }
@@ -2425,6 +2455,11 @@ async fn assets_generate_run(
                     format!("generation cancelled ({})", cancellation.label()),
                     "the owning background job stopped the capability probe",
                 ));
+            }
+            if reason.timed_out() {
+                // Not a verdict on the CLI; nothing is remembered, so the next
+                // request probes again.
+                return degrade(reason.to_string());
             }
             return degrade(format!(
                 "the 'agy' CLI does not meet ShellX Cut's safe non-interactive contract: {reason}"

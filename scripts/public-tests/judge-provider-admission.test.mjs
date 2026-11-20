@@ -20,7 +20,6 @@ import io
 import json
 import os
 import sys
-import types
 from unittest import mock
 
 root = sys.argv[1]
@@ -33,7 +32,7 @@ import codex_judge
 import grok_judge
 import ladder_judge
 
-REASON = "render judge unavailable until restricted tool/file access is verified"
+REASON = "native render-judge admission is pending"
 
 
 def expect(condition, detail):
@@ -73,65 +72,98 @@ expect(antigravity_judge._extract_json is codex_judge._extract_json, "Antigravit
 expect(grok_judge.codex_judge._extract_json is codex_judge._extract_json, "Grok decoder sharing")
 
 
-for adapter, binary, provider in (
-    (codex_judge, "codex", "codex"),
-    (antigravity_judge, "agy", "antigravity"),
-):
-    fixture_path = "/fixture/bin/" + binary
-    commands = []
+help_text = " ".join(codex_judge.codex_judge_policy.TRANSPORT_FLAGS).encode()
+outputs = [b"codex-cli 0.160.1\n", help_text]
+with (mock.patch.object(codex_judge.shutil, "which", return_value="/fixture/codex"),
+      mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", False),
+      mock.patch.object(codex_judge, "_child_route", return_value=(["/fixture/codex"], None)),
+      mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded", side_effect=outputs) as run,
+      mock.patch.object(codex_judge.codex_judge_runtime, "premodel_probe",
+                        side_effect=AssertionError("unadmitted detect probed policy"))):
+    installed = codex_judge.detect()
+expect(installed["found"] and not installed["judge_ready"], repr(installed))
+expect(installed["capabilities"]["direct_image_and_schema"] is True, repr(installed))
+expect(installed["availability_reason"], repr(installed))
+expect([call.args[0] for call in run.call_args_list] ==
+       [["/fixture/codex", "--version"], ["/fixture/codex", "exec", "--help"]], repr(run.call_args_list))
 
-    def version_only(command, **_kwargs):
-        commands.append(command)
-        expect(command == [fixture_path, "--version"], repr(command))
-        return types.SimpleNamespace(stdout=provider + " fixture 1.2.3\n", stderr="", returncode=0)
+# Synthetic effective-policy results check the admission contract without a
+# provider process or configuration read.
+with (mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", True),
+      mock.patch.object(codex_judge.shutil, "which", return_value="/fixture/codex"),
+      mock.patch.object(codex_judge, "_child_route", return_value=(["/fixture/codex"], None)),
+      mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded", side_effect=outputs),
+      mock.patch.object(codex_judge.codex_judge_runtime, "premodel_probe",
+                        return_value={"effective_policy": True}) as probe):
+    capable = codex_judge.detect()
+expect(capable["judge_ready"] is True and capable["availability_reason"] is None, repr(capable))
+expect(capable["capabilities"]["native_tool_free_admission"] is True, repr(capable))
+expect(probe.call_count == 1 and probe.call_args.args[0] == ["/fixture/codex"], repr(probe.call_args))
 
-    with (
-        mock.patch.object(adapter.shutil, "which", return_value=fixture_path),
-        mock.patch.object(adapter.subprocess, "run", side_effect=version_only),
-        mock.patch("builtins.open", side_effect=AssertionError("detect opened provider state")),
-    ):
-        detected = adapter.detect()
-    expect(detected["found"] is True and detected["path"] == fixture_path, repr(detected))
-    expect(detected["judge_ready"] is False, repr(detected))
-    expect(detected["availability_reason"] == REASON, repr(detected))
-    expect(detected["logged_in"] is None and detected["version"] == provider + " fixture 1.2.3", repr(detected))
-    expect(commands == [[fixture_path, "--version"]], repr(commands))
+with (mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", True),
+      mock.patch.object(codex_judge.shutil, "which", return_value="/fixture/codex"),
+      mock.patch.object(codex_judge, "_child_route", return_value=(["/fixture/codex"], None)),
+      mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded", side_effect=outputs),
+      mock.patch.object(codex_judge.codex_judge_runtime, "premodel_probe",
+                        return_value={"effective_policy": False}) as rejected_probe):
+    rejected = codex_judge.detect()
+expect(rejected_probe.call_count == 1 and rejected["found"], repr(rejected))
+expect(rejected["judge_ready"] is False and rejected["availability_reason"], repr(rejected))
+expect(rejected["capabilities"]["native_tool_free_admission"] is False, repr(rejected))
 
-    with (
-        mock.patch.object(adapter.shutil, "which", return_value=None),
-        mock.patch.object(adapter.subprocess, "run", side_effect=AssertionError("missing detect ran a process")),
-    ):
-        missing = adapter.detect()
-    expect(missing["found"] is False and missing["path"] is None, repr(missing))
-    expect(missing["judge_ready"] is False and missing["availability_reason"] == REASON, repr(missing))
+with (mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", True),
+      mock.patch.object(codex_judge.shutil, "which", return_value="/fixture/codex"),
+      mock.patch.object(codex_judge, "_child_route", return_value=(["/fixture/codex"], None)),
+      mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded", side_effect=outputs),
+      mock.patch.object(codex_judge.codex_judge_runtime, "premodel_probe",
+                        side_effect=codex_judge.codex_judge_runtime.ProbeError("codex_effective_policy_tools"))):
+    refused = codex_judge.detect()
+expect(refused["found"] and refused["judge_ready"] is False, repr(refused))
+expect(refused["availability_reason"] == "codex_effective_policy_tools", repr(refused))
 
-    # An explicit review remains an honest terminal receipt even when --render
-    # names a non-existent/unreadable file. Every render/protocol hook raises if
-    # reached; no provider or model subprocess may occur.
-    blocked_stdout = io.StringIO()
-    with (
-        mock.patch.object(adapter.subprocess, "run", side_effect=AssertionError("review started a subprocess")),
-        mock.patch.object(adapter.judge, "probe_duration_s", side_effect=AssertionError("review probed a render")),
-        mock.patch.object(adapter.judge, "extract_frames", side_effect=AssertionError("review extracted frames")),
-        contextlib.redirect_stdout(blocked_stdout),
-        argv([adapter.__file__, "review", "--render", "/fixture/missing-render.mp4", "--mode", "window"]),
-    ):
-        code = adapter.main()
-    receipt = json.loads(blocked_stdout.getvalue())
-    expect(code == 0 and receipt["status"] == "not_run", repr(receipt))
-    expect(receipt["not_run_reason"] == REASON, repr(receipt))
-    expect(receipt["backend"]["provider"] == provider, repr(receipt))
-    expect(receipt["backend"]["watched"] is False and receipt["backend"]["frames_sent"] == 0, repr(receipt))
-    expect(receipt["prompt_chars"] == {"system": 0, "user": 0}, repr(receipt))
-    expect(receipt["bundle_dir"] is None and receipt["review"] is None, repr(receipt))
+with (mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", True),
+      mock.patch.object(codex_judge.shutil, "which", return_value="/fixture/codex"),
+      mock.patch.object(codex_judge, "_child_route", return_value=(["/fixture/codex"], None)),
+      mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded",
+                        side_effect=[outputs[0], b"--image --ephemeral"]),
+      mock.patch.object(codex_judge.codex_judge_runtime, "premodel_probe",
+                        side_effect=AssertionError("transport-negative detect probed policy"))):
+    incomplete = codex_judge.detect()
+expect(incomplete["found"] and not incomplete["judge_ready"], repr(incomplete))
 
-expect(not hasattr(codex_judge, "invoke_codex") and not hasattr(codex_judge, "build_codex_prompts"),
-       "Codex unsupported invocation remains reachable")
-expect(not hasattr(antigravity_judge, "invoke_antigravity") and not hasattr(antigravity_judge, "build_antigravity_prompts"),
-       "Antigravity unsupported invocation remains reachable")
+with mock.patch.object(codex_judge.shutil, "which", return_value=None):
+    missing = codex_judge.detect()
+expect(not missing["found"] and not missing["judge_ready"], repr(missing))
 
-# Auto selection skips present-but-unready Codex/Antigravity and can still use
-# a qualified Claude or Grok entry. This is detection-only: no adapter runs.
+# An explicit false native gate must stop review before render/model even if the
+# shipping gate changes later.
+blocked_stdout = io.StringIO()
+with (mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", False),
+      mock.patch.object(codex_judge.judge, "probe_duration_s", side_effect=AssertionError("render probed")),
+      mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded", side_effect=AssertionError("provider started")),
+      contextlib.redirect_stdout(blocked_stdout),
+      argv([codex_judge.__file__, "review", "--render", "/fixture/missing-render.mp4"])):
+    code = codex_judge.main()
+receipt = json.loads(blocked_stdout.getvalue())
+expect(code == 0 and receipt["status"] == "not_run", repr(receipt))
+expect(receipt["backend"]["watched"] is False and receipt["backend"]["frames_sent"] == 0, repr(receipt))
+
+# Antigravity remains unready when its native broker route is unavailable.
+with mock.patch.object(antigravity_judge.shutil, "which", return_value=None):
+    agy_missing = antigravity_judge.detect()
+expect(not agy_missing["found"] and not agy_missing["judge_ready"], repr(agy_missing))
+agy_stdout = io.StringIO()
+with (mock.patch.object(antigravity_judge.judge, "probe_duration_s", side_effect=AssertionError("render probed")),
+      mock.patch.object(antigravity_judge.judge, "extract_frames", side_effect=AssertionError("frames extracted")),
+      contextlib.redirect_stdout(agy_stdout),
+      argv([antigravity_judge.__file__, "review", "--render", "/fixture/missing-render.mp4"])):
+    agy_code = antigravity_judge.main()
+agy_receipt = json.loads(agy_stdout.getvalue())
+expect(agy_code == 0 and agy_receipt["status"] == "not_run", repr(agy_receipt))
+expect(agy_receipt["backend"]["frames_sent"] == 0, repr(agy_receipt))
+
+# Auto selection uses affirmative capability and retains the configured order.
+# All entries are mocked; no adapter or provider runs.
 with (
     mock.patch.object(ladder_judge.cli_judge, "detect_providers", return_value={"claude": {"found": True, "restricted_read_capable": True}}),
     mock.patch.object(ladder_judge.codex_judge, "detect", return_value={"provider": "codex", "found": True, "judge_ready": False, "availability_reason": REASON}),
@@ -150,8 +182,17 @@ with (
     grok_ladder = ladder_judge.detect_ladder()
 expect(grok_ladder["auto_selected"] == "grok", repr(grok_ladder))
 
-# A forced unsupported provider retains the explicit selection. It may emit its
-# own not_run receipt but cannot fall through to Grok/Claude.
+with (
+    mock.patch.object(ladder_judge.cli_judge, "detect_providers", return_value={"claude": {"found": False}}),
+    mock.patch.object(ladder_judge.codex_judge, "detect", return_value={"provider": "codex", "found": True, "judge_ready": True, "availability_reason": None}),
+    mock.patch.object(ladder_judge.antigravity_judge, "detect", return_value={"provider": "antigravity", "found": True, "judge_ready": False, "availability_reason": REASON}),
+    mock.patch.object(ladder_judge.grok_judge, "detect", return_value={"provider": "grok", "found": True, "judge_ready": True}),
+):
+    capable_ladder = ladder_judge.detect_ladder()
+expect(capable_ladder["auto_selected"] == "codex", repr(capable_ladder))
+expect(capable_ladder["rungs"][2]["judge_ready"] is False, repr(capable_ladder))
+
+# A forced unready provider retains the explicit selection and cannot fall through.
 selected = []
 def explicit_adapter(provider, passthrough, launches=None):
     selected.append((provider, passthrough, launches))
@@ -166,19 +207,19 @@ with (
 expect(code == 0 and [provider for provider, _, _ in selected] == ["codex"], repr(selected))
 expect(selected[0][2] is None, repr(selected))
 
-print("PASS render-judge provider admission boundary")
+print("PASS capability-based render-judge admission boundary")
 `;
 
 if (!python) {
-  test("Codex and Antigravity render-judge admission", { skip: "Python is not available" }, () => {});
+  test("capability-based render-judge admission", { skip: "Python is not available" }, () => {});
 } else {
-  test("Codex and Antigravity render-judge admission", () => {
+  test("capability-based render-judge admission", () => {
     const result = spawnSync(python, ["-c", source, ROOT], {
       cwd: ROOT,
       encoding: "utf8",
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(result.stdout, /PASS render-judge provider admission boundary/);
+    assert.match(result.stdout, /PASS capability-based render-judge admission boundary/);
   });
 }

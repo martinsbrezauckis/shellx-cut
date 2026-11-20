@@ -539,7 +539,11 @@ impl RenderOptions {
         let (pw, ph) = (project.settings.width, project.settings.height);
         let even = |v: u32| v & !1u32;
         match self.resolution {
-            Resolution::Project => (pw, ph),
+            // The picture is composed in 4:2:0, so an older project's odd size
+            // composes 1 px smaller. That is used ONLY for stills (export.frame
+            // says so): every VIDEO at the project size refuses before it gets
+            // here (`odd_size::require_even_output`, the server's verb gate).
+            Resolution::Project => (even(pw).max(2), even(ph).max(2)),
             Resolution::Explicit { width, height } => (even(width).max(2), even(height).max(2)),
             Resolution::MatchSource => {
                 let mut mw = 0u32;
@@ -571,5 +575,68 @@ impl RenderOptions {
                 }
             }
         }
+    }
+}
+
+/// Item 87: a mono source plays on both channels at its own level. Without
+/// this, the `aformat=channel_layouts=stereo` conversion lets ffmpeg's
+/// resampler spread mono at -3 dB per channel (its constant-power default),
+/// so a mono voice came out 3 dB quieter than the source while a stereo
+/// source at centre stays at unity; nobody had chosen that. Empty for any
+/// other channel count or an unknown one (byte-identical to before).
+pub(crate) fn mono_to_both_channels(asset: Option<&cut_core::Asset>) -> &'static str {
+    let channels = asset
+        .and_then(|a| a.probe.as_ref())
+        .and_then(|p| p.get("raw")?.get("streams")?.as_array().cloned())
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("audio"))
+                .and_then(|s| s.get("channels")?.as_u64())
+        });
+    if channels == Some(1) {
+        "pan=stereo|c0=c0|c1=c0,"
+    } else {
+        ""
+    }
+}
+
+/// Item 99: the picture area of a non-16:9 source inside its 960x540 proxy
+/// (the proxy pads it with bars); None for a 16:9 source, whose proxy has none.
+pub(super) fn proxy_picture_rect((sw, sh): (u32, u32)) -> Option<[u32; 4]> {
+    let full = cut_core::ClipCrop {
+        x: 0,
+        y: 0,
+        w: sw,
+        h: sh,
+    };
+    super::map_crop_to_proxy(&full, sw, sh)
+        .filter(|r| *r != [0, 0, crate::proxy::PROXY_WIDTH, crate::proxy::PROXY_HEIGHT])
+}
+
+#[cfg(test)]
+mod mono_tests {
+    use super::*;
+
+    #[test]
+    fn mono_source_plays_on_both_channels_at_unity() {
+        let asset = |channels: u64| cut_core::Asset {
+            path: "/x.mp4".into(),
+            hash: "sha256:x".into(),
+            probe: Some(serde_json::json!({"raw": {"streams": [
+                {"codec_type": "video"},
+                {"codec_type": "audio", "channels": channels}
+            ]}})),
+            transcript: None,
+            perception: None,
+            proxy: None,
+            filmstrip: None,
+        };
+        assert_eq!(
+            mono_to_both_channels(Some(&asset(1))),
+            "pan=stereo|c0=c0|c1=c0,"
+        );
+        assert_eq!(mono_to_both_channels(Some(&asset(2))), "");
+        assert_eq!(mono_to_both_channels(None), "");
     }
 }

@@ -5,10 +5,11 @@
 //! ordinals, primary state, or geometry: any mismatch asks the caller to reopen
 //! the source picker instead of selecting a plausible replacement.
 
-use super::MonitorInfo;
+use super::{MonitorInfo, WindowInfo};
 use cut_core::{error_codes, CutError};
 
 const MAX_MONITOR_ID_BYTES: usize = 1_024;
+const MAX_WINDOW_ID_BYTES: usize = 1_024;
 
 /// Server-admitted monitor target for one capture start.
 ///
@@ -69,9 +70,96 @@ pub(super) fn admit(
     })
 }
 
+/// Admit an optional window identity before anything is created or started.
+///
+/// The window must be one of the windows the same fresh Doctor result lists.
+/// Without this check a closed or invented window id returned success at
+/// Start and failed only at Stop, after a capture directory and journal had
+/// already been created.
+pub(super) fn admit_window(
+    requested: Option<&str>,
+    window_capture_supported: bool,
+    windows: &[WindowInfo],
+) -> Result<(), CutError> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if !window_capture_supported {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "window recording is not available on this system",
+            "this recorder captures whole displays only on this platform",
+        )
+        .with_suggested_action("choose a display from screen_record.doctor instead of a window"));
+    }
+    if requested.trim().is_empty() || requested.len() > MAX_WINDOW_ID_BYTES {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "window must be a current opaque window identity",
+            "the window value is empty or too long to be a window id from screen_record.doctor",
+        )
+        .with_suggested_action("reopen the source picker and choose a listed window"));
+    }
+    if !windows.iter().any(|window| window.id == requested) {
+        return Err(CutError::new(
+            error_codes::NOT_FOUND,
+            "the selected window is no longer available",
+            format!(
+                "window {requested} is not in the current screen_record.doctor window list: it was closed, or the id did not come from that list"
+            ),
+        )
+        .with_suggested_action("reopen the source picker and choose the window again"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn window(id: &str) -> WindowInfo {
+        WindowInfo {
+            id: id.into(),
+            title: "Notes".into(),
+            app: "notes.exe".into(),
+        }
+    }
+
+    #[test]
+    fn listed_window_is_admitted_and_absent_window_is_refused_before_start() {
+        let listed = "windows-hwnd-v1:0000000000010203:42";
+        admit_window(Some(listed), true, &[window(listed)]).unwrap();
+        admit_window(None, true, &[]).unwrap();
+        let error = admit_window(
+            Some("windows-hwnd-v1:00000000deadbeef:1"),
+            true,
+            &[window(listed)],
+        )
+        .unwrap_err();
+        assert_eq!(error.code, error_codes::NOT_FOUND);
+        assert_eq!(error.message, "the selected window is no longer available");
+        assert!(error.cause.contains("windows-hwnd-v1:00000000deadbeef:1"));
+        assert_eq!(
+            error.suggested_action.as_deref(),
+            Some("reopen the source picker and choose the window again")
+        );
+    }
+
+    #[test]
+    fn window_on_a_display_only_platform_is_refused_with_a_display_action() {
+        let error = admit_window(Some("any"), false, &[]).unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS);
+        assert_eq!(
+            error.message,
+            "window recording is not available on this system"
+        );
+        assert_eq!(
+            error.suggested_action.as_deref(),
+            Some("choose a display from screen_record.doctor instead of a window")
+        );
+        let error = admit_window(Some("  "), true, &[]).unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS);
+    }
 
     fn monitor(id: Option<&str>, index: u32) -> MonitorInfo {
         MonitorInfo {

@@ -23,10 +23,18 @@ impl LinuxInputListener {
         }
     }
 
-    pub(super) fn finish(self, duration_ms: u64) -> Result<crate::input_evdev::EvdevSnapshot> {
+    pub(super) fn finish(
+        self,
+        duration_ms: u64,
+    ) -> Result<(
+        crate::input_evdev::EvdevSnapshot,
+        Option<crate::cursor_correlation::EvdevEvidence>,
+    )> {
         match self {
-            Self::Evdev(listener) => listener.seal(duration_ms),
-            Self::Rdevin(listener) => listener.seal(duration_ms),
+            Self::Evdev(listener) => listener
+                .seal_with_evidence(duration_ms)
+                .map(|(snapshot, evidence)| (snapshot, Some(evidence))),
+            Self::Rdevin(listener) => listener.seal(duration_ms).map(|snapshot| (snapshot, None)),
         }
     }
 }

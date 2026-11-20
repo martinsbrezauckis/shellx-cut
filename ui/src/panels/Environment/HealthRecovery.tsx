@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { OPEN_RECORDING_RECOVERY_EVENT } from '../../app/RecordingRecoveryNotice'
 import { callVerb } from '../../lib/client'
 import type { DoctorReport } from '../../lib/doctor'
 import type { JobsListResult } from '../../lib/clientResults'
@@ -35,6 +36,7 @@ function stateLabel(state: HealthRow['state']): string {
     case 'unrecoverable': return 'Could not recover'
     case 'unsupported': return 'Not reported'
     case 'checking': return 'Checking'
+    case 'not-checked': return 'Not checked yet'
   }
 }
 
@@ -43,14 +45,18 @@ function actionLabel(action: HealthAction): string | null {
     case 'assets': return 'Open Assets'
     case 'recording': return 'Open Record'
     case 'toolchain': return 'Open toolchain settings'
+    case 'check-capture': return 'Check screen capture'
+    case 'recover-recordings': return 'Recover recordings'
     case null: return null
   }
 }
 
-function ActionButton({ action, onRun }: { action: Exclude<HealthAction, null>; onRun: () => void }) {
+export function ActionButton({ action, onRun }: { action: Exclude<HealthAction, null>; onRun: () => void }) {
   const label = actionLabel(action)
   if (action === 'assets') return <button type="button" className="env-btn env-btn--ghost" data-cut-health-open-assets onClick={onRun}>{label}</button>
   if (action === 'recording') return <button type="button" className="env-btn env-btn--ghost" data-cut-health-open-recording onClick={onRun}>{label}</button>
+  if (action === 'check-capture') return <button type="button" className="env-btn env-btn--ghost" data-cut-health-check-capture onClick={onRun}>{label}</button>
+  if (action === 'recover-recordings') return <button type="button" className="env-btn env-btn--ghost" data-cut-health-recover-recordings onClick={onRun}>{label}</button>
   return <button type="button" className="env-btn env-btn--ghost" data-cut-health-open-toolchain onClick={onRun}>{label}</button>
 }
 
@@ -62,6 +68,33 @@ async function attempt<T>(request: Promise<T>): Promise<Attempt<T>> {
   } catch {
     return { ok: false }
   }
+}
+
+/** The full screen-capture check, started by its own button: the status read
+ *  on page open never captures. Null when the engine did not answer. */
+export async function readCaptureCheck(call: typeof callVerb): Promise<RecorderDoctor | null> {
+  const read = await attempt(call('screen_record.doctor', { mode: 'check' }))
+  if (!read.ok || !read.value.ok || !read.value.result) return null
+  return read.value.result as RecorderDoctor
+}
+
+/** What each Health action button does. Recovering recordings asks the
+ *  recording banner to list them, then goes to Record where they are handled. */
+export function runHealthAction(action: Exclude<HealthAction, null>, to: {
+  checkCapture: () => void
+  openAssets: () => void
+  openRecording: () => void
+  openToolchain: () => void
+}): void {
+  if (action === 'check-capture') to.checkCapture()
+  else if (action === 'assets') to.openAssets()
+  else if (action === 'recording') to.openRecording()
+  else if (action === 'recover-recordings') {
+    // The recovery banner lists the recordings with their actions.
+    window.dispatchEvent(new Event(OPEN_RECORDING_RECOVERY_EVENT))
+    to.openRecording()
+  }
+  else to.openToolchain()
 }
 
 export default function HealthRecovery({
@@ -85,6 +118,7 @@ export default function HealthRecovery({
   const [refreshing, setRefreshing] = useState(false)
   const [settledRequest, setSettledRequest] = useState(0)
   const request = useRef(0)
+  const captureCheckRequest = useRef(0)
   // Environment receives an App callback whose identity can change as a
   // project delta arrives. Keep the latest action without turning ordinary
   // project refreshes into another revision-bound filesystem health scan.
@@ -109,7 +143,9 @@ export default function HealthRecovery({
     setToolchainScanFailed(false)
     const [jobsRead, doctorRead, toolchainRead, projectHealthRead, recoveryRead] = await Promise.all([
       attempt(callVerb('jobs.list', {})),
-      attempt(callVerb('screen_record.doctor', {})),
+      // Opening this page only shows readiness: the status read never starts a
+      // capture or a system prompt. The full check runs from its own button.
+      attempt(callVerb('screen_record.doctor', { mode: 'status' })),
       attempt(doctorRefresh.current()),
       hasProject
         ? attempt(loadProjectHealth(
@@ -166,11 +202,25 @@ export default function HealthRecovery({
     return () => { request.current += 1 }
   }, [projectSession, refresh])
 
-  const runAction = (action: Exclude<HealthAction, null>) => {
-    if (action === 'assets') onOpenAssets()
-    else if (action === 'recording') onOpenRecording()
-    else onOpenToolchain()
-  }
+  // The person asked for this check, so it may run the short screen capture
+  // (and macOS may show its screen-recording alert).
+  const checkCapture = useCallback(async () => {
+    const id = ++captureCheckRequest.current
+    const page = request.current
+    setCaptureDoctor(null)
+    setCaptureDoctorFailed(false)
+    const read = await readCaptureCheck(callVerb)
+    if (id !== captureCheckRequest.current || page !== request.current) return
+    if (read === null) setCaptureDoctorFailed(true)
+    else setCaptureDoctor(read)
+  }, [])
+
+  const runAction = (action: Exclude<HealthAction, null>) => runHealthAction(action, {
+    checkCapture: () => void checkCapture(),
+    openAssets: onOpenAssets,
+    openRecording: onOpenRecording,
+    openToolchain: onOpenToolchain,
+  })
   const rows = healthRecoveryRows({
     hasProject,
     projectHealth,

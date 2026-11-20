@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 
 mod authorization;
 pub(crate) use authorization::OutputAuthorization;
+mod lease_identity;
+pub(crate) mod monitor_scratch;
 mod policy;
 pub(crate) use policy::OutputPathPolicy;
 
@@ -74,20 +76,33 @@ impl serde::Serialize for OutputPath {
 #[derive(Debug)]
 struct OutputReservation {
     marker: PathBuf,
-    // This durable, per-output lock file is deliberately retained after normal
-    // cleanup. Its OS-managed advisory lock is released on process death, so a
-    // future writer can safely reclaim a crash-left marker without guessing
-    // whether another process is still encoding the same destination.
-    _lease: File,
+    // The per-output lock file. Its OS-managed advisory lock is released on
+    // process death, so a future writer can safely reclaim a crash-left marker
+    // without guessing whether another process is still encoding the same
+    // destination. Item 98: the owner deletes it on release (see
+    // lease_identity for why that cannot split ownership across files).
+    lease_path: PathBuf,
+    lease: File,
 }
 
 impl Drop for OutputReservation {
     fn drop(&mut self) {
-        // Remove the visible marker while the advisory lease is still held; the
-        // File drops immediately after this method and unlocks at process exit.
-        // Keeping the lease file itself avoids an unlink/recreate race between
-        // two processes that would otherwise split ownership across inodes.
+        // Remove the visible marker and then the lock file's name while the
+        // advisory lock is still held; the File drops right after this method.
+        // A writer that opened the old file meanwhile sees on its identity
+        // check that the name is gone and opens it again.
         let _ = std::fs::remove_file(&self.marker);
+        // Only the file this reservation created and locked is ever deleted:
+        // the identity check fails for anything else at that name, including
+        // a link planted there, which is then left alone and logged.
+        if lease_identity::still_named(&self.lease, &self.lease_path) {
+            let _ = std::fs::remove_file(&self.lease_path);
+        } else {
+            tracing::warn!(
+                lease = %self.lease_path.display(),
+                "output lock file no longer names this reservation's file; left in place"
+            );
+        }
     }
 }
 
@@ -98,9 +113,28 @@ impl Drop for OutputReservation {
 /// because cutd serves a single open project per process (same scope as the
 /// CUTD_OUTPUTS_DIR env root). A workspace preference — NOT part of the project
 /// or the op-log, never replayed.
+#[cfg(not(test))]
 static SESSION_OUTPUT_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+// In a test binary every test shares ONE process, so a process-wide folder
+// leaks from one test into every concurrent one (a queued render of another
+// test once wrote into a folder that test had already deleted). Each test
+// therefore owns its folder: tests run on their own thread, and the value
+// lives there. Product code keeps the single engine-wide value above.
+#[cfg(test)]
+type TestFolderStore = std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>;
+
+#[cfg(test)]
+thread_local! {
+    /// This test's folder. A runtime the test builds hands the same store to its
+    /// own worker threads (`test_fixture::thread_start_hook`); no other test
+    /// can reach it.
+    static SESSION_OUTPUT_DIR: std::cell::RefCell<TestFolderStore> =
+        std::cell::RefCell::new(TestFolderStore::default());
+}
 static OUTPUT_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+mod reservation_link_tests;
 /// The session output dir is process-global (it is a user preference for the
 /// whole cutd session), and `cargo test` runs the tests in one binary on
 /// several threads — so every test that reads or writes it has to take this
@@ -122,16 +156,96 @@ fn session_output_dir() -> Option<PathBuf> {
     unscoped_session_output_dir()
 }
 
+/// The app-wide export folder when one is chosen and exists.
+pub(crate) fn app_export_folder() -> Option<PathBuf> {
+    unscoped_session_output_dir()
+}
+
 fn unscoped_session_output_dir() -> Option<PathBuf> {
-    let dir = SESSION_OUTPUT_DIR.read().ok()?.clone()?;
+    let dir = chosen_session_output_dir()?;
     dir.is_dir().then_some(dir)
 }
 
+/// The folder as chosen, even when it has since been deleted. The choice is a
+/// remembered app-wide preference: it is read back from the app-data settings
+/// file once per run, so it survives a restart of the engine.
+#[cfg(not(test))]
+fn chosen_session_output_dir() -> Option<PathBuf> {
+    static LOADED: std::sync::Once = std::sync::Once::new();
+    LOADED.call_once(|| {
+        if let Some(saved) = saved_folder_file().and_then(|file| read_saved_folder(&file)) {
+            if let Ok(mut guard) = SESSION_OUTPUT_DIR.write() {
+                guard.get_or_insert(saved);
+            }
+        }
+    });
+    SESSION_OUTPUT_DIR.read().ok()?.clone()
+}
+
+/// Where the remembered export folder is kept: in the state home with the other
+/// per-user state (`userdata`), so `SHELLX_CUT_HOME` moves it too.
+fn saved_folder_file() -> Option<PathBuf> {
+    crate::userdata::export_folder_path()
+}
+
+/// The folder saved in `file`, if the file exists and names one.
+fn read_saved_folder(file: &Path) -> Option<PathBuf> {
+    let value: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
+    let dir = value.get("dir")?.as_str()?.trim();
+    (!dir.is_empty()).then(|| PathBuf::from(dir))
+}
+
+/// Remember (Some) or forget (None) the export folder in `file`.
+fn write_saved_folder(file: &Path, dir: Option<&Path>) -> std::io::Result<()> {
+    match dir {
+        Some(dir) => {
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(
+                file,
+                json!({ "dir": dir.display().to_string() }).to_string(),
+            )
+        }
+        None => match std::fs::remove_file(file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        },
+    }
+}
+
+#[cfg(test)]
+fn chosen_session_output_dir() -> Option<PathBuf> {
+    SESSION_OUTPUT_DIR.with(|store| store.borrow().lock().ok()?.clone())
+}
+
 /// Set (Some) or clear (None) the session output dir.
+#[cfg(not(test))]
 pub(crate) fn set_session_output_dir(dir: Option<PathBuf>) {
+    // Load the saved choice first, so this write replaces it rather than racing it.
+    let _ = chosen_session_output_dir();
+    if let Some(file) = saved_folder_file() {
+        if let Err(error) = write_saved_folder(&file, dir.as_deref()) {
+            tracing::warn!(%error, "could not remember the export folder across restarts");
+        }
+    }
     if let Ok(mut g) = SESSION_OUTPUT_DIR.write() {
         *g = dir;
     }
+}
+
+#[cfg(test)]
+pub(crate) fn set_session_output_dir(dir: Option<PathBuf>) {
+    // A test's temp folder must meet the render's permission rule whatever the
+    // machine's umask is (many Linux accounts create 0775 folders by default).
+    if let Some(dir) = &dir {
+        test_fixture::make_private(dir);
+    }
+    SESSION_OUTPUT_DIR.with(|store| {
+        if let Ok(mut slot) = store.borrow().lock() {
+            *slot = dir;
+        }
+    });
 }
 
 /// The directories the HTTP export routes may READ from, canonical, most
@@ -166,12 +280,17 @@ pub(crate) fn authorized_export_read_roots(project_dir: &Path) -> Vec<PathBuf> {
     // A project is untrusted data. Its literal exports component must be a
     // plain local directory, not a link/reparse point that canonicalization
     // would turn into standing read authority elsewhere on the host. The
-    // record-recovery helper carries the Windows reparse-point check as well
+    // record-recovery helper carries the Windows name-surrogate (junction) check as well
     // as the cross-platform symlink check.
     if let Ok(project) = project_dir.canonicalize() {
         let exports = project.join("exports");
         if record_recovery::is_plain_dir(&exports).unwrap_or(false) {
             push(exports);
+        }
+        // Item 98: the app's playback audio (export.audio scratch) lives in
+        // the engine's private folder, never derived from the project path.
+        if let Some(scratch) = monitor_scratch::monitor_dir() {
+            push(scratch);
         }
     }
     if let Ok(d) = std::env::var("CUTD_OUTPUTS_DIR") {
@@ -183,6 +302,143 @@ pub(crate) fn authorized_export_read_roots(project_dir: &Path) -> Vec<PathBuf> {
         push(dir);
     }
     roots
+}
+
+/// The render stages every export beside its final file and refuses a folder
+/// that EVERYONE can write to (any user could swap the staged file) unless it
+/// has the sticky bit; a folder only the group can write to is fine. The
+/// chosen-folder check applies the same rule through
+/// `cut_media::check_output_dir_policy`, so the folder is refused when it is
+/// chosen, in plain words, and not at the end of an export.
+fn shared_folder_refusal(error: CutError) -> CutError {
+    if !error
+        .message
+        .contains("can be written by anyone on this computer")
+    {
+        return error;
+    }
+    let folder = error
+        .message
+        .rsplit_once(": ")
+        .map(|(_, path)| path.to_owned())
+        .unwrap_or_default();
+    CutError::new(
+        error_codes::IO,
+        format!("export folder can be written by anyone on this computer: {folder}"),
+        "exports are written through a staging file in the folder, and in a folder everyone can write to, any user on this computer could replace that file; a folder with the sticky bit set (like /tmp) is allowed",
+    )
+}
+
+/// Prove the chosen export folder still exists and accepts files; otherwise the
+/// plain refusal that names the folder and the way forward.
+pub(crate) fn check_export_folder(dir: &Path) -> Result<(), CutError> {
+    let result = if dir.is_dir() {
+        cut_media::folder_access::ensure_writable_folder("export folder", dir)
+            .and_then(|()| cut_media::check_output_dir_policy(dir).map_err(shared_folder_refusal))
+    } else {
+        Err(cut_media::folder_access::folder_error(
+            "export folder",
+            dir,
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        ))
+    };
+    result.map_err(|error| {
+        error.with_suggested_action(
+            "nothing was exported. Choose another export folder (Export > Choose folder, or project.set_output_dir), change this folder's permissions so that not everyone can write to it (or set its sticky bit), or clear the choice to use the project's exports folder (project.set_output_dir with no dir)",
+        )
+        .with_requirement("export_folder")
+    })
+}
+
+/// How often the engine re-checks a chosen export folder on its own. A folder
+/// deleted, unmounted or locked while the app runs then shows as unavailable
+/// (status bar, `ui.state.export_folder`, the event) within this time, without a
+/// restart and without anything else asking. Modest on purpose: one directory
+/// stat and one mode check, no file is written.
+const FOLDER_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The cheap part of "is the chosen folder usable": it exists and meets the
+/// render's permission rule. The write probe is left to the explicit checks.
+fn folder_watch_key() -> (Option<String>, bool) {
+    match chosen_session_output_dir() {
+        None => (None, true),
+        Some(dir) => {
+            let usable = dir.is_dir() && cut_media::check_output_dir_policy(&dir).is_ok();
+            (Some(dir.display().to_string()), usable)
+        }
+    }
+}
+
+/// One look: publish `output_folder_changed` when the folder or its usability
+/// differs from the previous look. The first look only records.
+#[cfg(test)]
+fn folder_watch_step(
+    last: &mut Option<(Option<String>, bool)>,
+    events: &crate::events::EventBus,
+) -> bool {
+    let now = folder_watch_key();
+    let changed = last.as_ref().is_some_and(|previous| *previous != now);
+    if changed {
+        events.publish(crate::events::Event::OutputFolderChanged {
+            status: output_folder_status(),
+        });
+    }
+    *last = Some(now);
+    changed
+}
+
+/// The engine's own watch over the chosen export folder (see
+/// [`FOLDER_WATCH_INTERVAL`]).
+pub(crate) fn spawn_folder_watch(events: crate::events::EventBus) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last: Option<(Option<String>, bool)> = None;
+        let mut tick = tokio::time::interval(FOLDER_WATCH_INTERVAL);
+        loop {
+            tick.tick().await;
+            // A hung network drive must not stall the runtime.
+            let Ok(now) = tokio::task::spawn_blocking(folder_watch_key).await else {
+                continue;
+            };
+            if last.as_ref().is_some_and(|previous| *previous != now) {
+                if let Ok(status) = tokio::task::spawn_blocking(output_folder_status).await {
+                    events.publish(crate::events::Event::OutputFolderChanged { status });
+                }
+            }
+            last = Some(now);
+        }
+    })
+}
+
+/// The export destination as the engine holds it (the one truth the status bar,
+/// the export menu and an agent all read): `dir` is the chosen folder or null,
+/// `destination` is `chosen` or `project_exports`, and an unusable chosen
+/// folder reads `usable:false` with its plain `problem` and `suggested_action`.
+pub(crate) fn output_folder_status() -> Value {
+    let Some(dir) = chosen_session_output_dir() else {
+        return json!({
+            "dir": Value::Null,
+            "destination": "project_exports",
+            "usable": true,
+            "problem": Value::Null,
+            "suggested_action": Value::Null,
+        });
+    };
+    match check_export_folder(&dir) {
+        Ok(()) => json!({
+            "dir": dir.display().to_string(),
+            "destination": "chosen",
+            "usable": true,
+            "problem": Value::Null,
+            "suggested_action": Value::Null,
+        }),
+        Err(error) => json!({
+            "dir": dir.display().to_string(),
+            "destination": "chosen",
+            "usable": false,
+            "problem": error.message,
+            "suggested_action": error.suggested_action,
+        }),
+    }
 }
 
 /// Build the project's PathFence (cut-media owns the output-fencing policy). Writes
@@ -222,6 +478,15 @@ pub(crate) fn fence_output_path(
     policy: OutputPathPolicy,
 ) -> Result<OutputPath, CutError> {
     let fence = make_fence(project_dir)?;
+    if requested.is_none() && authorization::scoped_default_dir().is_none() {
+        // The person's chosen export folder is where this file would go. If it
+        // is gone or cannot be written, say so NOW, in plain words, before any
+        // encoder starts: never fall back silently and never fail at the end
+        // with an ffmpeg "No such file or directory".
+        if let Some(dir) = chosen_session_output_dir() {
+            check_export_folder(&dir)?;
+        }
+    }
     let (mut candidate, create_project_parent) = match requested {
         Some(p) => {
             let pb = PathBuf::from(p);
@@ -257,7 +522,7 @@ pub(crate) fn fence_output_path(
         // rejects escapes). Create its parent — e.g. exports/ — so an explicit
         // "exports/_monitor_a.mp3" works on a fresh project, matching default
         // project exports. Each literal component is checked before creation,
-        // so a static link or Windows reparse point cannot redirect this
+        // so a static link or Windows junction cannot redirect this
         // mutation before PathFence gets its canonical membership check.
         ensure_plain_project_relative_dir(fence.project_dir(), &parent)?;
     }
@@ -343,7 +608,7 @@ pub(crate) fn fence_project_directory_path(
 
 /// Create a project-local directory chain only through literal, plain
 /// directories. Unlike `create_dir_all`, this refuses a static symlink or a
-/// Windows reparse point before it can redirect creation outside the canonical
+/// Windows junction before it can redirect creation outside the canonical
 /// project root. It intentionally does not claim to resist a concurrent local
 /// path swap; that actor is outside Cut's project-input threat boundary.
 pub(crate) fn ensure_plain_project_relative_dir(
@@ -421,7 +686,7 @@ fn require_plain_project_dir(path: &Path) -> Result<(), CutError> {
                 "project output directory {} is not a plain directory",
                 path.display()
             ),
-            "project output components cannot be symlinks or Windows reparse points",
+            "project output components cannot be symlinks or Windows junctions",
         )),
         Err(error) => Err(output_directory_error(path, error)),
     }
@@ -571,6 +836,12 @@ fn reserve_next_available_output_path(
             };
             parent.join(name)
         };
+        // A name that is already taken is never overwritten here, so the
+        // overwrite rule must not judge it: a default name moves on to the
+        // next free one whatever its suffix (a second review page, say).
+        if std::fs::symlink_metadata(&candidate).is_ok() {
+            continue;
+        }
         // Preserve every PathFence check for each collision suffix. This must
         // happen before the sidecar is created, so a rejected path is never
         // reserved and the canonical fence remains the authority on location.
@@ -625,36 +896,46 @@ fn reserve_explicit_output_path(path: PathBuf) -> Result<OutputPath, CutError> {
 /// with an unlocked lease is from a crashed writer, so it is safe to replace.
 fn try_reserve_output_path(path: &Path) -> Result<Option<OutputReservation>, CutError> {
     let lease_path = reservation_lease_path(path);
-    let lease = std::fs::OpenOptions::new()
+    // The lease sits in a folder a received project may have filled. Only an
+    // ordinary single-link file (or none) is used; a link or shared file at
+    // this name could otherwise create, lock or re-attribute a file elsewhere.
+    if cut_core::store::plain_file_state(&lease_path) == cut_core::store::PlainFileState::NotPlain {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            format!(
+                "output lease {} is a link or not an ordinary file",
+                lease_path.display()
+            ),
+            "export reservation files must be ordinary files inside the output folder",
+        )
+        .with_suggested_action(
+            "delete that hidden file from the output folder, then export again",
+        ));
+    }
+    let mut lease_options = std::fs::OpenOptions::new();
+    lease_options
         .create(true)
         .read(true)
         .write(true)
-        .truncate(false)
-        .open(&lease_path)
-        .map_err(|error| {
-            CutError::new(
-                error_codes::IO,
-                format!("could not open output lease {}", lease_path.display()),
-                error.to_string(),
-            )
-        })?;
-    hide_reservation_artifact(&lease_path);
-    match lease.try_lock_exclusive() {
-        Ok(()) => {}
-        Err(error)
-            if error.kind() == std::io::ErrorKind::WouldBlock
-                || (cfg!(windows) && error.raw_os_error() == Some(33)) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => {
-            return Err(CutError::new(
-                error_codes::IO,
-                format!("could not lock output lease {}", lease_path.display()),
-                error.to_string(),
-            ));
-        }
+        .truncate(false);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        lease_options.custom_flags(libc::O_NOFOLLOW);
     }
+    // A released owner deletes the lock file. Locking a file whose name is
+    // already gone proves nothing, so lock, check the name, and retry a few
+    // times when an owner released (and deleted) it in between.
+    let mut attempts = 0;
+    let lease = loop {
+        attempts += 1;
+        match lock_named_lease(&lease_options, &lease_path)? {
+            LeaseLock::Locked(lease) => break lease,
+            LeaseLock::Busy => return Ok(None),
+            LeaseLock::Stale if attempts < 8 => continue,
+            LeaseLock::Stale => return Ok(None),
+        }
+    };
 
     let marker = reservation_marker_path(path);
     match std::fs::remove_file(&marker) {
@@ -682,8 +963,59 @@ fn try_reserve_output_path(path: &Path) -> Result<Option<OutputReservation>, Cut
     hide_reservation_artifact(&marker);
     Ok(Some(OutputReservation {
         marker,
-        _lease: lease,
+        lease_path,
+        lease,
     }))
+}
+
+enum LeaseLock {
+    Locked(File),
+    /// Another live writer holds the lock.
+    Busy,
+    /// Locked a file whose name an owner deleted meanwhile; open it again.
+    Stale,
+}
+
+fn lock_named_lease(
+    options: &std::fs::OpenOptions,
+    lease_path: &Path,
+) -> Result<LeaseLock, CutError> {
+    let lease = options.open(lease_path).map_err(|error| {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull
+        ) {
+            let folder = lease_path.parent().unwrap_or(lease_path);
+            return cut_media::paths::output_folder_error(folder, &error);
+        }
+        CutError::new(
+            error_codes::IO,
+            format!("could not open output lease {}", lease_path.display()),
+            error.to_string(),
+        )
+    })?;
+    hide_reservation_artifact(lease_path);
+    match lease.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || (cfg!(windows) && error.raw_os_error() == Some(33)) =>
+        {
+            return Ok(LeaseLock::Busy);
+        }
+        Err(error) => {
+            return Err(CutError::new(
+                error_codes::IO,
+                format!("could not lock output lease {}", lease_path.display()),
+                error.to_string(),
+            ));
+        }
+    }
+    if lease_identity::still_named(&lease, lease_path) {
+        Ok(LeaseLock::Locked(lease))
+    } else {
+        Ok(LeaseLock::Stale)
+    }
 }
 
 fn reservation_marker_path(path: &Path) -> PathBuf {
@@ -883,32 +1215,36 @@ pub(crate) fn resolve_existing_project_file(
     fenced_existing_file_under_dir(project_dir, &candidate, label, suggested_action)
 }
 
+/// project.get_output_dir {} — read the export destination the engine holds.
+/// Read-only; works with or without an open project.
+pub(crate) async fn project_get_output_dir() -> Result<VerbResult, CutError> {
+    Ok(VerbResult::ok(output_folder_status()))
+}
+
 /// project.set_output_dir{dir?} — choose where exports/renders land when a verb
 /// isn't given an explicit `path`. Empty/absent `dir` clears it (back to
 /// <project>/exports). The folder must already exist (the UI's native folder
 /// picker only returns existing dirs); it is canonicalized and becomes an
-/// allowed fence root. A workspace preference — never an op, never replayed.
-pub(crate) async fn project_set_output_dir(args: Value) -> Result<VerbResult, CutError> {
+/// allowed fence root. An app-wide remembered preference held by the engine
+/// (not per project, never an op, never replayed): it stays until cleared, the
+/// status bar shows it, and every change publishes `output_folder_changed`.
+pub(crate) async fn project_set_output_dir(
+    state: &crate::state::AppState,
+    args: Value,
+) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         dir: Option<String>,
     }
     let a: Args = crate::dispatch::parse_args(args)?;
-    match a.dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let cleared = match a.dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => {
             set_session_output_dir(None);
-            Ok(VerbResult::ok(
-                json!({ "dir": Value::Null, "cleared": true }),
-            ))
+            true
         }
         Some(d) => {
             let path = std::fs::canonicalize(d).map_err(|e| {
-                CutError::new(
-                    error_codes::INVALID_ARGS,
-                    format!("output folder not found: {d}"),
-                    e.to_string(),
-                )
-                .with_suggested_action("pick an existing folder (the desktop picker returns one)")
+                cut_media::folder_access::folder_error("output folder", Path::new(d), &e)
             })?;
             if !path.is_dir() {
                 return Err(CutError::new(
@@ -917,15 +1253,395 @@ pub(crate) async fn project_set_output_dir(args: Value) -> Result<VerbResult, Cu
                     path.display().to_string(),
                 ));
             }
-            set_session_output_dir(Some(path.clone()));
-            Ok(VerbResult::ok(json!({ "dir": path.display().to_string() })))
+            // An existing folder that refuses new files would only fail later,
+            // at the end of an export or a recording. Refuse it now, by name.
+            cut_media::folder_access::ensure_writable_folder("output folder", &path)?;
+            // The render refuses a folder other users can write to; say so now,
+            // not at the end of the first export.
+            check_export_folder(&path)?;
+            set_session_output_dir(Some(path));
+            false
         }
+    };
+    let mut status = output_folder_status();
+    state
+        .events
+        .publish(crate::events::Event::OutputFolderChanged {
+            status: status.clone(),
+        });
+    if cleared {
+        status["cleared"] = json!(true);
     }
+    Ok(VerbResult::ok(status))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_remembered_export_folder_lives_in_the_state_home_not_the_tools_folder() {
+        let file = saved_folder_file().expect("a state home");
+        assert_eq!(
+            Some(file.clone()),
+            crate::userdata::shellx_cut_home().map(|home| home.join("export-folder.json")),
+            "one rule for every per-user state file"
+        );
+        let old_place = cut_perception::appdata_sidecar_dir()
+            .and_then(|dir| dir.parent().map(|parent| parent.join("export-folder.json")));
+        assert_ne!(
+            Some(file),
+            old_place,
+            "not next to the tools folder any more"
+        );
+    }
+
+    #[test]
+    fn the_export_folder_choice_is_remembered_in_its_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings").join("export-folder.json");
+        assert_eq!(read_saved_folder(&file), None);
+        let chosen = dir.path().join("exports out");
+        write_saved_folder(&file, Some(&chosen)).unwrap();
+        assert_eq!(read_saved_folder(&file), Some(chosen));
+        write_saved_folder(&file, None).unwrap();
+        assert_eq!(read_saved_folder(&file), None);
+        // Clearing twice is fine.
+        write_saved_folder(&file, None).unwrap();
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(read_saved_folder(&file), None);
+    }
+
+    #[tokio::test]
+    async fn a_chosen_folder_that_is_gone_is_refused_before_the_export_starts() {
+        let _fixture = test_fixture::SessionOutputDirFixture::new();
+        let project = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new();
+        let parent = tempfile::tempdir().unwrap();
+        let chosen = parent.path().join("deliveries");
+        std::fs::create_dir(&chosen).unwrap();
+        test_fixture::make_private(&chosen);
+        let set = project_set_output_dir(&state, json!({ "dir": chosen.display().to_string() }))
+            .await
+            .unwrap();
+        let status = set.result.unwrap();
+        assert_eq!(status["destination"], "chosen");
+        assert_eq!(status["usable"], true);
+        // While it is there the default export goes into it.
+        let ok = fence_output_path(
+            project.path(),
+            None,
+            "exports/out.mp4",
+            OutputPathPolicy::MP4,
+        )
+        .unwrap();
+        assert!(ok.starts_with(chosen.canonicalize().unwrap()));
+        drop(ok);
+
+        // The person's folder disappears (an unplugged drive, a deleted folder).
+        std::fs::remove_dir_all(&chosen).unwrap();
+        let status = project_get_output_dir().await.unwrap().result.unwrap();
+        assert_eq!(status["usable"], false);
+        assert!(
+            status["problem"].as_str().unwrap().contains("not found"),
+            "{status}"
+        );
+        assert!(status["suggested_action"]
+            .as_str()
+            .unwrap()
+            .contains("Choose another export folder"));
+        let refused = fence_output_path(
+            project.path(),
+            None,
+            "exports/out.mp4",
+            OutputPathPolicy::MP4,
+        )
+        .expect_err("a vanished export folder must be refused up front");
+        assert!(
+            refused.message.contains("export folder not found"),
+            "{}",
+            refused.message
+        );
+        assert!(
+            refused.message.contains("deliveries"),
+            "{}",
+            refused.message
+        );
+        let action = refused.suggested_action.unwrap();
+        assert!(action.contains("Choose another export folder"), "{action}");
+        assert!(action.contains("clear the choice"), "{action}");
+        // An explicit path is the caller's own choice and is not blocked by it.
+        std::fs::create_dir_all(project.path().join("exports")).unwrap();
+        let own = project.path().join("exports").join("mine.mp4");
+        assert!(fence_output_path(
+            project.path(),
+            own.to_str(),
+            "exports/out.mp4",
+            OutputPathPolicy::MP4
+        )
+        .is_ok());
+
+        // Clearing returns to the project's exports folder, and says so.
+        let cleared = project_set_output_dir(&state, json!({}))
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(cleared["destination"], "project_exports");
+        assert_eq!(cleared["cleared"], true);
+        assert!(cleared["dir"].is_null());
+        let back = fence_output_path(
+            project.path(),
+            None,
+            "exports/out.mp4",
+            OutputPathPolicy::MP4,
+        )
+        .unwrap();
+        assert!(back.starts_with(project.path().canonicalize().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn changing_the_folder_announces_it_on_the_event_stream() {
+        let _fixture = test_fixture::SessionOutputDirFixture::new();
+        let state = crate::state::AppState::new();
+        let mut events = state.events.subscribe();
+        let chosen = tempfile::tempdir().unwrap();
+        test_fixture::make_private(chosen.path());
+        project_set_output_dir(
+            &state,
+            json!({ "dir": chosen.path().display().to_string() }),
+        )
+        .await
+        .unwrap();
+        match events.recv().await.unwrap() {
+            crate::events::Event::OutputFolderChanged { status } => {
+                assert_eq!(status["destination"], "chosen");
+                assert_eq!(status["usable"], true);
+            }
+            other => panic!("expected output_folder_changed, got {other:?}"),
+        }
+        project_set_output_dir(&state, json!({})).await.unwrap();
+        match events.recv().await.unwrap() {
+            crate::events::Event::OutputFolderChanged { status } => {
+                assert_eq!(status["destination"], "project_exports");
+            }
+            other => panic!("expected output_folder_changed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_engine_notices_a_folder_that_disappears_on_its_own() {
+        let _fixture = test_fixture::SessionOutputDirFixture::new();
+        let state = crate::state::AppState::new();
+        let parent = tempfile::tempdir().unwrap();
+        let chosen = parent.path().join("Deliveries");
+        std::fs::create_dir(&chosen).unwrap();
+        test_fixture::make_private(&chosen);
+        project_set_output_dir(&state, json!({ "dir": chosen.display().to_string() }))
+            .await
+            .unwrap();
+        let mut events = state.events.subscribe();
+        let mut last = None;
+        assert!(
+            !folder_watch_step(&mut last, &state.events),
+            "the first look only records"
+        );
+        assert!(
+            !folder_watch_step(&mut last, &state.events),
+            "nothing changed"
+        );
+        std::fs::remove_dir_all(&chosen).unwrap();
+        assert!(
+            folder_watch_step(&mut last, &state.events),
+            "the folder is gone"
+        );
+        match events.recv().await.unwrap() {
+            crate::events::Event::OutputFolderChanged { status } => {
+                assert_eq!(status["usable"], false, "{status}");
+                assert!(status["problem"].as_str().unwrap().contains("not found"));
+            }
+            other => panic!("expected output_folder_changed, got {other:?}"),
+        }
+        assert!(
+            !folder_watch_step(&mut last, &state.events),
+            "told once, not every look"
+        );
+        std::fs::create_dir(&chosen).unwrap();
+        test_fixture::make_private(&chosen);
+        assert!(
+            folder_watch_step(&mut last, &state.events),
+            "and again when it comes back"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_export_folder_rule_allows_the_group_and_refuses_everyone_unless_sticky() {
+        use std::os::unix::fs::PermissionsExt;
+        let _fixture = test_fixture::SessionOutputDirFixture::new();
+        let state = crate::state::AppState::new();
+        let parent = tempfile::tempdir().unwrap();
+        let shared = parent.path().join("team");
+        std::fs::create_dir(&shared).unwrap();
+        let mode = |bits: u32| {
+            std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(bits)).unwrap()
+        };
+        let set = || project_set_output_dir(&state, json!({ "dir": shared.display().to_string() }));
+
+        // Group-writable (775, 770): allowed, as a shared team or family folder.
+        for bits in [0o775, 0o770, 0o2775] {
+            mode(bits);
+            let status = set().await.unwrap().result.unwrap();
+            assert_eq!(status["usable"], true, "{bits:o}: {status}");
+            assert!(
+                cut_media::check_output_dir_policy(&shared).is_ok(),
+                "{bits:o}"
+            );
+        }
+        // Everyone can write (777, 757, 772 style other-write) without sticky: refused.
+        for bits in [0o777, 0o757, 0o773] {
+            mode(bits);
+            let refused = set()
+                .await
+                .expect_err("other-writable without sticky is refused");
+            assert!(
+                refused
+                    .message
+                    .starts_with("export folder can be written by anyone on this computer: "),
+                "{bits:o}: {}",
+                refused.message
+            );
+            assert!(refused.message.contains("team"), "{}", refused.message);
+            let action = refused.suggested_action.unwrap();
+            assert!(action.contains("Choose another export folder"), "{action}");
+            assert!(action.contains("not everyone can write"), "{action}");
+            assert!(
+                cut_media::check_output_dir_policy(&shared).is_err(),
+                "{bits:o}"
+            );
+        }
+        // Everyone can write but the sticky bit protects each user's files (/tmp): allowed.
+        for bits in [0o1777, 0o1757] {
+            mode(bits);
+            assert_eq!(
+                set().await.unwrap().result.unwrap()["usable"],
+                true,
+                "{bits:o}"
+            );
+        }
+
+        // Chosen while private and opened to everyone later: unusable at once
+        // (the chip and ui.state follow), and the default export is refused
+        // before it starts.
+        mode(0o755);
+        set().await.unwrap();
+        mode(0o777);
+        let status = project_get_output_dir().await.unwrap().result.unwrap();
+        assert_eq!(status["usable"], false, "{status}");
+        assert!(status["problem"]
+            .as_str()
+            .unwrap()
+            .contains("can be written by anyone on this computer"));
+        let project = tempfile::tempdir().unwrap();
+        let denied = fence_output_path(
+            project.path(),
+            None,
+            "exports/out.mp4",
+            OutputPathPolicy::MP4,
+        )
+        .expect_err("refused before any encoder starts");
+        assert!(
+            denied
+                .message
+                .contains("can be written by anyone on this computer"),
+            "{}",
+            denied.message
+        );
+        // Group-writable again: fine for the render's own check and the export.
+        mode(0o775);
+        assert!(cut_media::check_output_dir_policy(&shared).is_ok());
+        assert!(fence_output_path(
+            project.path(),
+            None,
+            "exports/out.mp4",
+            OutputPathPolicy::MP4
+        )
+        .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_folder_that_cannot_be_written_is_refused_by_name() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            // Root ignores directory permissions; nothing to observe.
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = project_set_output_dir(
+            &crate::state::AppState::new(),
+            json!({ "dir": locked.display().to_string() }),
+        )
+        .await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.code, error_codes::IO);
+        assert!(
+            error.message.contains("cannot be written"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("locked"), "{}", error.message);
+        assert!(!error.message.contains("not found"), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn missing_output_folder_is_reported_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        let error = project_set_output_dir(
+            &crate::state::AppState::new(),
+            json!({ "dir": missing.display().to_string() }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, error_codes::NOT_FOUND);
+        assert!(
+            error.message.starts_with("output folder not found"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.suggested_action.as_deref(),
+            Some("create the folder first, or choose an existing folder")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_output_folder_is_named_not_reported_as_a_lease_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores directory permissions
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = try_reserve_output_path(&locked.join("render.mp4"));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.expect_err("a read-only folder must be refused");
+        assert!(
+            error.message.starts_with("output folder cannot be written"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("lease"), "{}", error.message);
+        assert!(error.suggested_action.is_some());
+    }
 
     #[cfg(unix)]
     fn symlink_dir(original: &Path, link: &Path) {
@@ -1145,6 +1861,70 @@ mod tests {
         )
         .expect("the explicit path becomes available when the writer releases it");
         assert_eq!(explicit.as_ref(), reserved_path);
+    }
+
+    /// Item 98: the owner deletes its lock file when it releases the name,
+    /// and a writer that opened the old file before that sees the name is gone.
+    #[test]
+    fn released_reservation_leaves_no_lock_file() {
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        set_session_output_dir(None);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        std::fs::create_dir_all(proj.join("exports")).unwrap();
+        let output =
+            fence_output_path(&proj, None, "exports/render_001.mp4", OutputPathPolicy::MP4)
+                .unwrap();
+        let lease_path = reservation_lease_path(&output);
+        assert!(
+            lease_path.exists(),
+            "a live reservation holds its lock file"
+        );
+        let early_opener = std::fs::File::open(&lease_path).unwrap();
+        drop(output);
+        assert!(!lease_path.exists(), "the owner removed its lock file");
+        assert!(
+            !lease_identity::still_named(&early_opener, &lease_path),
+            "a handle to the removed file is not the current lease"
+        );
+        let again = fence_output_path(&proj, None, "exports/render_001.mp4", OutputPathPolicy::MP4)
+            .unwrap();
+        assert!(lease_path.exists());
+        drop(again);
+        let leftovers: Vec<_> = std::fs::read_dir(proj.join("exports"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// A default name that is already taken moves on to the next free name even
+    /// when its suffix is not one the overwrite rule allows: exporting a review
+    /// package twice gives a second page, not a refusal.
+    #[test]
+    fn default_name_moves_past_an_existing_page_of_any_suffix() {
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        set_session_output_dir(None);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        std::fs::create_dir_all(proj.join("exports")).unwrap();
+        std::fs::write(proj.join("exports/review_render_001.html"), b"first page").unwrap();
+        let second = fence_project_output_path(
+            &proj,
+            None,
+            "exports/review_render_001.html",
+            OutputPathPolicy::HTML,
+        )
+        .expect("a taken default name is skipped, not refused");
+        assert_eq!(
+            second.file_name().and_then(|name| name.to_str()),
+            Some("review_render_001-2.html")
+        );
+        assert_eq!(
+            std::fs::read(proj.join("exports/review_render_001.html")).unwrap(),
+            b"first page",
+            "the first page is untouched"
+        );
     }
 
     #[test]

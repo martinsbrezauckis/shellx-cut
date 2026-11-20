@@ -9,13 +9,27 @@ export const USER_ACTION_FEEDBACK_EVENT = 'cut:user-action-feedback'
 
 export interface UserActionFeedbackDetail {
   message: string
-  setupSurface?: 'settings-video-performance' | 'settings-ai-transcription' | 'settings-services-integrations'
+  /** The Settings panel (a ui.open surface id) the notice's Open setup button opens. */
+  setupSurface?: string
+  /** For `ui.state.notices`: the verb whose result is shown, or `drop` / `app`. */
+  source?: string
+  /** The refusal or warning code behind the message, when there is one. */
+  code?: string | null
+  /** How many dropped items were not imported (`source: "drop"`). */
+  count?: number
 }
 
-export function publishUserActionMessage(message: string): void {
+/** Where an app-side message comes from, so an agent can tell what it is about. */
+export interface UserActionMessageOrigin {
+  source: string
+  code?: string | null
+  count?: number
+}
+
+export function publishUserActionMessage(message: string, origin?: UserActionMessageOrigin): void {
   if (typeof document === 'undefined' || !message.trim()) return
   document.dispatchEvent(new CustomEvent<UserActionFeedbackDetail>(USER_ACTION_FEEDBACK_EVENT, {
-    detail: { message: message.trim() },
+    detail: { message: message.trim(), ...(origin ?? {}) },
   }))
 }
 
@@ -27,8 +41,26 @@ const SETUP_SURFACE: Partial<Record<VerbName, UserActionFeedbackDetail['setupSur
   'media.diarize': 'settings-services-integrations',
 }
 
+/** The engine's code for a step refused because ffmpeg or ffprobe is not installed. */
+export const TOOL_MISSING = 'tool_missing'
+
+/** Plain words for a person when video processing is missing. The engine's
+ *  suggested_action is written for agents, so it is not shown here; the
+ *  notice's Open setup button leads to the platform's steps instead. */
+export function missingVideoToolsMessage(result: VerbResult): string | null {
+  if (result.ok || result.error?.code !== TOOL_MISSING) return null
+  const what = result.error?.message?.trim() || 'Video processing is not installed'
+  // A whole tool missing blocks all media work; a missing filter (e.g. no
+  // vid.stab for Stabilize) needs a more complete build.
+  return /is not installed$/.test(what)
+    ? `${what}. Set up video processing to import, preview and export.`
+    : `${what}. Open setup to get an FFmpeg that has it.`
+}
+
 export function userVerbFailureMessage(result: VerbResult, fallback: string): string | null {
   if (result.ok) return null
+  const missing = missingVideoToolsMessage(result)
+  if (missing) return missing
   const message = result.error?.message?.trim() || fallback
   const action = result.error?.suggested_action?.trim()
   if (!action || message.toLocaleLowerCase().includes(action.toLocaleLowerCase())) return message
@@ -36,6 +68,12 @@ export function userVerbFailureMessage(result: VerbResult, fallback: string): st
 }
 
 function setupSurfaceForFailure(name: VerbName, result: VerbResult): UserActionFeedbackDetail['setupSurface'] {
+  // A refusal that names its missing tool or condition says where to get it
+  // (schema/requirements.json); only Settings panels get the button.
+  const named = result.ok ? undefined : result.error?.requirement?.get?.settings
+  if (named?.startsWith('settings-')) return named
+  // Any verb refused for a missing ffmpeg/ffprobe leads to the same setup.
+  if (!result.ok && result.error?.code === TOOL_MISSING) return 'settings-video-performance'
   const candidate = SETUP_SURFACE[name]
   if (!candidate) return undefined
   const detail = [
@@ -66,7 +104,7 @@ export function publishUserActionFailure<N extends VerbName>(
   const detail = userActionFailureDetail(name, result, fallback)
   if (!detail || typeof document === 'undefined') return detail?.message ?? null
   document.dispatchEvent(new CustomEvent<UserActionFeedbackDetail>(USER_ACTION_FEEDBACK_EVENT, {
-    detail,
+    detail: { ...detail, source: name, code: result.error?.code ?? null },
   }))
   return detail.message
 }
@@ -89,7 +127,7 @@ export async function runUserVerb<N extends VerbName>(
     const message = `${base}: the local engine is unreachable.`
     if (typeof document !== 'undefined') {
       document.dispatchEvent(new CustomEvent<UserActionFeedbackDetail>(USER_ACTION_FEEDBACK_EVENT, {
-        detail: { message },
+        detail: { message, source: name, code: 'engine_unreachable' },
       }))
     }
     return null

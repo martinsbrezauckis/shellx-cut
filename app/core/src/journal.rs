@@ -152,6 +152,28 @@ fn same_file(left: &Metadata, right: &Metadata) -> bool {
     }
 }
 
+/// Whether the opened journal has exactly one name. Read from the handle, so
+/// it is the file actually opened; on Windows the link count is not in std
+/// metadata and comes from `GetFileInformationByHandle`.
+fn single_name(file: &File, opened: &Metadata) -> Result<bool, CutError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = file;
+        Ok(opened.nlink() == 1)
+    }
+    #[cfg(windows)]
+    {
+        let _ = opened;
+        Ok(crate::reparse::handle_identity(file)?.2 == 1)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, opened);
+        Ok(true)
+    }
+}
+
 /// Check the literal journal leaf before opening it, and keep recovery tied to
 /// the same file that was parsed. A project-supplied symlink must never turn a
 /// crash-tail repair into a write to an unrelated local file.
@@ -162,13 +184,9 @@ pub(crate) fn open_plain_journal(
     expected: Option<&Metadata>,
 ) -> Result<File, CutError> {
     let leaf = std::fs::symlink_metadata(path)?;
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        leaf.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
+    // Only a name-surrogate reparse point (symbolic link, junction) names
+    // another entry; cloud placeholders and other reparse points do not.
+    let reparse = crate::reparse::names_another_entry(&leaf);
     if !leaf.file_type().is_file() || leaf.file_type().is_symlink() || reparse {
         return Err(CutError::new(
             codes::INVALID_ARGS,
@@ -189,6 +207,21 @@ pub(crate) fn open_plain_journal(
     }
     let file = options.open(path)?;
     let opened = file.metadata()?;
+    // A second name (hard link) would make every append, and the tail repair's
+    // truncation, write into a file outside the project (item 140 sweep).
+    if !single_name(&file, &opened)? {
+        return Err(CutError::new(
+            codes::INVALID_ARGS,
+            "operation journal is shared with another file",
+            format!(
+                "{} is a second name (hard link) of a file elsewhere, so Cut does not write to it",
+                path.display()
+            ),
+        )
+        .with_suggested_action(
+            "copy the project folder to a new place (a copy has its own files) and open the copy",
+        ));
+    }
     if !opened.is_file()
         || !same_file(&leaf, &opened)
         || expected.is_some_and(|original| !same_file(original, &opened))

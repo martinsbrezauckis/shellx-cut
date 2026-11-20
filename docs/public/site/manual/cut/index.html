@@ -7,7 +7,7 @@
     <title>ShellX Cut Manual</title>
     <meta
       name="description"
-      content="ShellX Cut manual: setup, interface map, editing workflows, Generate, recording, delivery, and Debug API."
+      content="ShellX Cut manual: setup, interface map, editing, Polished screen recording with cursor clicks and zoom, camera layouts, Agent Chat, delivery, and Debug API."
     />
     <meta name="robots" content="index,follow" />
     <meta name="theme-color" content="#050505" />
@@ -19,7 +19,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="../manual.css?v=16" />
-    <script src="../manual.js?v=24" defer></script>
+    <script src="../manual.js?v=25" defer></script>
   </head>
   <body class="manual-body">
     <header class="manual-topbar">
@@ -28,10 +28,12 @@
         <span>ShellX Docs</span>
       </a>
       <nav class="manual-topnav" aria-label="Docs products">
-        <a href="./">Cut</a>
-        <a href="https://docs.theshellx.com/manual/canvas/">Design Studio</a>
-        <span class="manual-muted">Drive</span>
-        <a href="https://docs.theshellx.com/manual/vault/">Vault</a>
+        <a href="https://docs.theshellx.com/manual/shellx/">ShellX</a>
+        <a href="./" aria-current="page">Cut</a>
+        <span class="manual-muted">Design Studio</span>
+        <a href="https://docs.theshellx.com/manual/drive/">Drive</a>
+        <span class="manual-muted">Vault</span>
+        <a href="https://docs.theshellx.com/manual/motion/">Motion</a>
         <span class="manual-muted">Browser</span>
       </nav>
     </header>
@@ -44,7 +46,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.115" data-release-status="candidate" data-published-version="0.6.114">0.6.115</span>
+          <span class="manual-version" data-app-version="0.6.116" data-release-status="candidate" data-published-version="0.6.115">0.6.116</span>
         </div>
         <input
           class="manual-search"
@@ -272,7 +274,7 @@
           <summary>Workflows</summary>
           <button class="manual-node" data-feature-id="cut.workflow.import">Import and organize media</button>
           <button class="manual-node" data-feature-id="cut.workflow.base_overlay">Build the base timeline, then overlays</button>
-          <button class="manual-node" data-feature-id="cut.workflow.split_trim">Split and trim clips</button>
+          <button class="manual-node" data-feature-id="cut.workflow.split_trim">Split, trim, and move clips</button>
           <button class="manual-node" data-feature-id="cut.workflow.captions">Captions and transcript</button>
           <button class="manual-node" data-feature-id="cut.workflow.edit_for_clarity">Edit for Clarity</button>
           <button class="manual-node" data-feature-id="cut.workflow.generate">Prompt and storyboard Generate</button>
@@ -302,7 +304,7 @@
           <p class="manual-eyebrow">docs.theshellx.com / Cut manual</p>
           <h1>Learn Cut from the interface.</h1>
           <p>
-            Setup, editing, Generate, delivery, and the Debug API in one manual.
+            Setup, editing, Polished recording, Generate, delivery, and the Debug API in one manual.
             Use the tree to find the exact tool, menu item, filter, or panel you
             need.
           </p>
@@ -319,7 +321,7 @@
           <h2>Click a feature to see where it lives.</h2>
           <div class="manual-surface" data-manual-surface="editor" aria-label="ShellX Cut interface map">
             <img
-              src="../assets/cut/cut-main-editor-current.png?v=edc5c37d-editor"
+              src="../assets/cut/cut-main-editor-current.png?v=a864bddb-editor"
               alt="ShellX Cut editor with the Assets tab, editing-readiness summary, preview, and timeline tracks visible"
             />
             <div class="manual-highlight" data-manual-highlight="editor" data-label="Assets" aria-hidden="true"></div>
@@ -356,11 +358,13 @@
           <h2>Record with F9, keep the original, then edit.</h2>
           <div class="manual-surface" data-manual-surface="recording" aria-label="ShellX Cut Recording Studio surface">
             <img
-              src="../assets/cut/cut-recording-studio-current.png?v=8cb84317-record"
+              src="../assets/cut/cut-recording-studio-current.png?v=362a69d5-record"
+              width="1920" height="1080"
               alt="ShellX Cut Record workspace: screen and sound on the left, real-source preview in the centre, camera and recording settings on the right, and Start recording at the bottom"
             />
             <div class="manual-highlight" data-manual-highlight="recording" data-label="Recording Studio" aria-hidden="true" hidden></div>
           </div>
+          <p>Set up your take here, or <a href="#polished-example">see a finished Polished clip</a>.</p>
           <div class="manual-grid">
             <article class="manual-card">
               <h3>Choose screen and sound</h3>
@@ -368,7 +372,7 @@
             </article>
             <article class="manual-card">
               <h3>Raw or Polished</h3>
-              <p><strong>Raw</strong> keeps the original capture. <strong>Polished</strong> also adds an editable clip with framing to the open project. Valid recorded click positions can drive highlights and zoom. Display recordings support synthetic cursor smoothing; Windows/macOS Window recordings retain their single native cursor without synthetic styling. Turn on <strong>Show keystrokes</strong> beneath Polished if you want them in the demo; it is off by default. Both modes save the unchanged original MP4 automatically when you stop.</p>
+              <p><strong>Raw</strong> keeps the original capture. <strong>Polished</strong> saves that same original MP4 and adds an editable clip to the open project. Polished follows your recorded pointer movement and clicks with blue click rings and smooth zoom up to 2×. Choose a display for smooth cursor styling; Windows/macOS Window recordings keep the native cursor. On Wayland, a stationary click may lack a fresh pointer position and produce no ring or zoom; moving the pointer before clicking is more reliable. Turn on <strong>Show keystrokes</strong> beneath Polished if you want them in the demo; it is off by default.</p>
             </article>
             <article class="manual-card">
               <h3>Use the right-side settings</h3>
@@ -376,7 +380,7 @@
             </article>
             <article class="manual-card">
               <h3>Choose your camera layout</h3>
-              <p>In Polished mode, enable <strong>Camera</strong>, choose a device from the current Doctor list, then select any of the four corners, <strong>Circle</strong> or <strong>Rounded rectangle</strong>, and the size. Your placement stays selected until <strong>Reset camera layout</strong>. Cut retains the camera video as a separate take on a hidden track, while the chosen bubble is baked into the polished clip. Editing the retained take does not update that bubble. Windows, macOS, and Linux builds with native camera capture may list a device; a supported build can still list none. After the screen starts, the camera owner checks the exact device and a real first frame. The Start acknowledgement alone is not a camera recording. If the selected camera fails, that take stops without silently choosing another camera or switching to screen-only. Turn Camera off to start a separate screen-only take.</p>
+              <p>In Polished mode, enable <strong>Camera</strong> and choose an available device. Camera capture is supported on Windows, macOS and Linux with a compatible camera and the required operating-system permissions. Choose any of the four corners, <strong>Circle</strong> or <strong>Rounded rectangle</strong>, and the size; placement stays selected until <strong>Reset camera layout</strong>. Cut keeps a separate camera take on a hidden track and includes your chosen bubble in the polished clip. You can edit that clip, but changing the separate camera take does not change the bubble already rendered into it. If the selected camera cannot record, Cut stops the take and reports the problem. Choose another available device, or turn Camera off before starting a screen-only take.</p>
             </article>
             <article class="manual-card">
               <h3>Preview real captured pixels</h3>
@@ -401,10 +405,12 @@
             <article class="manual-card">
               <h3>Recording details and recovery</h3>
               <p>After Stop, the area below the preview reports the recorded streams, pointer information and shortcut status. If Stop fails, Cut checks whether that exact capture is still active before offering <strong>Retry Stop</strong>; uncertain or ended capture is reported explicitly. Do not assume that an error means the take has saved.</p>
+              <p>Closing the window or quitting during a recording saves it as Stop would before Cut closes. If Cut ends without that chance, for example after a crash or a power loss, the next start names the recording and offers <strong>Add to timeline</strong> for what was saved, with its sound, or <strong>Dismiss</strong>, which keeps the files. Cut keeps a save point every 15 seconds, so the last seconds of picture before such a stop can be missing; the notice says how much can be recovered of what was recorded. Opening the project prepares the interrupted recording as a visible job, so you can keep working while it runs. A recording started outside this window, for example through the API, is shown here with <strong>Stop</strong>.</p>
             </article>
             <article class="manual-card">
               <h3>Long recording safety</h3>
               <p>Microphone and Windows system audio are written continuously with bounded memory. Cut exposes the raw WAV only after it finishes cleanly and stops before the WAV format limit could corrupt a long capture.</p>
+              <p>A recording is saved in parts of 15 seconds. Where one part ends and the next begins, the picture of a moving screen holds for about half a second on macOS and about 2 seconds on Windows; the sound keeps recording. On Windows, stopping a long recording of a moving screen can take several seconds while Cut finishes the file.</p>
             </article>
             <article class="manual-card">
               <h3>Windows system audio</h3>
@@ -421,6 +427,16 @@
           </div>
         </section>
 
+        <section class="manual-section" id="polished-example">
+          <p class="manual-eyebrow">Polished result</p>
+          <h2>Follow the click, then keep editing.</h2>
+          <p>A frame from a real Cut Polished recording shows the blue click highlight and closer framing. The original MP4 is saved separately; the polished clip is ready on your timeline for trimming, captions and export.</p>
+          <div class="manual-surface" aria-label="Polished recording example">
+            <img src="../assets/cut/cut-polished-v06115.webp" loading="lazy" width="1920" height="1080"
+              alt="A real ShellX Cut Polished recording with a blue cursor click highlight and automatic zoom" />
+          </div>
+        </section>
+
         <section class="manual-section" id="first-run">
           <p class="manual-eyebrow">First run</p>
           <h2>Setup is part of the editor.</h2>
@@ -432,11 +448,15 @@
                 media, and final export. A fresh PC often needs FFmpeg installed
                 before Cut can work like a video editor. If it is missing,
                 Preview points directly to the Video processing setup card. On
-                Windows and Linux x86_64, choose Install there to consent to
-                Cut's separate verified runtime. On macOS, install Homebrew's complete build with
-                <code>brew install ffmpeg-full</code>; Cut detects its keg-only
-                path after restart. The regular Homebrew formula omits filters
-                used by captions, stabilization, and managed color.
+                Windows, Linux x86_64 and Apple silicon Macs, choose Download
+                there; the publisher, version, size, licence and source are shown
+                beside it, and choosing Download is your consent. The Apple
+                silicon build cannot stabilize video. For Stabilize, and on Intel
+                Macs, the card shows the steps: install Homebrew, then Homebrew's
+                complete build with <code>brew install ffmpeg-full</code>, and
+                choose Check again; Cut finds it without a restart. The regular
+                Homebrew formula omits filters used by captions, stabilization,
+                and managed color.
               </p>
             </article>
             <article class="manual-card">
@@ -470,6 +490,16 @@
           </div>
         </section>
 
+        <section class="manual-section" id="agent-chat">
+          <p class="manual-eyebrow">Agent Chat</p>
+          <h2>Ask for an edit in the open project.</h2>
+          <p>Choose your installed CLI agent in Chat, attach project assets or a timeline target, and describe the change. Leave Model empty to use the CLI's configured default. After a turn, inspect Preview and Diff before continuing; Step back is available while the change can safely be reverted.</p>
+          <div class="manual-surface" aria-label="Agent Chat in the editor">
+            <img src="../assets/cut/cut-agent-chat-v06115.webp" loading="lazy" width="2160" height="1350"
+              alt="ShellX Cut v0.6.115 Agent Chat beside the shared project and timeline" />
+          </div>
+        </section>
+
         <section class="manual-section" id="workflows">
           <p class="manual-eyebrow">Workflows</p>
           <h2>Common Cut tasks.</h2>
@@ -480,7 +510,7 @@
             </article>
             <article class="manual-card">
               <h3>Base track and overlays</h3>
-              <p>Use normal Insert or drag from Assets or Library for the story timeline. Imported picture and sound stay linked when moved or trimmed. Use Alt-drag or an overlay lane only when the clip should sit on top, then use track headers to reorder, mute, or solo lanes.</p>
+              <p>Use normal Insert or drag from Assets or Library for the story timeline. Imported picture and sound stay linked when moved or trimmed. Use Alt-drag from Assets, or an overlay lane, only when the clip should sit on top, then use track headers to reorder, mute, or solo lanes.</p>
             </article>
             <article class="manual-card">
               <h3>Edit and retime</h3>
@@ -507,8 +537,8 @@
               <p>Use registered project assets as references, label variations, compare takes, choose a result, and insert or replace from verified project history. Cancelled placeholders remain available for an explicit retry.</p>
             </article>
             <article class="manual-card">
-              <h3>Motion discovery and deferred connection</h3>
-              <p>Settings can discover an existing Motion installation and show its status. Only that read-only discovery is qualified in v0.6.114. The existing Edit in Motion, refresh, tracking and round-trip routes remain unqualified; managed installation and connection work is deferred. Do not treat those routes as a tested editing workflow for this release.</p>
+              <h3>Find ShellX Motion</h3>
+              <p>Open <strong>Settings → Motion</strong> to find an existing ShellX Motion installation and view its status. ShellX Motion is a separate application with its own installation and manual.</p>
             </article>
             <article class="manual-card">
               <h3>Agent Chat changes</h3>
@@ -516,11 +546,12 @@
             </article>
             <article class="manual-card">
               <h3>Record and polish</h3>
-              <p>Choose Raw or Polished and your screen and sound settings once. F9 can then start and stop from Edit or another focused app when the global shortcut is available. Both modes save the original MP4; Polished also adds an editable clip to the current project, or an automatically created recording project. Choose optional export destinations after Stop.</p>
+              <p>Choose Raw or Polished and your screen and sound settings once. F9 can then start and stop from Edit or another focused app when the global shortcut is available. Both modes save the original MP4; Polished also adds an editable clip to the current project, or an automatically created recording project. With valid click positions, the polished result shows blue click rings and smooth zoom up to 2×. Choose optional export destinations after Stop.</p>
             </article>
             <article class="manual-card">
               <h3>Review and export</h3>
               <p>Read ops, receipts, QC, scopes, and diffs before rendering previews, final files, or platform-ready exports.</p>
+              <p>Closing or quitting while an export runs asks first: <strong>An export is still running</strong>, with <strong>Keep working</strong> (the default) or <strong>Quit and stop it</strong>. After a crash or power loss, the next start says which export was interrupted and that its unfinished files were removed.</p>
             </article>
           </div>
         </section>
@@ -536,6 +567,11 @@
               Cut server.
             </p>
           </div>
+          <div class="manual-surface" aria-label="Agent control settings">
+            <img src="../assets/cut/cut-agent-control-v06115.webp" loading="lazy" width="1040" height="1026"
+              alt="ShellX Cut v0.6.115 Agent control settings with the local Debug API and MCP setup controls" />
+          </div>
+          <p>Open <strong>Settings → Agent control</strong> to inspect the local connection, copy the MCP configuration and test that a client reaches the running editor.</p>
           <table class="manual-api-table">
             <thead>
               <tr>

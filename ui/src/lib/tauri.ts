@@ -13,6 +13,8 @@
 // native events target that Webview rather than the generic app event bus.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { loadTrackedDialogs } from './nativeDialogs'
+import { publishUserActionMessage } from './userActionFeedback'
 import { validShellUpdateState, type ShellUpdateState } from './updateState'
 
 type TauriGlobal = {
@@ -310,7 +312,7 @@ export async function confirmAction(
     return typeof window !== 'undefined' ? window.confirm(text) : false
   }
   try {
-    const { confirm } = await import('@tauri-apps/plugin-dialog')
+    const { confirm } = await loadTrackedDialogs('confirmAction')
     return await confirm(text, {
       title: opts?.title ?? 'ShellX Cut',
       kind: 'warning',
@@ -332,7 +334,7 @@ export async function showMessage(
     return
   }
   try {
-    const { message } = await import('@tauri-apps/plugin-dialog')
+    const { message } = await loadTrackedDialogs('showMessage')
     await message(text, {
       title: opts?.title ?? 'ShellX Cut',
       kind: opts?.kind ?? 'info',
@@ -390,6 +392,24 @@ function mediaPickerFilters() {
 }
 
 /**
+ * A native file dialog that FAILS to open (as opposed to one the person
+ * cancels, which resolves with no selection) must not look like a cancel.
+ * The failure goes to the app's shared notice, so the person reads it and
+ * `ui.state.notices` lists it (`source: "app"`, `code: "picker_failed"`).
+ */
+function reportPickerFailure(picker: string, error: unknown): void {
+  const reason = typeof error === 'string' && error.trim()
+    ? error.trim()
+    : error instanceof Error && error.message
+      ? error.message
+      : ''
+  publishUserActionMessage(
+    `The file chooser could not open (${picker})${reason ? `: ${reason}` : ''}. Nothing was changed. Try again; if it keeps failing, restart ShellX Cut.`,
+    { source: 'app', code: 'picker_failed' },
+  )
+}
+
+/**
  * Open the native OS file picker (multi-select, media filter) and return the
  * chosen absolute paths — empty if cancelled or not in Tauri.
  *
@@ -403,7 +423,7 @@ function mediaPickerFilters() {
 export async function pickMedia(): Promise<string[]> {
   if (!isTauri()) return []
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickMedia')
     const sel = await open({
       multiple: true,
       title: 'Import media — ShellX Cut',
@@ -413,7 +433,8 @@ export async function pickMedia(): Promise<string[]> {
     const arr = Array.isArray(sel) ? sel : [sel]
     // Normalize: open() yields path strings (older builds yield {path}).
     return arr.map((s) => (typeof s === 'string' ? s : (s as { path?: string })?.path ?? '')).filter(Boolean)
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickMedia', error)
     return []
   }
 }
@@ -422,7 +443,7 @@ export async function pickMedia(): Promise<string[]> {
 export async function pickLibraryRelinkMedia(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickLibraryRelinkMedia')
     const sel = await open({
       multiple: false,
       title: 'Relink missing Library media — ShellX Cut',
@@ -430,7 +451,8 @@ export async function pickLibraryRelinkMedia(): Promise<string | null> {
     })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickLibraryRelinkMedia', error)
     return null
   }
 }
@@ -445,11 +467,12 @@ export async function pickLibraryRelinkMedia(): Promise<string | null> {
 export async function pickFolder(options: { title?: string } = {}): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickFolder')
     const sel = await open({ directory: true, multiple: false, title: options.title ?? 'Choose export folder — ShellX Cut' })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickFolder', error)
     return null
   }
 }
@@ -458,11 +481,12 @@ export async function pickFolder(options: { title?: string } = {}): Promise<stri
 export async function pickMotionPackage(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickMotionPackage')
     const sel = await open({ directory: true, multiple: false, title: 'Relink ShellX Motion package' })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickMotionPackage', error)
     return null
   }
 }
@@ -480,7 +504,7 @@ export async function pickExportOutput(opts?: {
 }): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { save } = await loadTrackedDialogs('pickExportOutput')
     const sel = await save({
       title: opts?.title ?? 'Choose output file — ShellX Cut',
       defaultPath: opts?.defaultPath ?? 'ShellX Cut export.mp4',
@@ -492,7 +516,8 @@ export async function pickExportOutput(opts?: {
     })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickExportOutput', error)
     return null
   }
 }
@@ -525,7 +550,7 @@ export async function pickRenderOutput(): Promise<string | null> {
 export async function pickOtio(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickOtio')
     const sel = await open({
       multiple: false,
       title: 'Import timeline (OpenTimelineIO) — ShellX Cut',
@@ -533,7 +558,8 @@ export async function pickOtio(): Promise<string | null> {
     })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickOtio', error)
     return null
   }
 }
@@ -549,7 +575,7 @@ export async function pickOtio(): Promise<string | null> {
 export async function pickSubtitle(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickSubtitle')
     const sel = await open({
       multiple: false,
       title: 'Import captions (SRT / VTT / ASS) — ShellX Cut',
@@ -557,7 +583,8 @@ export async function pickSubtitle(): Promise<string | null> {
     })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickSubtitle', error)
     return null
   }
 }
@@ -566,7 +593,7 @@ export async function pickSubtitle(): Promise<string | null> {
 export async function pickReviewFeedback(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickReviewFeedback')
     const sel = await open({
       multiple: false,
       title: 'Import review feedback — ShellX Cut',
@@ -574,7 +601,8 @@ export async function pickReviewFeedback(): Promise<string | null> {
     })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickReviewFeedback', error)
     return null
   }
 }
@@ -590,7 +618,7 @@ export async function pickReviewFeedback(): Promise<string | null> {
 export async function pickCube(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickCube')
     const sel = await open({
       multiple: false,
       title: 'Choose a LUT (.cube) — ShellX Cut',
@@ -598,7 +626,8 @@ export async function pickCube(): Promise<string | null> {
     })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickCube', error)
     return null
   }
 }
@@ -613,11 +642,12 @@ export async function pickCube(): Promise<string | null> {
 export async function pickFfmpeg(): Promise<string | null> {
   if (!isTauri()) return null
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
+    const { open } = await loadTrackedDialogs('pickFfmpeg')
     const sel = await open({ multiple: false, title: 'Choose the ffmpeg executable — ShellX Cut' })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
-  } catch {
+  } catch (error) {
+    reportPickerFailure('pickFfmpeg', error)
     return null
   }
 }
@@ -702,4 +732,127 @@ export function onRecordHotkey(cb: () => void): () => void {
     cancelled = true
     off?.()
   }
+}
+
+/**
+ * The desktop shell holds a window close or quit while a recording runs and
+ * asks this window to save it (`cut:close-requested`). Returns an unsubscribe
+ * fn; a no-op outside the desktop app.
+ */
+export function onCloseRequested(cb: () => void): () => void {
+  const t = tauri()
+  if (!t) return () => {}
+  let off: (() => void) | null = null
+  let cancelled = false
+  t.event
+    .listen('cut:close-requested', () => cb())
+    .then((unlisten) => {
+      if (cancelled) unlisten()
+      else off = unlisten
+    })
+    .catch(() => {})
+  return () => {
+    cancelled = true
+    off?.()
+  }
+}
+
+/** Tell the shell this window is saving the recording before it closes. */
+export async function acknowledgeCloseRequest(): Promise<boolean> {
+  const t = tauri()
+  if (!t) return false
+  try { return await t.core.invoke<boolean>('acknowledge_close_request') } catch { return false }
+}
+
+/** Tell the shell the recording is saved (or the attempt ended); it closes now. */
+export async function finishCloseRequest(): Promise<boolean> {
+  const t = tauri()
+  if (!t) return false
+  try { return await t.core.invoke<boolean>('finish_close_request') } catch { return false }
+}
+
+/** What the shell asks when the app closes while an export (or other work
+ * someone asked for) runs: the engine's sentence and the named jobs. */
+/** One running job of the quit question, as the engine's records list it. */
+export interface QuitJob {
+  job_id: string
+  kind: string
+  progress?: number
+  message?: string | null
+}
+
+export interface QuitJobsQuestion {
+  message: string
+  cause: string
+  suggested_action: string
+  question: string
+  /** One record per running job. A job's message is free text (it can hold
+   * ';' or ','), so the list is never made by splitting `cause`. */
+  running?: QuitJob[]
+}
+
+/** Subscribe to the shell's export question at close (`cut:quit-jobs-running`)
+ * and to its end when the work finished meanwhile (`cut:quit-jobs-settled`). */
+export function onQuitJobsQuestion(
+  asked: (question: QuitJobsQuestion) => void,
+  settled: () => void,
+): () => void {
+  const t = tauri()
+  if (!t) return () => {}
+  const offs: Array<() => void> = []
+  let cancelled = false
+  const keep = (unlisten: () => void) => {
+    if (cancelled) unlisten()
+    else offs.push(unlisten)
+  }
+  t.event.listen('cut:quit-jobs-running', (event) => asked(event.payload as QuitJobsQuestion)).then(keep).catch(() => {})
+  t.event.listen('cut:quit-jobs-settled', () => settled()).then(keep).catch(() => {})
+  return () => {
+    cancelled = true
+    for (const off of offs) off()
+  }
+}
+
+/** Tell the shell this window shows the export question. */
+export async function acknowledgeQuitQuestion(): Promise<boolean> {
+  const t = tauri()
+  if (!t) return false
+  try { return await t.core.invoke<boolean>('acknowledge_quit_question') } catch { return false }
+}
+
+/** The person's answer: `stop` quits and stops the work; false keeps working. */
+export async function answerQuitQuestion(stop: boolean): Promise<boolean> {
+  const t = tauri()
+  if (!t) return false
+  try { return await t.core.invoke<boolean>('answer_quit_question', { stop }) } catch { return false }
+}
+
+/** A second launch named a project (`cut:open-project`): the shell brought this
+ * window forward and asks it to open that project. */
+export function onShellOpenProject(cb: (path: string) => void): () => void {
+  const t = tauri()
+  if (!t) return () => {}
+  let off: (() => void) | null = null
+  let cancelled = false
+  t.event
+    .listen('cut:open-project', (event) => {
+      const path = (event.payload as { path?: unknown } | null)?.path
+      if (typeof path === 'string' && path) cb(path)
+    })
+    .then((unlisten) => {
+      if (cancelled) unlisten()
+      else off = unlisten
+    })
+    .catch(() => {})
+  return () => {
+    cancelled = true
+    off?.()
+  }
+}
+
+/** The project path the app was launched with, once; null when none. */
+export async function takeLaunchProject(): Promise<string | null> {
+  const t = tauri()
+  if (!t) return null
+  try { return (await t.core.invoke<string | null>('take_launch_project')) ?? null } catch { return null }
 }

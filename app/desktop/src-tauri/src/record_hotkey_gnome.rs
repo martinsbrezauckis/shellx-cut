@@ -1,7 +1,7 @@
 //! GNOME's visible custom-keybinding fallback for the Record F9 shortcut.
 //!
 //! GNOME 46 does not expose the GlobalShortcuts portal backend on the supported
-//! PC2 Wayland host, and Shell's GrabAccelerator is allowlisted. A user-owned
+//! tested Wayland environment, and Shell's GrabAccelerator is allowlisted. A user-owned
 //! GNOME custom keybinding is therefore the owned startup route. The binding
 //! can invoke only this executable's exact one-byte forwarder.
 

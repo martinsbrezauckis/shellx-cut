@@ -172,6 +172,7 @@ impl RegionStartOptions {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Serialize)]
 struct WireRegionSelection {
     display_id: u32,

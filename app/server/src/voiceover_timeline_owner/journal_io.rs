@@ -169,11 +169,13 @@ fn ensure_open_regular(file: &File) -> Result<(), CutError> {
     let metadata = file
         .metadata()
         .map_err(|_| io_error("inspect private voiceover journal"))?;
-    if metadata.file_type().is_file() && !is_reparse(&metadata) {
+    // A second name (hard link) of another file is never appended to.
+    let single = record_recovery::has_single_name(file).unwrap_or(false);
+    if metadata.file_type().is_file() && !is_reparse(&metadata) && single {
         Ok(())
     } else {
         Err(io_error(
-            "private voiceover journal is not a local regular file",
+            "private voiceover journal is not a local file with one name",
         ))
     }
 }
@@ -293,6 +295,10 @@ fn append_canonical_entry(
 }
 
 #[cfg(test)]
+#[path = "journal_io_link_tests.rs"]
+mod link_tests;
+
+#[cfg(test)]
 mod size_limit_tests {
     use super::*;
 
@@ -326,18 +332,11 @@ fn is_plain_regular_file(path: &Path) -> Result<bool, CutError> {
         && !is_reparse(&metadata))
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 fn io_error(detail: impl Into<String>) -> CutError {

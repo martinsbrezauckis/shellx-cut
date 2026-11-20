@@ -91,3 +91,29 @@ mod tests {
         assert_eq!(parse_macos_window_id("87"), None);
     }
 }
+
+/// The selected window was closed (or its id is stale) by the time the native
+/// backend resolved it. The action names what fixes that, not a platform setup
+/// problem, on every platform that records windows.
+#[cfg(any(windows, target_os = "macos", test))]
+pub(crate) fn window_unavailable(detail: impl std::fmt::Display) -> record_core::RecordError {
+    record_core::RecordError::new(
+        record_core::error_codes::CAPTURE,
+        "the selected window is no longer available",
+        detail.to_string(),
+    )
+    .with_action("reopen the source picker and choose the window again")
+}
+
+#[cfg(test)]
+mod window_unavailable_tests {
+    #[test]
+    fn closed_window_names_the_picker_action() {
+        let error = super::window_unavailable("gone");
+        assert_eq!(error.message, "the selected window is no longer available");
+        assert_eq!(
+            error.suggested_action.as_deref(),
+            Some("reopen the source picker and choose the window again")
+        );
+    }
+}

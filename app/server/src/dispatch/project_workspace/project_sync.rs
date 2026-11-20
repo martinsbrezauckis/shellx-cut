@@ -73,7 +73,7 @@ pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbR
     let guard = state.project.read().await;
     let store = guard.as_ref().ok_or_else(no_project)?;
     let Some(since_revision) = args.since_revision else {
-        return snapshot(store, "cold");
+        return snapshot(state, store, "cold");
     };
     let page = match store
         .log
@@ -81,21 +81,21 @@ pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbR
     {
         Ok(page) => page,
         Err(error) if error.code == error_codes::NOT_FOUND => {
-            return snapshot(store, "invalid_revision")
+            return snapshot(state, store, "invalid_revision")
         }
         // A single valid operation can exceed the delta byte cap. It is not a
         // malformed request: return the canonical full-state fallback rather
         // than leaving a reconnect unable to converge.
         Err(error) if error.code == error_codes::INVALID_ARGS => {
-            return snapshot(store, "delta_too_large")
+            return snapshot(state, store, "delta_too_large")
         }
         Err(error) => return Err(error),
     };
     if page.has_more {
-        return snapshot(store, "too_old");
+        return snapshot(state, store, "too_old");
     }
     let Some((changes, affected)) = bounded_changes(&page.ops) else {
-        return snapshot(store, "unsupported_delta");
+        return snapshot(state, store, "unsupported_delta");
     };
     // This is ephemeral B5-to-B6 evidence, but it remains revision-bound just
     // like the rest of a delta. Always include it so a supported later mutation
@@ -103,7 +103,7 @@ pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbR
     // prior revision's authority until its next full snapshot.
     let portable_b5_receipt = store.current_relink_receipt()?;
     let project_identity = super::path_free_project_identity(store)?;
-    Ok(VerbResult::ok(json!({
+    let mut result = json!({
         "sync": {
             "mode": "delta",
             "from_revision": since_revision,
@@ -115,18 +115,34 @@ pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbR
             "encoded_bytes": page.encoded_bytes,
             "portable_b5_receipt": portable_b5_receipt,
         }
-    })))
+    });
+    with_proxy_check(state, store, &mut result);
+    Ok(VerbResult::ok(result))
 }
 
-fn snapshot(store: &ProjectStore, reason: &str) -> Result<VerbResult, CutError> {
-    Ok(VerbResult::ok(super::full_project_state(
+fn snapshot(state: &AppState, store: &ProjectStore, reason: &str) -> Result<VerbResult, CutError> {
+    let mut result = super::full_project_state(
         store,
         json!({
             "mode": "snapshot",
             "reason": reason,
             "project_revision": store.log.current_revision()?,
         }),
-    )?))
+    )?;
+    with_proxy_check(state, store, &mut result);
+    Ok(VerbResult::ok(result))
+}
+
+/// While the opened project's proxies are being checked (they are held back
+/// and not used yet), say so: `proxy_check {state:"checking", job_id, assets}`.
+/// Absent otherwise. The check job's end is the moment to read the project again.
+fn with_proxy_check(state: &AppState, store: &ProjectStore, result: &mut Value) {
+    if let (Some(check), Some(object)) = (
+        crate::dispatch::media::proxy_check_status(state, &store.dir),
+        result.as_object_mut(),
+    ) {
+        object.insert("proxy_check".into(), check);
+    }
 }
 
 /// Return only state changes the UI can apply without replaying Cut's full

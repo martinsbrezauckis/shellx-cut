@@ -23,7 +23,7 @@ impl Drop for NativeRuntimeEnvRestore {
 
 #[test]
 fn premium_member_is_selected_without_changing_ordinary_python() {
-    let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+    let _guard = super::super::lock_native_runtime_env();
     let _restore = NativeRuntimeEnvRestore::capture();
     let temp = tempfile::tempdir().unwrap();
     let context = |name: &str, version: &str| {
@@ -90,16 +90,19 @@ fn premium_member_is_selected_without_changing_ordinary_python() {
 
 #[test]
 fn native_runtime_absent_keeps_the_existing_sidecar_ladder() {
-    let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+    let _guard = super::super::lock_native_runtime_env();
     let _restore = NativeRuntimeEnvRestore::capture();
     std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
-    let runtime = sidecar_runtime().unwrap();
+    // Selection only: whether a Python can really be started is the separate
+    // `ensure_runnable` check (python_missing tests), so this ladder test does
+    // not depend on the machine having one.
+    let runtime = sidecar_runtime_unchecked().unwrap();
     assert!(runtime.native_context.is_none());
 }
 
 #[test]
 fn native_runtime_set_selects_the_declared_python_member() {
-    let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+    let _guard = super::super::lock_native_runtime_env();
     let _restore = NativeRuntimeEnvRestore::capture();
     let temp = tempfile::tempdir().unwrap();
     let python_root = temp.path().join("python-runtime");
@@ -155,7 +158,7 @@ fn native_runtime_set_selects_the_declared_python_member() {
 
 #[test]
 fn invalid_native_runtime_never_falls_through_to_the_legacy_python() {
-    let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+    let _guard = super::super::lock_native_runtime_env();
     let _restore = NativeRuntimeEnvRestore::capture();
     let temp = tempfile::tempdir().unwrap();
     let invalid = temp.path().join("native-runtime-context.json");
@@ -166,7 +169,7 @@ fn invalid_native_runtime_never_falls_through_to_the_legacy_python() {
 
 #[test]
 fn native_runtime_environment_is_restored_during_unwind() {
-    let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+    let _guard = super::super::lock_native_runtime_env();
     let _restore = NativeRuntimeEnvRestore::capture();
     for prior in [
         None,
@@ -223,6 +226,8 @@ fn native_python_command_policy_isolated_and_normal_compatible() {
 #[cfg(target_os = "linux")]
 #[test]
 fn native_python_command_ignores_hostile_pythonpath() {
+    // Runs `python3` from PATH, so it must not overlap a test that changes PATH.
+    let _guard = super::super::lock_native_runtime_env();
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("sitecustomize.py"),

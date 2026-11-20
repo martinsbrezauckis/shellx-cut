@@ -16,7 +16,9 @@ const doctor = {
   pause: { supported: true, detail: 'Pause available', incompatible: [] },
 }
 
-async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = false) {
+// `override(name)` may return a whole engine reply for one verb (for example an
+// engine refusal) instead of the default fixture result.
+async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = false, override = null) {
   let currentDoctor = initialDoctor
   const cacheDir = mkdtempSync(join(tmpdir(), 'cut-record-handoff-'))
   t.after(() => rmSync(cacheDir, { recursive: true, force: true }))
@@ -35,8 +37,8 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
       })
     } }], server: { host: '127.0.0.1', port: 0 },
   })
-  await server.listen()
   t.after(() => server.close())
+  await server.listen()
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage()
@@ -51,11 +53,13 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
     if (name === 'screen_record.start') starts.push(route.request().postDataJSON())
     if (name === 'screen_record.pause' || name === 'screen_record.resume') pauseActions.push(name)
     if (holdPolish && name === 'screen_record.polish') { pendingPolishes.push(route); return }
+    const custom = override?.(name)
+    if (custom) { await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(custom) }); return }
     const result = name === 'screen_record.doctor' ? currentDoctor
       : name === 'screen_record.start' ? { capture_id: 'capture-fixture', pause: { enabled: Boolean(starts.at(-1)?.pause) } }
         : holdPolish && name === 'screen_record.stop' ? { capture_id: 'capture-fixture', raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json' }
           : holdPolish && name === 'screen_record.studio_event' ? { last_event: route.request().postDataJSON().event }
-        : name === 'screen_record.status' ? { capture_id: 'capture-fixture', terminal: false }
+        : name === 'screen_record.status' ? { capture_id: 'capture-fixture', ready: true, terminal: false, since_first_screen_frame_ms: 0 }
           : name === 'screen_record.pause' ? { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: 200 }
             : name === 'screen_record.resume' ? { action: 'resume', saved: true, state: 'recording', logical_media_time_ms: 200 }
           : {}
@@ -171,6 +175,23 @@ test('pause admission from Edit F9 provides live controls after Record mounts', 
   assert.deepEqual(errors, [])
 })
 
+test('a completed unsupported Doctor clears a saved Pause choice after the pending probe', async t => {
+  const preset = {
+    schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+    fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+    keys: false, raw: false, pause: { mode: 'enabled' }, studio: { background: 'gradient' },
+  }
+  const unavailable = { ...doctor, pause: { supported: false, detail: 'Pause intentionally unavailable', incompatible: [] } }
+  const { page, starts, errors } = await fixture(t, preset, unavailable)
+  await page.getByText('Pause intentionally unavailable', { exact: true }).waitFor({ state: 'attached' })
+  assert.equal(await page.locator('[data-cut-action="record-pause-enable"]').isChecked(), false)
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  assert.equal(starts.length, 1)
+  assert.equal(Object.hasOwn(starts[0], 'pause'), false)
+  assert.deepEqual(errors, [])
+})
+
 test('a durable Pause acknowledgement survives Edit and Record remount', async t => {
   const preset = {
     schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
@@ -257,3 +278,63 @@ for (const mode of ['raw', 'pause']) {
     assert.deepEqual(errors, [])
   })
 }
+
+const quickPreset = {
+  schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+  fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+  keys: false, raw: true, studio: { background: 'gradient' },
+}
+
+test('a refused Start shows the way forward the engine gives', async t => {
+  const refusal = {
+    ok: false,
+    error: {
+      code: 'not_found',
+      message: 'the selected window is no longer available',
+      cause: 'window windows-hwnd-v1:00000000deadbeef:1 is not in the current screen_record.doctor window list',
+      suggested_action: 'reopen the source picker and choose the window again',
+    },
+  }
+  const { page, errors } = await fixture(t, quickPreset, doctor, false, name => (name === 'screen_record.start' ? refusal : null))
+  await page.locator('[data-cut-action="record-start"]').click()
+  const shown = page.locator('[data-cut-rec-error]')
+  await shown.waitFor()
+  assert.equal(
+    await shown.textContent(),
+    'Could not start recording: The selected window is no longer available. Reopen the source picker and choose the window again.',
+  )
+  assert.deepEqual(errors, [])
+})
+
+test('an early Stop says nothing was recorded and how to record, with no recovery hint', async t => {
+  let stopped = false
+  const nothingRecorded = {
+    ok: false,
+    error: {
+      code: 'capture',
+      message: 'nothing was recorded',
+      cause: 'Stop came before the first screen frame was captured, so there is no take to save',
+      suggested_action: 'start the recording again and wait until the timer is running before you stop',
+    },
+  }
+  const { page, errors } = await fixture(t, quickPreset, doctor, false, name => {
+    if (name === 'screen_record.stop') { stopped = true; return nothingRecorded }
+    if (name === 'screen_record.status' && stopped) {
+      return { ok: false, error: { code: 'not_found', message: 'screen recording is not active in this cutd process' } }
+    }
+    return null
+  })
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  await page.locator('[data-test-stop]').click()
+  const shown = page.locator('[data-cut-rec-error]')
+  await shown.waitFor()
+  const text = await shown.textContent()
+  assert.equal(
+    text,
+    'Nothing was recorded: Stop came before the first screen frame was captured. Start the recording again and wait until the timer is running before you stop.',
+  )
+  assert.doesNotMatch(text, /Recovery|recover/i, 'there is nothing to recover')
+  assert.deepEqual(errors, [])
+})
+

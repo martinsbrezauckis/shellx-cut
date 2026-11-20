@@ -44,6 +44,8 @@ fn test_actor() -> Actor {
     }
 }
 
+mod add_music;
+mod applicability_trust;
 mod assemble_apply;
 mod assemble_broll_import_failure;
 mod assemble_broll_revision_transition;
@@ -54,30 +56,61 @@ mod assets_probe_cancellation;
 mod caption_bulk;
 mod caption_track_resolution;
 mod captions_kinetic_regression;
+mod captions_refusal;
+mod check_applicable;
 mod clip_delete_cleanup;
 mod delivery_admission;
+mod derived_media_at_open;
 mod detach_audio;
+mod diarize_project_files;
+mod edit_point_snap;
+mod engine_reports;
 mod export_chapters;
 mod generate_project_transition;
 mod generation_cli;
 mod group_review_request_idempotency;
+mod hdr_render;
+mod hdr_tone_map_gate;
 mod interchange_warnings;
 mod jobs_project_binding;
 mod jobs_retry;
+mod judge_checked_inputs;
+mod judge_project_files;
 mod linked_insert;
+mod linked_move;
 mod media_async_transition;
+mod media_tool_gate;
+#[cfg(unix)]
+mod motion_project_files;
 #[cfg(unix)]
 mod motion_project_transition;
+mod nest_cache_links;
 mod nest_media_io;
+mod no_transcript_answers;
+mod odd_project_render;
 mod otio_rounding;
 mod output_contract;
 mod output_path_fencing;
 mod overwrite;
+mod planted_reports;
 mod preview_comparison;
 mod project_capture_transition;
+mod project_change_jobs;
+mod project_format_from_clip;
+mod proxy_giveback_event;
+mod proxy_rebuild_truth;
+mod receipt_size_limits;
+mod received_cache_facts;
 mod recipe_runner;
+mod recording_recovery_background;
+mod render_check_outcome;
+#[cfg(unix)]
+mod render_project_files;
+mod render_queue_outcome;
+mod render_stop_race;
 mod render_verify;
 mod request_idempotency;
+mod reverse_admission;
 mod schema_contract;
 mod screen_record;
 mod screen_record_cadence;
@@ -89,10 +122,15 @@ mod screen_record_sparse_export_regression;
 mod screen_record_start_project_identity;
 mod screen_record_terminal;
 mod sequence_index;
+mod setup_perception_cancel;
 mod smart_bins;
+mod subframe_guard;
 mod system_tools;
+mod title_remake_paths;
 mod transition_test_support;
+mod truncated_source;
 mod ui_command_confirmation;
+mod unreadable_import;
 #[test]
 fn effect_strips_flattened_track_key_from_detail() {
     let e = effect(Some("v1"), json!({"track":"evil","clip":"c1"}));
@@ -2822,6 +2860,20 @@ async fn capture_manifest_ingests_markers() {
         .as_str()
         .unwrap()
         .contains("capture-manifest ingest"));
+    // One event had no usable time: the import says so (row 201b sibling).
+    let video = wait_job(&state, &video_job, 60).await;
+    assert_eq!(
+        video.completion,
+        Some(crate::jobs::JobCompletion::DoneWithWarnings)
+    );
+    assert!(video.result.unwrap()["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w
+            .as_str()
+            .unwrap()
+            .starts_with("1 capture marker could not be created")));
     // Still image + manifest: parsed but no markers (stills never place);
     // the IMAGE job finishes (not fails) and says so.
     let png = dir.path().join("card.png");
@@ -3551,7 +3603,7 @@ async fn edit_split_at_scenes_splits_base_clip() {
     .await;
     let receipts = dir.path().join("t.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema":"shellx-cut/perception/1","asset_hash":"","source_path":"x",
@@ -3673,7 +3725,7 @@ async fn split_at_scenes_surfaces_non_boundary_split_failure() {
     let (dir, state, asset_id, _clip_id) = ramped_single_video_clip_fixture().await;
     let receipts = dir.path().join("t.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join(format!("{asset_id}.perception.json")),
         serde_json::to_string(&json!({
             "schema":"shellx-cut/perception/1","asset_hash":"","source_path":"x",
@@ -3838,7 +3890,7 @@ async fn multicam_switch_does_not_destroy_user_program_track() {
     let receipts = dir.path().join("mc.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
     for (asset, source, lufs) in [("a1", "cam1.mp4", -10.0), ("a2", "cam2.mp4", -20.0)] {
-        std::fs::write(
+        engine_reports::write_engine_report(
             receipts.join(format!("{asset}.perception.json")),
             serde_json::to_string(&json!({
                 "schema": "shellx-cut/perception/1",
@@ -4480,7 +4532,7 @@ async fn remove_silences_honors_track_narrowing() {
     // v1's source window only.
     let receipts = dir.path().join("t.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema": "shellx-cut/perception/1",
@@ -5463,7 +5515,7 @@ async fn duck_computes_windows_from_perception() {
     // [5000,5500) + [6500,8000) → timeline [0,500) + [1500,3000).
     let receipts = dir.path().join("t.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema": "shellx-cut/perception/1",
@@ -5501,7 +5553,7 @@ async fn duck_computes_windows_from_perception() {
     let project: cut_core::Project = serde_json::from_value(s.result.unwrap()).unwrap();
     assert_eq!(project.track("a2t").unwrap().gain_windows.len(), 2);
     // Fully-silent against-track → honest no-op, NO op appended.
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema": "shellx-cut/perception/1",
@@ -5545,7 +5597,7 @@ async fn remove_silences_totality_guard() {
     std::fs::create_dir_all(&receipts).unwrap();
     // Perception fact: ONE silence covering the entire 10s source — maps
     // to ~100% of both tracks' timelines (the regression footage shape).
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema": "shellx-cut/perception/1",
@@ -5610,7 +5662,7 @@ async fn remove_silences_guard_allows_normal_pass() {
     let receipts = dir.path().join("t.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
     // One 1s silence inside v1's 5s window → ~15% removal. No guard.
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema": "shellx-cut/perception/1",
@@ -5665,7 +5717,7 @@ async fn remove_silences_errors_without_silence_facts() {
     // 2) Facts present, nothing matched in scope → honest ok-zero stays.
     let receipts = dir.path().join("t.cutproj/receipts");
     std::fs::create_dir_all(&receipts).unwrap();
-    std::fs::write(
+    engine_reports::write_engine_report(
         receipts.join("a1.perception.json"),
         serde_json::to_string(&json!({
             "schema": "shellx-cut/perception/1",
@@ -5867,11 +5919,15 @@ async fn edit_results_match_schema_shapes() {
     assert_eq!(res["clip"], "c1");
     assert_eq!(res["src_in_ms"], 0);
     assert_eq!(res["src_out_ms"], 2000);
-    // edit.move → {clip, track, at_ms}
-    let res = go("edit.move", json!({"clip":"c2","to_track":"v1","at_ms":0})).await;
+    // edit.move → {clip, track, at_ms}; past the end so the overwrite keeps c1.
+    let res = go(
+        "edit.move",
+        json!({"clip":"c2","to_track":"v1","at_ms":6000}),
+    )
+    .await;
     assert_eq!(res["clip"], "c2");
     assert_eq!(res["track"], "v1");
-    assert_eq!(res["at_ms"], 0);
+    assert_eq!(res["at_ms"], 6000);
     for (verb, args) in [
         ("edit.gain", json!({"clip":"c1","db":-3.0})),
         ("edit.mute", json!({"track":"v1","on":true})),
@@ -7921,8 +7977,17 @@ async fn assets_generate_reserves_replaces_and_retains_pending_timeline_slots() 
     assert!(deleted.ok, "{:?}", deleted.error);
     let stale_finished = wait_job(&state, &stale_job, 30).await;
     assert_eq!(stale_finished.state, crate::jobs::JobState::Done);
+    // Generated but not placed: never a plain "done" (row 201b sibling).
+    assert_eq!(
+        stale_finished.completion,
+        Some(crate::jobs::JobCompletion::DoneWithWarnings)
+    );
     let stale_result = stale_finished.result.unwrap();
     assert_eq!(stale_result["placement"]["state"], "failed");
+    assert!(stale_result["warnings"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("The asset was generated but not placed"));
     assert!(
         stale_result["asset_id"].as_str().is_some(),
         "provider result is retained"
@@ -8613,7 +8678,15 @@ async fn render_frame_result_shape_matches_schema() {
         .status()
         .expect("ffmpeg present (cut-media dependency)");
     assert!(ff.success(), "lavfi asset generation failed");
-    let r = dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+    // No proxy: the asserted composed fallback must not race a proxy job that
+    // a loaded test machine can finish before the frame request.
+    let r = dispatch(
+        &state,
+        "media.import",
+        json!({"path": media, "proxy": false}),
+        test_actor(),
+    )
+    .await;
     assert!(r.ok, "{:?}", r.error);
     // Explicit src_range_ms — no probe dependency, no auto-place race.
     let r = dispatch(
@@ -8650,8 +8723,8 @@ async fn render_frame_result_shape_matches_schema() {
         "base64 only with inline:true (the binary-output contract)"
     );
     // The `fast` field reports which path served the frame. With no
-    // proxy built (the import chain is async + unawaited here) the fast
-    // scrub plan can't resolve, so it falls back to the composed path.
+    // proxy (imported with proxy:false) the fast scrub plan can't resolve,
+    // so it falls back to the composed path.
     assert_eq!(
         res["fast"], false,
         "no proxy → composed fallback, fast:false"
@@ -8722,6 +8795,12 @@ static JUDGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Project + manufactured receipt + dummy render output. render.final
 /// needs real media; the judge WIRING only needs a persisted receipt and
 /// a file at output_path — manufacturing both keeps the test hermetic.
+/// The judge fixture render's bytes and their content hash, as render.final
+/// records it on the receipt.
+const JUDGE_FIXTURE_RENDER: &[u8] = b"fake-render-bytes";
+const JUDGE_FIXTURE_HASH: &str =
+    "sha256:9800009253ab3c9d7917aedfb1aa713379d2b751281deaca8a64c21438baea03";
+
 async fn judge_fixture(dir: &std::path::Path) -> (AppState, PathBuf) {
     let state = AppState::new();
     let proj = dir.join("t.cutproj");
@@ -8737,12 +8816,12 @@ async fn judge_fixture(dir: &std::path::Path) -> (AppState, PathBuf) {
     std::fs::create_dir_all(&receipts).unwrap();
     let render = proj.join("exports/render_001.mp4");
     std::fs::create_dir_all(render.parent().unwrap()).unwrap();
-    std::fs::write(&render, b"fake-render-bytes").unwrap();
+    std::fs::write(&render, JUDGE_FIXTURE_RENDER).unwrap();
     let receipt = cut_core::RenderReceipt {
         render_id: "render_001".into(),
         ts: OpRecord::now_ts(),
         output_path: render.display().to_string(),
-        output_hash: "sha256:fake".into(),
+        output_hash: JUDGE_FIXTURE_HASH.into(),
         duration_ms: 1000,
         preset: "standard".into(),
         at_op: "op_000001".into(),
@@ -8750,6 +8829,8 @@ async fn judge_fixture(dir: &std::path::Path) -> (AppState, PathBuf) {
         pass: false,
         judge: None,
         fix_actions: vec![],
+        encode: None,
+        outcome: None,
     };
     let rpath = receipts.join("render_001.json");
     std::fs::write(&rpath, serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
@@ -8809,7 +8890,13 @@ async fn verify_judge_fake_adapter_completed() {
         .parent()
         .unwrap()
         .join("render_001.output.perception.json");
-    std::fs::write(&pcept, b"{}").unwrap();
+    std::fs::write(
+        &pcept,
+        format!(r#"{{"schema":"shellx-cut/perception/1","asset_hash":"{JUDGE_FIXTURE_HASH}"}}"#),
+    )
+    .unwrap();
+    // As render.final does after analysing the render.
+    cut_media::cache_trust::remember(&pcept);
     let stub = write_stub_adapter(
         &dir.path().join("stub.py"),
         r#"{"schema": "shellx-cut/judge-review/1", "status": "completed",
@@ -8845,15 +8932,11 @@ async fn verify_judge_fake_adapter_completed() {
         receipt.output_path,
         "adapter must receive the receipt's output path"
     );
-    // Compare CANONICAL forms: ProjectStore canonicalizes the project root,
-    // so the adapter receives the perception path under the RESOLVED root
-    // (e.g. /private/var on macOS, where tempdir() hands back the /var
-    // symlink). Both point at the same file the fixture wrote, so
-    // canonicalize matches regardless of the platform's symlink/prefix
-    // quirks — asserting the raw display() string only held on Linux.
+    // The adapter gets the run's own copy of exactly the checked analysis
+    // bytes (never the project file, which could change after the check).
     assert_eq!(
-        std::fs::canonicalize(judge["stub_args"]["perception"].as_str().unwrap()).unwrap(),
-        std::fs::canonicalize(&pcept).unwrap(),
+        std::fs::read(judge["stub_args"]["perception"].as_str().unwrap()).unwrap(),
+        std::fs::read(&pcept).unwrap(),
         "render's own output-perception must be passed explicitly"
     );
     let intent = judge["stub_args"]["intent"].as_str().unwrap();
@@ -9059,153 +9142,5 @@ async fn verify_judge_unknown_backend_fails_fast() {
         e.cause.contains("auto") && e.cause.contains("grok"),
         "cause lists the valid backends: {}",
         e.cause
-    );
-}
-
-/// audio.add_music: places a bed on an auto-created music1 track,
-/// auto-ducks under the base speech track using perception silences
-/// (windows RECORDED on the lowered edit.duck step), surfaces beat:N
-/// markers from the music asset's perception BeatGrid, and applies the bed
-/// gain. Proves the whole lowered chain end-to-end at the dispatch layer.
-#[tokio::test]
-async fn add_music_beds_ducks_and_marks_beats() {
-    let dir = tempfile::tempdir().unwrap();
-    // narrowing_fixture: a1 placed on v1 [src 0-5000] + a1t [src 5000-10000]
-    // at timeline [0,5000). a1t is the speech track the bed ducks under.
-    let state = narrowing_fixture(dir.path()).await;
-    let receipts = dir.path().join("t.cutproj/receipts");
-    std::fs::create_dir_all(&receipts).unwrap();
-    // Speech facts on a1 (the VO): silences [5500,6500]+[8000,10000] in
-    // source → speech complement within a1t's window [5000,10000) maps to
-    // timeline [0,500)+[1500,3000) (same maths as the duck test).
-    std::fs::write(
-        receipts.join("a1.perception.json"),
-        serde_json::to_string(&json!({
-            "schema": "shellx-cut/perception/1",
-            "asset_hash": "sha256:test",
-            "source_path": "clip.mp4",
-            "instruments_run": ["silence"],
-            "silences": [
-                {"start_ms": 5500, "end_ms": 6500, "source": "both"},
-                {"start_ms": 8000, "end_ms": 10000, "source": "both"}
-            ],
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    // Import a "music" asset (dummy file) + give it a probe duration and a
-    // perception report with a beat grid (the import chain doesn't run in
-    // tests, so we wire the facts directly — the same pattern the duck test
-    // uses for silences).
-    let music = dir.path().join("music.wav");
-    std::fs::write(&music, b"not-really-audio").unwrap();
-    let r = dispatch(&state, "media.import", json!({"path": music}), test_actor()).await;
-    assert!(r.ok, "{:?}", r.error);
-    let music_asset = r.result.unwrap()["asset_id"].as_str().unwrap().to_string();
-    update_asset(&state, &music_asset, |a| {
-        a.probe = Some(json!({"kind":"audio","duration_ms":4000,"has_audio":true}));
-    })
-    .await
-    .unwrap();
-    std::fs::write(
-        receipts.join(format!("{music_asset}.perception.json")),
-        serde_json::to_string(&json!({
-            "schema": "shellx-cut/perception/1",
-            "asset_hash": "sha256:music",
-            "source_path": "music.wav",
-            "instruments_run": ["beats"],
-            // Beats every 500ms (120 bpm) within [0,4000): 0,500...,3500.
-            "beats": {"bpm": 120.0, "beats_ms": [0, 500, 1000, 1500, 2000, 2500, 3000, 3500]},
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    // Add the music bed (defaults: music1 track, bed_gain -18, auto-duck
-    // against the base speech track a1t at -15, beat markers on).
-    let r = dispatch(
-        &state,
-        "audio.add_music",
-        json!({"asset": music_asset, "rationale": "podcast bed"}),
-        test_actor(),
-    )
-    .await;
-    assert!(r.ok, "{:?}", r.error);
-    let res = r.result.unwrap();
-    assert_eq!(
-        res["track_id"], "music1",
-        "auto-created the dedicated bed track"
-    );
-    assert_eq!(res["created_track"], true);
-    assert_eq!(res["bed_gain_db"], -18.0);
-    assert_eq!(res["bed_duration_ms"], 4000);
-    // Auto-duck produced 2 windows from the VO speech (same as duck test).
-    assert_eq!(
-        res["ducked_windows"], 2,
-        "ducked under the two speech spans"
-    );
-    // 8 beats within [0,4000) → 8 markers.
-    assert_eq!(res["beats_marked"], 8);
-
-    // State checks: the bed clip exists on music1, gain set, duck windows
-    // recorded on the track, and 8 beat markers landed.
-    let s = dispatch(&state, "project.state", json!({}), test_actor()).await;
-    let project: cut_core::Project = serde_json::from_value(s.result.unwrap()).unwrap();
-    let bed_track = project.track("music1").expect("music1 track created");
-    match bed_track.clips.first().expect("bed clip placed") {
-        cut_core::Clip::Media(c) => {
-            assert_eq!(c.asset, music_asset);
-            assert_eq!(c.gain_db, -18.0, "bed gain applied");
-        }
-        _ => unreachable!("bed clip should be media"),
-    }
-    assert_eq!(
-        bed_track.gain_windows.len(),
-        2,
-        "auto-duck windows on the bed track"
-    );
-    assert_eq!(bed_track.gain_windows[0].db, -15.0, "default duck depth");
-    let beats: Vec<&cut_core::Marker> = project
-        .markers
-        .iter()
-        .filter(|m| m.label == "beat")
-        .collect();
-    assert_eq!(beats.len(), 8, "one marker per beat in range");
-    assert_eq!(beats[0].at_ms, 0);
-    assert_eq!(
-        beats[1].at_ms, 500,
-        "beat at source 500 → timeline 500 (bed at 0)"
-    );
-
-    // Replay determinism: the whole lowered chain (add_track + insert +
-    // gain + duck + 8 add_marker) reproduces the TIMELINE byte-identically
-    // from the log. (Asset.probe is a CACHE field written by update_asset,
-    // not an op — replay legitimately lacks it; compare tracks+markers, the
-    // state the lowered steps actually produce.)
-    let ops = dispatch(&state, "project.ops", json!({}), test_actor()).await;
-    let log: Vec<cut_core::OpRecord> =
-        serde_json::from_value(ops.result.unwrap()["ops"].clone()).unwrap();
-    let rebuilt = cut_core::rebuild_from_log(&log).expect("replay");
-    assert_eq!(rebuilt.tracks, project.tracks, "tracks replay identically");
-    assert_eq!(
-        rebuilt.markers, project.markers,
-        "beat markers replay identically"
-    );
-
-    // duck:false skips ducking; beat_markers:false skips markers.
-    let r = dispatch(
-            &state,
-            "audio.add_music",
-            json!({"asset": music_asset, "track": "music1", "at_ms": 5000, "duck": false, "beat_markers": false}),
-            test_actor(),
-        )
-        .await;
-    assert!(r.ok, "{:?}", r.error);
-    let res = r.result.unwrap();
-    assert_eq!(res["ducked_windows"], 0, "duck:false skips ducking");
-    assert_eq!(res["beats_marked"], 0, "beat_markers:false skips markers");
-    assert_eq!(
-        res["created_track"], false,
-        "reused the existing music1 track"
     );
 }

@@ -1,6 +1,6 @@
 //! Parent/child cancellation for the sequential Render Queue orchestrator.
 
-use super::{JobCancellationReason, JobManager, JobState, JOB_DRAIN_TIMEOUT};
+use super::{JobCancellationReason, JobManager, JobState};
 use cut_core::CutError;
 
 impl JobManager {
@@ -17,10 +17,11 @@ impl JobManager {
         // can replace the dependency while a completed child transitions, so a
         // pre-cancellation snapshot could leave the actual render alive.
         control.request_cancel(JobCancellationReason::CancelledByUser);
-        let deadline = tokio::time::Instant::now() + JOB_DRAIN_TIMEOUT;
+        let drain_timeout = self.drain_timeout();
+        let deadline = tokio::time::Instant::now() + drain_timeout;
         if !control.wait_until(deadline).await {
             self.lock_inner().tasks.insert(job_id.to_string(), control);
-            return Err(cancel_pending(job_id));
+            return Err(self.cancel_pending_error(job_id, drain_timeout));
         }
         if self
             .get(job_id)
@@ -52,7 +53,7 @@ impl JobManager {
                     // be draining and reinsert its control as pending, so do not
                     // report the parent cancelled before that child is terminal.
                     self.lock_inner().tasks.insert(job_id.to_string(), control);
-                    return Err(cancel_pending(job_id));
+                    return Err(self.cancel_pending_error(job_id, drain_timeout));
                 }
                 Ok(_) => {}
             }
@@ -63,14 +64,86 @@ impl JobManager {
     }
 }
 
-fn cancel_pending(job_id: &str) -> CutError {
+/// The answer when a cancelled job's worker has not ended inside the drain
+/// window. Plain on purpose: the job was told to stop, nothing new starts, and
+/// the record turns cancelled when the step it is in has ended.
+pub(super) fn cancel_pending(
+    job_id: &str,
+    drain_timeout: std::time::Duration,
+    step: Option<&str>,
+) -> CutError {
+    let step = step
+        .map(|text| format!(" The step it is in: {text}."))
+        .unwrap_or_default();
     CutError::new(
         "job_cancel_pending",
-        format!("job '{job_id}' is still stopping"),
+        format!("job '{job_id}' was told to stop and is still ending its current step"),
         format!(
-            "a blocking worker did not finish within {} ms",
-            JOB_DRAIN_TIMEOUT.as_millis()
+            "its worker did not end within {} s; it starts nothing new and the job is recorded as cancelled as soon as that step ends.{step}",
+            drain_timeout.as_secs().max(1)
         ),
     )
-    .with_suggested_action("wait for the worker to finish shutting down, then retry jobs.cancel")
+    .with_suggested_action(
+        "wait a few seconds and call jobs.cancel again (it answers cancelled once the step has ended), or read jobs.status",
+    )
+}
+
+impl JobManager {
+    /// The pending-cancel answer, naming the step the job is in (its last
+    /// progress message), so a step that cannot be interrupted says so.
+    pub(super) fn cancel_pending_error(
+        &self,
+        job_id: &str,
+        drain_timeout: std::time::Duration,
+    ) -> CutError {
+        let step = self.get(job_id).and_then(|record| record.message);
+        cancel_pending(job_id, drain_timeout, step.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cancel_pending;
+    use std::time::Duration;
+
+    #[test]
+    fn a_cancel_that_needs_longer_says_what_is_happening_and_what_to_do() {
+        let error = cancel_pending("job-1", Duration::from_millis(20_000), None);
+        assert_eq!(error.code, "job_cancel_pending");
+        assert!(error.message.contains("told to stop"), "{}", error.message);
+        assert!(error.cause.contains("20 s"), "{}", error.cause);
+        assert!(!error.cause.contains("blocking worker"), "{}", error.cause);
+        let action = error.suggested_action.expect("a next step");
+        assert!(action.contains("jobs.cancel again"), "{action}");
+    }
+
+    #[test]
+    fn a_cancel_inside_an_uninterruptible_step_names_that_step() {
+        let error = cancel_pending(
+            "job-1",
+            Duration::from_millis(20_000),
+            Some("perception setup: downloading the installer, about 20 MB; it stops right after"),
+        );
+        assert!(
+            error
+                .cause
+                .contains("downloading the installer, about 20 MB; it stops right after"),
+            "{}",
+            error.cause
+        );
+    }
+
+    #[test]
+    fn the_manager_quotes_the_jobs_current_step_in_the_pending_answer() {
+        let manager = crate::jobs::JobManager::new(crate::events::EventBus::new());
+        let job = manager.create("setup_perception");
+        manager.progress(
+            &job.job_id,
+            0.05,
+            Some("perception setup: downloading the installer, about 20 MB; a cancel stops right after it".into()),
+        );
+        let error = manager.cancel_pending_error(&job.job_id, Duration::from_secs(20));
+        assert!(error.cause.contains("about 20 MB"), "{}", error.cause);
+        assert!(error.cause.contains("stops right after"), "{}", error.cause);
+    }
 }

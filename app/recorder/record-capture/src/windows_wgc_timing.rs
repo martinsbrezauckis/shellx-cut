@@ -140,7 +140,7 @@ impl WgcTimingRecorder {
     /// WGC's encoder makes a constant-rate file from sparse native frames. At
     /// Stop it can extend the last held frame by the preceding native gap, so
     /// the file can outlive the capture clock even though every real frame was
-    /// delivered before Stop. The retained PC4 file used nearly its largest
+    /// delivered before Stop. The retained desktop file used nearly its largest
     /// native gap as a held tail; the retained Windows file used less than its
     /// largest gap. Permit clipping only when both independent clocks agree on
     /// the real frame span and the encoded tail fits within an observed gap.
@@ -395,8 +395,8 @@ mod tests {
     }
 
     #[test]
-    fn earlier_max_gap_explains_measured_pc4_cfr_tail_without_moving_stop() {
-        // Retained 839 PC4 segment: 69 native frames, 476 decoded CFR frames,
+    fn earlier_max_gap_explains_measured_cfr_tail_without_moving_stop() {
+        // Retained 839 desktop segment: 69 native frames, 476 decoded CFR frames,
         // 7,933 ms media and a separately observed 7,499 ms Stop boundary.
         let root = tempfile::tempdir().unwrap();
         let origin = Instant::now();

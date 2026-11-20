@@ -7,6 +7,7 @@
 // the director decides the editorial "which subject" call the whale editors lack.
 // Callers: topbar (Format → "Direct…"). Deps: lib/client (verbs + director types).
 
+import { engineMediaUrl } from '../lib/mediaUrl'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   callVerb,
@@ -159,7 +160,7 @@ export default function DirectorModal({ aspect, preset, onClose }: DirectorModal
         {phase === 'pick' && director && (
           <div className="dir-pick" data-cut-director-pick>
             {director.contact_sheet_url && (
-              <img className="dir-sheet" data-cut-director-sheet src={director.contact_sheet_url} alt="per-scene contact sheet" />
+              <img className="dir-sheet" data-cut-director-sheet src={engineMediaUrl(director.contact_sheet_url)} alt="per-scene contact sheet" />
             )}
             <div className="dir-hint">Pick who each shot follows. <b>Auto</b> = let the CV ranker decide (active speaker / saliency).</div>
             <div className="dir-scenes">
@@ -215,7 +216,7 @@ export default function DirectorModal({ aspect, preset, onClose }: DirectorModal
                 <div className={`dir-qc-verdict ${qc.review_count > 0 ? 'dir-qc-verdict--flag' : 'dir-qc-verdict--ok'}`}>
                   QC: {qc.review_count > 0 ? `${qc.review_count}/${qc.scene_count} scene(s) flagged` : `all ${qc.scene_count} scene(s) look good`}
                 </div>
-                {qc.qc_sheet_url && <img className="dir-sheet" data-cut-director-qc-sheet src={qc.qc_sheet_url} alt="QC review sheet" />}
+                {qc.qc_sheet_url && <img className="dir-sheet" data-cut-director-qc-sheet src={engineMediaUrl(qc.qc_sheet_url)} alt="QC review sheet" />}
                 {qc.review_count > 0 && (
                   <ul className="dir-qc-list">
                     {qc.scenes.filter((s) => s.needs_review).map((s) => (

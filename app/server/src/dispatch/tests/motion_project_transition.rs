@@ -126,6 +126,7 @@ async fn direct_motion_materialization_pins_a(
     let _motion_env = crate::motion_bridge::MOTION_ENV_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     let (a_path, b_path) = open_a_with_same_revision(&state, root.path()).await;
     let (cli, templates, started, release) = write_blocking_motion_connector(root.path());
     let _cli = EnvRestore::set("SHELLX_MOTION_CLI", &cli);

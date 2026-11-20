@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "cut-core"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "chrono",
  "serde",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "cut-export"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "roxmltree 0.20.0",
  "serde",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "cut-media"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "cut-core",
  "fontdb",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "cut-native-runtime-context"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "serde",
  "serde_json",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "cut-perception"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "cut-core",
  "cut-media",
@@ -964,7 +964,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1997,7 +1997,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "record-capture"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "ashpd",
  "cc",
@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "record-core"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "serde",
  "serde_json",
@@ -2489,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "record-engine"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "record-core",
  "serde",
@@ -2497,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "record-recovery"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "cut-media",
  "getrandom 0.2.17",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "record-render"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "cut-media",
  "libc",
@@ -2673,22 +2673,22 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.0",
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -2710,9 +2710,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2868,7 +2868,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.6.115"
+version = "0.6.116"
 dependencies = [
  "anyhow",
  "axum",
@@ -3201,7 +3201,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3332,9 +3332,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.52.3"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -3947,9 +3947,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -3988,7 +3988,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

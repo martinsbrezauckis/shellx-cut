@@ -38,6 +38,9 @@ pub(crate) struct WgcVideoEncoder {
     width: u32,
     height: u32,
     window_fitter: Option<crate::windows_wgc_window_fit::WindowFrameFitter>,
+    /// Samples that entered the queue. Only a segment that never received
+    /// one may treat Media Foundation's empty-sink result as empty.
+    offered_samples: u64,
 }
 
 impl WgcVideoEncoder {
@@ -169,6 +172,7 @@ impl WgcVideoEncoder {
             width,
             height,
             window_fitter: None,
+            offered_samples: 0,
         })
     }
 
@@ -239,6 +243,7 @@ impl WgcVideoEncoder {
                 .ok_or("WGC video encoder already closed")?,
             (SendDirectX::new(surface), timestamp, None),
         )?;
+        self.offered_samples += 1;
         // Only the latest accepted independent copy remains owned. The queued
         // resource can be consumed without changing the eventual held pixels.
         self.last_accepted = Some((SendDirectX::new(retained), timestamp, accepted_at));
@@ -261,15 +266,16 @@ impl WgcVideoEncoder {
         let Some((surface, last_timestamp, accepted_at)) = self.last_accepted.take() else {
             return Ok(None);
         };
-        let (timestamp, elapsed_100ns) =
-            self.clock
-                .held_at_stop(last_timestamp, accepted_at, stop_at, self.timed_origin)?;
-        // An ordinary final frame already spans one requested frame period.
-        // Avoid an extra queue entry at normal cadence, especially when the
-        // bounded queue is full at Stop.
-        if elapsed_100ns <= self.terminal_sample_duration {
+        let Some((timestamp, elapsed_100ns)) = self.clock.closing_sample(
+            (last_timestamp, accepted_at),
+            stop_at,
+            self.timed_origin,
+            self.terminal_sample_duration,
+            self.offered_samples == 1,
+        )?
+        else {
             return Ok(None);
-        }
+        };
         if let Some(error) = self
             .scheduling_failure
             .lock()
@@ -287,6 +293,7 @@ impl WgcVideoEncoder {
                 .ok_or("WGC video encoder already closed")?,
             (surface, timestamp, Some(self.terminal_sample_duration)),
         )?;
+        self.offered_samples += 1;
         Ok(Some(
             u64::try_from(elapsed_100ns / 10_000).unwrap_or(u64::MAX),
         ))
@@ -308,7 +315,10 @@ impl WgcVideoEncoder {
                     .map_err(|_| "WGC transcoder thread panicked")?
                     .map_err(Error::from)
             })
-            .transpose();
+            .transpose()
+            .or_else(|error| {
+                crate::windows_wgc_empty_segment::close_result(self.offered_samples > 0, error)
+            });
         let starting = self.source.RemoveStarting(self.starting);
         let requested = self.source.RemoveSampleRequested(self.requested);
         result?;

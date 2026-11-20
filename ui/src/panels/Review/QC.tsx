@@ -8,6 +8,7 @@
 // verify verbs create no op; the fix verbs (reflow/shift) DO and surface as ops.
 // Callers: Review/index.tsx. Deps: lib/client (callVerb + the verb types).
 
+import { noTranscriptKind, noTranscriptSentence } from '../../lib/noTranscript'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type BrandCheckResult, type BrandKit, type Project } from '../../lib/client'
 import { Icon } from '../../icons'
@@ -103,6 +104,7 @@ export default function QC({ project }: { project: Project | null }) {
   const [pacing, setPacing] = useState<Cell<PacingResult>>(undefined)
   const [captions, setCaptions] = useState<Cell<CaptionsResult>>(undefined)
   const [delivery, setDelivery] = useState<Cell<DeliveryResult>>(undefined)
+  const [deliveryNote, setDeliveryNote] = useState<string | null>(null)
   const [brand, setBrand] = useState<Cell<BrandCheckResult>>(undefined)
   const [brandForm, setBrandForm] = useState<BrandDraft>(() => brandDraft(project?.brand, project))
   const [brandBusy, setBrandBusy] = useState(false)
@@ -209,8 +211,9 @@ export default function QC({ project }: { project: Project | null }) {
       setPacing(p.ok ? (p.result as PacingResult) : null)
       setCaptions(c.ok ? (c.result as CaptionsResult) : null)
       setDelivery(d.ok ? (d.result as DeliveryResult) : null)
+      setDeliveryNote(noTranscriptKind(d.error) ? noTranscriptSentence(noTranscriptKind(d.error)!) : null)
     } catch {
-      setPacing(null); setCaptions(null); setDelivery(null)
+      setPacing(null); setCaptions(null); setDelivery(null); setDeliveryNote(null)
     } finally {
       setBusy(false)
     }
@@ -348,7 +351,7 @@ export default function QC({ project }: { project: Project | null }) {
 
       {/* DELIVERY — verbal pacing (WPM + fillers); fillers fix = remove_fillers */}
       <Card title="Delivery" tag="verify.delivery" pass={delivery?.pass} data="delivery">
-        {delivery === null ? <Err /> : delivery === undefined ? <Dim /> : (
+        {delivery === null ? (deliveryNote ? <div className="qc__err" data-cut-qc-no-transcript>{deliveryNote}</div> : <Err />) : delivery === undefined ? <Dim /> : (
           <ul className="qc__metrics">
             <li>{delivery.wpm} WPM (articulation {delivery.articulation_wpm}) · {delivery.word_count} words</li>
             <li>{delivery.filler_count} fillers · {delivery.fillers_per_min}/min{delivery.note ? ` · ${delivery.note}` : ''}</li>

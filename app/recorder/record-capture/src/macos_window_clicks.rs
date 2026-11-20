@@ -271,6 +271,7 @@ impl WindowClickCapture {
                     CursorCoordinateState::Exact
                 },
                 exact_clicks: exact,
+                held_clicks: 0,
                 approximate_clicks: 0,
                 unavailable_clicks: unavailable,
                 // An admitted click is bounded by both surrounding frames as

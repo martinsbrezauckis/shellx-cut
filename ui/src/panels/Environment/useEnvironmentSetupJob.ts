@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { callVerb, type JobRecord } from '../../lib/client'
 import { events } from '../../lib/events'
+import { jobFailureText } from '../../lib/jobFailureText'
+import type { SetupStart } from '../../lib/doctor'
 
 const SETUP_JOB_POLL_MS = 750
 export const SETUP_JOB_MAX_POLLS = 960
@@ -45,11 +47,12 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
   }
 
   const runJob = async (
-    start: () => Promise<{ job_id: string } | null>,
+    start: () => Promise<SetupStart>,
     startError: string,
+    maxPolls = SETUP_JOB_MAX_POLLS,
   ) => {
     setJob({ busy: true, pct: 0, msg: null, err: null })
-    let started: { job_id: string } | null
+    let started: SetupStart
     try {
       started = await start()
     } catch {
@@ -63,11 +66,16 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
       setJob({ busy: false, pct: null, msg: null, err: startError })
       return
     }
+    if ('refused' in started) {
+      // The engine refused before starting (e.g. a missing prerequisite): its words.
+      setJob({ busy: false, pct: null, msg: null, err: started.refused || startError })
+      return
+    }
 
     const jobId = started.job_id
     activeJobRef.current = jobId
     let readFailures = 0
-    for (let poll = 0; poll < SETUP_JOB_MAX_POLLS; poll += 1) {
+    for (let poll = 0; poll < maxPolls; poll += 1) {
       await new Promise((resolve) => setTimeout(resolve, SETUP_JOB_POLL_MS))
       if (!mountedRef.current || activeJobRef.current !== jobId) return
 
@@ -110,7 +118,8 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
         return
       }
       if (record.state === 'failed') {
-        failStatusRead(record.error?.message ?? 'setup failed')
+        // The engine's reason and its next step, as on every failed-job surface.
+        failStatusRead(jobFailureText(record, 'Setup failed.'))
         return
       }
     }

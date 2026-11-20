@@ -1,0 +1,12 @@
+# The selected Cut UI may only take over and finish a close that the shell is
+# holding because a recording is running, and take and answer the question the
+# shell asks when an export runs. It cannot close or keep the window.
+[[permission]]
+identifier = "allow-close-guard"
+description = "Allows the selected Cut UI to acknowledge a held close, report that the running recording was saved, and answer the question asked when an export runs."
+commands.allow = [
+  "acknowledge_close_request",
+  "finish_close_request",
+  "acknowledge_quit_question",
+  "answer_quit_question",
+]

@@ -48,6 +48,24 @@ export function needsColdHistoryLoad(project: Project | null | undefined, initia
   return project != null && !initialHistoryLoaded
 }
 
+/** Share the current history request and release its slot on either outcome.
+ * A project reset may replace the slot before an old request settles. */
+export function loadProjectHistoryOnce(
+  pending: { current: Promise<boolean> | null },
+  load: () => Promise<boolean>,
+): Promise<boolean> {
+  if (pending.current) return pending.current
+  const task = load()
+  pending.current = task
+  const clear = () => {
+    if (pending.current === task) pending.current = null
+  }
+  // finally() would create a second rejected promise on failure. Observe
+  // both outcomes here while preserving the original rejection for callers.
+  void task.then(clear, clear)
+  return task
+}
+
 export type ProjectSync =
   | { mode: 'snapshot'; project: SyncedProject; reason: string; projectRevision?: string | null }
   | { mode: 'delta'; delta: ProjectDelta }

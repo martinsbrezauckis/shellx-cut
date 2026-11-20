@@ -11,6 +11,8 @@ type ClipGestureMode = 'move' | 'trim-l' | 'trim-r'
 interface ClipViewProps {
   item: LaidItem
   zoom: number
+  /** Project frame rate (a clip shorter than one frame is drawn as a marker). */
+  fps?: number
   selected: boolean
   dragging: boolean
   locked?: boolean
@@ -30,7 +32,7 @@ interface ClipViewProps {
   windowed?: { url: string; startMs: number; endMs: number }
 }
 
-const ClipView = memo(function ClipView({ item, zoom, selected, dragging, locked = false, displayName, offline = false, relinking = false, onClipDown, onRelinkAsset, filmstrip, windowed }: ClipViewProps) {
+const ClipView = memo(function ClipView({ item, zoom, fps = 30, selected, dragging, locked = false, displayName, offline = false, relinking = false, onClipDown, onRelinkAsset, filmstrip, windowed }: ClipViewProps) {
   const left = msToPx(item.startMs, zoom)
   const width = Math.max(2, msToPx(item.durMs, zoom))
   const label = displayName ?? item.label
@@ -61,6 +63,31 @@ const ClipView = memo(function ClipView({ item, zoom, selected, dragging, locked
       clientX: rect.left + Math.min(24, rect.width / 2),
       clientY: rect.top + Math.min(18, rect.height / 2),
     }))
+  }
+  // A media clip shorter than one frame (made before edits were held to the
+  // frame grid) would be a hair line nobody can see or grab: draw it as a
+  // marker that can be selected and deleted.
+  const subFrame = item.kind !== 'caption' && item.durMs * fps < 1000
+  if (subFrame) {
+    const frameMs = (1000 / fps).toFixed(1)
+    return (
+      <div
+        className={['tl-clip', `tl-clip--${item.kind}`, 'tl-clip--subframe', selected ? 'tl-clip--selected' : ''].join(' ')}
+        style={{ left }}
+        title={`Clip shorter than one frame: ${item.durMs} ms (one frame is ${frameMs} ms at ${fps} fps). Select it and press Delete to remove it.`}
+        data-cut-action="clip"
+        data-cut-clip={item.id}
+        data-cut-subframe="true"
+        data-cut-locked={locked || undefined}
+        tabIndex={0}
+        role="group"
+        aria-label={`${label}: clip shorter than one frame`}
+        onMouseDown={(e) => onClipDown(e, item, 'move')}
+        onKeyDown={openKeyboardMenu}
+      >
+        <span className="tl-clip-subframe-mark" aria-hidden="true">!</span>
+      </div>
+    )
   }
   return (
     <div

@@ -39,11 +39,11 @@ pub(super) fn run_device(request: DeviceCaptureRequest) -> Result<CapturedMicrop
             if let Some(level) = terminal_level {
                 level.mark_device_lost();
             }
-            return Err(RecordError::new(
+            return Err(crate::mic_endpoint::explain_open_error(RecordError::new(
                 error_codes::CAPTURE,
                 "mic config",
                 error.to_string(),
-            ));
+            )));
         }
     };
     let end = run_stream(
@@ -72,7 +72,7 @@ pub(super) fn run_device(request: DeviceCaptureRequest) -> Result<CapturedMicrop
             }
         }
     }
-    let end = end?;
+    let end = end.map_err(crate::mic_endpoint::explain_open_error)?;
     Ok(CapturedMicrophone {
         path: end.samples_written.then_some(path),
         microphone_lost: end.microphone_lost,

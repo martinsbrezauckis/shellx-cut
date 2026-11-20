@@ -339,6 +339,16 @@ kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
 }
 .user-action-feedback button:hover { border-color: var(--ink-2); }
 .user-action-feedback button:focus-visible { outline: 2px solid var(--cut-soft); outline-offset: 2px; }
+/* The odd-project-size notice shares the feedback look, sits above it so
+   both can show, and is a warning rather than a failure until an export is
+   refused. */
+.user-action-feedback.odd-size-notice {
+  bottom: 104px;
+  border-color: color-mix(in srgb, var(--warn, var(--err)) 55%, var(--hairline-2));
+}
+.user-action-feedback.odd-size-notice[data-cut-odd-size-notice="refused"] {
+  border-color: color-mix(in srgb, var(--err) 55%, var(--hairline-2));
+}
 .user-action-feedback .user-action-feedback__dismiss {
   width: 30px;
   padding: 0;

@@ -6,6 +6,7 @@
 
 import { callVerb } from './client'
 import type { Waveform } from './clientModel'
+import { activeMediaScope, scopeMediaUrl, scopedCacheKey } from './mediaScope'
 
 // ---------------------------------------------------------------------------
 // Waveform cache (timeline audio-clip overlay, zero-local-mutation contract display-only)
@@ -17,8 +18,9 @@ import type { Waveform } from './clientModel'
  * function of the source media, not of the view). A resolved `null` is cached
  * too — a successful empty result is never refetched. Verb-level failures are
  * dropped from the cache so transient cutd/import/probe issues can recover.
- * Module-level so it outlives panel remounts; the audio content of an asset
- * (addressed by id) does not change within a session, so no invalidation. */
+ * Module-level so it outlives panel remounts. The key carries the project
+ * scope: asset ids (`a1`) repeat between projects, so an id alone must never
+ * serve another project's peaks. */
 const waveformCache = new Map<string, Promise<Waveform | null>>()
 
 /**
@@ -30,7 +32,7 @@ const waveformCache = new Map<string, Promise<Waveform | null>>()
  * entry per asset. Display-only: this reads peaks, it never mutates state.
  */
 export function getWaveform(asset: string, buckets?: number): Promise<Waveform | null> {
-  const key = `${asset}@${buckets ?? 'def'}`
+  const key = scopedCacheKey(`${asset}@${buckets ?? 'def'}`)
   const hit = waveformCache.get(key)
   if (hit) return hit
   const p = callVerb('media.waveform', buckets != null ? { asset, buckets } : { asset })
@@ -60,7 +62,8 @@ export function getWaveform(asset: string, buckets?: number): Promise<Waveform |
  *
  * The cache is keyed by the full request (asset + window + count + height); the
  * Timeline QUANTIZES windows/counts so pan/zoom jitter reuses entries. Module-
- * level so it survives panel remounts (an asset's pixels don't change in-session).
+ * level so it survives panel remounts; the key and the served URL carry the
+ * project scope because asset ids repeat between projects.
  * Returns the served tile URL, or null on failure (timeline falls back to the
  * base strip — no crash, no console noise). */
 const windowThumbCache = new Map<string, Promise<string | null>>()
@@ -85,9 +88,10 @@ export function getWindowThumbs(
   count: number,
   h: number,
 ): Promise<WindowThumbs | null> {
-  const key = `${asset}@${t0}-${t1}#${count}x${h}`
+  const key = scopedCacheKey(`${asset}@${t0}-${t1}#${count}x${h}`)
+  const scope = activeMediaScope()
   const hit = windowThumbCache.get(key)
-  const wrap = (url: string | null): WindowThumbs | null => (url ? { url: `/${url}`, startMs: t0, endMs: t1 } : null)
+  const wrap = (url: string | null): WindowThumbs | null => (url && scopeMediaUrl(`/${url}`, scope) ? { url: scopeMediaUrl(`/${url}`, scope), startMs: t0, endMs: t1 } : null)
   if (hit) return hit.then(wrap)
   const p = callVerb('media.filmstrip', { asset, range_ms: [t0, t1], count, h })
     .then((r) => (r.ok && r.result ? ((r.result as { thumbs?: string }).thumbs ?? null) : null))

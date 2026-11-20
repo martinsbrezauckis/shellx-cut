@@ -10,8 +10,8 @@ use std::path::Path;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SourceCheck {
-    pub(super) matches: bool,
+pub(crate) struct SourceCheck {
+    pub(crate) matches: bool,
     pub(super) readable: bool,
     pub(super) bytes: Option<u64>,
 }
@@ -27,7 +27,7 @@ struct SourceSnapshot {
 }
 
 impl SourceCheck {
-    pub(super) fn verify(source: &Path, expected_hash: &str) -> Self {
+    pub(crate) fn verify(source: &Path, expected_hash: &str) -> Self {
         let before = source_snapshot(source);
         let actual = cut_core::hash_file(source).ok();
         let after = source_snapshot(source);

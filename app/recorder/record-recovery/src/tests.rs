@@ -9,6 +9,12 @@ use crate::{
     MediaFacts, OwnerState, RecoveryState,
 };
 
+/// Stand-ins for FFmpeg and FFprobe, the same on every system. What they
+/// promise is what the checkpoint verifier reads from a real FFmpeg:
+/// - a decode run (output `-`, `-progress pipe:1`) succeeds and reports its
+///   decoded frame count as `frame=N` lines, ending with `progress=end`;
+/// - any other run writes its last argument (the output file);
+/// - FFprobe reports a positive duration and one video stream.
 fn tools(dir: &Path) -> (String, String) {
     #[cfg(not(windows))]
     let ffmpeg = dir.join("ffmpeg");
@@ -19,9 +25,9 @@ fn tools(dir: &Path) -> (String, String) {
     #[cfg(windows)]
     let ffprobe = dir.join("ffprobe.cmd");
     #[cfg(not(windows))]
-    fs::write(&ffmpeg, "#!/bin/sh\nlast=\nfor arg do last=$arg; done\n[ \"$last\" = - ] || printf checkpoint > \"$last\"\n").unwrap();
+    fs::write(&ffmpeg, "#!/bin/sh\nlast=\nfor arg do last=$arg; done\n[ \"$last\" = - ] && { printf 'frame=1\\nprogress=end\\n'; exit 0; }\nprintf checkpoint > \"$last\"\n").unwrap();
     #[cfg(windows)]
-    fs::write(&ffmpeg, "@echo off\r\nset last=\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nset \"last=%~1\"\r\nshift\r\ngoto next\r\n:done\r\nif \"%last%\"==\"-\" exit /b 0\r\n>\"%last%\" <nul set /p =checkpoint\r\nexit /b 0\r\n").unwrap();
+    fs::write(&ffmpeg, "@echo off\r\nset last=\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nset \"last=%~1\"\r\nshift\r\ngoto next\r\n:done\r\nif \"%last%\"==\"-\" (\r\necho frame=1\r\necho progress=end\r\nexit /b 0\r\n)\r\n>\"%last%\" <nul set /p =checkpoint\r\nexit /b 0\r\n").unwrap();
     #[cfg(not(windows))]
     fs::write(&ffprobe, "#!/bin/sh\nprintf '{\"format\":{\"duration\":\"0.100\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_frames\":\"1\"}]}'\n").unwrap();
     #[cfg(windows)]
@@ -183,14 +189,20 @@ fn truncated_final_segment_reports_exact_known_tail() {
 }
 
 #[test]
-fn pid_reuse_is_ambiguous_and_torn_tail_keeps_valid_prefix() {
+fn pid_reuse_means_the_owner_is_gone_and_torn_tail_keeps_valid_prefix() {
+    // The recorded identity is the process id plus its start time: a live
+    // process with that id but another start time is a different process, so
+    // the recorded owner has exited and its capture can be recovered.
     let mut start = CaptureStart::new("cap", 100);
     start.owner_identity = "other-process".into();
     assert_eq!(
         owner_state(&start),
-        OwnerState::Ambiguous,
-        "never recover a reused live PID"
+        OwnerState::Dead,
+        "a reused PID with another start time is not the owner"
     );
+    // An owner whose identity could not be read stays ambiguous.
+    start.owner_identity = "unavailable".into();
+    assert_eq!(owner_state(&start), OwnerState::Ambiguous);
     let dir = tempdir().unwrap();
     let mut owner = ManifestOwner::begin(dir.path(), CaptureStart::new("cap", 100)).unwrap();
     segment(&mut owner, 0);

@@ -6,7 +6,7 @@ Status: working integration contract.
 connector, linked-render, tracking and external-editor code is not a completed
 or qualified connection for this release. Its connection testing is deferred;
 the implementation checkpoints below do not establish release acceptance.
-Managed integration remains planned for v0.6.115.
+Managed integration remains in development.
 
 Purpose: keep ShellX Cut aligned with ShellX Motion without duplicating a second
 motion renderer or standalone motion editor inside Cut.
@@ -79,7 +79,7 @@ remain refused. The generic submit command stays discoverable when its host reso
 configured, but returns typed `capability_unavailable`; the route must not disappear and invite a
 feature-specific fallback.
 
-PC2 Linux x64 Node 24.18.0 and Mac arm64 Node 26.0.0 passed the focused lifecycle/refusal tests,
+Linux x64 Node 24.18.0 and Mac arm64 Node 26.0.0 passed the focused lifecycle/refusal tests,
 affected package typechecks, and complete contract, argument, documentation, source-hygiene,
 architecture, packed-build, and pack gates on byte-identical source. This is Motion source/packed
 evidence, not installed Cut evidence.
@@ -107,7 +107,7 @@ above. `stack`, `detail`, `cause`, URLs, and path-bearing text are excluded from
 boundary. This is source compatibility only; the exact Cut-server plus Motion-runtime process pair
 remains an R6 qualification requirement.
 
-PC2 and Mac independently passed the focused Core/connector/Debug/MCP/type gates and the complete
+Linux and Mac independently passed the focused Core/connector/Debug/MCP/type gates and the complete
 contract, documentation, architecture, installed-bin and packed-package gates from the exact MCI-3
 source tree. Each packed 19 packages, 4,528 files, and 1,480 reachable shipping modules. This is
 Motion source/packed evidence, not an installed Cut process-pair result. The generic Cut consumer,

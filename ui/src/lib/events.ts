@@ -11,7 +11,10 @@
 // subscribers. Callers: App.tsx (connect once), panels (subscribe).
 // Deps: WebSocket, lib/capture (lazy import — capture lib loads on demand).
 
+import { outputFolderStatusFrom, type OutputFolderStatus } from './outputFolderStatus'
 import type { FixAction, JudgeEnvelope, OpRecord, RenderReceipt } from './client'
+import type { ReceiptCheckOutcome } from './receiptModel'
+import type { ColorReport, EncodeReport } from './encodeReport'
 import type { DoctorReport } from './doctor'
 import type { UiObservableState } from '../app/uiControlState'
 
@@ -29,12 +32,15 @@ export type CutEvent =
     from_revision?: string
     delta?: { kind: string; count: number }
   }
-  | { type: 'job_progress'; job_id: string; kind: string; progress: number; message?: string }
+  | { type: 'job_progress'; job_id: string; kind: string; progress: number; message?: string; terminal?: boolean }
   | { type: 'render_done'; job_id: string; render_id: string; ok: boolean; path?: string }
   | { type: 'receipt_ready'; receipt: RenderReceipt }
   | { type: 'ui_state'; state: unknown }
   | { type: 'project_changed'; open: boolean; name?: string }
-  | { type: 'ui_command'; verb: 'ui.open' | 'ui.playhead' | 'ui.select' | 'ui.highlight' | 'preview.voiceover.playback'; args: Record<string, unknown>; request_id?: number }
+  // The export destination changed (a person's choice or an agent's
+  // project.set_output_dir); `status` is what project.get_output_dir returns.
+  | { type: 'output_folder_changed'; status: OutputFolderStatus }
+  | { type: 'ui_command'; verb: 'ui.open' | 'ui.playhead' | 'ui.select' | 'ui.preview' | 'ui.highlight' | 'preview.voiceover.playback'; args: Record<string, unknown>; request_id?: number }
   // The environment doctor's capabilities changed (startup scan, refresh,
   // or a completed system.fetch_tool) — the wizard + status-bar chip re-render.
   | { type: 'doctor_updated'; report: DoctorReport }
@@ -195,7 +201,7 @@ function opRecordFrom(v: unknown): OpRecord | null {
   return out
 }
 
-function renderReceiptFrom(v: unknown): RenderReceipt | null {
+export function renderReceiptFrom(v: unknown): RenderReceipt | null {
   const obj = recordFrom(v)
   if (!obj) return null
   const renderId = stringField(obj, 'render_id')
@@ -209,6 +215,8 @@ function renderReceiptFrom(v: unknown): RenderReceipt | null {
   if (!renderId || !ts || !outputPath || !outputHash || durationMs == null || !preset || !atOp || pass == null) return null
   const judge = obj.judge === null ? null : judgeEnvelopeFrom(obj.judge)
   const fixActions = recordArrayFrom(obj.fix_actions).map(fixActionFrom).filter((action) => action !== null)
+  const encode = encodeReportFrom(obj.encode)
+  const outcome = checkOutcomeFrom(obj.outcome)
   return {
     render_id: renderId,
     ts,
@@ -226,10 +234,73 @@ function renderReceiptFrom(v: unknown): RenderReceipt | null {
     pass,
     ...(judge !== undefined ? { judge } : {}),
     ...(fixActions.length > 0 ? { fix_actions: fixActions } : {}),
+    ...(encode ? { encode } : {}),
+    ...(outcome ? { outcome } : {}),
   }
 }
 
-function doctorReportFrom(v: unknown): DoctorReport | null {
+function checkOutcomeFrom(v: unknown): ReceiptCheckOutcome | undefined {
+  const obj = recordFrom(v)
+  if (!obj) return undefined
+  const verdict = stringField(obj, 'verdict')
+  const summary = stringField(obj, 'summary')
+  if (!summary || (verdict !== 'passed' && verdict !== 'problems' && verdict !== 'warnings' && verdict !== 'unmeasured')) return undefined
+  const action = stringField(obj, 'action')
+  const notApplicable = Array.isArray(obj.not_applicable)
+    ? obj.not_applicable.filter((name): name is string => typeof name === 'string')
+    : []
+  return { verdict, summary, ...(action ? { action } : {}), ...(notApplicable.length ? { not_applicable: notApplicable } : {}) }
+}
+
+function encodeReportFrom(v: unknown): EncodeReport | undefined {
+  const obj = recordFrom(v)
+  if (!obj) return undefined
+  const encoder = stringField(obj, 'encoder')
+  const requested = booleanField(obj, 'hardware_requested')
+  const used = booleanField(obj, 'hardware_used')
+  if (!encoder || requested == null || used == null) return undefined
+  const reason = stringField(obj, 'fallback_reason')
+  const detail = stringField(obj, 'fallback_detail')
+  const color = colorReportFrom(obj.color)
+  const memoryNote = stringField(obj, 'memory_note')
+  const threads = typeof obj.encoder_threads === 'number' ? obj.encoder_threads : undefined
+  const pipeline = obj.pipeline === 'gpu' || obj.pipeline === 'standard' ? obj.pipeline : undefined
+  const pipelineReason = stringField(obj, 'pipeline_reason')
+  return {
+    encoder,
+    hardware_requested: requested,
+    hardware_used: used,
+    ...(reason ? { fallback_reason: reason } : {}),
+    ...(detail ? { fallback_detail: detail } : {}),
+    ...(color ? { color } : {}),
+    ...(memoryNote ? { memory_note: memoryNote } : {}),
+    ...(threads ? { encoder_threads: threads } : {}),
+    ...(pipeline ? { pipeline } : {}),
+    ...(pipelineReason ? { pipeline_reason: pipelineReason } : {}),
+  }
+}
+
+function colorReportFrom(v: unknown): ColorReport | undefined {
+  const obj = recordFrom(v)
+  if (!obj) return undefined
+  const output = stringField(obj, 'output')
+  const processing = numberField(obj, 'processing_bit_depth')
+  const file = numberField(obj, 'file_bit_depth')
+  if (!output || processing == null || file == null) return undefined
+  const sources = recordArrayFrom(obj.sources).flatMap((source) => {
+    const asset = stringField(source, 'asset')
+    const name = stringField(source, 'file')
+    const handling = stringField(source, 'handling')
+    if (!asset || !name || !handling) return []
+    const transfer = stringField(source, 'transfer')
+    const bits = numberField(source, 'bit_depth')
+    return [{ asset, file: name, handling, ...(transfer ? { transfer } : {}), ...(bits != null ? { bit_depth: bits } : {}) }]
+  })
+  const note = stringField(obj, 'note')
+  return { output, processing_bit_depth: processing, file_bit_depth: file, sources, ...(note ? { note } : {}) }
+}
+
+export function doctorReportFrom(v: unknown): DoctorReport | null {
   const obj = recordFrom(v)
   if (!obj) return null
   const schema = stringField(obj, 'schema')
@@ -259,7 +330,7 @@ function doctorReportFrom(v: unknown): DoctorReport | null {
   }
 }
 
-function cutEventFrom(v: unknown): CutEvent | null {
+export function cutEventFrom(v: unknown): CutEvent | null {
   const obj = recordFrom(v)
   if (!obj) return null
   switch (obj.type) {
@@ -285,7 +356,14 @@ function cutEventFrom(v: unknown): CutEvent | null {
       const progress = numberField(obj, 'progress')
       if (!jobId || !kind || progress == null) return null
       const message = stringField(obj, 'message')
-      return { type: 'job_progress', job_id: jobId, kind, progress, ...(message ? { message } : {}) }
+      return {
+        type: 'job_progress',
+        job_id: jobId,
+        kind,
+        progress,
+        ...(message ? { message } : {}),
+        ...(obj.terminal === true ? { terminal: true } : {}),
+      }
     }
     case 'render_done': {
       const jobId = stringField(obj, 'job_id')
@@ -315,12 +393,17 @@ function cutEventFrom(v: unknown): CutEvent | null {
         case 'ui.open':
         case 'ui.playhead':
         case 'ui.select':
+        case 'ui.preview':
         case 'ui.highlight':
         case 'preview.voiceover.playback':
           return { type: 'ui_command', verb, args, ...(requestId == null ? {} : { request_id: requestId }) }
         default:
           return null
       }
+    }
+    case 'output_folder_changed': {
+      const status = outputFolderStatusFrom(obj.status)
+      return status ? { type: 'output_folder_changed', status } : null
     }
     case 'doctor_updated': {
       const report = doctorReportFrom(obj.report)

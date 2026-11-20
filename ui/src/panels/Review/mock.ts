@@ -22,6 +22,8 @@ const MOCK_ON = MOCK_PARAMS.has('mock')
 // mutating Cut session. Keep its read allowance generated from schema/verbs.
 const MOCK_EMBEDDED_MANUAL_READ_ONLY = MOCK_PARAMS.get('manual') === 'embed' && MOCK_PARAMS.get('mock') === '1'
 const MOCK_TRANSCRIPT_MISSING = MOCK_PARAMS.has('mockTranscriptMissing')
+// Windows without Microsoft's Visual C++ runtime: captions point at its entry.
+const MOCK_VC_RUNTIME_MISSING = MOCK_PARAMS.has('mockVcRuntimeMissing')
 const MOCK_DIRECTOR_ERROR = MOCK_PARAMS.has('mockDirectorError')
 const MOCK_ENVIRONMENT = MOCK_PARAMS.has('mockEnvironment')
 const MOCK_CHAT_ACTION_FIXTURE = MOCK_PARAMS.has('mockChatActionFixture')
@@ -779,13 +781,24 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
                 },
               }]
             : MOCK_TRANSCRIPT_MISSING
-              ? [{
-                id: 'perception',
-                title: 'Captions and transcription',
-                status: 'missing',
-                hint: 'Install captions to create searchable, word-level transcripts.',
-                details: { stt_ready: false },
-              }]
+              ? [
+                  ...(MOCK_VC_RUNTIME_MISSING
+                    ? [{
+                        id: 'vc-runtime',
+                        kind: 'perception',
+                        status: 'missing',
+                        hint: 'Needed for captions and transcription.',
+                        details: { fetch_available: true, about: 'Fixture install text.', needed_by: ['Captions and transcription'] },
+                      }]
+                    : []),
+                  {
+                    id: 'perception',
+                    title: 'Captions and transcription',
+                    status: 'missing',
+                    hint: 'Install captions to create searchable, word-level transcripts.',
+                    details: { stt_ready: false },
+                  },
+                ]
               : [],
           essential_ok: true,
         },

@@ -26,6 +26,12 @@ pub enum Event {
         progress: f32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+        /// True only on the event that ENDS the job (done, failed, cancelled,
+        /// superseded, interrupted). A reader decides "ended" from this (or the
+        /// job's state), never from `progress`: an ended job keeps the progress
+        /// it really reached, and 1.0 means finished work.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        terminal: bool,
     },
     /// A render job finished (success or failure; receipt follows on success).
     RenderDone {
@@ -36,7 +42,9 @@ pub enum Event {
         path: Option<String>,
     },
     /// A RenderReceipt (checks included) is ready (render-receipt contract evidence).
-    ReceiptReady { receipt: RenderReceipt },
+    /// Boxed: the receipt is far larger than every other variant, and an event
+    /// is cloned for every subscriber. The wire form is unchanged.
+    ReceiptReady { receipt: Box<RenderReceipt> },
     /// UI client state changed (panels/playhead/selection) — lets a remote
     /// agent mirror what the human sees.
     UiState { state: serde_json::Value },
@@ -48,6 +56,10 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// The export destination changed (a person chose or cleared a folder in the
+    /// app, or an agent called `project.set_output_dir`). `status` is the same
+    /// object `project.get_output_dir` returns.
+    OutputFolderChanged { status: serde_json::Value },
     /// The environment doctor report changed: a capability flipped —
     /// e.g. ffmpeg went missing→present after system.fetch_tool, or a refresh
     /// re-detected a judge CLI. The start wizard + status-bar environment chip

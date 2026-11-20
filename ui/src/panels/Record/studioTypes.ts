@@ -44,12 +44,14 @@ export interface StudioRawStreams {
   studio_events?: string | null
 }
 
-export type CursorCoordinateState = 'exact' | 'approximate' | 'unavailable'
+export type CursorCoordinateState = 'exact' | 'held' | 'approximate' | 'unavailable'
 
 export interface CursorCorrelation {
   source: 'legacy_unknown' | 'rdevin_absolute' | 'wayland_pipewire_metadata' | 'wayland_evdev_relative'
   state: CursorCoordinateState
   exact_clicks: number
+  /** Validated same-segment SPA positions held through observed pointer stillness. */
+  held_clicks?: number
   approximate_clicks: number
   unavailable_clicks: number
   max_metadata_age_ms?: number
@@ -63,6 +65,10 @@ export function cursorCorrelationLabel(correlation: CursorCorrelation | null): s
       return `${correlation.unavailable_clicks} pointer position${correlation.unavailable_clicks === 1 ? '' : 's'} unavailable`
     }
     return `${correlation.approximate_clicks} pointer position${correlation.approximate_clicks === 1 ? '' : 's'} approximate`
+  }
+  if (correlation.state === 'held') {
+    const held = correlation.held_clicks ?? 0
+    return `${held} pointer position${held === 1 ? '' : 's'} retained while stationary`
   }
   return 'Pointer positions accurate'
 }

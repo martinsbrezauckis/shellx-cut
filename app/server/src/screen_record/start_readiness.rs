@@ -8,6 +8,8 @@
 use super::{required_capture_card, RecordCard, RecordStartAdmission};
 use cut_core::{error_codes, CutError};
 
+/// Whether Start may be attempted. A status read that did not check screen
+/// delivery still admits the attempt, because Start runs that check itself.
 pub(super) fn start_allowed(cards: &[RecordCard]) -> bool {
     start_allowed_for_platform(cards, cfg!(target_os = "linux"))
 }
@@ -17,25 +19,34 @@ pub(super) fn ensure_start_ready(cards: &[RecordCard]) -> Result<(), CutError> {
 }
 
 fn ensure_start_ready_for_platform(cards: &[RecordCard], is_linux: bool) -> Result<(), CutError> {
-    let blocked = blocked_cards(cards, is_linux);
+    // Admission always uses a full check, so a "checked at start" card never
+    // admits here.
+    let blocked = blocked_cards(cards, is_linux, false);
     if blocked.is_empty() {
         return Ok(());
     }
+    // Name the first missing requirement for the registry (the cause lists all).
+    let requirement = if blocked.iter().any(|item| item.starts_with("ffmpeg=")) {
+        "ffmpeg"
+    } else {
+        "screen_permission"
+    };
     Err(CutError::new(
         error_codes::NOT_FOUND,
         "screen recording is not ready on this system",
         blocked.join("; "),
     )
+    .with_requirement(requirement)
     .with_suggested_action(
-        "resolve the required screen_record.doctor cards, then retry the recording",
+        "Tell the person what the cause names and where to provide it (for screen recording permission: System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen ShellX Cut), then start the recording again",
     ))
 }
 
 fn start_allowed_for_platform(cards: &[RecordCard], is_linux: bool) -> bool {
-    blocked_cards(cards, is_linux).is_empty()
+    blocked_cards(cards, is_linux, true).is_empty()
 }
 
-fn blocked_cards(cards: &[RecordCard], is_linux: bool) -> Vec<String> {
+fn blocked_cards(cards: &[RecordCard], is_linux: bool, attempt: bool) -> Vec<String> {
     [
         "ffmpeg",
         "screen_capture",
@@ -48,7 +59,11 @@ fn blocked_cards(cards: &[RecordCard], is_linux: bool) -> Vec<String> {
     .filter_map(|name| {
         let card = cards.iter().find(|card| card.name == name);
         match card {
-            Some(card) if card.status == "ok" || linux_portal_prompt_deferred(card, is_linux) => {
+            Some(card)
+                if card.status == "ok"
+                    || linux_portal_prompt_deferred(card, is_linux)
+                    || (attempt && checked_at_start(card)) =>
+            {
                 None
             }
             Some(card) => Some(format!("{}={} ({})", card.name, card.status, card.detail)),
@@ -56,6 +71,12 @@ fn blocked_cards(cards: &[RecordCard], is_linux: bool) -> Vec<String> {
         }
     })
     .collect()
+}
+
+fn checked_at_start(card: &RecordCard) -> bool {
+    card.name == "screen_capture"
+        && card.status == "unknown"
+        && card.start_admission == RecordStartAdmission::CheckedAtStart
 }
 
 fn linux_portal_prompt_deferred(card: &RecordCard, is_linux: bool) -> bool {
@@ -119,6 +140,22 @@ mod tests {
         cards[0].status = "unknown".into();
         assert!(!start_allowed_for_platform(&cards, true));
         assert!(ensure_start_ready_for_platform(&cards, true).is_err());
+    }
+
+    #[test]
+    fn unchecked_screen_admits_an_attempt_but_never_a_start() {
+        let cards = vec![
+            card("ffmpeg", "ok", RecordStartAdmission::Strict),
+            card(
+                "screen_capture",
+                "unknown",
+                RecordStartAdmission::CheckedAtStart,
+            ),
+            card("input_hook", "ok", RecordStartAdmission::Strict),
+        ];
+        assert!(start_allowed_for_platform(&cards, false));
+        let error = ensure_start_ready_for_platform(&cards, false).unwrap_err();
+        assert!(error.suggested_action.unwrap().contains("System Settings"));
     }
 
     #[test]

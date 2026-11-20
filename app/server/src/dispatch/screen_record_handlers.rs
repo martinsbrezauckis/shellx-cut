@@ -4,6 +4,7 @@ use std::io::Read;
 mod camera_foundation;
 mod stop_files;
 mod stop_log;
+mod stop_outcome;
 
 use stop_files::{
     capture_marker_duration, capture_started_unix_ms, local_regular_file_nonempty, unix_ms_now,
@@ -76,8 +77,12 @@ pub(super) async fn screen_record_stop(
         // the default export folder (project.set_output_dir) or <project>/exports.
         raw_path: Option<String>,
         rationale: Option<String>,
+        // Why Stop was asked for. `app_exit`: the app is closing during the
+        // recording; the take is saved as usual and the next start says so.
+        reason: Option<String>,
     }
     let a: Args = parse_args(args)?;
+    let app_exit = stop_outcome::app_exit(a.reason.as_deref())?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     crate::screen_record::recovery::validate_capture_id(&a.capture_id)?;
 
@@ -136,6 +141,14 @@ pub(super) async fn screen_record_stop(
         // on a ScreenCast consent dialog) or a crash leaves a trail there. Append the
         // tail so the agent sees WHY without a second round-trip.
         let log_tail = stop_log::diagnostic(&out_dir);
+        if crate::screen_record::is_capture_active(&a.capture_id) {
+            // The worker owns the take and is still writing it.
+            return Err(stop_outcome::still_saving(
+                &a.capture_id,
+                finalization_budget.wait_ms,
+                log_tail,
+            ));
+        }
         return Err(CutError::new(
             error_codes::SIDECAR,
             format!(
@@ -154,6 +167,10 @@ pub(super) async fn screen_record_stop(
             "verify the capture actually started (screen_record.doctor) and the desktop granted ScreenCast consent — for unattended capture the recorder must persist a ScreenCast restore token (PersistMode::ExplicitlyRevoked)",
         ));
     }
+
+    // The take is now saved in the project's recording folder, whatever the
+    // optional steps below do.
+    crate::screen_record::pending_recordings::after_stop_saved(&a.capture_id, app_exit);
 
     // 4. Parse the RecordingProject; pull source_video, audio, and the events track.
     let project_file = std::fs::File::open(&project_path).map_err(|e| {
@@ -370,14 +387,16 @@ pub(super) async fn screen_record_stop(
             a.raw_path.as_deref(),
             "exports/raw_recording.mp4",
             OutputPathPolicy::MP4,
-        )?;
+        )
+        .map_err(stop_outcome::take_kept_in_project)?;
         crate::screen_record::mux_raw_sources(
             &inputs.source_video,
             inputs.mic.as_deref(),
             inputs.system.as_deref(),
             inputs.system_offset_ms,
             &raw_out,
-        )?;
+        )
+        .map_err(stop_outcome::take_kept_in_project)?;
         raw_has_mic = inputs.mic.is_some();
         raw_has_system = inputs.system.is_some();
         raw_path = Some(raw_out.display().to_string());
@@ -406,8 +425,11 @@ pub(super) async fn screen_record_stop(
         plan = ae.result.as_ref().and_then(|r| r.get("plan").cloned());
     }
 
+    let notes = stop_files::capture_notes(&out_dir);
     Ok(VerbResult::ok(json!({
         "capture_id": a.capture_id,
+        // What is wrong with a take saved with a problem (empty when exact).
+        "notes": notes,
         "held_last_frame_ms": record_recovery::recovery_status(&out_dir).held_last_frame_ms,
         "project": project_path,
         "source": source_video,
@@ -431,7 +453,8 @@ pub(super) async fn screen_record_stop(
         "raw_path": raw_path,
         "raw_has_mic": raw_has_mic,
         "raw_has_system": raw_has_system,
-    })))
+    }))
+    .with_warnings(stop_files::notes_as_warnings(&notes)))
 }
 
 pub(super) fn screen_record_polish_subverb_error(step: &str, res: &VerbResult) -> Option<CutError> {
@@ -575,53 +598,23 @@ pub(super) async fn screen_record_polish(
     let key = format!("{}_{plan_tag}_{av_tag}", src_hash.replace(':', "_"));
     let baked = cache.join(format!("{key}.mp4"));
     let baked_s = baked.display().to_string();
-    let cached = crate::screen_record::cache_output::cache_hit(&baked)?;
-    if !cached {
-        // Rendering is CPU/ffmpeg work. Keep the verb's established synchronous
-        // result shape, but never occupy an async worker while it runs. It shares
-        // the export limiter so an auto-polish cannot saturate the recorder path.
-        let render_source = source.clone();
-        let render_plan = admitted_plan;
-        let render_baked = baked.clone();
-        let render_audio = audio.map(std::path::Path::to_path_buf);
-        state
-            .jobs
-            .with_limit(
-                "screen_record.export",
-                1,
-                run_blocking_cancellable("screen_record.polish", move |cancellation| {
-                    let child_cancellation = cancellation.clone();
-                    let control = record_render::ffmpeg::ProcessControl::bounded(
-                        std::time::Duration::from_secs(30 * 60),
-                        move || child_cancellation.is_cancelled(),
-                    );
-                    crate::screen_record::cache_output::bake_seed(&render_baked, |staged| {
-                        if raw {
-                            crate::screen_record::mux_raw_with_control(
-                                &render_source,
-                                render_audio.as_deref(),
-                                staged,
-                                &control,
-                            )
-                        } else {
-                            crate::screen_record::render_with_control(
-                                &render_source,
-                                render_plan
-                                    .as_ref()
-                                    .expect("normal polish has admitted plan"),
-                                staged,
-                                render_audio.as_deref(),
-                                &control,
-                            )
-                            .map(|_| ())
-                        }
-                    })
-                    .map(|_| ())
-                }),
-            )
-            .await?;
+    let cached = crate::screen_record::cache_output::reusable_bake(&baked)?;
+    // The bake is a visible `screen_record_polish` job bound to this project
+    // (see screen_record::polish_job); it ends when the clip is placed.
+    use crate::screen_record::polish_job;
+    let input = polish_job::BakeInput {
+        cached,
+        raw,
+        source: source.clone(),
+        baked: baked.clone(),
+        audio: audio.map(std::path::Path::to_path_buf),
+        plan: admitted_plan,
+    };
+    let polish = polish_job::bake(state, &project.name, polish_job::bake_work(input)).await?;
+    if let Some(reply) = polish_job::waiting_elsewhere(state, &dir, &source, &baked_s).await {
+        polish.placed(Ok(reply.clone())).await;
+        return Ok(VerbResult::ok(reply));
     }
-    let _ = &baked_s; // (baked path string kept for the result payload below)
 
     // Auto-checkpoint: the whole polish (import + insert) reverts in one step.
     let cp = Box::pin(dispatch(
@@ -950,7 +943,10 @@ pub(super) async fn screen_record_polish(
         }
     }
 
-    Ok(VerbResult::ok(json!({
+    stop_outcome::note_added_to_timeline(&source);
+    let reply = json!({
+        "placed": true,
+        "job_id": polish.job_id,
         "clip_id": clip_id,
         "asset_id": asset_id,
         "camera_artifact_id": camera_artifact.as_ref().map(|camera| &camera.artifact.artifact_id),
@@ -962,5 +958,11 @@ pub(super) async fn screen_record_polish(
         "system_warnings": system_warnings,
         "baked": baked,
         "cached": cached,
-    })))
+    });
+    polish
+        .placed(Ok(
+            json!({"clip_id": reply["clip_id"], "baked": reply["baked"]}),
+        ))
+        .await;
+    Ok(VerbResult::ok(reply))
 }

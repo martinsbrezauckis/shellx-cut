@@ -30,6 +30,19 @@ impl ProjectStore {
         .transpose()?;
         let append = self.log.append(op)?;
         let cache_result = write_cache(self, &encoded);
+        // A replayed or rebuilt next state keeps what this engine established,
+        // and an asset an engine action adds now (a title, a recording, a
+        // timeline import) carries the probe the engine gave it.
+        next.probe_facts.inherit(&self.project.probe_facts);
+        let added: Vec<String> = next
+            .assets
+            .keys()
+            .filter(|id| !self.project.assets.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in added {
+            next.mark_probe_verified(&id);
+        }
         self.project = next;
         if let Some((history, pos)) = sequence_history {
             self.undo_history = history;

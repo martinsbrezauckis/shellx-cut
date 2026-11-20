@@ -216,3 +216,79 @@ fn failed_worker_can_persist_known_partial_progress_without_becoming_done() {
         Some(64)
     );
 }
+
+#[tokio::test]
+async fn a_cancelled_job_keeps_the_progress_it_reached() {
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let manager = JobManager::new(bus);
+    let job = manager.create("analysis");
+    manager.progress(&job.job_id, 0.4, Some("working".into()));
+    manager.cancel_by_user(&job.job_id);
+    let record = manager.get(&job.job_id).unwrap();
+    assert_eq!(record.state, JobState::Failed);
+    assert_eq!(record.outcome, Some(JobOutcome::Cancelled));
+    assert!(
+        (record.progress - 0.4).abs() < 1e-6,
+        "a cancelled job must not read as complete, got {}",
+        record.progress
+    );
+    // Earlier events (create, running progress) come first; find the terminal one.
+    loop {
+        let event = events.recv().await.expect("terminal progress event");
+        if let crate::events::Event::JobProgress {
+            progress, message, ..
+        } = event
+        {
+            if message.as_deref() == Some("cancelled") {
+                assert!((progress - 0.4).abs() < 1e-6, "event progress {progress}");
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_superseded_job_and_a_queued_cancel_do_not_read_as_complete() {
+    let manager = JobManager::new(EventBus::new());
+    let superseded = manager.create("analysis");
+    manager.progress(&superseded.job_id, 0.25, None);
+    manager.supersede(&superseded.job_id);
+    assert_eq!(manager.get(&superseded.job_id).unwrap().progress, 0.25);
+    let queued = manager.create("analysis");
+    manager.cancel_by_user(&queued.job_id);
+    assert_eq!(manager.get(&queued.job_id).unwrap().progress, 0.0);
+    // A failed job did not finish either: it keeps what it reached.
+    let failed = manager.create("analysis");
+    manager.progress(&failed.job_id, 0.6, None);
+    manager.fail(&failed.job_id, CutError::new("failed", "boom", "fixture"));
+    assert_eq!(manager.get(&failed.job_id).unwrap().progress, 0.6);
+}
+
+/// Row 210: `outcome` answers "did the job do what was asked". A job that ran
+/// to its end but did not fully deliver is `partial`, never `succeeded`; a
+/// clean or merely warned job stays `succeeded`. Read as an agent reads it.
+#[test]
+fn outcome_says_whether_the_job_delivered() {
+    let manager = JobManager::new(EventBus::new());
+    let read = |id: &str| serde_json::to_value(manager.get(id).unwrap()).unwrap();
+    let cases: [(&str, fn(&JobManager, &str)); 4] = [
+        ("succeeded", |m, id| m.finish(id, serde_json::json!({}))),
+        ("succeeded", |m, id| {
+            m.finish_with_warnings(id, serde_json::json!({}))
+        }),
+        ("partial", |m, id| {
+            m.finish_with_problems(id, serde_json::json!({}))
+        }),
+        ("partial", |m, id| {
+            m.finish_with_failed_items(id, serde_json::json!({}), 1, 3)
+        }),
+    ];
+    for (expected, end) in cases {
+        let job = manager.create("render_queue");
+        end(&manager, &job.job_id);
+        let record = read(&job.job_id);
+        assert_eq!(record["state"], "done", "{record}");
+        assert_eq!(record["outcome"], expected, "{record}");
+    }
+}

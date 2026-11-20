@@ -16,6 +16,27 @@
 //! `doctor()` reports capability cards (mirrors ShellX Cut's system.doctor) so the
 //! UI/agent can tell what's present vs needs install/permission.
 
+/// Tests write this engine's origin records (`cut_media::cache_trust`) when
+/// they publish checkpoints. Point the engine's home at a per-process temp
+/// folder before any test runs, so a test never writes into the person's real
+/// ShellX Cut data.
+#[cfg(test)]
+mod test_home {
+    extern "C" fn init() {
+        let home = std::env::temp_dir().join(format!("cut-test-process-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&home);
+        std::env::set_var("SHELLX_CUT_HOME", home);
+    }
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "android", target_os = "freebsd"),
+        link_section = ".init_array"
+    )]
+    #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
+    #[cfg_attr(windows, link_section = ".CRT$XCU")]
+    #[used]
+    static INIT: extern "C" fn() = init;
+}
+
 pub mod camera;
 // REC-CAMERA-01a is deliberately crate-private until a durable server owner
 // wires it to real native finalization. Its test-injected lifecycle must still
@@ -71,6 +92,7 @@ mod camera_session_tests;
 #[cfg(test)]
 mod camera_session_timing_tests;
 mod capture_clock;
+mod capture_notes;
 mod capture_output;
 mod checkpoint;
 mod controller_placement;
@@ -78,11 +100,13 @@ pub mod doctor;
 mod doctor_portal;
 mod doctor_probe;
 mod doctor_process;
+mod doctor_status;
 mod doctor_system_audio;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_camera;
 #[cfg(target_os = "linux")]
 mod linux_camera_devices;
+pub mod screen_access;
 mod source_lifecycle;
 // REC-REGION-01 first fixes the cross-host crop contract; the native backends
 // consume it in the next slice. Keep that bounded foundation compiled on native
@@ -199,6 +223,8 @@ mod windows_window_clicks;
 pub mod cursor_correlation;
 #[cfg(all(test, target_os = "linux", feature = "capture-linux"))]
 mod cursor_correlation_tests;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod cursor_session_mode;
 
 // Shared rdevin input hook — compiled when any live-capture backend is active.
 #[cfg(any(
@@ -218,6 +244,8 @@ mod input_listener;
 
 #[cfg(feature = "mic")]
 mod macos_system_audio;
+#[cfg(feature = "mic")]
+mod macos_system_audio_spool;
 #[cfg(feature = "mic")]
 mod mic;
 mod mic_endpoint;
@@ -276,6 +304,8 @@ mod windows_picker;
 mod windows_region_capture;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_runtime;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_empty_segment;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_wgc_encoder;
 #[cfg(all(windows, feature = "capture-windows"))]
@@ -346,6 +376,10 @@ mod macos_monitor_target;
 mod macos_readiness;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_region_capture;
+#[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
+mod macos_segment_frames;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_segments;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_system_tap;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
@@ -393,11 +427,16 @@ pub(crate) use camera::CameraUseIntent;
 pub use camera::{CameraBackend, CameraDevice, CameraReadiness, CameraRequest, ReplayCamera};
 pub(crate) use camera_timing::CameraFrameObservation;
 pub use capture_clock::CaptureClock;
+pub use capture_notes::{CAPTURE_NOTES_FILE, CAPTURE_NOTES_SCHEMA};
 pub use doctor::{doctor, Card};
 pub use doctor_portal::{is_linux_portal_prompt_deferred, LINUX_PORTAL_PROMPT_DEFERRED_DETAIL};
+pub use doctor_probe::ScreenCheck;
+pub use doctor_status::{doctor_status, DoctorStatus};
 pub use mic_endpoint::{
-    list_microphone_endpoints, resolve_microphone_source, MicrophoneEndpoint,
-    MicrophoneEndpointRef, MicrophoneSource,
+    explain_open_error, list_microphone_endpoints, microphone_access, microphone_privacy_block,
+    no_microphone_device, request_microphone_access, resolve_microphone_source, MicrophoneAccess,
+    MicrophoneEndpoint, MicrophoneEndpointRef, MicrophoneProblem, MicrophoneSource,
+    MicrophoneSwitch, MICROPHONE_CAPTURE_COMPILED,
 };
 pub use pause_stream_coordinator::PauseStreamCoordinator;
 pub use pause_stream_selection::SelectedCaptureStreams;
@@ -417,6 +456,10 @@ pub use replay::ReplayCapture;
 #[doc(hidden)]
 pub use scene_live_coordinator::{
     PrivateSceneCoordinator, PrivateSceneCoordinatorError, PrivateSceneProjection,
+};
+pub use screen_access::{
+    forbid_native_capture_access, native_screen_access_attempts, screen_capture_access_preflight,
+    screen_probe_attempts,
 };
 pub use session_clock::{
     LogicalSessionClock, SessionPhase, SessionTransition, SessionTransitionIgnored,
@@ -547,6 +590,9 @@ pub struct WindowInfo {
 ///   ScreenCast portal shows its OWN source picker at capture time, so an in-app
 ///   list is neither needed nor available.
 pub fn list_monitors_checked() -> Result<Vec<MonitorInfo>> {
+    if !screen_access::admit_native_screen_access() {
+        return Ok(Vec::new());
+    }
     #[cfg(all(windows, feature = "capture-windows"))]
     {
         return Ok(windows::list_monitors());
@@ -590,6 +636,9 @@ pub fn window_capture_supported() -> bool {
 }
 
 pub fn list_windows() -> Vec<WindowInfo> {
+    if !screen_access::admit_native_screen_access() {
+        return Vec::new();
+    }
     #[cfg(all(windows, feature = "capture-windows"))]
     {
         return windows::list_windows();
@@ -616,6 +665,9 @@ pub struct MicWarm {
     pub peak_dbfs: Option<i16>,
     /// True when this build was compiled with the `mic` feature (a mic backend).
     pub supported: bool,
+    /// Why the microphone could not be opened, when the test failed to open it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<MicrophoneProblem>,
 }
 
 /// Warm the default microphone for up to `max_ms` (see [`MicWarm`]).
@@ -865,6 +917,29 @@ pub struct CaptureConfig {
     /// process-local and never influences capture or serialized media.
     #[serde(skip, default)]
     pub active_preview: Option<active_capture_preview::ActiveCapturePreview>,
+    /// The caller's hold on the one native system-audio stream. A backend that
+    /// stops its audio at the capture-end boundary releases it there, so a
+    /// system-audio test or the next recording is not refused while the take
+    /// is still being written. Never serialized.
+    #[serde(skip, default)]
+    pub system_audio_lease: Option<SharedSystemAudioLease>,
+}
+
+/// A [`SystemAudioLease`] that the recorder can release early.
+pub type SharedSystemAudioLease = std::sync::Arc<std::sync::Mutex<Option<SystemAudioLease>>>;
+
+/// Release the system-audio hold of `cfg` now (idempotent).
+#[cfg_attr(
+    not(all(target_os = "macos", feature = "capture-macos")),
+    allow(dead_code)
+)]
+pub(crate) fn release_system_audio_lease(cfg: &CaptureConfig) {
+    if let Some(lease) = cfg.system_audio_lease.as_ref() {
+        lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -897,6 +972,7 @@ impl Default for CaptureConfig {
             controller_placement: None,
             source_lifecycle: None,
             active_preview: None,
+            system_audio_lease: None,
         }
     }
 }
@@ -909,6 +985,8 @@ impl Default for CaptureConfig {
 pub struct CaptureReadiness(
     std::sync::Arc<std::sync::atomic::AtomicU8>,
     input_hook_startup::InputHookStartupHandle,
+    /// Wall-clock time (Unix ms) of the first delivered screen frame; 0 = none.
+    std::sync::Arc<std::sync::atomic::AtomicU64>,
 );
 
 /// The public, read-only projection of [`CaptureReadiness`]. `ready` is an
@@ -919,6 +997,9 @@ pub struct CaptureReadinessStatus {
     pub ready: bool,
     pub terminal: bool,
     pub state: CaptureReadinessState,
+    /// When the first real screen frame reached the capture path (Unix ms).
+    /// Absent until then. A recording timer counts from this moment.
+    pub first_screen_frame_unix_ms: Option<u64>,
 }
 
 /// A capture never returns from a terminal readiness state to `Ready`.
@@ -946,6 +1027,7 @@ impl Default for CaptureReadiness {
         Self(
             std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             input_hook_startup::InputHookStartupHandle::default(),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         )
     }
 }
@@ -969,12 +1051,23 @@ impl CaptureReadiness {
     /// Mark a real native screen frame as delivered to the active capture
     /// path. A late callback cannot revive an already-terminal capture.
     pub fn mark_first_screen_frame_delivered(&self) {
-        let _ = self.0.compare_exchange(
-            Self::AWAITING,
-            Self::READY,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        );
+        if self
+            .0
+            .compare_exchange(
+                Self::AWAITING,
+                Self::READY,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| u64::try_from(value.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(0)
+                .max(1);
+            self.2.store(now, std::sync::atomic::Ordering::Release);
+        }
     }
 
     /// Close readiness at the same boundary as the live capture Stop signal.
@@ -1011,7 +1104,9 @@ impl CaptureReadiness {
             Self::TERMINAL_AFTER_FRAME => CaptureReadinessState::TerminalAfterFirstScreenFrame,
             _ => CaptureReadinessState::AwaitingFirstScreenFrame,
         };
+        let first_frame = self.2.load(std::sync::atomic::Ordering::Acquire);
         CaptureReadinessStatus {
+            first_screen_frame_unix_ms: (first_frame != 0).then_some(first_frame),
             ready: matches!(state, CaptureReadinessState::Ready),
             terminal: matches!(
                 state,
@@ -1036,9 +1131,16 @@ mod capture_readiness_tests {
         );
         assert!(!readiness.status().ready);
 
+        assert_eq!(readiness.status().first_screen_frame_unix_ms, None);
         readiness.mark_first_screen_frame_delivered();
         assert_eq!(readiness.status().state, CaptureReadinessState::Ready);
         assert!(readiness.status().ready);
+        let first = readiness
+            .status()
+            .first_screen_frame_unix_ms
+            .expect("the first frame time is recorded");
+        readiness.mark_first_screen_frame_delivered();
+        assert_eq!(readiness.status().first_screen_frame_unix_ms, Some(first));
         assert!(!readiness.status().terminal);
     }
 

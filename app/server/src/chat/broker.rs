@@ -41,6 +41,9 @@ pub use environment::{native_environment, sanitized_environment_for_provider, La
 pub(crate) use environment::{sanitized_environment_from, sanitized_environment_from_admitted};
 #[path = "broker/verify.rs"]
 mod verify;
+pub use verify::CapabilityFailure;
+#[cfg(test)]
+pub(crate) use verify::TEST_PROBE_LIMITS_MS;
 const REQUIRED_CODEX_EXEC_HELP_TOKENS: &[&str] = &[
     "--config",
     "--json",
@@ -194,7 +197,7 @@ pub async fn verify_installed_agent(
     executable: &crate::gen::ProviderChildCommand,
     environment: &LaunchEnvironment,
     workspace: &Path,
-) -> Result<(), String> {
+) -> Result<(), CapabilityFailure> {
     verify::installed_agent(agent, executable, environment, workspace).await
 }
 

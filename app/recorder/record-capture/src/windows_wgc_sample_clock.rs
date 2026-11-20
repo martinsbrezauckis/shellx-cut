@@ -100,6 +100,30 @@ impl WgcSampleClock {
         }
     }
 
+    /// The closing same-pixel sample at an owned Stop, or `None` when the last
+    /// frame already spans its frame period (no extra queue entry at normal
+    /// cadence, especially when the bounded queue is full at Stop).
+    ///
+    /// A part whose only frame came just before Stop (a checkpoint reopened
+    /// right before it) always gets one: Media Foundation writes a lone
+    /// sample with duration 0, and that part would fail verification.
+    pub(crate) fn closing_sample(
+        &self,
+        (last_timestamp, accepted_at): (i64, Instant),
+        stop_at: Instant,
+        timed_origin: Option<(Instant, QpcCaptureOrigin)>,
+        terminal_sample_duration: i64,
+        only_sample: bool,
+    ) -> Result<Option<(i64, i64)>, &'static str> {
+        let held = self.held_at_stop(last_timestamp, accepted_at, stop_at, timed_origin);
+        let (timestamp, elapsed) = match held {
+            Ok(held) if !only_sample || held.1 > 0 => held,
+            Err(error) if !only_sample => return Err(error),
+            _ => (last_timestamp + 1, 1),
+        };
+        Ok((only_sample || elapsed > terminal_sample_duration).then_some((timestamp, elapsed)))
+    }
+
     /// Map an observed still-pixel interval onto the same native sample clock.
     /// The caller supplies the last accepted sample's elapsed timestamp and
     /// callback observation; no callback count or requested rate enters this.
@@ -217,6 +241,38 @@ mod tests {
         assert_eq!(
             clock.held_at_stop(0, callback, stop, None),
             Ok((30_000_000, 30_000_000))
+        );
+    }
+
+    #[test]
+    fn a_lone_frame_just_before_stop_still_gets_a_closing_sample() {
+        let clock = WgcSampleClock::default();
+        let stop = Instant::now();
+        let last = (0, stop - Duration::from_millis(10));
+        // Several frames: the last one already spans the 10 ms to Stop.
+        assert_eq!(
+            clock.closing_sample(last, stop, None, 333_333, false),
+            Ok(None)
+        );
+        // The only frame of the part: closed 10 ms later, it gets a length.
+        assert_eq!(
+            clock.closing_sample(last, stop, None, 333_333, true),
+            Ok(Some((100_000, 100_000)))
+        );
+        // Stop observed at the frame itself: still a positive, later sample.
+        let at_stop = (5, stop);
+        assert_eq!(
+            clock.closing_sample(at_stop, stop, None, 333_333, true),
+            Ok(Some((6, 1)))
+        );
+        assert!(clock
+            .closing_sample(at_stop, stop, None, 333_333, false)
+            .is_err());
+        // A long still stretch is held whatever the count.
+        let still = (0, stop - Duration::from_secs(2));
+        assert_eq!(
+            clock.closing_sample(still, stop, None, 333_333, false),
+            Ok(Some((20_000_000, 20_000_000)))
         );
     }
 }

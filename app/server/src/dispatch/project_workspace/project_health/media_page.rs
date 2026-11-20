@@ -150,7 +150,8 @@ fn source_is_available(project_dir: &Path, asset: &cut_core::Asset) -> bool {
 }
 
 fn proxy_state(project_dir: &Path, asset_id: &str, asset: &cut_core::Asset) -> DerivedState {
-    if probe_kind(asset).is_some_and(|kind| kind != "video") {
+    // A title or shape movie Cut drew plays as made: it never has a proxy.
+    if probe_kind(asset).is_some_and(|kind| kind != "video") || drawn_overlay(project_dir, asset) {
         return DerivedState::NotApplicable;
     }
     derived_state(
@@ -163,7 +164,7 @@ fn proxy_state(project_dir: &Path, asset_id: &str, asset: &cut_core::Asset) -> D
 }
 
 fn filmstrip_state(project_dir: &Path, asset_id: &str, asset: &cut_core::Asset) -> DerivedState {
-    if probe_kind(asset) == Some("audio") {
+    if probe_kind(asset) == Some("audio") || drawn_overlay(project_dir, asset) {
         return DerivedState::NotApplicable;
     }
     derived_state(
@@ -173,6 +174,10 @@ fn filmstrip_state(project_dir: &Path, asset_id: &str, asset: &cut_core::Asset) 
         "filmstrip",
         "jpg",
     )
+}
+
+fn drawn_overlay(project_dir: &Path, asset: &cut_core::Asset) -> bool {
+    crate::dispatch::edit_tools::is_drawn_overlay(project_dir, &asset.path)
 }
 
 fn probe_kind(asset: &cut_core::Asset) -> Option<&str> {

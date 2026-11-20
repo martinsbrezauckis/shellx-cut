@@ -1306,6 +1306,8 @@ export interface CaptureRecoveryItem {
   checkpoints: number
   has_open_segment: boolean
   receipt?: CaptureRecoveryReceipt | null
+  /** Whether screen_record.recover can make a clip from the files (newer engines). */
+  recoverable?: boolean
 }
 
 export interface ScreenRecordRecoveryStatusResult {
@@ -1554,6 +1556,26 @@ export interface VerbResults {
   'jobs.status': JobRecord
   'jobs.list': JobsListResult
   'jobs.cancel': { job_id: string; cancelled: boolean }
+  'jobs.before_quit': {
+    running: []
+    cancelled_jobs: Array<{ job_id: string; kind: string; progress: number; message?: string }>
+  }
+  'jobs.interrupted': {
+    interrupted: Array<{
+      key: string
+      job_id: string
+      kind: string
+      project_path: string
+      project_name: string
+      started_unix_ms: number
+      helpers_stopped: number
+      leftover_files_removed: number
+      export_folders: string[]
+      message: string
+      suggested_action: string
+    }>
+  }
+  'jobs.interrupted_dismiss': { dismissed: true; key: string }
   'jobs.retry': {
     job_id: string
     retry_of: string

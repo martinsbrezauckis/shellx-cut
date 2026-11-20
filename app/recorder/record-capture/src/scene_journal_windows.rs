@@ -82,12 +82,11 @@ pub(super) fn same_open_file(left: &File, right: &File, path: &Path) -> SceneJou
     Ok(identity(left, path)? == identity(right, path)?)
 }
 
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry, and the standard library reports exactly those as symlinks; cloud
+/// placeholders and other reparse points are the file itself.
 pub(super) fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
+    metadata.file_type().is_symlink()
 }
 
 /// Pin a non-reparse parent and use its physical path while opening one fixed

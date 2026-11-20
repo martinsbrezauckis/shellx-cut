@@ -68,6 +68,11 @@ pub(crate) async fn start(args: Value) -> Result<VerbResult, CutError> {
         args.window.is_some(),
         &recorder_doctor.monitors,
     )?;
+    monitor_start_admission::admit_window(
+        args.window.as_deref(),
+        recorder_doctor.window_capture_supported,
+        &recorder_doctor.windows,
+    )?;
     let root = owner::owned_root()?;
     let handle = owner::mint_handle()?;
     let capture_id = super::new_capture_id();
@@ -209,6 +214,7 @@ fn capture_once(
         controller_placement: None,
         source_lifecycle: None,
         active_preview: None,
+        system_audio_lease: None,
     };
     let result = capture
         .capture(&config, control.stop_signal())

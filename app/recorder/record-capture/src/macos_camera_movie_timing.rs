@@ -182,18 +182,17 @@ pub(super) fn verify_movie_timing(
     // is still cancelled and reaped if it stalls past that budget.
     let probe_timeout = probe_timeout(decoded_frames, movie.len())?;
     let mut metadata_command = Command::new(ffprobe);
-    metadata_command
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=time_base,duration_ts:format=duration",
-            "-of",
-            "json",
-        ])
-        .arg(path);
+    metadata_command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=time_base,duration_ts:format=duration",
+        "-of",
+        "json",
+    ]);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut metadata_command, path);
     let metadata_control =
         OwnedProcessControl::bounded(probe_timeout, || false).with_output_cap(MAX_METADATA_BYTES);
     let metadata = run_owned_command(
@@ -236,8 +235,8 @@ pub(super) fn verify_movie_timing(
             "csv=p=0",
             "-o",
         ])
-        .arg(&packet_path)
-        .arg(path);
+        .arg(&packet_path);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut packet_command, path);
     // The owned process polls this predicate every 20ms and reaps its tree on
     // excess growth. The cap scales from the independently decoded frame count
     // while the parser retains at most one 64-byte row in memory.

@@ -24,6 +24,7 @@ async fn media_import_keeps_a_job_with_a_until_project_b_can_open() {
     std::fs::write(&source, ONE_BY_ONE_PNG).unwrap();
     let source = source.canonicalize().unwrap();
     let state = AppState::new();
+    super::transition_test_support::allow_slow_worker_stop(&state);
     create_project(&state, "a", &a_path).await;
     create_project(&state, "b", &b_path).await;
     assert!(

@@ -110,7 +110,7 @@
           }
         }
       },
-      "result": "{job_id, bundle_id} — package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
+      "result": "{job_id, bundle_id} — package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Each platform receipt carries encode:{encoder, hardware_requested:false, hardware_used:false} because render.bundle always encodes in software. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
       "result_schema": {
         "type": "object",
         "required": [
@@ -152,7 +152,7 @@
     {
       "name": "render.queue",
       "domain": "render",
-      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + segmented OOM-bounded encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup soft-limit); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. The immediate jobs list contains an explicit resolved output path, or null for a default destination whose render ID is assigned when its child starts. Actual per-entry job IDs, output paths and receipts arrive in the terminal queue job result (jobs.status{job_id: queue_id}). Requires an open project.",
+      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + memory-bounded, possibly segmented encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup memory scope: soft throttle, hard stop at RAM minus 1 GB); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. The immediate jobs list contains an explicit resolved output path, or null for a default destination whose render ID is assigned when its child starts. Actual per-entry job IDs, output paths and receipts arrive in the terminal queue job result (jobs.status{job_id: queue_id}). Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -265,7 +265,7 @@
           }
         }
       },
-      "result": "{queue_id, count, jobs:[{idx, output}]} — output is a resolved explicit path or null while a default destination awaits its child render ID; the terminal queue job result (jobs.status{job_id: queue_id}) supplies each actual {idx, job_id, render_id, output, ok, pass, receipt, error?}, plus {summary_line, count, succeeded, failed}.",
+      "result": "{queue_id, count, jobs:[{idx, output}]} — output is a resolved explicit path or null while a default destination awaits its child render ID; the terminal queue job result (jobs.status{job_id: queue_id}) supplies each actual {idx, job_id, render_id, output, ok, pass, receipt, error?}, plus {summary_line, count, succeeded, failed, failures}. Some failed: done_with_warnings, outcome_reason items_failed; all failed: the job fails.",
       "result_schema": {
         "type": "object",
         "required": [

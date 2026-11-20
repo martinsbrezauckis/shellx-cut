@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { callVerb, type Project } from '../../lib/client'
+import { scopeMediaUrl } from '../../lib/mediaScope'
 import { placeLinkedAV, planAssetInsertAtPlayhead } from '../../lib/placement'
 import { ASSET_DRAG_DROP } from '../../lib/dnd'
 import { useAssetCardDrag, type AssetCardDragItem } from '../../lib/useAssetCardDrag'
@@ -25,6 +26,7 @@ import { libraryIdFromAssetHash, mediaBasename } from '../../lib/mediaPath'
 import { confirmAction, isTauri, pickMedia } from '../../lib/tauri'
 import { getGenerateProxies, setGenerateProxies } from '../../lib/proxyPref'
 import { openCutManual } from '../../lib/manual'
+import { publishUserActionFailure, TOOL_MISSING } from '../../lib/userActionFeedback'
 import type { DoctorReport } from '../../lib/doctor'
 import { Icon } from '../../icons'
 import { useOfflineMedia } from '../../app/OfflineMediaContext'
@@ -59,6 +61,9 @@ interface ProbeView {
   height?: number
   fps?: number
   has_audio?: boolean
+  decode_check?: { warning?: string }
+  nominal_fps?: number
+  variable_frame_rate?: boolean
 }
 
 interface AssetRow {
@@ -129,7 +134,7 @@ const THUMB_H = 36
 function AssetThumb({ assetId, kind, film }: { assetId: string; kind?: string; film?: string }) {
   const [stripW, setStripW] = useState<number | null>(null)
   const [frac, setFrac] = useState(0.15) // resting poster position
-  const url = film ? `/${film}` : null
+  const url = (film ? scopeMediaUrl(`/${film}`) : '') || null
   useEffect(() => {
     if (!url) return
     let alive = true
@@ -502,7 +507,14 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
           }
           await placeImported(res.asset_id, res.job_id)
         }
-      } else if (!firstErr) firstErr = r.error?.message ?? r.error?.code ?? 'import failed'
+      } else {
+        if (!firstErr) firstErr = r.error?.message ?? r.error?.code ?? 'import failed'
+        if (r.error?.code === TOOL_MISSING) {
+          // Same refusal for every file: say it once, with the setup button.
+          publishUserActionFailure('media.import', r, 'Import failed')
+          break
+        }
+      }
     }
     setBusy(null)
     setNote(imported > 0

@@ -159,6 +159,43 @@ fn tail_overwrite_pads_only_the_needed_gap_then_extends() {
     assert_eq!(project.track("v1").unwrap().duration_ms(), 2_000);
 }
 
+/// A slot strictly inside one gap splits that gap. Gaps carry no id, so no
+/// split id is needed or recorded; this used to panic with "single-clip split
+/// was planned" (found while reusing the overwrite for `edit.move`, item 176).
+#[test]
+fn overwrite_strictly_inside_a_gap_splits_the_gap_without_a_split_id() {
+    let mut project = Project::new("gap", ProjectSettings::default());
+    project.assets.insert("a1".into(), asset(4_000));
+    project.assets.insert("a2".into(), asset(4_000));
+    project.track_mut("v1").unwrap().clips = vec![
+        media("c1", "a1", [0, 1_000]),
+        Clip::Gap(GapClip::new(2_000)),
+        media("c2", "a1", [1_000, 2_000]),
+    ];
+
+    let effects = overwrite(&mut project, "a2", &["v1".into()], 1_500, [0, 500])
+        .expect("overwrite inside a gap");
+    assert!(effects[0].detail.get("split_clip").is_none());
+    assert_eq!(effects[0].detail["overwritten_gap_ms"], 500);
+    let spans: Vec<(Option<&str>, u64)> = project
+        .track("v1")
+        .unwrap()
+        .clips
+        .iter()
+        .map(|clip| (clip.id(), clip.timeline_duration_ms()))
+        .collect();
+    assert_eq!(
+        spans,
+        [
+            (Some("c1"), 1_000),
+            (None, 500),
+            (Some("c3"), 500),
+            (None, 1_000),
+            (Some("c2"), 1_000)
+        ]
+    );
+}
+
 #[test]
 fn video_only_and_audio_only_overwrites_leave_the_other_track_unchanged() {
     let mut project = Project::new("one-sided", ProjectSettings::default());

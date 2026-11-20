@@ -28,7 +28,7 @@ async function mounted(t) {
         </script><script type="module" src="/public-tests/fixtures/premium-matte-browser.tsx"></script>`)
       })
     } }], server: { host: '127.0.0.1', port: 0 } })
-  await server.listen(); t.after(() => server.close())
+  t.after(() => server.close()); await server.listen()
   const browser = await chromium.launch({ headless: true }); t.after(() => browser.close())
   const page = await browser.newPage(); const errors = []; const doctors = []; const edits = []; const setups = []
   page.on('pageerror', error => errors.push(String(error)))

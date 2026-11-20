@@ -137,9 +137,7 @@ pub fn run_ocr(rt: &Runtime, video: &Path, at_ms: u64) -> Result<OcrResult, CutE
                 format!("ocr runner spawn failed: {e}"),
                 "the local OCR runtime could not be started",
             )
-            .with_suggested_action(
-                "install the perception sidecar + rapidocr-onnxruntime in its venv",
-            )
+            .with_suggested_action(cut_perception::captions_setup_action())
         },
     )?;
     if !out.status.success() {

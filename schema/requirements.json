@@ -1,0 +1,1300 @@
+{
+  "schema": "shellx-cut/requirements/1",
+  "about": "What each verb and feature needs to run: the tools Cut uses and the conditions of this machine and project. One source for the engine (system.doctor requirements, the refusals) and the agent and person documents. An open project is not listed per feature: it follows each verb's behavior.project_state in schema/verbs.json. Every verb must be in exactly one feature (requires: [] declares that it needs nothing); scripts/public-tests/requirements-contract.test.mjs and the engine's requirements tests check it. The tables in skill/shellx-cut/SKILL.md and reference.md are generated from this file: node scripts/generate-requirements-docs.mjs (--check in CI).",
+  "requirements": [
+    {
+      "id": "ffmpeg",
+      "kind": "tool",
+      "name": "Video processing (FFmpeg)",
+      "what": "Reads, previews, converts and exports video and audio.",
+      "license": {
+        "name": "GNU General Public License version 3",
+        "url": "https://www.gnu.org/licenses/gpl-3.0.html"
+      },
+      "state": {
+        "doctor_card": "ffmpeg"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Download",
+        "verb": "system.fetch_tool",
+        "args": {
+          "tool": "ffmpeg",
+          "accept_license": true
+        },
+        "person": "before downloading, tell the person it is FFmpeg under the GNU General Public License version 3 (the consent text in system.doctor's ffmpeg card names publisher, version and size) and ask whether you may download it and accept that licence; if the person asked for the download themselves, that is the go-ahead, and your reply says which licence applied. In the app the person chooses Download or Choose ffmpeg; an ffmpeg they already have works through system.set_ffmpeg {path}"
+      }
+    },
+    {
+      "id": "ffprobe",
+      "kind": "tool",
+      "name": "Media inspection (ffprobe)",
+      "what": "Reads the length, size and streams of a media file; comes with FFmpeg.",
+      "license": {
+        "name": "GNU General Public License version 3",
+        "url": "https://www.gnu.org/licenses/gpl-3.0.html"
+      },
+      "state": {
+        "doctor_card": "ffprobe"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Download",
+        "verb": "system.fetch_tool",
+        "args": {
+          "tool": "ffmpeg",
+          "accept_license": true
+        },
+        "person": "comes with FFmpeg: the same download, licence and question as FFmpeg"
+      }
+    },
+    {
+      "id": "ffmpeg_vidstab",
+      "kind": "tool",
+      "name": "Stabilization in FFmpeg (vid.stab)",
+      "what": "The FFmpeg filters Stabilize uses.",
+      "state": {
+        "doctor_card": "ffmpeg",
+        "detail_true": "can_stabilize"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Choose ffmpeg",
+        "verb": "system.set_ffmpeg",
+        "person": "a complete FFmpeg build is needed (on a Mac: Homebrew's ffmpeg-full); the steps are in system.doctor's ffmpeg card, details.setup"
+      }
+    },
+    {
+      "id": "ffmpeg_libass",
+      "kind": "tool",
+      "name": "Caption burn-in in FFmpeg (libass)",
+      "what": "The FFmpeg filter that draws captions into an export.",
+      "state": {
+        "doctor_card": "ffmpeg",
+        "detail_true": "can_burn_captions"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Choose ffmpeg",
+        "verb": "system.set_ffmpeg",
+        "person": "a complete FFmpeg build is needed; the steps are in system.doctor's ffmpeg card, details.setup"
+      }
+    },
+    {
+      "id": "ffmpeg_zimg",
+      "kind": "tool",
+      "name": "Color management in FFmpeg (zimg)",
+      "what": "The FFmpeg filter for color-managed export and the HDR tone map.",
+      "state": {
+        "doctor_card": "ffmpeg",
+        "detail_true": "can_color_manage"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Choose ffmpeg",
+        "verb": "system.set_ffmpeg",
+        "person": "a complete FFmpeg build is needed; the steps are in system.doctor's ffmpeg card, details.setup"
+      }
+    },
+    {
+      "id": "gpu_encoder",
+      "kind": "tool",
+      "name": "Faster exports (GPU encoder)",
+      "what": "A hardware video encoder (NVENC, Quick Sync, AMF or VideoToolbox) in the FFmpeg Cut uses.",
+      "state": {
+        "doctor_card": "gpu-encode",
+        "detail_true": "hardware_available"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Choose ffmpeg",
+        "verb": "system.set_ffmpeg",
+        "person": "needs a supported graphics card, its driver and an FFmpeg built with its encoder; the steps are in system.doctor's gpu-encode card, details.enable_help"
+      }
+    },
+    {
+      "id": "cuda_render",
+      "kind": "tool",
+      "name": "GPU render path (CUDA)",
+      "what": "The opt-in path that also scales and composites on an NVIDIA GPU.",
+      "state": {
+        "doctor_card": "gpu-encode",
+        "detail_true": "full_fasttrack"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "button": "Choose ffmpeg",
+        "verb": "system.set_ffmpeg",
+        "person": "needs an NVIDIA GPU with its driver and an FFmpeg with CUDA filters"
+      }
+    },
+    {
+      "id": "captions_runtime",
+      "kind": "tool",
+      "name": "Captions and transcription",
+      "what": "Cut's own Python environment for transcription, silences, scenes, beats, faces and the output checks.",
+      "state": {
+        "doctor_card": "perception",
+        "tier_at_least": "instruments-capable"
+      },
+      "get": {
+        "settings": "settings-ai-transcription",
+        "button": "Install captions",
+        "verb": "system.setup_perception",
+        "person": "a download of several hundred MB that needs no Python of the person's own. On macOS and Linux it needs no administrator permission; on Windows Microsoft's Visual C++ runtime must be installed first (its own Install in the same Settings page), and Windows asks for administrator permission for that step"
+      }
+    },
+    {
+      "id": "speech_model",
+      "kind": "tool",
+      "name": "Speech-to-text model",
+      "what": "The transcription model inside the captions runtime.",
+      "state": {
+        "doctor_card": "perception",
+        "tier_at_least": "full-stt"
+      },
+      "get": {
+        "settings": "settings-ai-transcription",
+        "button": "Install captions",
+        "verb": "system.setup_perception",
+        "person": "comes with Install captions; system.set_stt_model chooses the model"
+      }
+    },
+    {
+      "id": "vc_runtime",
+      "kind": "tool",
+      "name": "Microsoft Visual C++ Redistributable",
+      "what": "Windows runtime files the captions runtime's native modules load.",
+      "license": {
+        "name": "Microsoft Software License Terms for the Microsoft Visual C++ Redistributable",
+        "url": "https://aka.ms/VCRedistLicense"
+      },
+      "platforms": [
+        "windows"
+      ],
+      "state": {
+        "doctor_card": "vc-runtime"
+      },
+      "get": {
+        "settings": "settings-ai-transcription",
+        "button": "Install",
+        "verb": "system.fetch_tool",
+        "args": {
+          "tool": "vc-runtime"
+        },
+        "person": "Microsoft's own installer from Microsoft (aka.ms/vc14), checked for Microsoft's signature; Windows asks a person for administrator permission, which an agent cannot give; or install it from https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"
+      }
+    },
+    {
+      "id": "matte_runtime",
+      "kind": "tool",
+      "name": "Background removal",
+      "what": "The local cutout model and runtime Remove background uses.",
+      "state": {
+        "doctor_card": "matte"
+      },
+      "get": {
+        "settings": "settings-ai-transcription",
+        "button": "Install",
+        "verb": "system.setup_matte"
+      }
+    },
+    {
+      "id": "matte_premium",
+      "kind": "tool",
+      "name": "Premium background removal",
+      "what": "The higher-quality cutout install (NVIDIA GPU).",
+      "license": {
+        "name": "NTU S-Lab License 1.0 (non-commercial)"
+      },
+      "state": {
+        "doctor_card": "matte_premium"
+      },
+      "get": {
+        "settings": "settings-ai-transcription",
+        "button": "Install premium",
+        "verb": "system.setup_matte",
+        "args": {
+          "model": "matanyone",
+          "accept_noncommercial": true
+        },
+        "person": "the premium model is licensed for non-commercial use only (NTU S-Lab License 1.0): tell the person and ask before installing; accept_noncommercial:true states their yes. It needs an NVIDIA GPU; about 3 GB"
+      }
+    },
+    {
+      "id": "review_judge",
+      "kind": "tool",
+      "name": "Render review (a signed-in agent CLI)",
+      "what": "Claude Code, Codex or another agent CLI the person has installed and signed in to; Cut drives it to review renders.",
+      "state": {
+        "doctor_cards_prefix": "judge.",
+        "detail_true": "judge_ready"
+      },
+      "get": {
+        "settings": "settings-services-integrations",
+        "person": "the person installs the CLI and signs in to it themselves; Cut never signs in for anyone. Then Re-scan (system.doctor {refresh:true})"
+      }
+    },
+    {
+      "id": "chat_cli",
+      "kind": "tool",
+      "name": "Agent CLI for chat and translation",
+      "what": "A signed-in Claude Code, Codex, Grok or Antigravity CLI that Agent Chat and translation run on.",
+      "state": {
+        "doctor_cards_prefix": "judge.",
+        "chat_wired": true
+      },
+      "get": {
+        "settings": "settings-agent-control",
+        "person": "the person installs the CLI and signs in to it themselves; Cut never signs in for anyone. Then Re-scan (system.doctor {refresh:true})"
+      }
+    },
+    {
+      "id": "generation_provider",
+      "kind": "tool",
+      "name": "Media generation provider",
+      "what": "A signed-in generation CLI (Codex image generation, Grok Imagine, Antigravity) for generated media and Generate plans.",
+      "state": {
+        "check_verb": "assets.providers",
+        "reason": "not checked by system.doctor; assets.providers reports each provider's readiness"
+      },
+      "get": {
+        "settings": "settings-services-integrations",
+        "person": "the person installs the provider's CLI and signs in themselves; Cut never signs in for anyone"
+      }
+    },
+    {
+      "id": "dub_service",
+      "kind": "tool",
+      "name": "Dubbing service",
+      "what": "The local text-to-speech service audio.dub uses.",
+      "state": {
+        "doctor_card": "dub"
+      },
+      "get": {
+        "settings": "settings-services-integrations",
+        "person": "start the dubbing service and set its address (CUT_DUB_ENDPOINT); see system.doctor's dub card"
+      }
+    },
+    {
+      "id": "diarize_service",
+      "kind": "tool",
+      "name": "Speaker labelling service",
+      "what": "The local diarization service media.diarize uses.",
+      "state": {
+        "doctor_card": "diarize"
+      },
+      "get": {
+        "settings": "settings-services-integrations",
+        "person": "start the speaker labelling service and set its address (CUT_DIARIZE_ENDPOINT); see system.doctor's diarize card"
+      }
+    },
+    {
+      "id": "motion_runtime",
+      "kind": "tool",
+      "name": "ShellX Motion",
+      "what": "The separate ShellX Motion app that renders motion templates and tracking for Cut.",
+      "state": {
+        "check_verb": "system.motion_status",
+        "reason": "not checked by system.doctor; system.motion_status reports it"
+      },
+      "get": {
+        "settings": "settings-video-performance",
+        "verb": "system.motion_status",
+        "person": "ShellX Motion is installed separately"
+      }
+    },
+    {
+      "id": "open_project",
+      "kind": "condition",
+      "name": "An open project",
+      "what": "A project is open in this engine.",
+      "state": {
+        "engine": "open_project"
+      },
+      "get": {
+        "settings": "projects",
+        "verb": "project.open",
+        "person": "open or create a project (project.open {path} or project.create {name})"
+      }
+    },
+    {
+      "id": "export_folder",
+      "kind": "condition",
+      "name": "A usable export folder",
+      "what": "The chosen export folder exists and accepts files (or the project's exports folder is used).",
+      "state": {
+        "engine": "export_folder"
+      },
+      "get": {
+        "settings": "settings-general",
+        "verb": "project.set_output_dir",
+        "person": "choose another export folder, or clear the choice to use the project's exports folder"
+      }
+    },
+    {
+      "id": "disk_space",
+      "kind": "condition",
+      "name": "Free disk space",
+      "what": "Room on the app-data drive for downloads and on the export drive for renders.",
+      "state": {
+        "doctor_card": "disk"
+      },
+      "get": {
+        "settings": "settings-health-recovery",
+        "verb": "project.cache_purge",
+        "person": "free space on the drive; Settings > Health & recovery can preview and remove Cut's aged cache files (Preview cache cleanup)"
+      }
+    },
+    {
+      "id": "transcript",
+      "kind": "condition",
+      "name": "A transcript of the asset",
+      "what": "The asset has been transcribed.",
+      "per_asset": true,
+      "state": {
+        "per_asset": "project.state assets[].transcript"
+      },
+      "get": {
+        "settings": "transcript",
+        "verb": "media.transcribe",
+        "person": "a transcript is made after a clip is imported while Captions and transcription is installed. For a clip imported before that, a person can run a recipe that starts with a transcript (Recipes > Add captions, which also adds captions); there is no separate Transcribe button"
+      }
+    },
+    {
+      "id": "analysis",
+      "kind": "condition",
+      "name": "An analysis of the asset",
+      "what": "The asset's silences, scenes, beats and loudness have been measured (done after import when captions are installed).",
+      "per_asset": true,
+      "state": {
+        "per_asset": "project.state assets[].perception"
+      },
+      "get": {
+        "settings": "settings-ai-transcription",
+        "verb": "media.perception",
+        "person": "silences, scenes, beats and loudness are measured after a clip is imported while Captions and transcription is installed. For a clip imported before that, the recipes First edit and Edit for clarity measure it; there is no separate button"
+      }
+    },
+    {
+      "id": "screen_permission",
+      "kind": "condition",
+      "name": "Screen recording permission",
+      "what": "The operating system lets ShellX Cut capture the screen.",
+      "state": {
+        "check_verb": "screen_record.doctor",
+        "check_args": {
+          "mode": "status"
+        },
+        "reason": "read by screen_record.doctor {mode:'status'} (screen_check), not by system.doctor"
+      },
+      "get": {
+        "settings": "settings-recording",
+        "person": "a person must allow it: macOS System Settings > Privacy & Security > Screen & System Audio Recording, then reopen ShellX Cut; on Linux the screen-sharing portal asks"
+      }
+    },
+    {
+      "id": "microphone_permission",
+      "kind": "condition",
+      "name": "Microphone access",
+      "what": "The operating system lets ShellX Cut use the microphone, and a microphone is present.",
+      "state": {
+        "check_verb": "screen_record.doctor",
+        "check_args": {
+          "mode": "microphone"
+        },
+        "reason": "read by screen_record.doctor {mode:'microphone'} (microphone_blocked), not by system.doctor"
+      },
+      "get": {
+        "settings": "settings-recording",
+        "person": "a person must allow it in the system's privacy settings (Windows: Settings > Privacy & security > Microphone; macOS: Privacy & Security > Microphone)"
+      }
+    },
+    {
+      "id": "system_audio",
+      "kind": "condition",
+      "name": "System sound capture",
+      "what": "The operating system lets ShellX Cut record the computer's own sound.",
+      "state": {
+        "check_verb": "screen_record.system_audio_probe",
+        "reason": "read by screen_record.system_audio_probe, not by system.doctor"
+      },
+      "get": {
+        "settings": "settings-recording",
+        "person": "a person must allow it (macOS asks separately for Audio Capture)"
+      }
+    },
+    {
+      "id": "ui_client",
+      "kind": "condition",
+      "name": "The editor window",
+      "what": "A ShellX Cut window (or the app in a browser) is connected to this engine.",
+      "state": {
+        "engine": "ui_client"
+      },
+      "get": {
+        "person": "open the app; system.doctor gives the local address to open in a browser"
+      }
+    },
+    {
+      "id": "network",
+      "kind": "condition",
+      "name": "Internet connection",
+      "what": "Downloads and online stock search need the internet.",
+      "state": {
+        "not_checked": "Cut does not probe the network; a download or search that cannot connect says so"
+      },
+      "get": {
+        "person": "connect to the internet and retry"
+      }
+    }
+  ],
+  "features": [
+    {
+      "id": "projects",
+      "name": "Projects",
+      "verbs": [
+        "project.create",
+        "project.open",
+        "project.list",
+        "project.forget",
+        "project.delete"
+      ],
+      "requires": []
+    },
+    {
+      "id": "project_editing",
+      "name": "Project, sequences, history and timeline edits",
+      "verbs": [
+        "project.save",
+        "project.state",
+        "project.health",
+        "project.sequence_list",
+        "project.sequence_index",
+        "project.sequence_create",
+        "project.sequence_switch",
+        "project.sequence_rename",
+        "project.sequence_delete",
+        "project.ops",
+        "project.checkpoint",
+        "project.revert",
+        "project.undo",
+        "project.redo",
+        "project.diff",
+        "project.close",
+        "project.rename",
+        "project.format",
+        "project.brand",
+        "project.group_preview",
+        "project.group_reject",
+        "project.cache_preview",
+        "project.cache_purge",
+        "project.package_plan",
+        "project.package_create",
+        "media.check",
+        "media.remove",
+        "media.bin_save",
+        "media.bin_delete",
+        "media.bin_list",
+        "edit.split",
+        "edit.ripple_delete",
+        "edit.trim",
+        "edit.move",
+        "edit.insert",
+        "edit.overwrite",
+        "edit.detach_audio",
+        "edit.duplicate",
+        "edit.nest",
+        "edit.replace",
+        "edit.fit_to_fill",
+        "edit.split_edit",
+        "edit.paste",
+        "edit.gain",
+        "edit.fade",
+        "edit.mute_range",
+        "edit.transform",
+        "edit.crop",
+        "edit.grade",
+        "edit.grade_stack",
+        "edit.grade_window",
+        "edit.effect",
+        "edit.adjustment",
+        "edit.reverse",
+        "edit.freeze",
+        "edit.animate",
+        "edit.keyframe",
+        "edit.add_mask",
+        "edit.eq",
+        "audio.cleanup_voice",
+        "edit.slide",
+        "edit.speed",
+        "edit.speed_ramp",
+        "edit.crossfade",
+        "edit.add_track",
+        "edit.remove_track",
+        "edit.reorder_track",
+        "edit.blend",
+        "edit.track_visible",
+        "edit.track_lock",
+        "edit.mute",
+        "edit.solo",
+        "edit.pan",
+        "edit.paste_attributes",
+        "edit.slip",
+        "edit.roll",
+        "edit.slide_edit",
+        "edit.add_marker",
+        "edit.remove_marker",
+        "edit.seek_marker",
+        "edit.move_marker",
+        "edit.update_marker",
+        "edit.restore",
+        "edit.insert_linked",
+        "grade.save",
+        "grade.apply",
+        "grade.list",
+        "captions.import",
+        "captions.add_text",
+        "captions.set_style",
+        "captions.save_style",
+        "captions.apply_style",
+        "captions.list_styles",
+        "captions.reflow",
+        "captions.shift",
+        "captions.set_range",
+        "captions.set_text",
+        "captions.bulk_preview",
+        "captions.bulk_apply",
+        "title.templates",
+        "effects.list",
+        "transitions.list",
+        "comment.add",
+        "comment.list",
+        "comment.resolve",
+        "comment.draft",
+        "comment.apply",
+        "comment.import",
+        "inspect.media",
+        "inspect.range",
+        "media.index_status",
+        "media.intelligence_status",
+        "media.intelligence_rebuild",
+        "media.intelligence_search",
+        "jobs.status",
+        "jobs.list",
+        "jobs.cancel",
+        "jobs.retry",
+        "jobs.before_quit",
+        "jobs.interrupted",
+        "jobs.interrupted_dismiss",
+        "recipe.list",
+        "recipe.describe",
+        "recipe.run",
+        "assemble.repurpose",
+        "assemble.from_script",
+        "plugins.list",
+        "plugins.enable",
+        "plugins.call",
+        "motion.link.relink",
+        "export.xml",
+        "export.otio",
+        "export.edl",
+        "export.srt",
+        "export.vtt",
+        "export.ass",
+        "export.chapters"
+      ],
+      "requires": [],
+      "note": "These verbs change or read the project; what they record is drawn by preview and export, which have their own needs. recipe.run and plugins.call need what the verbs they run need."
+    },
+    {
+      "id": "project_color",
+      "name": "Project color management",
+      "verbs": [
+        "project.color",
+        "edit.color_space"
+      ],
+      "requires": [],
+      "optional": [
+        {
+          "id": "ffmpeg_zimg",
+          "effect": "the setting is kept, but a color-managed export is refused until the FFmpeg Cut uses has zimg"
+        }
+      ]
+    },
+    {
+      "id": "export_folder",
+      "name": "Export folder",
+      "verbs": [
+        "project.set_output_dir",
+        "project.get_output_dir"
+      ],
+      "requires": []
+    },
+    {
+      "id": "library",
+      "name": "Library",
+      "verbs": [
+        "library.list",
+        "library.remove",
+        "library.move",
+        "library.tag",
+        "library.favorite",
+        "library.use",
+        "library.folder_add",
+        "library.folder_rename",
+        "library.folder_remove"
+      ],
+      "requires": []
+    },
+    {
+      "id": "import",
+      "name": "Import and relink media",
+      "verbs": [
+        "media.import",
+        "media.relink",
+        "media.probe",
+        "media.relink_preview",
+        "media.relink_apply",
+        "media.waveform",
+        "media.filmstrip",
+        "library.add",
+        "library.relink",
+        "library.add_to_project",
+        "import.otio",
+        "project.cache_rebuild",
+        "motion.link.refresh"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "optional": [
+        {
+          "id": "captions_runtime",
+          "effect": "imports are not analysed: no silences, scenes, beats or transcript until captions are installed and the asset is analysed"
+        }
+      ]
+    },
+    {
+      "id": "transcription",
+      "name": "Transcription",
+      "verbs": [
+        "media.transcribe"
+      ],
+      "requires": [
+        "ffmpeg",
+        "captions_runtime",
+        "speech_model",
+        "vc_runtime"
+      ]
+    },
+    {
+      "id": "analysis",
+      "name": "Silences, scenes, beats and loudness",
+      "verbs": [
+        "media.perception"
+      ],
+      "requires": [
+        "ffmpeg",
+        "captions_runtime",
+        "vc_runtime"
+      ]
+    },
+    {
+      "id": "analysis_edits",
+      "name": "Edits from the analysis (scenes, beats, silences, emphasis, speaker energy)",
+      "verbs": [
+        "edit.split_at_scenes",
+        "edit.mark_scenes",
+        "edit.cut_to_beat",
+        "edit.auto_zoom",
+        "transcript.remove_silences",
+        "edit.duck",
+        "edit.multicam_switch",
+        "score.clip",
+        "audio.add_music"
+      ],
+      "requires": [
+        "analysis"
+      ],
+      "note": "The analysis is made by media.perception (or after import when captions are installed). audio.add_music ducks under speech from the base track's analysis."
+    },
+    {
+      "id": "transcript_edits",
+      "name": "Word edits, transcript search, chapters and generated captions",
+      "verbs": [
+        "transcript.get",
+        "transcript.timeline",
+        "transcript.cut_words",
+        "transcript.mute_words",
+        "transcript.ignore_words",
+        "transcript.search",
+        "transcript.chapters",
+        "transcript.assemble",
+        "transcript.remove_fillers",
+        "transcript.remove_retakes",
+        "edit.trim_edges",
+        "captions.generate",
+        "captions.kinetic",
+        "export.transcript",
+        "clip.candidates",
+        "assemble.shorts"
+      ],
+      "requires": [
+        "transcript"
+      ],
+      "note": "Without a transcript these verbs refuse with the reason: captions not installed (Install captions) or the asset not transcribed (media.transcribe).",
+      "verb_extra": {
+        "captions.kinetic": [
+          "ffmpeg",
+          "ffprobe"
+        ]
+      }
+    },
+    {
+      "id": "translation",
+      "name": "Translation of captions and transcripts",
+      "verbs": [
+        "transcript.translate",
+        "captions.translate"
+      ],
+      "requires": [],
+      "any_of": [
+        [
+          "chat_cli"
+        ],
+        [
+          "captions_runtime"
+        ]
+      ],
+      "note": "First choice: the person's signed-in agent CLI; otherwise the local translation model in the captions runtime. transcript.translate also needs the asset's transcript.",
+      "verb_extra": {
+        "transcript.translate": [
+          "transcript"
+        ]
+      }
+    },
+    {
+      "id": "speaker_labels",
+      "name": "Speaker labels",
+      "verbs": [
+        "media.diarize"
+      ],
+      "requires": [
+        "ffmpeg",
+        "captions_runtime",
+        "diarize_service"
+      ]
+    },
+    {
+      "id": "dubbing",
+      "name": "Dubbing",
+      "verbs": [
+        "audio.dub"
+      ],
+      "requires": [
+        "ffmpeg",
+        "captions_runtime",
+        "dub_service",
+        "transcript"
+      ],
+      "note": "Translation runs on the person's signed-in agent CLI first, otherwise on the local model; the speech is made by the dubbing service through the captions runtime's bridge."
+    },
+    {
+      "id": "visual_analysis",
+      "name": "Motion tracking and the visual search index",
+      "verbs": [
+        "edit.track",
+        "media.index"
+      ],
+      "requires": [
+        "captions_runtime",
+        "vc_runtime"
+      ],
+      "verb_extra": {
+        "media.index": [
+          "ffmpeg"
+        ]
+      }
+    },
+    {
+      "id": "redact",
+      "name": "Redaction (blur or cover a region, faces, text)",
+      "verbs": [
+        "edit.redact"
+      ],
+      "requires": [],
+      "optional": [
+        {
+          "id": "captions_runtime",
+          "effect": "faces and automatic text detection need it; a drawn region works without it"
+        }
+      ]
+    },
+    {
+      "id": "visual_search",
+      "name": "Visual search",
+      "verbs": [
+        "media.search"
+      ],
+      "requires": [],
+      "optional": [
+        {
+          "id": "captions_runtime",
+          "effect": "a text query needs it to become a search vector; query_vector works without it"
+        },
+        {
+          "id": "network",
+          "effect": "the search model is downloaded the first time a text query runs"
+        }
+      ],
+      "note": "Searches the visual index media.index built."
+    },
+    {
+      "id": "background_removal",
+      "name": "Remove background",
+      "verbs": [
+        "edit.matte"
+      ],
+      "requires": [
+        "ffmpeg",
+        "matte_runtime"
+      ],
+      "optional": [
+        {
+          "id": "matte_premium",
+          "effect": "without it the standard cutout model is used"
+        }
+      ]
+    },
+    {
+      "id": "color_and_sync_analysis",
+      "name": "Color match, auto balance and multicam audio sync",
+      "verbs": [
+        "edit.color_match",
+        "edit.auto_balance",
+        "edit.multicam_sync"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "note": "These read frames or audio of the clips to compute the edit."
+    },
+    {
+      "id": "stabilize",
+      "name": "Stabilize",
+      "verbs": [
+        "edit.stabilize"
+      ],
+      "requires": [
+        "ffmpeg_vidstab"
+      ]
+    },
+    {
+      "id": "titles_and_shapes",
+      "name": "Titles, shapes and Generate templates on the timeline",
+      "verbs": [
+        "title.add",
+        "title.update",
+        "edit.add_shape",
+        "generate.insert",
+        "shape.update"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe"
+      ]
+    },
+    {
+      "id": "generate_plans",
+      "name": "Generate templates, previews and plans",
+      "verbs": [
+        "generate.list",
+        "generate.describe",
+        "generate.preview",
+        "generate.from_prompt",
+        "generate.storyboard"
+      ],
+      "requires": [],
+      "verb_extra": {
+        "generate.preview": [
+          "ffmpeg"
+        ]
+      },
+      "optional": [
+        {
+          "id": "generation_provider",
+          "effect": "without a provider, generate.from_prompt and generate.storyboard plan only from the built-in templates (status not_run for what needs a provider)"
+        },
+        {
+          "id": "ffmpeg",
+          "effect": "generate.from_prompt and generate.storyboard with policy insert make media and need FFmpeg; the default plan does not",
+          "verbs": [
+            "generate.from_prompt",
+            "generate.storyboard"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preview",
+      "name": "Preview frames, comparisons, storyboards and scopes",
+      "verbs": [
+        "render.frame",
+        "render.preview",
+        "render.compare",
+        "render.storyboard",
+        "export.frame",
+        "export.gif",
+        "verify.scopes"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "optional": [
+        {
+          "id": "ffmpeg_zimg",
+          "effect": "a project with HDR clips needs zimg for the tone map; without it these verbs refuse and name the clips"
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "name": "Export and render",
+      "verbs": [
+        "render.final",
+        "render.queue",
+        "render.bundle",
+        "export.range",
+        "export.publish",
+        "export.audio",
+        "autopilot.run",
+        "comment.export"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe",
+        "export_folder"
+      ],
+      "verb_extra": {
+        "comment.export": []
+      },
+      "optional": [
+        {
+          "id": "gpu_encoder",
+          "effect": "without a GPU encoder the export uses the software encoder (slower, same picture)"
+        },
+        {
+          "id": "cuda_render",
+          "effect": "without it the GPU render path is not available; the software path renders the same frames"
+        },
+        {
+          "id": "ffmpeg_libass",
+          "effect": "captions cannot be burned into the export; the export is refused while burned captions are asked for"
+        },
+        {
+          "id": "ffmpeg_zimg",
+          "effect": "a color-managed or HDR export is refused until FFmpeg has zimg"
+        },
+        {
+          "id": "captions_runtime",
+          "effect": "the output checks are not measured; the receipt says 'not measured' with the reason"
+        },
+        {
+          "id": "disk_space",
+          "effect": "the render plan warns or refuses when the export drive is too full"
+        }
+      ]
+    },
+    {
+      "id": "reframe",
+      "name": "Smart reframe and directed cuts",
+      "verbs": [
+        "render.reframe",
+        "render.direct",
+        "render.qc"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe",
+        "captions_runtime",
+        "vc_runtime"
+      ]
+    },
+    {
+      "id": "checks",
+      "name": "Output checks",
+      "verbs": [
+        "verify.checks",
+        "verify.rerun",
+        "verify.pacing",
+        "verify.captions",
+        "verify.delivery",
+        "verify.loudness",
+        "verify.brand",
+        "verify.pregate"
+      ],
+      "requires": [],
+      "verb_extra": {
+        "verify.rerun": [
+          "ffmpeg",
+          "ffprobe",
+          "captions_runtime"
+        ],
+        "verify.loudness": [
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "verify.delivery": [
+          "transcript"
+        ]
+      },
+      "note": "verify.checks reads the last render receipt; verify.pacing, verify.captions and verify.pregate read the project and its analysis."
+    },
+    {
+      "id": "render_review",
+      "name": "Render review",
+      "verbs": [
+        "verify.judge"
+      ],
+      "requires": [
+        "ffmpeg",
+        "ffprobe",
+        "review_judge"
+      ]
+    },
+    {
+      "id": "agent_chat",
+      "name": "Agent Chat",
+      "verbs": [
+        "agent.chat"
+      ],
+      "requires": [
+        "chat_cli"
+      ]
+    },
+    {
+      "id": "stock_media",
+      "name": "Stock media and b-roll",
+      "verbs": [
+        "assets.providers",
+        "assets.search",
+        "assets.fetch",
+        "assets.generated_list",
+        "assemble.broll"
+      ],
+      "requires": [],
+      "verb_extra": {
+        "assets.search": [
+          "network"
+        ],
+        "assets.fetch": [
+          "network",
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "assemble.broll": [
+          "ffmpeg",
+          "ffprobe"
+        ]
+      },
+      "note": "Online providers need the internet; the local_folder provider does not."
+    },
+    {
+      "id": "generated_media",
+      "name": "Generated media",
+      "verbs": [
+        "assets.generate"
+      ],
+      "requires": [
+        "generation_provider",
+        "ffmpeg",
+        "ffprobe"
+      ]
+    },
+    {
+      "id": "motion",
+      "name": "ShellX Motion templates and tracking",
+      "verbs": [
+        "motion.job.get",
+        "motion.job.list",
+        "motion.script_to_cut",
+        "motion.map_import",
+        "motion.apply_import",
+        "motion.link.edit",
+        "motion.link.tracking.inventory",
+        "motion.link.tracking.request",
+        "motion.link.tracking.inspect",
+        "motion.link.tracking.apply",
+        "motion.link.tracking.verify",
+        "motion.link.tracking.detach",
+        "motion.template_to_cut"
+      ],
+      "requires": [
+        "motion_runtime"
+      ],
+      "verb_extra": {
+        "motion.apply_import": [
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "motion.template_to_cut": [
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "motion.script_to_cut": [
+          "ffmpeg",
+          "ffprobe"
+        ]
+      },
+      "note": "motion.map_import and motion.apply_import read a package ShellX Motion already wrote."
+    },
+    {
+      "id": "recording",
+      "name": "Screen recording",
+      "verbs": [
+        "screen_record.start",
+        "screen_record.stop",
+        "screen_record.studio_event",
+        "screen_record.pause",
+        "screen_record.resume",
+        "screen_record.scene_activate",
+        "screen_record.scene_timer",
+        "screen_record.preview_capability",
+        "screen_record.preview_start",
+        "screen_record.preview_status",
+        "screen_record.live_frame",
+        "screen_record.preview_frame",
+        "screen_record.preview_pause",
+        "screen_record.preview_resume",
+        "screen_record.preview_hide",
+        "screen_record.preview_stop",
+        "screen_record.rehearsal_start",
+        "screen_record.rehearsal_discard",
+        "debug.screenshot"
+      ],
+      "requires": [
+        "screen_permission"
+      ],
+      "optional": [
+        {
+          "id": "microphone_permission",
+          "effect": "the recording has no microphone sound"
+        },
+        {
+          "id": "system_audio",
+          "effect": "the recording has no system sound"
+        }
+      ]
+    },
+    {
+      "id": "recording_results",
+      "name": "Recording results and recovery",
+      "verbs": [
+        "screen_record.autoedit",
+        "screen_record.polish",
+        "screen_record.export",
+        "screen_record.copy_raw",
+        "screen_record.recover",
+        "screen_record.recovery_status",
+        "screen_record.status",
+        "screen_record.active",
+        "screen_record.pending",
+        "screen_record.pending_dismiss"
+      ],
+      "requires": [],
+      "verb_extra": {
+        "screen_record.polish": [
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "screen_record.export": [
+          "ffmpeg",
+          "ffprobe",
+          "export_folder"
+        ],
+        "screen_record.recover": [
+          "ffmpeg",
+          "ffprobe"
+        ]
+      }
+    },
+    {
+      "id": "recording_setup",
+      "name": "Recording setup checks",
+      "verbs": [
+        "screen_record.doctor",
+        "screen_record.system_audio_probe",
+        "screen_record.microphone_selection"
+      ],
+      "requires": []
+    },
+    {
+      "id": "voiceover",
+      "name": "Voiceover",
+      "verbs": [
+        "voiceover.start",
+        "voiceover.tick",
+        "voiceover.stop",
+        "voiceover.cancel",
+        "voiceover.observe_playhead"
+      ],
+      "requires": [],
+      "verb_extra": {
+        "voiceover.start": [
+          "microphone_permission"
+        ]
+      }
+    },
+    {
+      "id": "setup",
+      "name": "Setup and environment",
+      "verbs": [
+        "system.mcp_test",
+        "system.doctor",
+        "system.motion_status",
+        "system.set_stt_model",
+        "system.set_ffmpeg",
+        "system.fetch_tool",
+        "system.setup_perception",
+        "system.setup_matte"
+      ],
+      "requires": [],
+      "verb_extra": {
+        "system.fetch_tool": [
+          "network",
+          "disk_space"
+        ],
+        "system.setup_perception": [
+          "network",
+          "disk_space",
+          "vc_runtime"
+        ],
+        "system.setup_matte": [
+          "network",
+          "disk_space",
+          "vc_runtime"
+        ]
+      }
+    },
+    {
+      "id": "editor_window",
+      "name": "Driving the editor window",
+      "verbs": [
+        "ui.state",
+        "ui.screenshot",
+        "ui.open",
+        "ui.playhead",
+        "ui.select",
+        "ui.preview",
+        "ui.highlight"
+      ],
+      "requires": [
+        "ui_client"
+      ]
+    }
+  ]
+}

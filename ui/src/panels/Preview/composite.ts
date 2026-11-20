@@ -19,8 +19,9 @@
 // Callers: panels/Preview/index.tsx. Deps: lib/client types, Timeline/layout.
 
 import type { CSSProperties } from 'react'
+import { scopeMediaUrl } from '../../lib/mediaScope'
 import { sourceUrl, type CaptionStyle, type ClipGrade, type ClipTransform, type Project } from '../../lib/client'
-import { layoutTrack } from '../Timeline/layout'
+import { layoutTrack, type LaidItem } from '../Timeline/layout'
 
 /**
  * Max simultaneous overlay <video> elements decoded at once. Each is a 960×540
@@ -29,6 +30,9 @@ import { layoutTrack } from '../Timeline/layout'
  * overlays and report the dropped count so the UI can note the cap honestly.
  */
 export const MAX_OVERLAYS = 4
+
+/** How far ahead an overlay clip is loaded and parked (matches the base deck). */
+export const OVERLAY_PREROLL_MS = 3000
 
 /** One resolved overlay video layer (a clip on a track above the base). */
 export interface OverlayLayer {
@@ -45,6 +49,7 @@ export interface OverlayLayer {
   durMs: number
   speed: number
   reverse: boolean
+  freezeAtMs?: number
   /** Normalized geometry + opacity (defaults to full-frame opaque). */
   transform: Required<ClipTransform>
   /** Approximate grade for the CSS filter, when the clip is graded. */
@@ -68,12 +73,29 @@ export interface OverlayResolution {
 }
 
 /**
- * Pick the monitor surface for a playable base video. Exact composed frames are
- * the authority while paused/scrubbing. During playback, use the existing live
- * composite so the media clock is not gated by one FFmpeg/JPEG render per frame.
+ * Whether the live stage (playing proxy <video>s) is mounted: whenever there is
+ * something playable, paused or playing, in either mode. It is never unmounted
+ * to show the exact frame while paused; the composed frame is drawn ON TOP of it
+ * (see composedFrameOnTop) so starting play never re-creates media elements,
+ * which on some webviews (WebKitGTK) shows the wrong picture for seconds.
  */
-export function shouldUseLivePreviewSurface(hasVideo: boolean, composed: boolean, rate: number): boolean {
-  return hasVideo && (!composed || rate !== 0)
+export function shouldUseLivePreviewSurface(hasVideo: boolean): boolean {
+  return hasVideo
+}
+
+/** The exact composed frame covers the live stage while the playhead rests:
+ * COMPOSED on (the default) and paused. Playing, the live stage shows. */
+export function composedFrameOnTop(composed: boolean, rate: number, liveStage: boolean): boolean {
+  return composed && rate === 0 && liveStage
+}
+
+/** A base-track gap (no base clip under the playhead) shown on the live
+ * stage: during forward play always (overlays play as video over black, the
+ * base deck parks the next clip), and paused when overlay clips are visible
+ * there, like a paused base clip, so starting or stopping play does not swap
+ * surfaces. An empty gap keeps the engine frame (and its "no clip" note). */
+export function liveBaseGap(inGap: boolean, rate: number, overlayCount: number): boolean {
+  return inGap && (rate === 1 || (rate === 0 && overlayCount > 0))
 }
 
 /** Project geometry aspect ratio (w/h) for the stage box; 16:9 fallback. */
@@ -100,6 +122,75 @@ function fullTransform(t: ClipTransform | null | undefined): Required<ClipTransf
   }
 }
 
+/** The video tracks stacked above the primary track, base to front (callers
+ * skip hidden ones). */
+function overlayTracks(project: Project | null, primaryTrackId: string | null) {
+  if (!project || !primaryTrackId) return null
+  const vids = project.tracks.filter((t) => t.kind === 'video')
+  const primaryIdx = vids.findIndex((t) => t.id === primaryTrackId)
+  if (primaryIdx < 0) return null
+  return vids.slice(primaryIdx + 1)
+}
+
+/** One overlay layer for a laid clip, or null when its asset is unknown. */
+function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAssets: Set<string>): OverlayLayer | null {
+  const asset = it.asset ? project.assets[it.asset] : undefined
+  if (!it.asset || !asset) return null
+  // Prefer the proxy; fall back to streaming the source (also when the
+  // media-address guard refuses the proxy address and gives '').
+  const proxied = asset.proxy ? scopeMediaUrl(asset.proxy) : ''
+  const src = proxied || sourceUrl(it.asset)
+  const kind: 'proxy' | 'source' = proxied ? 'proxy' : 'source'
+  return {
+    clipId: it.id,
+    trackId,
+    src,
+    kind,
+    assetId: it.asset,
+    startMs: it.startMs,
+    srcInMs: it.srcInMs ?? 0,
+    srcOutMs: it.srcOutMs ?? (it.srcInMs ?? 0) + it.durMs,
+    durMs: it.durMs,
+    speed: it.speed && it.speed > 0 ? it.speed : 1,
+    reverse: !!it.reverse,
+    freezeAtMs: it.freezeAtMs,
+    transform: fullTransform(it.transform),
+    grade: it.grade ?? null,
+    isImage: imageAssets.has(it.asset),
+  }
+}
+
+/** Overlay VIDEO clips that start within `horizonMs` after `atMs` on a track
+ * with room under the decode cap (see MAX_OVERLAYS), so the monitor can load
+ * and park each one on its first frame before it appears (the same reason as
+ * the base deck: an element created at the cut shows the wrong picture on some
+ * webviews until its first seek completes). Stills need no parking. */
+export function resolveUpcomingOverlays(
+  project: Project | null,
+  atMs: number,
+  primaryTrackId: string | null,
+  imageAssets: Set<string>,
+  active: readonly OverlayLayer[],
+  horizonMs = OVERLAY_PREROLL_MS,
+): OverlayLayer[] {
+  const tracks = overlayTracks(project, primaryTrackId)
+  if (!project || !tracks) return []
+  const out: OverlayLayer[] = []
+  for (const track of tracks) {
+    if (active.length + out.length >= MAX_OVERLAYS) break
+    if (track.visible === false) continue
+    for (const it of layoutTrack(track, imageAssets)) {
+      if (it.kind !== 'video' || !it.asset || imageAssets.has(it.asset)) continue
+      if (it.startMs <= atMs) continue
+      if (it.startMs > atMs + horizonMs) break
+      const layer = overlayLayer(project, track.id, it, imageAssets)
+      if (layer) out.push(layer)
+      break
+    }
+  }
+  return out
+}
+
 /**
  * Resolve the overlay layers stacked ABOVE `primaryTrackId` at timeline `atMs`.
  * Walks each video track AFTER the primary (in project/compositing order),
@@ -114,40 +205,18 @@ export function resolveOverlays(
   primaryTrackId: string | null,
   imageAssets: Set<string>,
 ): OverlayResolution {
-  if (!project || !primaryTrackId) return { overlays: [], dropped: 0 }
-  const vids = project.tracks.filter((t) => t.kind === 'video')
-  const primaryIdx = vids.findIndex((t) => t.id === primaryTrackId)
-  if (primaryIdx < 0) return { overlays: [], dropped: 0 }
+  const tracks = overlayTracks(project, primaryTrackId)
+  if (!project || !tracks) return { overlays: [], dropped: 0 }
 
   const out: OverlayLayer[] = []
-  for (let i = primaryIdx + 1; i < vids.length; i++) {
-    const track = vids[i]
+  for (const track of tracks) {
     if (track.visible === false) continue
     for (const it of layoutTrack(track, imageAssets)) {
       if (it.kind !== 'video' || !it.asset) continue
       if (atMs < it.startMs || atMs >= it.startMs + it.durMs) continue
-      const asset = project.assets[it.asset]
-      if (!asset) continue
-      const isImage = imageAssets.has(it.asset)
-      // Prefer the proxy; fall back to streaming the source.
-      const src = asset.proxy ?? sourceUrl(it.asset)
-      const kind: 'proxy' | 'source' = asset.proxy ? 'proxy' : 'source'
-      out.push({
-        clipId: it.id,
-        trackId: track.id,
-        src,
-        kind,
-        assetId: it.asset,
-        startMs: it.startMs,
-        srcInMs: it.srcInMs ?? 0,
-        srcOutMs: it.srcOutMs ?? (it.srcInMs ?? 0) + it.durMs,
-        durMs: it.durMs,
-        speed: it.speed && it.speed > 0 ? it.speed : 1,
-        reverse: !!it.reverse,
-        transform: fullTransform(it.transform),
-        grade: it.grade ?? null,
-        isImage,
-      })
+      const layer = overlayLayer(project, track.id, it, imageAssets)
+      if (!layer) continue
+      out.push(layer)
       break // one clip per track covers a given playhead position
     }
   }

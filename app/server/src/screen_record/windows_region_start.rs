@@ -44,15 +44,11 @@ pub(super) async fn start_from_foreground_ticket(
     let quality = record_capture::admit_capture_quality(request.quality).map_err(record_err)?;
     let cadence = super::cadence::from_server_fps(request.fps)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
+    let microphone_source = super::microphone::source_for_recording_start(request.audio)?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
     let target =
         monitor_start_admission::admit(None, Some(&monitor_id), false, &recorder_doctor.monitors)?;
-    let microphone_source = if request.audio {
-        super::microphone::source_for_start()?
-    } else {
-        record_capture::MicrophoneSource::SystemDefault
-    };
 
     let capture_id = new_capture_id();
     windows_path::ensure_pre_marker_path(&dir, &capture_id)?;

@@ -883,3 +883,33 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
         set_session_output_dir(None);
     });
 }
+
+#[test]
+fn unmeasured_checks_say_not_measured_because_captions_are_not_installed() {
+    use crate::dispatch::mark_output_checks_unmeasured;
+    use cut_core::{CheckResult, CutError};
+    let mut checks = vec![CheckResult {
+        name: cut_core::check_names::LUFS.into(),
+        pass: false,
+        details: json!({}),
+        evidence: json!({}),
+    }];
+    let error = CutError::new(
+        error_codes::SIDECAR,
+        "Captions and transcription are not installed",
+        "ShellX Cut runs captions on its own Python",
+    )
+    .with_suggested_action("Ask the person to choose Install captions");
+
+    mark_output_checks_unmeasured(&mut checks, &error);
+
+    assert_eq!(
+        checks[0].details["reason"],
+        "not measured, because captions and transcription are not installed"
+    );
+    assert_eq!(
+        checks[0].details["suggested_action"],
+        "Ask the person to choose Install captions"
+    );
+    assert_eq!(checks[0].details["status"], "unmeasured");
+}

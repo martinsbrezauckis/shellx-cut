@@ -54,10 +54,17 @@ fn io_err(ctx: &str, e: impl std::fmt::Display) -> CutError {
     )
 }
 
+/// A cached bake is reused only when it is an ordinary single-link file of
+/// the project (not a link, Windows junction or file shared with another
+/// path) with content; anything else is rebaked over its name.
+///
+/// Item 155: and only when this engine baked it (`cut_media::cache_trust`): the
+/// name is a hash of data in project.json, so a received project could carry a
+/// different picture under it.
 fn cache_ready(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.len() > 0)
-        .unwrap_or(false)
+    cut_core::store::plain_file_state(path) == cut_core::store::PlainFileState::Plain
+        && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+        && cut_media::cache_trust::trusted(path)
 }
 
 fn bake_lock(path: &Path) -> Result<Arc<Mutex<()>>, CutError> {
@@ -130,9 +137,12 @@ pub fn ensure_baked(
         ));
     }
     let tag = nest_cache_tag(&sub, &edl);
-    let dir = project_dir.join("cache").join("nest");
+    // Created only through plain project folders (no link or junction).
+    let dir = crate::output_paths::ensure_plain_project_relative_dir(
+        project_dir,
+        Path::new("cache/nest"),
+    )?;
     let out = dir.join(format!("{tag}.mp4"));
-    std::fs::create_dir_all(&dir).map_err(|e| io_err("create cache dir", e))?;
 
     // Preview, frame, and export requests can arrive together immediately after
     // edit.nest. Serialize the first bake for this exact output and re-check the
@@ -153,7 +163,8 @@ pub fn ensure_baked(
     // A zero-byte/non-file cache entry can only be stale: writers render to a
     // unique temp and publish by rename. Remove it before finalization so Windows
     // does not reject rename because a dead destination already exists.
-    if out.exists() {
+    // symlink_metadata: a planted link is removed as a name, never followed.
+    if std::fs::symlink_metadata(&out).is_ok() {
         std::fs::remove_file(&out).map_err(|e| io_err("remove stale cache entry", e))?;
     }
     // Render the sub-timeline at HIGH quality — this is an INTERMEDIATE, so minimise
@@ -196,6 +207,7 @@ pub fn ensure_baked(
         let _ = std::fs::remove_file(&tmp);
         return Err(io_err("finalise baked nest", error));
     }
+    cut_media::cache_trust::remember(&out);
     Ok(BakedNest {
         path: out,
         duration_ms: edl.duration_ms,

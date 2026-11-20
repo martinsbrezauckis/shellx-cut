@@ -8,6 +8,10 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// The operation journal's own size limit (`cut_core` journal), applied here
+/// too because this reader opens the log itself.
+const MAX_PROJECT_LOG_BYTES: u64 = 128 * 1024 * 1024;
+
 pub(crate) fn admit_project_binding(root: &CaptureRoot) -> Result<RecordingProjectBinding, String> {
     let (origin_path_sha256, records) = derive(root)?;
     let accepted_revision = records
@@ -72,6 +76,10 @@ fn project_dir(root: &CaptureRoot) -> Result<PathBuf, String> {
 }
 
 fn read_log(path: &Path) -> Result<Vec<cut_core::OpRecord>, String> {
+    read_log_within(path, MAX_PROJECT_LOG_BYTES)
+}
+
+fn read_log_within(path: &Path, limit: u64) -> Result<Vec<cut_core::OpRecord>, String> {
     if !record_recovery::is_plain_regular_file(path)
         .map_err(|_| "inspect project durable log".to_string())?
     {
@@ -94,8 +102,13 @@ fn read_log(path: &Path) -> Result<Vec<cut_core::OpRecord>, String> {
         .map_err(|_| "open project durable log".to_string())?;
     ensure_open_regular(&file)?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    (&mut file)
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
         .map_err(|_| "read project durable log".to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("project durable log is larger than the journal size limit".into());
+    }
     if bytes.is_empty() || bytes.last() != Some(&b'\n') {
         return Err("project durable log has no complete terminal revision".into());
     }
@@ -126,18 +139,11 @@ fn ensure_open_regular(file: &File) -> Result<(), String> {
         .ok_or_else(|| "opened project durable log is not regular".into())
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 fn durable_project_name(records: &[cut_core::OpRecord]) -> Result<String, String> {
@@ -168,4 +174,17 @@ fn durable_project_name(records: &[cut_core::OpRecord]) -> Result<String, String
             .ok_or_else(|| "project rename identity is invalid".to_string())?;
     }
     Ok(name)
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    #[test]
+    fn a_log_past_the_limit_is_refused_after_reading_only_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.jsonl");
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        let error = super::read_log_within(&path, 4096).unwrap_err();
+        assert!(error.contains("size limit"), "{error}");
+        assert_eq!(super::MAX_PROJECT_LOG_BYTES, 128 * 1024 * 1024);
+    }
 }

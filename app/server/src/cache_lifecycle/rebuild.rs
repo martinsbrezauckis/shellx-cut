@@ -21,9 +21,11 @@ use std::path::PathBuf;
 mod admission;
 mod estimate;
 mod partial;
+mod proxy_facts;
 mod worker;
 use admission::{retire_orphaned_reservations, revalidate_snapshot, snapshot_assets};
-use estimate::{RebuildEstimate, SourceCheck};
+use estimate::RebuildEstimate;
+pub(crate) use estimate::SourceCheck;
 use partial::{partial_reservation_result, reserve_planned_outputs};
 use worker::execute_rebuild;
 

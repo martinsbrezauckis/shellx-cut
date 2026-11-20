@@ -12,6 +12,8 @@
 // Exposed to the Rust recorder (macos.rs) via a tiny C ABI:
 //   void*  sxc_sysaudio_start(void)                          -> opaque ctx (NULL on failure)
 //   int    sxc_sysaudio_stop(ctx, &samples,&n,&channels,&rate) -> 0 ok; mallocs interleaved f32
+//   int    sxc_sysaudio_copy_new(ctx, &samples,&n,&channels,&rate,&first) -> 0 ok; mallocs the samples
+//          that arrived since the previous call (a crash-safe copy is written while recording)
 //   void   sxc_sysaudio_free(samples)
 // The Rust side converts the f32 PCM to a 16-bit `system.wav` (the a_system track).
 
@@ -39,6 +41,7 @@ struct TapCtx {
     double rate = 48000.0;
     std::chrono::steady_clock::time_point started;
     uint64_t first_packet_ms = std::numeric_limits<uint64_t>::max();
+    size_t copied = 0; // samples already handed out by sxc_sysaudio_copy_new
 };
 
 // IOProc: drains the tap's audio into the accumulator. Runs on a Core Audio thread; the
@@ -255,6 +258,33 @@ extern "C" int sxc_sysaudio_stop(void* h, float** out_samples, uint64_t* out_cou
     }
     std::memcpy(buf, samples.data(), n * sizeof(float));
     *out_samples = buf;
+    return 0;
+}
+
+// Copy the samples that arrived since the previous call. The accumulator itself is
+// unchanged (Stop still hands over the whole take); only a cursor moves. The copy runs
+// under the IOProc's mutex and is small (about one second of audio per call).
+extern "C" int sxc_sysaudio_copy_new(void* h, float** out_samples, uint64_t* out_count,
+                                     uint32_t* out_channels, double* out_rate,
+                                     uint64_t* out_first_packet_ms) {
+    if (!h || !out_samples || !out_count || !out_channels || !out_rate || !out_first_packet_ms) return -1;
+    *out_samples = nullptr;
+    *out_count = 0;
+    TapCtx* c = static_cast<TapCtx*>(h);
+    std::lock_guard<std::mutex> lk(c->mtx);
+    *out_channels = c->channels ? c->channels : 2;
+    *out_rate = c->rate > 0 ? c->rate : 48000.0;
+    *out_first_packet_ms = c->first_packet_ms;
+    if (c->copied > c->samples.size()) c->copied = c->samples.size();
+    const size_t n = c->samples.size() - c->copied;
+    if (!n) return 0;
+    if (n > SIZE_MAX / sizeof(float)) return -3;
+    float* buf = static_cast<float*>(std::malloc(n * sizeof(float)));
+    if (!buf) return -4;
+    std::memcpy(buf, c->samples.data() + c->copied, n * sizeof(float));
+    c->copied += n;
+    *out_samples = buf;
+    *out_count = static_cast<uint64_t>(n);
     return 0;
 }
 

@@ -223,7 +223,9 @@ fn agent_install_dirs(agent: &str, home: Option<PathBuf>) -> Vec<PathBuf> {
 /// First dir in `dirs` that holds any of the exe-name `cands`, returned as the
 /// joined absolute path. Pure (no env) — the unit-test seam for the ladder.
 fn first_in_dirs(dirs: &[PathBuf], cands: &[String]) -> Option<PathBuf> {
-    for dir in dirs {
+    // A relative PATH entry would resolve against the current folder, which
+    // may be a project from someone else.
+    for dir in dirs.iter().filter(|dir| dir.is_absolute()) {
         for name in cands {
             let p = dir.join(name);
             if p.is_file() {
@@ -259,7 +261,20 @@ pub fn resolve_agent(agent: &str) -> Option<PathBuf> {
     let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    if path_only_search() {
+        return first_in_dirs(&path_dirs, &exe_candidates(agent));
+    }
     resolve_agent_with(agent, &path_dirs, home_dir())
+}
+
+/// Whether provider CLIs are looked up on PATH only. The install-dir ladder
+/// (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) is independent of
+/// PATH and of HOME, so a test run with a stripped PATH and a temp HOME still
+/// found and started the person's real provider CLI. Unit tests are PATH-only
+/// (their stand-in CLIs are put on PATH); a test harness or an isolated run sets
+/// `SHELLX_CUT_AGENT_SEARCH=path` to get the same. A normal run is unchanged.
+fn path_only_search() -> bool {
+    cfg!(test) || std::env::var_os("SHELLX_CUT_AGENT_SEARCH").is_some_and(|value| value == "path")
 }
 
 #[cfg(windows)]
@@ -340,6 +355,8 @@ pub fn agent_std_command(program: &Path, args: &[String]) -> Result<std::process
 
         let line = windows_batch_command_line(program, args)?;
         let mut command = std::process::Command::new("cmd.exe");
+        // The shim starts its runtime by name: never from the current folder.
+        command.env("NoDefaultCurrentDirectoryInExePath", "1");
         command.args(["/D", "/V:OFF", "/S", "/C"]);
         command.raw_arg(format!("\"{line}\""));
         Ok(command)
@@ -367,6 +384,8 @@ pub fn agent_tokio_command(
 
         let line = windows_batch_command_line(program, args)?;
         let mut command = tokio::process::Command::new("cmd.exe");
+        // The shim starts its runtime by name: never from the current folder.
+        command.env("NoDefaultCurrentDirectoryInExePath", "1");
         command.args(["/D", "/V:OFF", "/S", "/C"]);
         command.as_std_mut().raw_arg(format!("\"{line}\""));
         Ok(command)

@@ -14,7 +14,7 @@ pub(crate) fn attach_first_screen_frame_observer(
     readiness: Option<CaptureReadiness>,
     preview: Option<(ActiveCapturePreview, u64, Instant)>,
 ) -> Result<(), &'static str> {
-    attach_screen_frame_observer(stream, readiness, preview, None)
+    attach_screen_frame_observer(stream, readiness, preview, None, None)
 }
 
 pub(crate) fn attach_screen_frame_observer(
@@ -22,11 +22,21 @@ pub(crate) fn attach_screen_frame_observer(
     readiness: Option<CaptureReadiness>,
     preview: Option<(ActiveCapturePreview, u64, Instant)>,
     window_clicks: Option<crate::macos_window_clicks::WindowClickCapture>,
+    segment_frames: Option<std::sync::Arc<crate::macos_segment_frames::SegmentFrames>>,
 ) -> Result<(), &'static str> {
     stream
         .add_output_handler(
             move |sample, output_type| {
                 if output_type == SCStreamOutputType::Screen {
+                    if let Some(frames) = segment_frames.as_ref() {
+                        let picture = crate::macos_segment_frames::status_carries_picture(
+                            crate::macos_frame_status::read_status(&sample),
+                            sample.image_buffer().is_some(),
+                        );
+                        if picture {
+                            frames.observe_picture(Instant::now());
+                        }
+                    }
                     if let Some(window_clicks) = window_clicks.as_ref() {
                         window_clicks.observe_frame(&sample);
                     }

@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn stitch_limit_names_the_reason_and_next_step_in_the_job_result() {
+    let mut scan = RecoveryScan::default();
+    recovery_failed(
+        &mut scan,
+        "capture-a",
+        &record_recovery::ManifestError::StitchLimit(
+            "too many parts to join safely; keep the original capture folder and contact support for recovery",
+        ),
+    );
+    assert_eq!(scan.failed_closed.len(), 1);
+    assert!(scan.failed_closed[0].contains("too many parts to join safely"));
+    assert!(scan.failed_closed[0].contains("keep the original capture folder"));
+}
+
 fn begin_fixture(capture: &Path, capture_id: &str) {
     let cadence = record_core::CaptureCadence::from_server_fps(30.0).unwrap();
     begin(capture, capture_id, &cadence).unwrap();

@@ -116,6 +116,7 @@ export default function JobRetryRecovery({ jobs, projectSession, onRefresh }: Jo
                   <strong>{job.label}</strong>
                   <span className={`settings-job-retry-terminal settings-job-retry-terminal--${job.terminalLabel.toLowerCase()}`}>{job.terminalLabel}</span>
                 </div>
+                {job.failureText && <p className="settings-job-retry-failure" data-cut-job-retry-failure={job.jobId}>{job.failureText}</p>}
                 {job.lineage && <small data-cut-job-retry-lineage>{job.lineage}</small>}
                 {admission ? (
                   <p

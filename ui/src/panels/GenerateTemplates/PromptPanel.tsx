@@ -1,3 +1,4 @@
+import { engineMediaUrl } from '../../lib/mediaUrl'
 import type { GenerateFromPromptResult } from '../../lib/client'
 import { Icon } from '../../icons'
 import {
@@ -146,7 +147,7 @@ export default function PromptPanel({
           {promptResult?.preview?.url ? (
             <img
               data-cut-generate-prompt-preview-img
-              src={promptResult.preview.url}
+              src={engineMediaUrl(promptResult.preview.url)}
               alt={`${promptResult.plan?.template_id ?? 'Generate'} prompt preview`}
             />
           ) : promptResult?.preview ? (

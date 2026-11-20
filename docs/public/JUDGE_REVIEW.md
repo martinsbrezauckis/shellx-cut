@@ -39,6 +39,30 @@ Before sampling or spending a CLI turn, the adapter rejects perception
 timestamps that exceed the render duration beyond the documented small
 instrument slack.
 
+The render's analysis file (`receipts/<render_id>.output.perception.json`) is
+used only when it is an ordinary file of the project (not a link, a Windows
+junction, or a file shared with another path; a cloud-synced file such as a
+OneDrive file is ordinary) and records the render's
+own content hash. Otherwise the review is not run: no facts or transcript from
+that file reach a prompt, and the job fails with a message naming the file.
+Deleting that file lets the next review analyse the render itself.
+
+### 4.1 Project files the review uses
+
+A project may come from someone else, so the review treats its files as
+untrusted. It never reads the render through a link at the render path, and a
+verdict is attached only to the render file the receipt names: the render's
+content hash must equal the one the receipt recorded. A render in the project
+or its export folders is checked before the review and again after it; when
+either check finds other content the review is not run (or its verdict is
+discarded) and the job fails with a message naming both hashes. A render
+outside them (for example a one-off Save As destination) is copied into the
+run folder while it is hashed, and the copy is reviewed. Each run works in a new
+folder under `.scratch/judge/<render_id>/` that no project content can occupy,
+and the latest result is also saved as `.scratch/judge/<render_id>/envelope.json`.
+A link or shared file already at that saved path stops the review before any
+provider is used, and the file it points to is left unchanged.
+
 ## 5. Review request and result
 
 The request combines:
@@ -90,6 +114,8 @@ fields are estimates only and must remain absent when pricing is unknown.
   never a pass.
 - `error` means a review was attempted but failed. The job fails while the
   error envelope remains attached for audit.
+- A refused project file is also recorded as `error`, with a reason that
+  starts with `review not run` and names the file to remove.
 - Failed CLI diagnostics retain bounded, labelled `stdout` and `stderr` text.
   A structured error envelope may be on stdout; Cut reports that evidence and
   does not infer a root cause from a keyword alone.
@@ -113,22 +139,21 @@ raw review and a report of filtering decisions for audit.
 
 The request union remains stable: `claude`, `codex`, `antigravity` (`agy`), and
 `grok` are accepted backend IDs. Detection (`found`) is separate from render
-judge admission (`judge_ready`). In v0.6.114, the only eligible render-review
-rungs are:
+judge admission (`judge_ready`). These render-review rungs are admitted when
+their capability checks pass:
 
 | Backend | Admission requirement |
 |---|---|
 | Claude Code (`claude`) | Version 2.1.248 or later, restricted Read capability, and a platform-safe copied-frame workspace. Each review uses a fresh copied-frame working directory. |
+| Codex (`codex`) | Direct sampled-frame image input, strict structured output, and a tool-free review route. Doctor must report `judge.codex.details.judge_ready:true`; binary discovery or version alone is insufficient. |
 | Grok Build (`grok`) | Version 1.0.21 or later with the verified no-model-tools policy. |
-| Codex (`codex`) | Deferred until restricted tool and file access are verified. A detected installation may still report `found:true`, but is not `judge_ready`. |
 | Antigravity (`agy`) | Deferred until restricted tool and file access are verified. A detected installation may still report `found:true`, but is not `judge_ready`. |
 
-For Codex and Antigravity, an explicit render-judge request returns
-`status:"not_run"` with `render judge unavailable until restricted tool/file
-access is verified` before render probing, perception resolution, frame
-extraction, prompt construction, or a model subprocess. This is a render-judge
-admission limit only; it does not remove those providers from Agent Chat or
-other product features.
+For a Codex installation that fails admission, or for Antigravity, an explicit
+render-judge request returns `status:"not_run"` before render probing, frame
+extraction, prompt construction, or a model subprocess. The recorded reason
+explains the unavailable capability. This render-judge limit does not remove
+those providers from Agent Chat or other product features.
 
 Auto retains its configured order—Claude, Codex, Antigravity, then Grok—but
 skips every unready rung. After a ready rung is actually attempted, an
@@ -137,8 +162,8 @@ review, including `fail`, is terminal. A named backend always selects only that
 rung and never falls back. The receipt records the selected, skipped, and
 attempted ladder state.
 
-Admission does not prove a provider account, model turn, or native platform
-behavior. `not_run` remains unreviewed rather than a passing review.
+Doctor admission reports capability, while the completed receipt records an
+actual review. `not_run` remains unreviewed rather than a passing review.
 
 ## Runtime and overrides
 

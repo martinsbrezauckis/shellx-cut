@@ -1,0 +1,6 @@
+# The selected Cut UI may ask once which project the app was launched with
+# (a `.cutproj` folder named on the command line). It receives only that path.
+[[permission]]
+identifier = "allow-launch-project"
+description = "Allows the selected Cut UI to take the project path the app was launched with."
+commands.allow = ["take_launch_project"]

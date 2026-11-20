@@ -13,6 +13,8 @@ fn receipt(checks: Vec<cut_core::CheckResult>) -> cut_core::RenderReceipt {
         pass: true,
         judge: None,
         fix_actions: Vec::new(),
+        encode: None,
+        outcome: None,
     }
 }
 
@@ -33,6 +35,7 @@ fn retry_prepared(dir: &std::path::Path) -> PreparedVerifyRerun {
         receipts,
         receipt_path,
         receipt: source_receipt,
+        receipt_written_here: false,
         output,
         profile: "talking_head".parse().unwrap(),
         project_revision: "op_000001".into(),

@@ -5,10 +5,13 @@
 //! configured or observed. Linux GNOME configuration lives in the sibling
 //! module so the portable state and narrow Tauri commands stay small.
 
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
+use serde::Deserialize;
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(target_os = "linux")]
@@ -17,7 +20,9 @@ mod gnome;
 
 const CAPABILITY_SCHEMA: &str = "shellx-cut/record-hotkey-capability@1";
 const EVENT_NAME: &str = "cut:record-hotkey-capability";
+#[cfg(target_os = "linux")]
 const PREFERENCE_SCHEMA: &str = "shellx-cut/record-hotkey-preference@1";
+#[cfg(target_os = "linux")]
 const PREFERENCE_FILE: &str = "record-hotkey-preference.json";
 
 #[derive(Clone, Debug, Serialize)]
@@ -62,6 +67,23 @@ impl Capability {
         }
     }
 
+    /// The native shortcut could not be taken (for example another program
+    /// already holds F9). The reason is shown to the person and to agents.
+    fn native_unavailable(error: &str) -> Self {
+        let error = error.trim_end_matches('.');
+        Self {
+            schema: CAPABILITY_SCHEMA,
+            state: "unavailable",
+            scope: "focused_only",
+            backend: "native_global_shortcut",
+            enabled: false,
+            can_enable: false,
+            reason: Some(format!(
+                "Global F9 could not be registered: {error}. Another program may already use F9. F9 still works while ShellX Cut is focused."
+            )),
+        }
+    }
+
     fn native_registered() -> Self {
         Self {
             schema: CAPABILITY_SCHEMA,
@@ -75,6 +97,7 @@ impl Capability {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Deserialize, Serialize)]
 struct StoredPreference {
     schema: String,
@@ -104,6 +127,7 @@ impl Default for RecordHotkeyState {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
@@ -111,6 +135,7 @@ fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("could not resolve global F9 preference storage: {error}"))
 }
 
+#[cfg(target_os = "linux")]
 /// Only a valid, explicitly saved `false` opts out of startup registration.
 /// Missing or damaged preference data retains the default-on attempt.
 fn read_preference(path: &Path) -> Option<bool> {
@@ -119,6 +144,7 @@ fn read_preference(path: &Path) -> Option<bool> {
         .and_then(|bytes| parse_preference(&bytes))
 }
 
+#[cfg(target_os = "linux")]
 fn parse_preference(bytes: &[u8]) -> Option<bool> {
     serde_json::from_slice::<StoredPreference>(bytes)
         .ok()
@@ -131,6 +157,7 @@ fn should_configure_on_startup(preference: Option<bool>) -> bool {
     preference != Some(false)
 }
 
+#[cfg(target_os = "linux")]
 fn write_preference(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let path = preference_path(app)?;
     let parent = path
@@ -374,8 +401,22 @@ pub(crate) fn configure_on_startup(app: &AppHandle) {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn configure_on_startup(_app: &AppHandle) {}
 
-pub(crate) fn native_registered(app: &AppHandle) {
-    publish(app, Capability::native_registered());
+/// Capability that follows a native (macOS/Windows) registration attempt.
+fn native_registration_capability(outcome: Result<(), String>) -> Capability {
+    match outcome {
+        Ok(()) => Capability::native_registered(),
+        Err(error) => Capability::native_unavailable(&error),
+    }
+}
+
+/// Publish the result of the native F9 registration. A failure is never
+/// silent: the capability event and `get_record_hotkey_capability` carry the
+/// reason, and the UI shows it where the shortcut is shown.
+pub(crate) fn publish_native_registration(app: &AppHandle, outcome: Result<(), String>) {
+    if let Err(error) = &outcome {
+        eprintln!("[shellx-cut] global F9 record hotkey unavailable: {error} — F9 stays focused-window only");
+    }
+    publish(app, native_registration_capability(outcome));
 }
 
 pub(crate) fn use_gnome_wayland_fallback() -> bool {
@@ -464,7 +505,7 @@ where
     #[cfg(target_os = "linux")]
     {
         let _ = gnome::forward_fixed_event();
-        return true;
+        true
     }
     #[cfg(not(target_os = "linux"))]
     false
@@ -473,6 +514,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_native_registration_is_reported_with_its_reason() {
+        let failed = native_registration_capability(Err(
+            "HotKey already registered by another program.".to_string(),
+        ));
+        assert_eq!(failed.state, "unavailable");
+        assert_eq!(failed.scope, "focused_only");
+        assert!(!failed.enabled);
+        let reason = failed.reason.expect("a failure always carries its reason");
+        assert!(reason.contains("HotKey already registered by another program"));
+        assert!(reason.contains("Another program may already use F9"));
+        assert!(reason.contains("still works while ShellX Cut is focused"));
+
+        let registered = native_registration_capability(Ok(()));
+        assert_eq!(registered.state, "registered");
+        assert_eq!(registered.scope, "global");
+        assert!(registered.reason.is_none());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -534,7 +594,10 @@ mod tests {
                 runtime: Mutex::new(Runtime { service: None }),
             };
             let actual = capability(&state);
-            assert_eq!(actual.state, "disabled", "stale {published} without listener");
+            assert_eq!(
+                actual.state, "disabled",
+                "stale {published} without listener"
+            );
             assert!(!actual.enabled);
             assert_eq!(actual.scope, "focused_only");
         }

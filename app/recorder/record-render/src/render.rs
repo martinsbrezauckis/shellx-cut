@@ -87,6 +87,48 @@ pub fn render_video_audio_with_control_progress(
     out_path: &str,
     audio: Option<&str>,
     control: &ffmpeg::ProcessControl,
+    on_frame: impl FnMut(u64, u64),
+) -> Result<u64> {
+    render_with_preset(
+        source_path,
+        plan,
+        out_path,
+        audio,
+        control,
+        ffmpeg::X264_EXPORT_PRESET,
+        on_frame,
+    )
+}
+
+/// The polished editable clip of a recording: the same picture as
+/// [`render_video_audio_with_control_progress`], encoded faster (see
+/// [`ffmpeg::X264_POLISH_PRESET`]).
+pub fn render_polish_with_control_progress(
+    source_path: &str,
+    plan: &EditPlan,
+    out_path: &str,
+    audio: Option<&str>,
+    control: &ffmpeg::ProcessControl,
+    on_frame: impl FnMut(u64, u64),
+) -> Result<u64> {
+    render_with_preset(
+        source_path,
+        plan,
+        out_path,
+        audio,
+        control,
+        ffmpeg::X264_POLISH_PRESET,
+        on_frame,
+    )
+}
+
+fn render_with_preset(
+    source_path: &str,
+    plan: &EditPlan,
+    out_path: &str,
+    audio: Option<&str>,
+    control: &ffmpeg::ProcessControl,
+    preset: &str,
     mut on_frame: impl FnMut(u64, u64),
 ) -> Result<u64> {
     plan.validate()?;
@@ -128,8 +170,13 @@ pub fn render_video_audio_with_control_progress(
     let audio_input = audio.unwrap_or(source_path);
     // Normalize loudness only when an explicit audio track (e.g. mic) is muxed.
     let normalize = audio.is_some();
-    let mut rendered_frames = 0_u64;
-    let result = ffmpeg::render_pipe_with_control(
+    let mut prepared_frames = 0_u64;
+    // Composing a 4K frame takes about 60-70 ms on one core, which made a
+    // 62 s 4K polish take two minutes. Frames are composed on several threads
+    // at once; the camera frame is read in order beforehand because its
+    // reader is a stream.
+    let workers = ffmpeg::compose_workers(size.width() as usize * size.height() as usize * 4);
+    let result = ffmpeg::render_pipe_parallel_with_control(
         source_path,
         out_path,
         out_w,
@@ -138,8 +185,16 @@ pub fn render_video_audio_with_control_progress(
         audio_input,
         normalize,
         control,
+        workers,
+        preset,
         |buf, t_ms| {
-            let src = Pixmap::from_vec(buf.to_vec(), size).expect("source pixmap from frame bytes");
+            let src = Pixmap::from_vec(buf, size).ok_or_else(|| {
+                RecordError::new(
+                    error_codes::FFMPEG,
+                    "source decode",
+                    "invalid RGBA source frame",
+                )
+            })?;
             let cam = match (&mut webcam, &plan.webcam) {
                 (Some((bp, frames)), Some(wc)) => match webcam_frame_index(wc, t_ms, fps) {
                     Some(idx) => {
@@ -161,11 +216,11 @@ pub fn render_video_audio_with_control_progress(
                 },
                 _ => None,
             };
-            let frame = comp.frame_webcam(&src, cam.as_ref(), t_ms).data().to_vec();
-            rendered_frames += 1;
-            on_frame(rendered_frames, expected_frames);
-            Ok(frame)
+            prepared_frames += 1;
+            on_frame(prepared_frames, expected_frames);
+            Ok((src, cam))
         },
+        |(src, cam), t_ms| Ok(comp.frame_webcam(&src, cam.as_ref(), t_ms).take()),
     );
     if result.is_ok() {
         if let Some((_, frames)) = webcam {

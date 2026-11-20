@@ -83,6 +83,6 @@ assert.equal(UI_DOM_MUTATION_OBSERVER_OPTIONS.childList, true)
 assert.equal(UI_DOM_MUTATION_OBSERVER_OPTIONS.characterData, true,
   'doctor text updates schedule a fresh DOM-backed ui.state')
 assert.deepEqual(UI_DOM_MUTATION_OBSERVER_OPTIONS.attributeFilter,
-  ['aria-selected', 'data-cut-app-version', 'data-cut-ui-source-content-manifest-sha256'])
+  ['aria-selected', 'data-cut-app-version', 'data-cut-ui-source-content-manifest-sha256', 'data-cut-preview-media-assets', 'data-cut-preview-mode', 'data-cut-preview-showing', 'data-cut-preview-hidden', 'data-cut-preview-media', 'data-cut-composed-frame-state', 'data-cut-composed-frame-at', 'data-cut-composed-frame-error', 'data-cut-composed-frame-latency', 'data-cut-quit-question-running'])
 
 console.log('PASS About rendered-version ui.state')

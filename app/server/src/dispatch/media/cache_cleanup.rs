@@ -164,16 +164,9 @@ fn plain_receipt_file(metadata: &std::fs::Metadata) -> bool {
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return false;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes()
-            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-            != 0
-        {
-            return false;
-        }
-    }
+    // Only a name-surrogate reparse point (symbolic link, junction) names
+    // another entry, and `is_symlink` above already reports exactly those;
+    // cloud placeholders and other reparse points are the file itself.
     true
 }
 

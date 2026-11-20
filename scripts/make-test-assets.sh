@@ -177,7 +177,21 @@ measure_loudness() { # $1=wav → "integrated_lufs true_peak_dbtp"
     | python3 -c '
 import json, sys
 raw = sys.stdin.read()
-stats = json.loads(raw[raw.rindex("{"):])  # loudnorm prints its JSON last
+# loudnorm prints one JSON object; newer ffmpeg builds print more text after it
+# (a muxer summary), so decode the object itself and ignore what follows.
+decoder = json.JSONDecoder()
+stats = None
+for start in range(len(raw)):
+    if raw[start] != "{":
+        continue
+    try:
+        candidate, _ = decoder.raw_decode(raw, start)
+    except ValueError:
+        continue
+    if isinstance(candidate, dict) and "input_i" in candidate and "input_tp" in candidate:
+        stats = candidate
+if stats is None:
+    sys.exit("loudnorm printed no JSON statistics")
 print(stats["input_i"], stats["input_tp"])'
 }
 read -r in_i in_tp <<<"$(measure_loudness "$WORK/talking_head.wav")"

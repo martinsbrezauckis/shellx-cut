@@ -256,13 +256,9 @@ fn checked_snapshot_dir(dir: &Path, create: bool) -> Result<Option<PathBuf>, Cut
         Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
+    // Only a name-surrogate reparse point (symbolic link, junction) names
+    // another entry; cloud placeholders and other reparse points do not.
+    let reparse = crate::reparse::names_another_entry(&metadata);
     if !metadata.file_type().is_dir()
         || metadata.file_type().is_symlink()
         || reparse

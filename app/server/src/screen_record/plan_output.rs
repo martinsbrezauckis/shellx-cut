@@ -57,7 +57,10 @@ impl PlanStage {
                 // A concurrent producer or imported entry won. Only a guarded,
                 // byte-identical regular file may satisfy this request.
                 let _ = super::cache_output::cache_hit(&path)?;
-                if std::fs::read(&path)? == bytes {
+                // Read no more than the new plan's length: a larger file differs.
+                let existing = cut_core::store::read_bounded_cache(&path, bytes.len() as u64);
+                if matches!(existing, cut_core::store::BoundedCacheRead::Bytes(ref existing) if *existing == bytes)
+                {
                     Ok(path)
                 } else {
                     Err(CutError::new(
@@ -115,5 +118,35 @@ mod tests {
         assert_eq!(paths[0], paths[1]);
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"finished-plan");
         assert_eq!(std::fs::read_dir(cache).unwrap().count(), 1);
+    }
+
+    /// A planted file at the plan's name is compared by length first and read
+    /// no further than the new plan: a huge one is refused at once.
+    #[test]
+    fn a_larger_planted_plan_is_refused_without_reading_it_whole() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = super::super::screen_record_cache_dir(project.path()).unwrap();
+        let track = project.path().join("capture/events.json");
+        let publish = || {
+            let stage = PlanStage::new(&cache).unwrap();
+            super::super::cache_output::write(stage.path(), b"finished-plan").unwrap();
+            stage.publish(&track)
+        };
+        let path = publish().unwrap();
+        let len = if cfg!(unix) {
+            64 * 1024 * 1024 * 1024
+        } else {
+            1024 * 1024
+        };
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(len)
+            .unwrap();
+        let started = std::time::Instant::now();
+        let error = publish().unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(error.message.contains("occupied"), "{error:?}");
     }
 }

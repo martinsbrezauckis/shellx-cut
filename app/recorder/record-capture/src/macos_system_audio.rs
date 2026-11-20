@@ -94,7 +94,9 @@ fn publish_system_wav_named_with_offset(
         sample_format: hound::SampleFormat::Int,
     };
     let written = (|| -> Result<(), hound::Error> {
-        let mut writer = hound::WavWriter::new(file, spec)?;
+        // Buffered: one unbuffered write per sample took about 11 s for a
+        // 62 s stereo take on a 10-core Mac, all of it inside Stop.
+        let mut writer = hound::WavWriter::new(std::io::BufWriter::new(file), spec)?;
         if let Some(offset_ms) = first_packet_offset_ms {
             let silence =
                 crate::mic_timing::leading_silence_samples(offset_ms, sample_rate, channels);
@@ -116,6 +118,63 @@ fn publish_system_wav_named_with_offset(
         return Err(format!("publish system.wav: {error}"));
     }
     Ok(())
+}
+
+/// Publish the Core Audio payload stopped at the video boundary as
+/// `<out_dir>/system.wav`, then drop the crash-safe copy written during the
+/// recording. Only real samples are written: an empty file would mask "no
+/// system sound was playing". If `system.wav` cannot be published the copy is
+/// kept, so recovery still finds the sound.
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+pub(crate) fn publish_stopped_tap(
+    out_dir: &Path,
+    stopped: Option<crate::macos_system_tap::SystemAudioResult>,
+    spool: crate::macos_system_audio_spool::SystemAudioSpool,
+) {
+    use std::io::Write;
+    let Some(result) = stopped else {
+        spool.keep();
+        return;
+    };
+    let mut debug = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out_dir.join("sysaudio.debug"))
+        .ok();
+    if let Some(file) = debug.as_mut() {
+        let _ = writeln!(
+            file,
+            "coreaudio_stop rc={} samples={} channels={} rate={} first_packet_offset_ms={:?} spool_failure={:?}",
+            result.rc,
+            result.count,
+            result.channels,
+            result.rate,
+            result.first_packet_offset_ms,
+            spool.failure(),
+        );
+    }
+    let samples = match (result.rc, result.samples.as_ref()) {
+        (0, Some(samples)) => samples,
+        _ => {
+            spool.keep();
+            return;
+        }
+    };
+    let (channels, sample_rate) =
+        crate::macos_system_audio_spool::wav_format(result.channels, result.rate);
+    match publish_padded_system_wav(
+        out_dir,
+        samples.as_slice(),
+        channels,
+        sample_rate,
+        result.first_packet_offset_ms,
+    ) {
+        Ok(()) => spool.discard(),
+        Err(error) => {
+            eprintln!("warning: {error}");
+            spool.keep();
+        }
+    }
 }
 
 #[cfg(test)]

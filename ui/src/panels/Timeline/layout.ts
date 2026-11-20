@@ -153,6 +153,8 @@ export interface LaidItem {
   speed?: number
   /** Reverse playback changes which source edge a timeline trim adjusts. */
   reverse?: boolean
+  /** Offset into the source window of a held frame, including zero. */
+  freezeAtMs?: number
   /** True when the clip carries a non-identity color grade (edit.grade). The
    * engine serde-skips an identity grade, so presence == a real grade. Drives
    * the timeline grade badge so users can see which clips are graded. */
@@ -296,6 +298,7 @@ export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[]
         // Carry speed (only when retimed) for the badge; durMs already reflects it.
         speed: speed !== 1 ? speed : undefined,
         reverse: clip.reverse || undefined,
+        freezeAtMs: clip.freeze?.at_ms,
         // A non-identity grade is serde-present on the clip → flag for the badge.
         graded: clip.grade ? true : undefined,
         // Carry the full grade so the live composite stage can CSS-approximate it.
@@ -361,12 +364,12 @@ export function contentExtentMs(project: Project | null): number {
 }
 
 // ---------------------------------------------------------------------------
-// Track geometry + ripple-vs-lift matrix
+// Track geometry + drag-move modes (overwrite / insert)
 // ---------------------------------------------------------------------------
 
 /** One laid-out track row with its vertical extent inside the track area
  * (offset BELOW the ruler — top is RULER_H-relative). Drives drop-target
- * resolution for vertical drag-move and the ripple-vs-lift feedback. */
+ * resolution for vertical drag-move. */
 export interface TrackRow {
   id: string
   kind: TrackKind
@@ -383,8 +386,8 @@ export interface TrackRow {
 
 /** Lay out track rows top→bottom with per-kind heights + kind-stacking index.
  * kindIndex mirrors the engine's "first video/audio track = base, later = overlay"
- * rule (edit.insert ripple matrix; edit.move kind-match) used for both the
- * cross-track drop guard and the ripple-vs-lift UI prediction. */
+ * rule (edit.insert ripple matrix; edit.move kind-match) used for the
+ * cross-track drop guard. */
 export function trackRows(project: Project | null): TrackRow[] {
   if (!project) return []
   const rows: TrackRow[] = []
@@ -410,40 +413,40 @@ export function trackRowAtY(rows: TrackRow[], yInTrackArea: number): TrackRow | 
 }
 
 /**
- * Predict the engine's ripple-vs-lift behavior for a clip dropped onto a track,
- * mirroring the edit.move / insert-ripple matrix WITHOUT contradicting it.
- *
- * edit.move gap-fills the source slot (source never ripples) and splices into
- * the destination. The destination's downstream content shifts right by the
- * clip duration. Whether that shift propagates to SIBLING tracks is the
- * ripple-vs-lift distinction the engine encodes for inserts:
- *  - BASE track (first of its kind, kindIndex 0) → siblings keep AV sync
- *    ("ripple" — the timeline expectation for a base-canvas edit).
- *  - OVERLAY / EXTRA track (kindIndex ≥ 1) → it floats; nothing else moves
- *    ("lift").
- * This is FEEDBACK ONLY — edit.move itself never takes a ripple flag; the UI
- * states the expectation the user should hold, it does not change the verb.
+ * The two drag-move modes, named as Premiere Pro, DaVinci Resolve, Final Cut
+ * and Avid name them ("lift" and "ripple" mean other actions there: lift =
+ * remove leaving a gap, ripple = close or open a gap on a trim or delete).
+ *  - overwrite: a plain drag, `edit.move {ripple:false}` (engine placement
+ *    "overwrite"): the clip replaces what is under its new slot; nothing else
+ *    moves on any track.
+ *  - insert: an Alt-drag, `edit.move {ripple:true}` (placement "insert"): the
+ *    clip is spliced in and the rest of every track moves right by its length.
+ * The source slot is left as a gap in both modes.
  */
-export type RippleMode = 'ripple' | 'lift'
-export function rippleModeForTrack(row: TrackRow): RippleMode {
-  return row.kindIndex === 0 ? 'ripple' : 'lift'
+export type MoveMode = 'overwrite' | 'insert'
+
+/** The standard word first, then a hint a first-time editor understands. */
+export const MOVE_MODE_HINT: Record<MoveMode, string> = {
+  overwrite: 'Overwrite: replaces what is under it',
+  insert: 'Insert: pushes the rest right',
 }
 
 /** Format an honest, verb-shaped rationale for a human timeline gesture, e.g.
- * `user drag: clip c3 +1.20s on v1` or `user drag: clip c6 −0.50s → v2 (lift)`.
- * Signed seconds with 2 decimals; track-change and ripple mode annotated. */
+ * `user drag: clip c3 +1.20s on v1 (overwrite)` or
+ * `user drag: clip c6 −0.50s → v2 (insert)`.
+ * Signed seconds with 2 decimals; track change and move mode annotated. */
 export function dragRationale(
   clipId: string,
   deltaMs: number,
   toTrack: string,
   trackChanged: boolean,
-  mode?: RippleMode,
+  mode?: MoveMode,
 ): string {
   const secs = deltaMs / 1000
   const sign = secs >= 0 ? '+' : '−'
   const mag = `${sign}${Math.abs(secs).toFixed(2)}s`
-  const dest = trackChanged ? ` → ${toTrack}${mode ? ` (${mode})` : ''}` : ` on ${toTrack}`
-  return `user drag: clip ${clipId} ${mag}${dest}`
+  const dest = trackChanged ? ` → ${toTrack}` : ` on ${toTrack}`
+  return `user drag: clip ${clipId} ${mag}${dest}${mode ? ` (${mode})` : ''}`
 }
 
 // ---------------------------------------------------------------------------

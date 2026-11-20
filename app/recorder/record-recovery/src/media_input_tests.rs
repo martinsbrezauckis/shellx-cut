@@ -283,6 +283,39 @@ fn genuine_mp4_keeps_video_frames_and_audio_decode_evidence() {
     assert!(media.duration_ms.abs_diff(200) <= 20);
 }
 
+/// The verifier counts frames in its one decode pass. A sparse
+/// variable-rate part (three frames over 4.5 s, as a still Windows screen
+/// gives) must count three on the FFmpeg this machine has: no frame duplicated
+/// to fill a rate, none dropped.
+#[test]
+fn one_decode_counts_every_frame_of_a_sparse_part() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("sparse.mp4");
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg("color=c=blue:s=32x32:r=30:d=4.6")
+        .args(["-vf", "select='eq(n\\,0)+eq(n\\,45)+eq(n\\,135)'"])
+        .args([
+            "-fps_mode",
+            "vfr",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&path)
+        .output()
+        .expect("real ffmpeg is required");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let media = crate::verify_media("ffmpeg", "ffprobe", &path).unwrap();
+    assert_eq!(media.decoded_video_frames, 3, "{media:?}");
+}
+
 #[cfg(unix)]
 #[test]
 fn owned_concat_cannot_expand_its_nested_input_format_beyond_mov() {

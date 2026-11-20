@@ -1,0 +1,17 @@
+/* third-party-notices.css — Settings > About "Third-party notices" disclosure (ThirdPartyNotices.tsx). */
+.env-notices { margin-top: 10px; }
+.env-notices-text {
+  margin: 8px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 9px 11px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 10px);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: var(--fs-mono-xs) var(--mono);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

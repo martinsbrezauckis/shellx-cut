@@ -18,6 +18,23 @@ pub mod codes {
     pub const IO: &str = "io";
     pub const FFMPEG: &str = "ffmpeg";
     pub const SIDECAR: &str = "sidecar";
+    /// A required external tool (ffmpeg or ffprobe) is not installed where
+    /// Cut looks. The step was refused before it changed anything; the
+    /// suggested_action says how to get the tool (system.fetch_tool where a
+    /// built-in download exists, otherwise the platform's install steps or
+    /// system.set_ffmpeg).
+    pub const TOOL_MISSING: &str = "tool_missing";
+    /// The file exists but is not a video, audio or image file that Cut can
+    /// read (a renamed text file, an empty file, a damaged file). Nothing was
+    /// added to the project; the suggested_action says how to get a usable copy.
+    pub const UNREADABLE_MEDIA: &str = "unreadable_media";
+    /// The project's frame size is odd (an older project), and a video export
+    /// at the project size needs even sides. Refused before anything runs;
+    /// the suggested_action is the exact `project.format` call to fix it.
+    pub const ODD_PROJECT_SIZE: &str = "odd_project_size";
+    /// The request is valid but this platform has no built-in way to do it
+    /// (e.g. no built-in FFmpeg download for this OS/architecture).
+    pub const UNSUPPORTED_PLATFORM: &str = "unsupported_platform";
     /// ShellX Motion stopped a render at the caller's or user's request. This
     /// is terminal and must never be treated as a retryable render failure.
     pub const RENDER_CANCELLED: &str = "render_cancelled";
@@ -38,6 +55,21 @@ pub mod codes {
     /// the totality guard: on fully-silent footage it removed 99.4%). The error's
     /// suggested_action names the explicit override arg to proceed anyway.
     pub const GUARDRAIL: &str = "guardrail";
+    /// A render could not get the memory it needs: the system stopped ffmpeg
+    /// (out-of-memory kill) or an allocation failed, or the render plan needs
+    /// more memory than this computer has. The suggested_action lists the
+    /// ways to make the render lighter.
+    pub const OUT_OF_MEMORY: &str = "out_of_memory";
+    /// The output drive has less free space than the render needs, or it
+    /// filled up while writing. The suggested_action says how much to free.
+    pub const NOT_ENOUGH_SPACE: &str = "not_enough_space";
+    /// A render's ffmpeg stopped working: for the stall time it wrote no new
+    /// output and used almost no processor time, so the engine ended it
+    /// instead of letting the job read "running" for ever. The message names
+    /// the part of the timeline (and the clip) it was making; the cause says
+    /// whether it was held at its memory limit; the suggested_action says
+    /// what to change before exporting again.
+    pub const RENDER_STALLED: &str = "render_stalled";
 }
 
 /// The actionable error (public verb contract:
@@ -60,6 +92,26 @@ pub struct CutError {
     /// What the agent should do next, when a clear next step exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_action: Option<String>,
+    /// The tool or condition this refusal is about (an id of
+    /// schema/requirements.json). The server fills its name and where to get
+    /// it from the registry before the answer leaves the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Boxed so an error stays small inside the many enums that carry one.
+    pub requirement: Option<Box<MissingRequirement>>,
+}
+
+/// The missing tool or condition named by a refusal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MissingRequirement {
+    /// Registry id, e.g. "ffmpeg", "captions_runtime", "open_project".
+    pub id: String,
+    /// Plain name, e.g. "Video processing (FFmpeg)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Where to get it: the Settings entry, the button, the verb and what a
+    /// person must do (`get` of the registry entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub get: Option<serde_json::Value>,
 }
 
 impl CutError {
@@ -72,7 +124,18 @@ impl CutError {
             at_ms: None,
             cause: cause.into(),
             suggested_action: None,
+            requirement: None,
         }
+    }
+
+    /// Name the missing tool or condition (a schema/requirements.json id).
+    pub fn with_requirement(mut self, id: &str) -> Self {
+        self.requirement = Some(Box::new(MissingRequirement {
+            id: id.to_string(),
+            name: None,
+            get: None,
+        }));
+        self
     }
 
     /// Attach a suggested next step (builder-style).

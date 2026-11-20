@@ -226,7 +226,7 @@ fn ordinary_factory_receives_each_exact_checkpoint_reservation() {
 
 #[test]
 fn ordinary_wgc_checkpoint_covers_frames_encoded_during_native_startup() {
-    // Retained PC4 native evidence: reserve=0, post-open observation=463,
+    // Retained desktop native evidence: reserve=0, post-open observation=463,
     // close=7373, encoded media=7533 ms. The media exceeds a post-open span
     // by 623 ms, but fits the reserved span with 160 ms of encoder drain.
     let (mut owner, log, _) = owner_with_startup(false, true);
@@ -315,7 +315,7 @@ fn checkpoint_rollover_keeps_contiguous_physical_segments_inside_one_active_run(
 
 #[test]
 fn checkpoint_rollover_reserves_after_native_close_and_publication() {
-    // PC4 r10 had already passed the 15,003 ms cadence deadline when close
+    // A retained take had already passed the 15,003 ms cadence deadline when close
     // finished at 15,112 ms. Using that old deadline for the next native
     // startup made the two published checkpoint facts overlap by 109 ms.
     let (mut owner, log, _) = owner_with_startup(false, true);

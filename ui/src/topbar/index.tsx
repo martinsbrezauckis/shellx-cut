@@ -18,7 +18,9 @@ import { callVerb, type PregateReport, type Project, type StoryboardResult } fro
 import { envHealthLevel, isFfmpegMissing, type DoctorReport } from '../lib/doctor'
 import type { WorkspaceMode } from '../layout/useLayout'
 import { FPS_PRESETS, RES_PRESETS, resKey } from '../lib/formatPresets'
-import { applyExportOutputDir, clearStoredOutputDirIfAccepted, folderTail, getStoredOutputDir, setStoredOutputDir, withAuthorizedOutputPath } from '../lib/exportDestination'
+import { applyExportOutputDir, clearStoredOutputDirIfAccepted, folderTail, getStoredOutputDir, refreshOutputFolder, setStoredOutputDir, withAuthorizedOutputPath } from '../lib/exportDestination'
+import { outputFolderLabel, outputFolderTitle } from '../lib/outputFolderStatus'
+import { useOutputFolderStatus } from '../lib/useOutputFolder'
 import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import {
   openVideoToolsGuide,
@@ -36,7 +38,7 @@ import UpdateButton from './UpdateButton'
 import StoryboardOverlay from './StoryboardOverlay'
 import PreflightWarning from './PreflightWarning'
 import ExportWarningNotice, { type ExportWarningNoticeState } from './ExportWarningNotice'
-import { runVideoPreflightAction } from './videoPreflight'
+import { runVideoPreflightAction, withResourceRisks } from './videoPreflight'
 import SequenceSwitcher from './SequenceSwitcher'
 import { useTopbarDismissibleMenu } from './useTopbarDismissibleMenu'
 import { useTopbarJobs } from './useTopbarJobs'
@@ -156,12 +158,13 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
   const exportAttempt = useRef(0)
   const currentProjectKey = useRef<string | null>(projectKey)
   const [menuOpen, setMenuOpen] = useState(false)
-  // Chosen export destination folder. Persisted in localStorage so it
-  // sticks across sessions; re-asserted to the (session-global) server in
-  // onExport, so it survives a cutd restart. null = default <project>/exports.
+  // Chosen export destination folder. The ENGINE holds it (it survives a
+  // restart and is shown by the status bar); this is its mirror, cached in
+  // localStorage. null = default <project>/exports.
   const [outputDir, setOutputDir] = useState<string | null>(() => {
     return getStoredOutputDir()
   })
+  const outputFolder = useOutputFolderStatus()
   const [renderOptsOpen, setRenderOptsOpen] = useState(false)
   const [preset, setPreset] = useState<Preset>('standard')
   const [profile, setProfile] = useState<Profile>('auto')
@@ -195,6 +198,11 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
   const ffmpegMissing = isFfmpegMissing(doctor)
 
   useTopbarDismissibleMenu(menuRef, menuOpen, setMenuOpen)
+  // Opening the Export menu shows the destination: re-check the folder first,
+  // so it never reads fine after it was deleted on disk.
+  useEffect(() => {
+    if (menuOpen) void refreshOutputFolder()
+  }, [menuOpen])
 
   useEffect(() => {
     const onExportDir = (e: Event) => setOutputDir((e as CustomEvent<string | null>).detail ?? null)
@@ -246,10 +254,26 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
     clearPreflight()
     if (action) await action()
   }
-  const runVideoPreflight = async (actionLabel: string, action: () => Promise<void>, onCancel?: () => void, isActive?: () => boolean) => {
+  const runVideoPreflight = async (actionLabel: string, action: () => Promise<void>, onCancel?: () => void, isActive?: () => boolean, renderPlanArgs?: Record<string, unknown>) => {
     return runVideoPreflightAction(actionLabel, action, {
       ffmpegMissing,
-      check: () => callVerb('verify.pregate', {}),
+      // Item 82: a single render also asks for its plan, whose memory and disk
+      // warnings join the quality risks in the same dialog.
+      check: renderPlanArgs
+        ? async () => {
+          const [pregate, plan] = await Promise.all([
+            callVerb('verify.pregate', {}),
+            callVerb('render.final', { ...renderPlanArgs, dry_run: true }).catch(() => null),
+          ])
+          // An odd project size refuses the render outright: no quality
+          // dialog, no "Export anyway"; the odd-size notice has the fix.
+          if (plan && !plan.ok && plan.error?.code === 'odd_project_size') {
+            return { ok: false, error: plan.error, blocked: `Not rendered: ${plan.error.message}.` }
+          }
+          if (!pregate.ok || !plan?.ok) return pregate
+          return { ...pregate, result: withResourceRisks(pregate.result, plan.result) }
+        }
+        : () => callVerb('verify.pregate', {}),
       showWarning: (report, label, pendingAction) => {
         if (isActive?.() !== false) openPreflight(report, label, pendingAction, onCancel)
       },
@@ -259,6 +283,13 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
 
   const onRender = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.blur() // keep Space as the global play/pause key
+    const renderArgs = {
+      preset,
+      format: fileFormat,
+      hardware: useGpu ? 'auto' as const : 'off' as const,
+      ...(profile !== 'auto' ? { profile } : {}),
+      ...(loudness !== 'off' ? { normalize_loudness: Number(loudness) } : {}),
+    }
     const startRender = async () => {
       try {
         // A non-project Format = SUBJECT-AWARE reframe (render.reframe): detect+track
@@ -271,13 +302,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 preset: reframePreset,
                 rationale: `reframe to ${aspect} (${reframePreset})`,
               })
-            : await callVerb('render.final', {
-                preset,
-                format: fileFormat,
-                hardware: useGpu ? 'auto' : 'off',
-                ...(profile !== 'auto' ? { profile } : {}),
-                ...(loudness !== 'off' ? { normalize_loudness: Number(loudness) } : {}),
-              })
+            : await callVerb('render.final', renderArgs)
         if (r.ok) {
           const jobId = (r.result as { job_id?: string })?.job_id
           flash(
@@ -294,7 +319,13 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
         flash(`${aspect !== 'project' ? 'reframe' : 'render'} failed: server unreachable`)
       }
     }
-    await runVideoPreflight(aspect !== 'project' ? 'reframing video' : 'rendering video', startRender)
+    await runVideoPreflight(
+      aspect !== 'project' ? 'reframing video' : 'rendering video',
+      startRender,
+      undefined,
+      undefined,
+      aspect !== 'project' ? undefined : renderArgs,
+    )
   }
 
   // Push the chosen destination folder to the session-global engine.
@@ -311,6 +342,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
     if (await applyOutputDir(dir)) {
       setOutputDir(dir)
       setStoredOutputDir(dir)
+      void refreshOutputFolder()
       flash(`Exports → ${dir}`)
     } else {
       flash('Could not use that folder')
@@ -1033,7 +1065,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 default project folder. Native picker on desktop. */}
             <div className="tb-menu-dest" data-cut-export-dest>
               <span className="tb-menu-dest-label" data-cut-output-dir={outputDir ?? ''}>
-                Default export folder: <b title={outputDir ?? undefined}>{outputDir ? folderTail(outputDir) : 'project exports'}</b>
+                Default export folder: <b title={outputFolderTitle(outputFolder)} data-cut-output-usable={outputFolder ? String(outputFolder.usable) : ''}>{outputDir ? outputFolderLabel(outputFolder ?? { dir: outputDir, destination: 'chosen', usable: true, problem: null, suggested_action: null }, folderTail) : 'project exports'}</b>
               </span>
               <button role="menuitem" data-cut-export-choose-folder onClick={() => void chooseFolder()}>
                 Choose default export folder…

@@ -13,7 +13,8 @@
 //! WHY A VERB, NOT AD-HOC CODE (public contract invariant 1 + the 100%-surface rule)
 //!   The scan is dispatched as `system.doctor`; the UI is just a reader. The
 //!   result is cached in AppState, recomputed on `refresh:true` or after a
-//!   successful `system.fetch_tool`, and a `doctor_updated` WS event fires on
+//!   successful `system.fetch_tool` or a `tool_missing` refusal from a verb/job.
+//!   A `doctor_updated` WS event fires on
 //!   change so the wizard/chip update live without polling.
 //!
 //! HONESTY + COLD-BOX CONTRACT
@@ -42,6 +43,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
+pub(crate) mod cache;
 mod judge_admission;
 mod premium_matte;
 use premium_matte::matte_premium_card;
@@ -184,6 +186,12 @@ fn run_doctor_command(
 }
 
 fn looks_like_missing_program(error: &CutError) -> bool {
+    // The media engine reports a missing ffmpeg/ffprobe as `tool_missing`
+    // (cut_media's spawn catch-all); that is a confirmed absence, never a
+    // timeout. Other programs keep the OS wording.
+    if error.code == cut_core::error_codes::TOOL_MISSING {
+        return true;
+    }
     let cause = error.cause.to_ascii_lowercase();
     cause.contains("no such file") || cause.contains("not found") || cause.contains("os error 2")
 }
@@ -336,12 +344,8 @@ fn ffmpeg_filter_caps(prog: &std::ffi::OsStr) -> Option<(bool, bool, bool)> {
     )
     .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    // `ffmpeg -filters` prints one filter per line; the NAME is the 2nd token after
-    // the leading flags column, e.g. " T.. subtitles      V->V  Render text...".
-    let has = |name: &str| {
-        text.lines()
-            .any(|l| l.split_whitespace().nth(1) == Some(name))
-    };
+    // The same parser the per-candidate scan uses (both FFmpeg 8 and 9 layouts).
+    let has = |name: &str| cut_media::hwencode::filter_listing_has(&text, name);
     let libass = has("subtitles") || has("ass");
     let libvidstab = has("vidstabtransform") || has("vidstabdetect");
     let zscale = has("zscale");
@@ -494,13 +498,27 @@ fn ffmpeg_source(stem: &str, resolved: &str, runnable: bool) -> CardSource {
 /// Build the ffmpeg + ffprobe cards from the toolpath resolver + a bounded
 /// `-version` probe. ESSENTIAL: a missing ffmpeg is what surfaces the wizard.
 fn ffmpeg_cards() -> Vec<Card> {
-    let mut cards = Vec::new();
-    for stem in ["ffmpeg", "ffprobe"] {
-        let prog = if stem == "ffmpeg" {
-            cut_media::toolpath::ffmpeg()
-        } else {
-            cut_media::toolpath::ffprobe()
-        };
+    vec![
+        ffmpeg_card_with_selection(),
+        media_tool_card("ffprobe", cut_media::toolpath::ffprobe()),
+    ]
+}
+
+/// One essential media tool's card for the program `prog` resolves to.
+/// The ffmpeg card plus WHY this ffmpeg is the one in use
+/// (`details.selection`: reason, automatic, found, text). Built from the same
+/// choice as `toolpath::ffmpeg()`, so the reason always names the build used.
+fn ffmpeg_card_with_selection() -> Card {
+    let selection = cut_media::toolpath::ffmpeg_selection();
+    let mut card = media_tool_card("ffmpeg", selection.program.clone());
+    if let Some(details) = card.details.as_object_mut() {
+        details.insert("selection".into(), json!(selection));
+    }
+    card
+}
+
+fn media_tool_card(stem: &str, prog: std::ffi::OsString) -> Card {
+    {
         let resolved = prog.to_string_lossy().into_owned();
         // Tri-state probe: `<tool> -version` either ran (present and runnable),
         // failed to spawn (CONFIRMED missing), or TIMED OUT (unverified — a slow
@@ -565,7 +583,7 @@ fn ffmpeg_cards() -> Vec<Card> {
                 }
             }
         };
-        cards.push(Card {
+        Card {
             id: stem.to_string(),
             kind: "tool".into(),
             status,
@@ -579,6 +597,10 @@ fn ffmpeg_cards() -> Vec<Card> {
                 // The app-data dir the wizard's Download button installs into.
                 "install_dir": cut_media::toolpath::appdata_tools_dir()
                     .map(|p| p.join("ffmpeg").display().to_string()),
+                // How to get ffmpeg + ffprobe on this machine (route, steps,
+                // copyable commands, what a self-chosen build needs). The first-run
+                // setup renders it; agents relay it.
+                "setup": cut_media::tool_setup::ffmpeg_setup_guide(),
                 // Caption burn-in (libass), stabilize (libvidstab), and color-
                 // managed render (libzimg/zscale) capability. null on ffprobe / when
                 // the probe couldn't run.
@@ -596,9 +618,22 @@ fn ffmpeg_cards() -> Vec<Card> {
                 "can_export_vp9": enc.map(|e| e.1),
                 "can_export_av1": enc.map(|e| e.2),
             }),
-        });
+        }
     }
-    cards
+}
+
+/// The essential gate: ffmpeg and ffprobe both present (Ok, Degraded or an
+/// unverified timeout). A CONFIRMED missing one of either is the hard blocker
+/// that opens the first-run wizard — imports cannot read a clip without
+/// ffprobe, and nothing renders without ffmpeg.
+fn essential_ok_for(cards: &[Card]) -> bool {
+    let present = |id: &str| {
+        cards
+            .iter()
+            .find(|c| c.id == id)
+            .is_some_and(|c| !matches!(c.status, CardStatus::Missing))
+    };
+    present("ffmpeg") && present("ffprobe")
 }
 
 /// Probe `<tool> -version` for an ESSENTIAL tool with a single in-scan RETRY on
@@ -629,26 +664,55 @@ fn ffmpeg_unverified_hint(stem: &str) -> String {
     )
 }
 
-/// OS-aware actionable hint for a missing ffmpeg-family tool — names the verb
-/// that fixes it (system.fetch_tool) so the wizard button and the agent path
-/// are the same instruction.
+/// Platform-aware hint for a missing ffmpeg-family tool. It follows the same
+/// setup guide as the engine's `tool_missing` refusal and the card's
+/// `details.setup`, so the wizard, Settings and an agent read one instruction.
 fn ffmpeg_missing_hint(stem: &str) -> String {
-    // macOS has no in-app auto-fetch (BtbN ships no mac build) — guide to Homebrew
-    // so a Mac user is never stuck staring at a dead Install button.
-    #[cfg(target_os = "macos")]
-    {
-        format!(
-            "{stem} is not resolvable (core editing + render need it). Install it with \
-             Homebrew (`brew install ffmpeg-full`; Cut detects its keg-only path after \
-             restart), or choose a compatible ffmpeg in Video processing settings."
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        format!(
-            "{stem} isn't available yet (core editing and export need it) — \
-             click Install to download it automatically, no admin needed."
-        )
+    ffmpeg_missing_hint_for(stem, &cut_media::tool_setup::ffmpeg_setup_guide())
+}
+
+fn ffmpeg_missing_hint_for(stem: &str, guide: &cut_media::tool_setup::FfmpegSetupGuide) -> String {
+    use cut_media::tool_setup::SetupRoute;
+    match guide.route {
+        SetupRoute::BuiltinDownload => {
+            let other = if guide.commands.is_empty() {
+                ""
+            } else {
+                " Homebrew's complete build is the other way (steps in Video processing)."
+            };
+            let publisher = guide
+                .download
+                .as_ref()
+                .map(|d| format!(" from its publisher {}", d.publisher))
+                .unwrap_or_default();
+            format!(
+                "{stem} isn't available yet (core editing and export need it) — choose \
+                 Download in Video processing to get it{publisher}, no admin needed.{other}"
+            )
+        }
+        SetupRoute::Homebrew => {
+            let install = guide
+                .commands
+                .iter()
+                .find(|c| c.label == "Install FFmpeg")
+                .map(|c| c.command.as_str())
+                .unwrap_or("brew install ffmpeg-full");
+            format!(
+                "{stem} is not installed, so Cut cannot import, preview or export yet. \
+                 Install Homebrew from https://brew.sh, run `{install}` in Terminal, then \
+                 click Check again — or choose a compatible ffmpeg."
+            )
+        }
+        SetupRoute::PackageManager => format!(
+            "{stem} is not installed, so Cut cannot import, preview or export yet. Install \
+             ffmpeg with your distribution's package manager, then click Check again — or \
+             choose a compatible ffmpeg."
+        ),
+        SetupRoute::ChooseBuild => format!(
+            "{stem} is not installed, so Cut cannot import, preview or export yet. Get a GPL \
+             build from {}, unzip it and choose its ffmpeg.exe — then Cut finds it at once.",
+            cut_media::tool_setup::FFMPEG_BUILDS_RELEASES
+        ),
     }
 }
 
@@ -1287,6 +1351,48 @@ fn chat_agent_block(
     })
 }
 
+/// Why a judge rung cannot be admitted while the captions runtime is absent.
+const JUDGE_CAPTIONS_MISSING_REASON: &str =
+    "Captions and transcription are not installed; render review runs on that Python runtime";
+
+/// The hint for a judge card whose CLI is installed but whose render-review
+/// adapter or Python runtime is not usable, or `None` when both are there.
+/// A missing captions runtime is named as such (the adapters ship inside the
+/// app, so "reinstall" would be wrong advice); an adapter that is really
+/// absent keeps the reinstall advice.
+fn judge_runtime_hint(
+    captions_missing: bool,
+    adapter_present: bool,
+    python_present: bool,
+) -> Option<String> {
+    if captions_missing {
+        Some(
+            "This CLI is installed, but render review runs on ShellX Cut's captions runtime, \
+             which is not installed yet. Choose Install captions (Settings > Environment) or \
+             call system.setup_perception, then re-scan. Agent chat can still use this CLI \
+             meanwhile."
+                .into(),
+        )
+    } else if !adapter_present {
+        Some(
+            "The bundled render-review adapter is missing. Reinstall ShellX Cut, \
+             or, in an ordinary development run, correct CUTD_JUDGE_ADAPTER if you set an override. Prepared native context only accepts the bundled adapter. Agent chat can \
+             still use this CLI, but Get AI review cannot run yet."
+                .into(),
+        )
+    } else if !python_present {
+        Some(
+            "This CLI is installed, but render review still needs a Python runtime \
+             for frame sampling and provider orchestration. Choose Install captions \
+             to add Cut's managed runtime, or set CUTD_ADAPTER_PYTHON. Agent chat can \
+             still use the CLI in the meantime."
+                .into(),
+        )
+    } else {
+        None
+    }
+}
+
 /// Build one card per judge rung. Installation and render-judge admission are
 /// deliberately separate: a CLI may remain usable for Agent Chat while its
 /// adapter reports it unready for verify.judge. Binary resolution reuses the
@@ -1298,6 +1404,7 @@ fn judge_card(
     vflag: &'static str,
     adapter: Option<&Path>,
     adapter_python: Option<&Path>,
+    captions_missing: bool,
     admissions: &judge_admission::JudgeAdmissions,
 ) -> Card {
     let adapter_runtime_ready = adapter.is_some() && adapter_python.is_some();
@@ -1314,7 +1421,11 @@ fn judge_card(
     // admitted Runner context it is the exact selected child, and discovery is
     // retained only as diagnostic display information below.
     let found = selected.is_some();
-    let admission = judge_admission::resolve(provider, found, adapter_runtime_ready, admissions);
+    let mut admission =
+        judge_admission::resolve(provider, found, adapter_runtime_ready, admissions);
+    if found && captions_missing {
+        admission.availability_reason = Some(JUDGE_CAPTIONS_MISSING_REASON.into());
+    }
     // Version is display-only. Never let an informational banner consume the
     // capability scan's budget or decide whether the provider is admitted.
     let version = selected
@@ -1340,21 +1451,12 @@ fn judge_card(
                      {provider} subscription (no API key — the CLI drives the review). \
                      Any one admitted judge rung is enough."
         ))
-    } else if adapter.is_none() {
-        Some(
-            "The bundled render-review adapter is missing. Reinstall ShellX Cut, \
-                     or, in an ordinary development run, correct CUTD_JUDGE_ADAPTER if you set an override. Prepared native context only accepts the bundled adapter. Agent chat can \
-                     still use this CLI, but Get AI review cannot run yet."
-                .into(),
-        )
-    } else if adapter_python.is_none() {
-        Some(
-            "This CLI is installed, but render review still needs a Python runtime \
-                     for frame sampling and provider orchestration. Choose Install captions \
-                     to add Cut's managed runtime, or set CUTD_ADAPTER_PYTHON. Agent chat can \
-                     still use the CLI in the meantime."
-                .into(),
-        )
+    } else if let Some(hint) = judge_runtime_hint(
+        captions_missing,
+        adapter.is_some(),
+        adapter_python.is_some(),
+    ) {
+        Some(hint)
     } else if admission.judge_ready {
         None
     } else {
@@ -1423,8 +1525,8 @@ fn judge_card(
     }
 }
 
-fn judge_cards() -> Vec<Card> {
-    let (adapter, adapter_python, native_context) = match resolve_adapter_runtime(
+pub(crate) fn judge_cards() -> Vec<Card> {
+    let (adapter, adapter_python, native_context, captions_missing) = match resolve_adapter_runtime(
         "judge/adapters/ladder_judge.py",
         crate::dispatch::configured_judge_adapter,
     ) {
@@ -1438,8 +1540,16 @@ fn judge_cards() -> Vec<Card> {
                 version_line(python.as_os_str(), &["--version"], Duration::from_secs(8)).is_some()
             }),
             native_context,
+            false,
         ),
-        Err(_) => (None, None, false),
+        // No captions runtime: the sidecar cannot be resolved, so neither the
+        // adapter nor its Python is known. That is not a missing adapter.
+        Err(error) => (
+            None,
+            None,
+            false,
+            cut_perception::is_captions_not_installed(&error),
+        ),
     };
     // The adapter owns provider-specific eligibility; invoke its cheap detect
     // protocol only once, before the per-card display/chat probes fan out.
@@ -1461,6 +1571,7 @@ fn judge_cards() -> Vec<Card> {
                         vflag,
                         adapter.as_deref(),
                         adapter_python.as_deref(),
+                        captions_missing,
                         &admissions,
                     )
                 })
@@ -1478,7 +1589,7 @@ fn judge_cards() -> Vec<Card> {
 // ---------------------------------------------------------------------------
 
 /// Free-space card for the volume that holds the app-data tools dir (where
-/// fetch_tool downloads land). Degraded under 500 MB free (a BtbN ffmpeg build
+/// fetch_tool downloads land). Degraded under 500 MB free (an ffmpeg build
 /// + its temp extraction needs headroom). Best-effort: a platform whose free
 /// space we cannot read reports unknown (status ok, no false alarm).
 fn disk_card() -> Card {
@@ -1523,14 +1634,59 @@ fn disk_card() -> Card {
     }
 }
 
+/// The hardware-encoding card when there is no ffmpeg at all: nothing can
+/// export, so it must not claim that software renders work.
+const NO_FFMPEG_EXPORT_HINT: &str =
+    "Exports need video processing first. Set up Video processing above; faster \
+     exports are checked after that.";
+
 /// The calm, one-line message shown when no installed ffmpeg has GPU encoders.
 /// Software encoding ALWAYS works, so this is reassurance + a gentle nudge — never
 /// a fault. Deliberately free of encoder acronyms, download URLs, and env-var
 /// syntax: the step-by-step "how to enable" lives in `details.enable_help`,
 /// rendered behind a COLLAPSED disclosure so it never becomes an always-on wall.
+/// The cause (old driver, no graphics card, no encoder in the ffmpeg build) is
+/// added after it by [`no_hardware_explanation`].
 const NO_HW_ENCODER_HINT: &str =
     "Using the software video encoder (no GPU acceleration detected). Renders work \
      fine — just slower for large exports.";
+
+/// Why there is no hardware encoder, split into what the card shows: the hint,
+/// the "how to enable" help (each cause has its own), and ffmpeg's own error line.
+struct NoHardwareExplanation {
+    shortfall: cut_media::hwencode::HwShortfall,
+    hint: String,
+    help: String,
+    technical_detail: Option<String>,
+}
+
+/// Build the explanation from the probe's diagnosis. The old advice ("install an
+/// ffmpeg build with GPU encoders") is right only when the build has no hardware
+/// encoder; with an encoder that cannot open, another build changes nothing and the
+/// driver is what to fix.
+fn no_hardware_explanation(diagnosis: &cut_media::hwencode::HwDiagnosis) -> NoHardwareExplanation {
+    use cut_media::hwencode::HwShortfall;
+    let shortfall = diagnosis.shortfall(None);
+    let hint = match shortfall {
+        HwShortfall::Unknown => NO_HW_ENCODER_HINT.to_string(),
+        other => format!(
+            "Using the software video encoder; renders work, just slower for large exports. \
+             {} {}",
+            other.reason(),
+            other.action()
+        ),
+    };
+    let help = match shortfall {
+        HwShortfall::NoEncoderInBuild | HwShortfall::Unknown => gpu_enable_help().to_string(),
+        other => other.action().to_string(),
+    };
+    NoHardwareExplanation {
+        shortfall,
+        hint,
+        help,
+        technical_detail: diagnosis.technical_detail(None),
+    }
+}
 
 /// Platform-specific, plain-language steps to ENABLE GPU encoding. Surfaced ONLY
 /// when no accelerated ffmpeg exists, and ONLY inside the collapsed "How to enable
@@ -1542,7 +1698,7 @@ fn gpu_enable_help() -> &'static str {
     {
         "Install an ffmpeg build that includes GPU encoders (NVIDIA, Intel, or AMD): \
          the 'full' build from https://www.gyan.dev/ffmpeg/builds/ , or the 'gpl' \
-         build from https://github.com/BtbN/FFmpeg-Builds/releases . Then pick it \
+         build from https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases . Then pick it \
          with the 'Change ffmpeg' button below."
     }
     #[cfg(target_os = "macos")]
@@ -1614,11 +1770,28 @@ fn gpu_encode_card() -> Card {
         .map(|v| !v.is_empty())
         .unwrap_or(false);
 
-    let hint = if !any_hw {
-        // No accelerated ffmpeg anywhere → a calm one-liner (software always works).
-        // The how-to-enable steps ride in details.enable_help and surface behind a
-        // collapsed disclosure, NOT dumped inline as a wall here.
-        Some(NO_HW_ENCODER_HINT.to_string())
+    // No ffmpeg anywhere: nothing renders, in software or hardware.
+    let ffmpeg_missing =
+        candidates.is_empty() && cut_media::toolpath::locate_media_tool("ffmpeg").is_none();
+
+    // The ffmpeg the engine really uses explains why there is no hardware tier;
+    // fall back to the best candidate when the default is not among the scanned.
+    // Without any ffmpeg there is nothing to explain: setup comes first.
+    let explanation = (!any_hw && !ffmpeg_missing).then(|| {
+        let diagnosis = resolved_caps
+            .as_ref()
+            .or(best.as_ref())
+            .map(|c| c.diagnosis.clone())
+            .unwrap_or_default();
+        no_hardware_explanation(&diagnosis)
+    });
+    let hint = if ffmpeg_missing {
+        Some(NO_FFMPEG_EXPORT_HINT.to_string())
+    } else if let Some(explanation) = explanation.as_ref() {
+        // No accelerated ffmpeg anywhere → a calm explanation of the cause
+        // (software always works). The how-to-enable steps ride in
+        // details.enable_help and surface behind a collapsed disclosure.
+        Some(explanation.hint.clone())
     } else if !default_is_best && !has_override {
         // A better ffmpeg exists and the user hasn't chosen one. With auto-select
         // on this never fires (the default IS the best); it only surfaces in a
@@ -1647,13 +1820,21 @@ fn gpu_encode_card() -> Card {
         hint,
         details: json!({
             "hardware_available": any_hw,
+            // True when no ffmpeg exists: the UI says exports need setup first.
+            "ffmpeg_missing": ffmpeg_missing,
             "backend": backend,
             // Full CUDA fast-track (scale_cuda/overlay_cuda + nvenc) actually runs.
             "full_fasttrack": full_fasttrack,
             // Plain-language "how to enable GPU encoding" steps — present ONLY when
             // there's no accelerated ffmpeg, so the UI shows the collapsed disclosure
             // exactly when it's actionable (null = nothing to enable).
-            "enable_help": (!any_hw).then(gpu_enable_help),
+            "enable_help": explanation.as_ref().map(|e| e.help.clone()),
+            // Why there is no hardware encoder: one of switched_off | driver_too_old |
+            // cannot_open | no_gpu | no_encoder_in_build | unknown (null when there is
+            // one), the plain sentence, and ffmpeg's own error line for an engineer.
+            "hardware_reason": explanation.as_ref().map(|e| e.shortfall),
+            "hardware_reason_text": explanation.as_ref().map(|e| e.shortfall.reason()),
+            "hardware_detail": explanation.as_ref().and_then(|e| e.technical_detail.clone()),
             "best_ffmpeg": best.as_ref().map(|b| b.path.clone()),
             "default_is_best": default_is_best,
             // The persisted MANUAL choice (system.set_ffmpeg), if any — the UI's
@@ -1662,6 +1843,14 @@ fn gpu_encode_card() -> Card {
             "h264": best.as_ref().and_then(|b| b.hw.h264.clone()),
             "hevc": best.as_ref().and_then(|b| b.hw.hevc.clone()),
             "av1": best.as_ref().and_then(|b| b.hw.av1.clone()),
+            // Largest delivery size each working encoder of the ffmpeg renders use
+            // accepted (UHD, DCI 4K, 8K, DCI 8K ladder), and the first it refused.
+            // A render larger than that uses software and says so in its plan.
+            "size_limits": if any_hw && !ffmpeg_missing {
+                json!(cut_media::hwencode_limits::size_limits())
+            } else {
+                json!([])
+            },
             // Every ffmpeg found + what each can do (the scan, for the UI/agent).
             "candidates": candidates.iter().map(|c| json!({
                 "path": c.path,
@@ -1682,7 +1871,7 @@ fn gpu_encode_card() -> Card {
 
 /// Walk up from `dir` to the first ancestor that exists (so statvfs/GetDiskFree
 /// has a real path to stat even before the tools dir is created).
-fn nearest_existing(dir: &Path) -> PathBuf {
+pub(crate) fn nearest_existing(dir: &Path) -> PathBuf {
     let mut cur: &Path = dir;
     loop {
         if cur.exists() {
@@ -1699,7 +1888,7 @@ fn nearest_existing(dir: &Path) -> PathBuf {
 /// returns (None, None) where we cannot read it (never a false low-disk alarm).
 #[cfg(unix)]
 #[allow(clippy::unnecessary_cast)] // Field widths differ between Linux and macOS.
-fn free_total_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
+pub(crate) fn free_total_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
     use std::os::unix::ffi::OsStrExt;
     let c = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
         Ok(c) => c,
@@ -1730,7 +1919,7 @@ fn free_total_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
 }
 
 #[cfg(windows)]
-fn free_total_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
+pub(crate) fn free_total_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
     use std::os::windows::ffi::OsStrExt;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
@@ -1750,7 +1939,7 @@ fn free_total_bytes(path: &Path) -> (Option<u64>, Option<u64>) {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn free_total_bytes(_path: &Path) -> (Option<u64>, Option<u64>) {
+pub(crate) fn free_total_bytes(_path: &Path) -> (Option<u64>, Option<u64>) {
     (None, None)
 }
 
@@ -1928,6 +2117,11 @@ fn prepared_matte_card_failure(reason: &str) -> Card {
 }
 
 pub fn scan(addr: Option<String>) -> DoctorReport {
+    // Notice an ffmpeg installed or chosen since the last scan, so "Check
+    // again" picks it up (and re-probes its hardware encoders) without a restart.
+    if cut_media::toolpath::refresh_media_tools() {
+        tracing::info!("doctor: media tools changed since the last scan");
+    }
     // Every group is observational and independent. Run them together so one
     // slow optional CLI/model never turns the total Doctor scan into the sum of
     // every individual timeout. Card order remains stable below.
@@ -1958,6 +2152,8 @@ pub fn scan(addr: Option<String>) -> DoctorReport {
         });
     let mut cards = Vec::new();
     cards.extend(ffmpeg);
+    // Windows: Microsoft's Visual C++ runtime that captions need (vc_runtime.rs).
+    cards.extend(crate::vc_runtime::doctor_card());
     cards.push(gpu);
     cards.push(perception);
     cards.push(matte);
@@ -1981,11 +2177,7 @@ pub fn scan(addr: Option<String>) -> DoctorReport {
     // essential to "missing" and pop the wizard until a manual re-scan. ONLY a truly
     // CONFIRMED-missing ffmpeg (spawn failed — the binary genuinely is not there) is the
     // hard blocker that warrants the auto-wizard. (ffprobe rides with ffmpeg.)
-    let essential_ok = cards
-        .iter()
-        .find(|c| c.id == "ffmpeg")
-        .map(|c| !matches!(c.status, CardStatus::Missing))
-        .unwrap_or(false);
+    let essential_ok = essential_ok_for(&cards);
 
     DoctorReport {
         schema: DOCTOR_SCHEMA.to_string(),
@@ -2173,6 +2365,41 @@ mod tests {
         assert!(configured.details.get("python_configured").is_none());
     }
 
+    /// A Mac without ffmpeg gets complete, truthful steps: where Homebrew comes
+    /// from, the exact install command, and Check again (no restart).
+    #[test]
+    fn mac_missing_hint_is_complete_and_needs_no_restart() {
+        let silicon = cut_media::tool_setup::ffmpeg_setup_guide_for("macos", "aarch64");
+        let hint = ffmpeg_missing_hint_for("ffmpeg", &silicon);
+        assert!(hint.contains("Download"), "{hint}");
+        assert!(hint.contains("Martin Riedl"), "{hint}");
+        assert!(hint.contains("Homebrew"), "{hint}");
+        assert!(!hint.contains("restart"), "{hint}");
+        let intel = cut_media::tool_setup::ffmpeg_setup_guide_for("macos", "x86_64");
+        let hint = ffmpeg_missing_hint_for("ffmpeg", &intel);
+        assert!(hint.contains("https://brew.sh"), "{hint}");
+        assert!(
+            hint.contains("/usr/local/bin/brew install ffmpeg-full"),
+            "{hint}"
+        );
+        assert!(hint.contains("Check again"), "{hint}");
+        assert!(!hint.contains("restart"), "{hint}");
+        assert!(
+            !hint.contains("Download"),
+            "no download exists on Intel Macs"
+        );
+        let linux_arm = cut_media::tool_setup::ffmpeg_setup_guide_for("linux", "aarch64");
+        assert!(!ffmpeg_missing_hint_for("ffmpeg", &linux_arm).contains("Download"));
+    }
+
+    /// With no ffmpeg at all the hardware-encoding card must not claim that
+    /// renders work in software.
+    #[test]
+    fn no_ffmpeg_export_hint_does_not_claim_renders_work() {
+        assert!(!NO_FFMPEG_EXPORT_HINT.contains("work"));
+        assert!(NO_FFMPEG_EXPORT_HINT.contains("Video processing"));
+    }
+
     /// The capability note names exactly the missing feature(s), frames ffmpeg
     /// as the user's external tool, states the license type, and never gates on it.
     #[test]
@@ -2242,6 +2469,22 @@ mod tests {
         assert!(j.contains("\"schema\":\"shellx-cut/doctor/1\""));
         // status enum lowercase.
         let _: DoctorReport = serde_json::from_str(&j).unwrap();
+    }
+
+    #[test]
+    fn judge_hint_names_missing_captions_not_a_missing_adapter() {
+        let hint = judge_runtime_hint(true, false, false).expect("a hint");
+        assert!(hint.contains("Install captions"), "{hint}");
+        assert!(hint.contains("system.setup_perception"), "{hint}");
+        assert!(!hint.contains("Reinstall"), "{hint}");
+        assert!(!hint.contains("adapter is missing"), "{hint}");
+        // An adapter that is really absent keeps the reinstall advice.
+        let real = judge_runtime_hint(false, false, true).expect("a hint");
+        assert!(real.contains("Reinstall ShellX Cut"), "{real}");
+        // Adapter present, Python absent: Install captions too.
+        let py = judge_runtime_hint(false, true, false).expect("a hint");
+        assert!(py.contains("Install captions"), "{py}");
+        assert_eq!(judge_runtime_hint(false, true, true), None);
     }
 
     #[test]
@@ -2448,6 +2691,79 @@ mod tests {
     /// timed-out probe degrades to — it serializes lowercase (the UI mirror in
     /// doctor.ts adds 'unknown' to CardStatus) and is explicitly NOT a confirmed
     /// absence, so it must not gate the first-run wizard.
+    /// The ffmpeg card reads the FFmpeg 9 `-filters` listing (two-character
+    /// flags column) with the same parser as the per-candidate scan.
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_card_reads_the_ffmpeg_9_filter_listing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("ffmpeg");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf 'Filters:\\n .. ass               V->V  x\\n \
+             .. vidstabtransform  V->V  x\\n .S zscale            V->V  x\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut caps = ffmpeg_filter_caps(fake.as_os_str());
+        for _ in 0..5 {
+            if caps.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            caps = ffmpeg_filter_caps(fake.as_os_str());
+        }
+        assert_eq!(caps, Some((true, true, true)));
+    }
+
+    /// An absent ffmpeg or ffprobe is MISSING (never an unverified timeout),
+    /// and either one missing turns the essential gate off — the condition the
+    /// UI opens the first-run wizard on. Uses a real spawn of a program that
+    /// does not exist, so it covers each platform's error path.
+    #[test]
+    fn an_absent_media_tool_is_missing_and_closes_the_essential_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["ffmpeg", "ffprobe", "ffmpeg.exe", "ffprobe.exe"] {
+            let outcome = probe_essential_version(dir.path().join(name).as_os_str());
+            assert!(
+                matches!(outcome, ProbeOutcome::NotFound),
+                "{name}: {outcome:?}"
+            );
+        }
+        let missing_ffmpeg = media_tool_card("ffmpeg", dir.path().join("ffmpeg").into_os_string());
+        assert_eq!(missing_ffmpeg.status, CardStatus::Missing);
+        let missing_ffprobe =
+            media_tool_card("ffprobe", dir.path().join("ffprobe").into_os_string());
+        assert_eq!(missing_ffprobe.status, CardStatus::Missing);
+
+        let with = |status: CardStatus, id: &str| Card {
+            status,
+            ..media_tool_card(id, dir.path().join(id).into_os_string())
+        };
+        assert!(!essential_ok_for(&[
+            missing_ffmpeg.clone(),
+            missing_ffprobe.clone()
+        ]));
+        assert!(!essential_ok_for(&[
+            missing_ffmpeg,
+            with(CardStatus::Ok, "ffprobe")
+        ]));
+        assert!(!essential_ok_for(&[
+            with(CardStatus::Ok, "ffmpeg"),
+            missing_ffprobe
+        ]));
+        assert!(essential_ok_for(&[
+            with(CardStatus::Ok, "ffmpeg"),
+            with(CardStatus::Ok, "ffprobe")
+        ]));
+        // An unverified (timed-out) probe stays non-blocking, as before.
+        assert!(essential_ok_for(&[
+            with(CardStatus::Unknown, "ffmpeg"),
+            with(CardStatus::Degraded, "ffprobe")
+        ]));
+    }
+
     #[test]
     fn unknown_status_is_honest_middle_state() {
         // Serializes/deserializes lowercase, matching doctor.ts's CardStatus union.
@@ -2631,5 +2947,87 @@ mod tests {
         );
         assert_eq!(c.status, CardStatus::Unknown);
         assert_eq!(c.details["reachable"], json!(false));
+    }
+
+    fn encoder_failure(
+        encoder: &str,
+        kind: cut_media::hwencode::EncoderFailureKind,
+        detail: &str,
+    ) -> cut_media::hwencode::EncoderFailure {
+        cut_media::hwencode::EncoderFailure {
+            encoder: encoder.into(),
+            kind,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// An ffmpeg that has the NVIDIA encoder on a machine whose driver is too old
+    /// is told to update the driver, with ffmpeg's own line kept as technical
+    /// detail, and is not sent to download another ffmpeg.
+    #[test]
+    fn no_hardware_explanation_blames_an_old_driver_not_the_ffmpeg_build() {
+        use cut_media::hwencode::{EncoderFailureKind, HwDiagnosis, HwShortfall};
+        let diagnosis = HwDiagnosis {
+            disabled_by_setting: false,
+            failures: vec![
+                encoder_failure(
+                    "h264_nvenc",
+                    EncoderFailureKind::DriverTooOld,
+                    "Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0",
+                ),
+                encoder_failure("h264_qsv", EncoderFailureKind::NoDevice, "no device"),
+            ],
+        };
+        let explanation = no_hardware_explanation(&diagnosis);
+        assert_eq!(explanation.shortfall, HwShortfall::DriverTooOld);
+        assert!(explanation.hint.contains("Update the graphics driver"));
+        assert!(!explanation.hint.contains("ffmpeg build"));
+        assert!(!explanation.help.contains("gyan.dev"));
+        assert!(explanation.help.contains("Update the graphics driver"));
+        assert!(explanation
+            .technical_detail
+            .as_deref()
+            .is_some_and(|d| d.contains("Found: 13.0")));
+    }
+
+    /// With no hardware encoder in the build the old advice stays: pick an ffmpeg
+    /// that has GPU encoders.
+    #[test]
+    fn no_hardware_explanation_keeps_the_build_advice_when_the_build_lacks_encoders() {
+        use cut_media::hwencode::{EncoderFailureKind, HwDiagnosis, HwShortfall};
+        let diagnosis = HwDiagnosis {
+            disabled_by_setting: false,
+            failures: vec![encoder_failure(
+                "h264_nvenc",
+                EncoderFailureKind::NotInBuild,
+                "Unknown encoder 'h264_nvenc'",
+            )],
+        };
+        let explanation = no_hardware_explanation(&diagnosis);
+        assert_eq!(explanation.shortfall, HwShortfall::NoEncoderInBuild);
+        assert!(explanation.hint.contains("no hardware video encoder"));
+        assert_eq!(explanation.help, gpu_enable_help());
+        assert_eq!(explanation.technical_detail, None);
+    }
+
+    /// No graphics card is its own message.
+    #[test]
+    fn no_hardware_explanation_names_a_missing_graphics_card() {
+        use cut_media::hwencode::{EncoderFailureKind, HwDiagnosis, HwShortfall};
+        let diagnosis = HwDiagnosis {
+            disabled_by_setting: false,
+            failures: vec![encoder_failure(
+                "h264_nvenc",
+                EncoderFailureKind::NoDevice,
+                "Cannot load libcuda.so.1",
+            )],
+        };
+        let explanation = no_hardware_explanation(&diagnosis);
+        assert_eq!(explanation.shortfall, HwShortfall::NoGpu);
+        assert!(explanation.hint.contains("No graphics card"));
+        assert!(explanation
+            .technical_detail
+            .as_deref()
+            .is_some_and(|d| d.contains("libcuda")));
     }
 }

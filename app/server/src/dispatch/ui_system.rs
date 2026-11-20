@@ -29,6 +29,7 @@ fn no_ui_client() -> CutError {
         "no UI client is connected",
         "ui.* relay verbs need a browser tab running the app, connected over WS",
     )
+    .with_requirement("ui_client")
     .with_suggested_action(
         "call system.doctor to read the live loopback address, then open it in a browser (or use render.frame for composed pixels)",
     )
@@ -106,13 +107,25 @@ pub(super) async fn ui_screenshot(state: &AppState, args: Value) -> Result<VerbR
             )
         })?;
     // Persist next to the project (frames/) or tmp when nothing is open.
-    let dir = match project_paths(state).await {
-        Ok((dir, _r, _p)) => dir.join("frames"),
-        Err(_) => std::env::temp_dir().join("shellx-cut"),
+    // Item 140 sweep: inside a project the folder is created only through
+    // plain folders and the file is replaced by name, never written in place.
+    let name = format!("ui_{}.png", chrono::Utc::now().timestamp_millis());
+    let path = match project_paths(state).await {
+        Ok((dir, _r, _p)) => {
+            let frames =
+                crate::output_paths::ensure_plain_project_relative_dir(&dir, Path::new("frames"))?;
+            let path = frames.join(&name);
+            crate::output_paths::write_output_atomic(&path, &bytes)?;
+            path
+        }
+        Err(_) => {
+            let dir = std::env::temp_dir().join("shellx-cut");
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(&name);
+            std::fs::write(&path, &bytes)?;
+            path
+        }
     };
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("ui_{}.png", chrono::Utc::now().timestamp_millis()));
-    std::fs::write(&path, &bytes)?;
     let mut result = json!({"path": path, "mime": "image/png"});
     if a.inline {
         result["base64"] = json!(b64);
@@ -288,6 +301,8 @@ pub(super) async fn system_doctor(state: &AppState, args: Value) -> Result<VerbR
     struct Args {
         #[serde(default)]
         refresh: bool,
+        #[serde(default)]
+        feature: Option<String>,
     }
     let a: Args = parse_args(args)?;
     let report = if a.refresh {
@@ -295,7 +310,25 @@ pub(super) async fn system_doctor(state: &AppState, args: Value) -> Result<VerbR
     } else {
         state.doctor_cached().await
     };
-    Ok(VerbResult::ok(serde_json::to_value(report)?))
+    // What needs what (schema/requirements.json), read from these cards and
+    // the engine's own state; nothing is probed a second time.
+    let facts = crate::requirements::EngineFacts {
+        open_project: state.project.read().await.is_some(),
+        export_folder: crate::output_paths::output_folder_status(),
+        ui_clients: state.ui_bridge.client_count(),
+        os: report.os.clone(),
+    };
+    if let Some(feature) = a.feature.as_deref() {
+        return Ok(VerbResult::ok(crate::requirements::feature_check(
+            feature, &report, &facts,
+        )?));
+    }
+    let section = crate::requirements::doctor_section(&report, &facts);
+    let mut answer = serde_json::to_value(report)?;
+    if let Value::Object(map) = &mut answer {
+        map.insert("requirements".into(), section);
+    }
+    Ok(VerbResult::ok(answer))
 }
 
 /// `system.motion_status {}` — bounded, read-only Motion discovery and
@@ -334,17 +367,39 @@ pub(super) async fn system_fetch_tool(
         #[serde(default)]
         #[allow(dead_code)] // recorded on the job below for the audit trail
         rationale: Option<String>,
+        /// The person agreed to the download offer (publisher, licence, size).
+        #[serde(default)]
+        accept_license: bool,
     }
     let a: Args = parse_args(args)?;
+    // Windows: Microsoft's Visual C++ runtime (vc_runtime.rs owns it).
+    if a.tool == crate::vc_runtime::TOOL_ID {
+        return fetch_vc_runtime(state);
+    }
     // Fail fast on an unknown tool id (the registry is the allow-list; the verb
     // schema also enum-restricts it, but we never trust only the schema).
     if a.tool != "ffmpeg" {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             format!("unknown tool '{}'", a.tool),
-            "system.fetch_tool serves a BUILT-IN registry only (v1: \"ffmpeg\"); there is no caller-supplied URL",
+            "system.fetch_tool serves a BUILT-IN registry only (\"ffmpeg\", and \"vc-runtime\" on Windows); there is no caller-supplied URL",
         )
-        .with_suggested_action("pass tool:\"ffmpeg\", or install other tools manually onto PATH"));
+        .with_suggested_action("pass tool:\"ffmpeg\" or tool:\"vc-runtime\", or install other tools manually onto PATH"));
+    }
+    // No job for a platform without a built-in download: answer now, with the
+    // platform's way to get ffmpeg, instead of an ok:true job that then fails.
+    if !cut_media::tool_setup::builtin_ffmpeg_download_available() {
+        return Err(crate::fetch::no_builtin_download(
+            &a.tool,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ));
+    }
+    // Nothing is downloaded without agreement to the offer the person sees.
+    let offer =
+        cut_media::tool_setup::download_offer_for(std::env::consts::OS, std::env::consts::ARCH);
+    if !a.accept_license {
+        return Err(crate::fetch::consent_required(offer.as_ref()));
     }
 
     let job = state.jobs.create("fetch_tool");
@@ -383,11 +438,18 @@ pub(super) async fn system_fetch_tool(
                 st.jobs
                     .progress(&jid, 0.99, Some("fetch: re-scanning environment".into()));
                 let report = st.doctor_rescan().await;
+                // Usable counts: a build without an optional filter is
+                // "degraded" but imports, previews and exports.
                 let ffmpeg_ok = report
                     .cards
                     .iter()
                     .find(|c| c.id == "ffmpeg")
-                    .map(|c| matches!(c.status, crate::doctor::CardStatus::Ok))
+                    .map(|c| {
+                        matches!(
+                            c.status,
+                            crate::doctor::CardStatus::Ok | crate::doctor::CardStatus::Degraded
+                        )
+                    })
                     .unwrap_or(false);
                 st.jobs.finish(
                     &jid,
@@ -399,6 +461,7 @@ pub(super) async fn system_fetch_tool(
                         "source_url": install.source_url,
                         "bytes": install.bytes,
                         "ffmpeg_ok_after": ffmpeg_ok,
+                        "limitation": offer.as_ref().and_then(|o| o.limitation.clone()),
                     }),
                 );
             }
@@ -406,6 +469,60 @@ pub(super) async fn system_fetch_tool(
         }
     });
     Ok(VerbResult::ok(json!({"job_id": job_id, "tool": a.tool})))
+}
+
+/// `system.fetch_tool {tool:"vc-runtime"}`: install
+/// Microsoft's Visual C++ Redistributable as a job (Windows only). The job
+/// downloads Microsoft's installer, runs it only after Windows' signature check
+/// accepts it as Microsoft's, and waits while Windows asks the PERSON for
+/// administrator permission; the result says installed, declined, cannot be
+/// approved by this account, download failed, signature failed or restart needed.
+fn fetch_vc_runtime(state: &AppState) -> Result<VerbResult, CutError> {
+    let current = crate::vc_runtime::status();
+    if !current.applicable {
+        return Err(CutError::new(
+            error_codes::UNSUPPORTED_PLATFORM,
+            "The Microsoft Visual C++ runtime is only needed on Windows",
+            format!("this is {}", std::env::consts::OS),
+        ));
+    }
+    let job = state.jobs.create("fetch_tool");
+    let job_id = job.job_id.clone();
+    let st = state.clone();
+    state.jobs.spawn(&job_id, async move {
+        let jid = job.job_id.clone();
+        let jobs = st.jobs.clone();
+        let jid_cl = jid.clone();
+        let cancellation = crate::jobs::current_job_cancellation();
+        let worker_cancellation = cancellation.clone();
+        let outcome = run_blocking("system.fetch_tool", move || {
+            let progress = move |frac: f32, msg: &str| {
+                jobs.progress(
+                    &jid_cl,
+                    (0.01 + frac * 0.97).min(0.98),
+                    Some(format!("Microsoft Visual C++ runtime: {msg}")),
+                );
+            };
+            crate::vc_runtime::install(&progress, &|| worker_cancellation.is_cancelled())
+        })
+        .await;
+        if outcome.is_err() {
+            if let Some(reason) = cancellation.reason() {
+                return st.jobs.cancel_from_worker(&jid, reason);
+            }
+        }
+        // The doctor card flips and doctor_updated fires either way.
+        let _ = st.doctor_rescan().await;
+        match outcome {
+            Ok(result) => st.jobs.finish(&jid, result),
+            Err(e) => st.jobs.fail(&jid, e),
+        }
+    });
+    Ok(VerbResult::ok(json!({
+        "job_id": job_id,
+        "tool": crate::vc_runtime::TOOL_ID,
+        "approval": "Windows asks the person for administrator permission while this job runs; poll the job for the outcome",
+    })))
 }
 
 /// serde default for `setup_perception.warm_model` (pre-fetch the model by default
@@ -440,6 +557,9 @@ pub(super) async fn system_setup_perception(
     }
     let a: Args = parse_args(args)?;
     let warm = a.warm_model;
+    // Windows: no doomed install without Microsoft's Visual C++ runtime; the
+    // refusal points at its tools-list entry and its install verb.
+    crate::vc_runtime::require_for("Captions and transcription")?;
 
     let job = state.jobs.create("setup_perception");
     let job_id = job.job_id.clone();
@@ -451,6 +571,8 @@ pub(super) async fn system_setup_perception(
             .progress(&jid, 0.01, Some("perception setup: starting".into()));
         let jobs = st.jobs.clone();
         let jid_cl = jid.clone();
+        let cancellation = crate::jobs::current_job_cancellation();
+        let worker_cancellation = cancellation.clone();
         let outcome = run_blocking("system.setup_perception", move || {
             let progress = move |frac: f32, msg: &str| {
                 // Reserve 1.0 for the post-install doctor re-scan.
@@ -460,9 +582,16 @@ pub(super) async fn system_setup_perception(
                     Some(format!("perception setup: {msg}")),
                 );
             };
-            crate::perception_setup::setup_perception(warm, &progress)
+            crate::perception_setup::setup_perception(warm, &progress, &worker_cancellation)
         })
         .await;
+        // A cancelled install ends as cancelled, whatever step it was in when
+        // its helper was stopped; the unfinished environment is already removed.
+        if outcome.is_err() {
+            if let Some(reason) = cancellation.reason() {
+                return st.jobs.cancel_from_worker(&jid, reason);
+            }
+        }
         match outcome {
             Ok(o) => {
                 st.jobs.progress(
@@ -478,6 +607,15 @@ pub(super) async fn system_setup_perception(
                     .map(|c| matches!(c.status, crate::doctor::CardStatus::Ok))
                     .unwrap_or(false);
                 let model_preparation_failed = o.model_warm_error.is_some();
+                // The full tools (beyond base transcription) failed to install or
+                // to import: a partial setup, said as such, never a plain "done".
+                let extras_missing = !o.full_perception_ready;
+                let warnings: Vec<String> = o
+                    .extras_note
+                    .iter()
+                    .chain(o.model_warm_error.iter().map(|e| &e.message))
+                    .cloned()
+                    .collect();
                 let result = json!({
                     "venv_python": o.venv_python,
                     "managed_python": o.managed_python,
@@ -492,8 +630,9 @@ pub(super) async fn system_setup_perception(
                     "full_perception_ready": o.full_perception_ready,
                     "extras_note": o.extras_note,
                     "perception_ok_after": sidecar_ok,
+                    "warnings": warnings,
                 });
-                if model_preparation_failed {
+                if model_preparation_failed || extras_missing {
                     st.jobs.finish_with_warnings(&jid, result);
                 } else {
                     st.jobs.finish(&jid, result);
@@ -612,6 +751,8 @@ pub(super) async fn system_setup_matte(
                     "re-run system.setup_matte{model:\"matanyone\", accept_noncommercial:true} to download it",
                 ));
             }
+            // Windows: torch needs Microsoft's Visual C++ runtime first.
+            crate::vc_runtime::require_for("Cleaner background removal")?;
             // Consented install: a progress job (cu128 torch ~3 GB + 135 MB ckpt).
             let job = state.jobs.create("setup_matte");
             let job_id = job.job_id.clone();
@@ -626,6 +767,8 @@ pub(super) async fn system_setup_matte(
                 );
                 let jobs = st.jobs.clone();
                 let jid_cl = jid.clone();
+                let cancellation = crate::jobs::current_job_cancellation();
+                let worker_cancellation = cancellation.clone();
                 let outcome = run_blocking("system.setup_matte", move || {
                     let progress = move |frac: f32, msg: &str| {
                         jobs.progress(
@@ -634,9 +777,16 @@ pub(super) async fn system_setup_matte(
                             Some(format!("premium background removal: {msg}")),
                         );
                     };
-                    crate::perception_setup::setup_matanyone(&progress)
+                    crate::perception_setup::setup_matanyone(&progress, &worker_cancellation)
                 })
                 .await;
+                // A cancelled install ends as cancelled, whatever step it was
+                // in; the unfinished premium environment is already removed.
+                if outcome.is_err() {
+                    if let Some(reason) = cancellation.reason() {
+                        return st.jobs.cancel_from_worker(&jid, reason);
+                    }
+                }
                 match outcome {
                     Ok(o) => {
                         st.jobs.progress(

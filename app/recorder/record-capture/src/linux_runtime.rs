@@ -19,7 +19,11 @@ pub(super) fn ffprobe_bin() -> String {
 }
 
 pub(crate) fn gst_bin() -> String {
-    std::env::var("SHELLX_RECORD_GST").unwrap_or_else(|_| "gst-launch-1.0".to_string())
+    // A relative override would be read against the current folder.
+    std::env::var("SHELLX_RECORD_GST")
+        .ok()
+        .filter(|gst| std::path::Path::new(gst).is_absolute())
+        .unwrap_or_else(|| "gst-launch-1.0".to_string())
 }
 
 /// Share one Tokio runtime across all portal work. ashpd caches its session-bus

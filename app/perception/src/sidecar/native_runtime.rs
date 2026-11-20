@@ -6,8 +6,8 @@
 //! Python ladder.
 
 use super::{
-    dev_checkout_sidecar_dir_for_exe, sidecar_base_dirs, sidecar_paths, sidecar_python_from_bases,
-    ENV_PYTHON,
+    check_interpreter, dev_checkout_sidecar_dir_for_exe, sidecar_base_dirs, sidecar_paths,
+    sidecar_python_from_bases, ENV_PYTHON,
 };
 use cut_core::{error_codes, CutError};
 use cut_native_runtime_context::{
@@ -21,6 +21,17 @@ pub struct SidecarRuntime {
     pub python: PathBuf,
     pub script: PathBuf,
     pub native_context: Option<RuntimeContext>,
+}
+impl SidecarRuntime {
+    /// Refuse plainly when there is no Python to start. A prepared native
+    /// context was verified when it was selected, so only the legacy ladder
+    /// is checked.
+    pub fn ensure_runnable(&self) -> Result<(), CutError> {
+        if self.native_context.is_some() {
+            return Ok(());
+        }
+        check_interpreter(&self.python)
+    }
 }
 const PYTHON_RUNTIME_MEMBER_ID: &str = "python";
 const PREMIUM_RUNTIME_MEMBER_ID: &str = "premium";
@@ -45,14 +56,28 @@ fn selected_native_runtime_context(prefer_premium: bool) -> Result<Option<Runtim
 /// Resolve the native interpreter when the Runner supplied a context, otherwise
 /// retain the established sidecar ladder. Both paths keep the application-owned
 /// `instruments.py` selection.
+///
+/// The interpreter is checked here, so every caller (render checks, transcribe,
+/// enrich, matte, faces, ...) gets the same plain "captions are not installed"
+/// refusal and the real setup action instead of a spawn error.
 pub fn sidecar_runtime() -> Result<SidecarRuntime, CutError> {
+    let runtime = sidecar_runtime_for_member(false)?;
+    runtime.ensure_runnable()?;
+    Ok(runtime)
+}
+
+/// [`sidecar_runtime`] without the interpreter check, for a caller that may be
+/// served from a cache and only needs the Python when it has to run it.
+pub(super) fn sidecar_runtime_unchecked() -> Result<SidecarRuntime, CutError> {
     sidecar_runtime_for_member(false)
 }
 
 /// Select a separately sealed premium Python when Runner supplied one. Older
 /// single-Python catalogs retain their existing premium matte behavior.
 pub fn premium_sidecar_runtime() -> Result<SidecarRuntime, CutError> {
-    sidecar_runtime_for_member(true)
+    let runtime = sidecar_runtime_for_member(true)?;
+    runtime.ensure_runnable()?;
+    Ok(runtime)
 }
 
 fn sidecar_runtime_for_member(prefer_premium: bool) -> Result<SidecarRuntime, CutError> {

@@ -1,0 +1,51 @@
+/* The question asked when the app is closed while an export runs. */
+.quit-question-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.quit-question {
+  width: min(480px, 100%);
+  padding: 20px 22px;
+  border: 1px solid var(--hairline-2, #2a2a28);
+  border-radius: 8px;
+  color: var(--ink, #f5f5f4);
+  background: var(--surface-2, #131312);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.quit-question h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.quit-question-running {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: var(--ink-2, #a8a8a4);
+  overflow-wrap: anywhere;
+}
+.quit-question-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.quit-question-actions button {
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  padding: 5px 12px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.quit-question-actions .quit-question-keep {
+  border-color: transparent;
+  color: var(--accent-ink, #0a0a0a);
+  background: var(--accent, #ffffff);
+}

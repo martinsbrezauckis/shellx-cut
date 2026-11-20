@@ -140,18 +140,11 @@ fn is_open_plain_regular(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
 }
 
-#[cfg(windows)]
+/// Only a name-surrogate reparse point (symbolic link, junction) names another
+/// entry. Cloud placeholders, compressed and deduplicated files are the file
+/// itself, so they are not refused here (the shared project-file rule).
 fn is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
-    false
+    cut_core::reparse::names_another_entry(metadata)
 }
 
 pub(super) fn project_relative_path(dir: &Path, path: &Path) -> Result<String, CutError> {

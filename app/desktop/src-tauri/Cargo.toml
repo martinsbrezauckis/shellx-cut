@@ -13,14 +13,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 [package]
 name = "shellx-cut"
-version = "0.6.115"
+version = "0.6.116"
 default-run = "shellx-cut"
 edition = "2021"
 description = "ShellX Cut — agent-first video editor, wrapped as a native Tauri 2 desktop app. The shell spawns the bundled cutd engine on loopback and points the webview at it."
 authors = ["Martins Brezauckis"]
-# MSRV: plist 1.10 is required for the quick-xml 0.41 security fixes and
-# requires Rust >= 1.88.
-rust-version = "1.88"
+# MSRV: Tauri 2.12 requires Rust >= 1.90.
+rust-version = "1.90"
 
 # Opt out of the parent cargo workspace at ../../Cargo.toml (the engine
 # workspace). Without this table cargo refuses to build a nested crate.
@@ -33,7 +32,7 @@ name = "shellx_cut_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.2", features = [] }
+tauri-build = { version = "2.7.1", features = [] }
 # The macOS foreground Region picker is an owned AppKit overlay compiled into
 # the Tauri shell. It must never be linked into the cutd sidecar: AppKit modal
 # interaction belongs to the process that owns the foreground window.
@@ -46,9 +45,12 @@ cc = "1"
 # button — a desktop affordance a browser origin can't provide (media.import
 # needs a real filesystem path). Drag-drop import needs NO plugin: it rides
 # Tauri's built-in `tauri://drag-drop` webview event, handled in the UI.
-tauri = { version = "2.11.2", features = [] }
+tauri = { version = "2.12.2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "=2.5.5"
+# One window per user: a second launch focuses the running window and hands it
+# a project path (single_instance.rs). Apache-2.0 OR MIT.
+tauri-plugin-single-instance = "=2.4.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -75,7 +77,7 @@ tokio = { version = "1", features = ["time", "sync"] }
 # the handler just EMITS a `cut:record-hotkey` Tauri event that the engine-served
 # webview listens for via the already-exposed window.__TAURI__.event.listen — so
 # no global-shortcut JS/IPC surface is granted to the remote origin. Version "2"
-# matches the rest of the 2.x plugin set (resolves to 2.3.x against tauri 2.11).
+# matches the rest of the 2.x plugin set.
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
@@ -85,6 +87,9 @@ tauri-plugin-wdio = { version = "1.2.0", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
 gio = "0.18"
+
+# Unix signals: the shell asks its engine to stop with SIGTERM before killing it.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [features]

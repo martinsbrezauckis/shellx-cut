@@ -139,7 +139,12 @@ async function runVite(buildDir) {
   if (!existsSync(viteBin)) {
     fail('local Vite is unavailable at ui/node_modules; run npm ci in ui on the designated build host before staging')
   }
-  await run(viteBin, ['build', '--base=./', '--outDir', buildDir, '--emptyOutDir', '--manifest'], {
+  // On Windows node_modules/.bin/vite is a shell shim that cannot be spawned directly (.cmd needs a shell), so run Vite's entry script through Node.
+  const viteArgs = ['build', '--base=./', '--outDir', buildDir, '--emptyOutDir', '--manifest']
+  const [command, args] = process.platform === 'win32'
+    ? [process.execPath, [resolve(uiRoot, 'node_modules/vite/bin/vite.js'), ...viteArgs]]
+    : [viteBin, viteArgs]
+  await run(command, args, {
     cwd: uiRoot,
     env: { ...process.env, SHELLX_CUT_SOURCEMAPS: '0' },
     stdio: 'inherit',

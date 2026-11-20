@@ -1,3 +1,6 @@
+// The folder rule is about permission bits, so its test and this import are Unix-only.
+#[cfg(unix)]
+use super::check_output_dir_policy;
 use super::{private_test_tempdir, run_with_atomic_output, run_with_validated_atomic_output};
 use cut_core::{error_codes, CutError};
 
@@ -56,18 +59,72 @@ fn precreated_legacy_temp_symlink_never_overwrites_its_sentinel() {
 
 #[cfg(unix)]
 #[test]
-fn group_or_world_writable_output_parent_is_refused_before_reservation() {
+fn an_output_parent_everyone_can_write_is_refused_unless_sticky_and_the_group_may_write() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = private_test_tempdir();
     let output_dir = root.path().join("shared-output");
     std::fs::create_dir(&output_dir).unwrap();
-    std::fs::set_permissions(&output_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
     let out = output_dir.join("final.mp4");
+    let mode = |bits| {
+        std::fs::set_permissions(&output_dir, std::fs::Permissions::from_mode(bits)).unwrap()
+    };
 
+    mode(0o777);
     let error = run_with_atomic_output(&args_for(&out), &out, |_tmp_args| Ok(())).unwrap_err();
     assert_eq!(error.code, error_codes::IO);
-    assert!(error.message.contains("writable by group or other"));
+    assert!(error
+        .message
+        .contains("can be written by anyone on this computer"));
+    assert!(check_output_dir_policy(&output_dir).is_err());
+
+    // The sticky bit (a /tmp-like folder) protects users' files from each other.
+    mode(0o1777);
+    assert!(check_output_dir_policy(&output_dir).is_ok());
+    // A folder only the group can write to is allowed, and a render publishes there.
+    mode(0o775);
+    assert!(check_output_dir_policy(&output_dir).is_ok());
+    run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
+        let tmp = std::path::Path::new(tmp_args.last().unwrap());
+        assert_eq!(
+            std::fs::symlink_metadata(tmp).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the staged file is owner-only"
+        );
+        std::fs::write(tmp, b"render bytes").unwrap();
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"render bytes");
+}
+
+/// In a folder the group can write to, a file a group member swaps in for the
+/// staged one after it was reserved is never published.
+#[cfg(unix)]
+#[test]
+fn a_staged_file_swapped_by_another_user_is_not_published() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = private_test_tempdir();
+    let output_dir = root.path().join("team-output");
+    std::fs::create_dir(&output_dir).unwrap();
+    std::fs::set_permissions(&output_dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let out = output_dir.join("final.mp4");
+
+    let error = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
+        let tmp = std::path::Path::new(tmp_args.last().unwrap());
+        // The swap: remove the reservation and put another regular file there.
+        std::fs::remove_file(tmp).unwrap();
+        std::fs::write(tmp, b"attacker bytes").unwrap();
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.code, error_codes::FFMPEG);
+    assert_eq!(
+        error.message,
+        "the staged output was replaced while the render ran"
+    );
+    assert!(!out.exists(), "a swapped file is never published");
 }
 
 #[cfg(unix)]

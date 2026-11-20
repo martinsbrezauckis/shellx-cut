@@ -1,3 +1,4 @@
+import { createPlayheadSeeks } from './app/playheadSeeks'
 // App.tsx — ShellX Cut app shell (UI contract).
 // Role: owns the WS connection + the verb-fetched snapshots, lays out the
 // shell — 54px top bar / middle (transcript LEFT ~40% | preview RIGHT ~60%
@@ -9,17 +10,18 @@
 // persisted sizes), topbar/, panels/*, statusbar/. Callers: main.tsx.
 
 import { RecordingInputHookWarning } from './panels/Record/RecordingInputHookWarning'
-import { Suspense, lazy, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   callVerb,
   type OpRecord,
   type RenderReceipt,
   type Transcript as TranscriptData,
 } from './lib/client'
-import { events, type CutEvent } from './lib/events'
+import { events, doctorReportFrom, renderReceiptFrom, type CutEvent } from './lib/events'
 import {
   applyProjectDelta,
   fetchProjectSync,
+  loadProjectHistoryOnce,
   loadProjectOpsPages,
   mergeProjectOps,
   needsColdHistoryLoad,
@@ -48,12 +50,17 @@ import AppDrawerStack, { type AppDrawer } from './app/AppDrawerStack'
 import AppRightRail from './app/AppRightRail'
 import AppWorkspace from './app/AppWorkspace'
 import { useAppImportEvents } from './app/useAppImportEvents'
+import { useAppAsyncBoundary } from './app/useAppAsyncBoundary'
 import { useAppLayoutController } from './app/useAppLayoutController'
 import { useRecordingWorkspaceNavigation, type RequestLayout } from './app/useRecordingWorkspaceNavigation'
 import { useRecordingSession } from './app/useRecordingSession'
+import { useShellOpenProject } from './app/useShellOpenProject'
 import { RecordingDeliveryProvider } from './app/RecordingDeliveryContext'
 import { useRenderQueueOwner } from './topbar/useRenderQueueOwner'
 import { RecordingSessionProvider } from './app/RecordingSessionContext'
+import RecordingRecoveryNotice from './app/RecordingRecoveryNotice'
+import QuitQuestion from './app/QuitQuestion'
+import './app/quitQuestion.css'
 import './app/recordingSession.css'
 import { useSourceNavigationController } from './app/useSourceNavigationController'
 import { useAppClipboardController } from './app/useAppClipboardController'
@@ -73,7 +80,9 @@ import {
 } from './manual/localManualState'
 import { isEmbeddedManualFrontend } from './manual/protocol'
 import UserActionFeedback from './components/UserActionFeedback'
-import { runUserVerb } from './lib/userActionFeedback'
+import OddProjectSizeNotice from './components/OddProjectSizeNotice'
+import { publishUserActionMessage, runUserVerb } from './lib/userActionFeedback'
+import { mediaScopeOf, setActiveMediaScope } from './lib/mediaScope'
 import type { AgentChatPrefill } from './lib/evidenceAttachments'
 import { OfflineMediaProvider } from './app/OfflineMediaContext'
 import { VolumeAutomationProvider } from './app/VolumeAutomationContext'
@@ -116,6 +125,7 @@ export default function App() {
   const [transcripts] = useState<Record<string, TranscriptData>>({})
   // --- UI-local view state (mirrored to the server via ui_state pushes) -----
   const [playheadMs, setPlayheadMs] = useState(0)
+  const [seekRevision, setSeekRevision] = useState(0)
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([])
   // Export RANGE [in,out] painted on the ruler (drag-select). The explicit span
   // "Save as clip" / Render section uses — no clip selection, no 30s fallback.
@@ -123,6 +133,8 @@ export default function App() {
   // connection + job pills live in statusbar/ (self-subscribed to `events`)
   // --- Environment doctor (the start wizard + Settings>Environment) ----------
   const [doctor, setDoctor] = useState<DoctorReport | null>(null)
+  const doctorRef = useRef<DoctorReport | null>(null)
+  const asyncBoundary = useAppAsyncBoundary()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [envOpen, setEnvOpen] = useState(false)
   const [envCategory, setEnvCategory] = useState<SettingsCategoryId>('overview')
@@ -130,6 +142,10 @@ export default function App() {
   // changes on a confirmed switch/close, never on ordinary project deltas.
   const [projectSession, setProjectSession] = useState(0)
   const projectSessionRef = useRef(0)
+  // Frame, proxy, filmstrip and waveform URLs/caches are keyed by asset id, and
+  // asset ids repeat between projects: scope them to the open project before any
+  // child renders (see lib/mediaScope).
+  setActiveMediaScope(mediaScopeOf(project, projectSession))
   const [generateTab, setGenerateTab] = useState<GenerateWorkspaceTab>('templates')
   const agentChatPromptSeq = useRef(0)
   const claimedAgentChatPrefills = useRef(new Set<number>())
@@ -213,10 +229,24 @@ export default function App() {
   /** Re-fetch the doctor (refresh=true forces a re-scan). Used by the wizard /
    *  env "Re-scan" buttons and after a fetch action. */
   const refreshDoctor = useCallback(async (refresh = true) => {
-    const d = await fetchDoctor(refresh)
-    if (d) setDoctor(d)
-    return d
-  }, [])
+    const token = asyncBoundary.beginDoctor()
+    try {
+      const d = doctorReportFrom(await fetchDoctor(refresh))
+      if (!asyncBoundary.isCurrentDoctor(token)) return doctorRef.current
+      if (d) {
+        doctorRef.current = d
+        setDoctor(d)
+      } else if (refresh) {
+        publishUserActionMessage('Could not refresh environment checks.')
+      }
+      return d
+    } catch {
+      if (asyncBoundary.isCurrentDoctor(token) && refresh) {
+        publishUserActionMessage('Could not refresh environment checks: the local engine is unreachable or returned invalid data.')
+      }
+      return asyncBoundary.isCurrentDoctor(token) ? null : doctorRef.current
+    }
+  }, [asyncBoundary])
 
   const { layout, setLayout: setRawLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
     useAppLayoutController(selectedClipIds)
@@ -308,6 +338,7 @@ export default function App() {
   const scheduleReconciliation = useRef<(deltaApplications: number) => void>(() => undefined)
   const initialHistoryLoaded = useRef(false)
   const historyLoadGeneration = useRef(0)
+  const projectSwitchSeq = useRef(0)
   const fullHistoryLoad = useRef<Promise<boolean> | null>(null)
   // A confirmed project change still happened at the backend. While Record
   // owns a capture, defer only the UI/provider reset that would unmount it.
@@ -364,35 +395,36 @@ export default function App() {
    * only from their known durable cursor after a snapshot fallback. */
   const loadHistoryAfter = useCallback(async (cursor?: string): Promise<boolean> => {
     const generation = historyLoadGeneration.current
-    const loaded = await loadProjectOpsPages(
-      async (nextCursor) => {
-        const result = await callVerb(
-          'project.ops',
-          nextCursor ? { cursor: nextCursor, limit: 128 } : { limit: 128 },
-        )
-        return result.ok && result.result ? result.result : null
-      },
-      () => generation === historyLoadGeneration.current,
-      cursor,
-    )
-    if (!loaded || generation !== historyLoadGeneration.current) return false
-    setOps((existing) => mergeProjectOps(existing, loaded.ops))
-    return true
-  }, [])
+    const owner = asyncBoundary.captureOwner()
+    try {
+      const loaded = await loadProjectOpsPages(
+        async (nextCursor) => {
+          const result = await callVerb(
+            'project.ops',
+            nextCursor ? { cursor: nextCursor, limit: 128 } : { limit: 128 },
+          )
+          if (!asyncBoundary.isCurrentOwner(owner)) return null
+          return result.ok && result.result ? result.result : null
+        },
+        () => asyncBoundary.isCurrentOwner(owner) && generation === historyLoadGeneration.current,
+        cursor,
+      )
+      if (!loaded || !asyncBoundary.isCurrentOwner(owner) || generation !== historyLoadGeneration.current) return false
+      setOps((existing) => asyncBoundary.isCurrentOwner(owner) && generation === historyLoadGeneration.current ? mergeProjectOps(existing, loaded.ops) : existing)
+      return true
+    } catch {
+      return false
+    }
+  }, [asyncBoundary])
 
   const loadFullHistory = useCallback((): Promise<boolean> => {
-    if (fullHistoryLoad.current) return fullHistoryLoad.current
-    const task = loadHistoryAfter()
-    fullHistoryLoad.current = task
-    void task.finally(() => {
-      if (fullHistoryLoad.current === task) fullHistoryLoad.current = null
-    })
-    return task
+    return loadProjectHistoryOnce(fullHistoryLoad, loadHistoryAfter)
   }, [loadHistoryAfter])
 
   /** Apply one bounded server-certified pull. ProjectSyncCoalescer owns the
    * one-in-flight plus one-pending policy around this runner. */
   const runProjectSync = useCallback(async (request: RevisionSyncRequest): Promise<RevisionSyncOutcome<SyncedProject | null | undefined>> => {
+    const owner = asyncBoundary.captureOwner()
     const stale = (): RevisionSyncOutcome<SyncedProject | null | undefined> => ({
       value: undefined,
       generation: request.generation,
@@ -402,13 +434,13 @@ export default function App() {
       generation: request.generation,
       projectRevision: value?.project_revision ?? projectRef.current?.project_revision,
     })
-    if (request.generation !== historyLoadGeneration.current) return stale()
+    if (!asyncBoundary.isCurrentOwner(owner) || request.generation !== historyLoadGeneration.current) return stale()
     const id = ++projectFetchSeq.current
     const pull = revisionPull(projectRef.current?.project_revision, request.advertisedPrevious)
     const response = await fetchProjectSync(
       request.forceSnapshot ? undefined : pull.sinceRevision,
     )
-    if (id !== projectFetchSeq.current || request.generation !== historyLoadGeneration.current) return stale()
+    if (!asyncBoundary.isCurrentOwner(owner) || id !== projectFetchSeq.current || request.generation !== historyLoadGeneration.current) return stale()
     if (!response || response.mode === 'no_project') {
       const nextProject = projectAfterUnavailableSync(projectRef.current, response)
       if (response?.mode === 'no_project') {
@@ -436,6 +468,7 @@ export default function App() {
       // that revision so an unsupported delta cannot hide any of its ops.
       if (previousRevision && !request.forceSnapshot && initialHistoryLoaded.current) {
         await loadHistoryAfter(previousRevision)
+        if (!asyncBoundary.isCurrentOwner(owner) || request.generation !== historyLoadGeneration.current) return stale()
       }
       return finish(projectRef.current)
     }
@@ -448,20 +481,24 @@ export default function App() {
     projectRef.current = next
     deltaSinceSnapshot.current += 1
     setProject(next)
-    setOps((existing) => mergeProjectOps(existing, response.delta.ops))
+    setOps((existing) => asyncBoundary.isCurrentOwner(owner) && request.generation === historyLoadGeneration.current ? mergeProjectOps(existing, response.delta.ops) : existing)
     scheduleReconciliation.current(deltaSinceSnapshot.current)
     return finish(next)
-  }, [layout.workspaceMode, loadHistoryAfter, recordingWorkspaceAdmission.blocked, resetProjectScopedUi])
+  }, [asyncBoundary, layout.workspaceMode, loadHistoryAfter, recordingWorkspaceAdmission.blocked, resetProjectScopedUi])
 
   syncRunner.current = runProjectSync
-  const syncProject = useCallback((forceSnapshot = false, advertisedPrevious?: string, targetRevision?: string): Promise<SyncedProject | null | undefined> => (
-    syncQueue.current.request({
-      generation: historyLoadGeneration.current,
-      forceSnapshot,
-      advertisedPrevious,
-      targetRevision,
-    })
-  ), [])
+  const syncProject = useCallback(async (forceSnapshot = false, advertisedPrevious?: string, targetRevision?: string): Promise<SyncedProject | null | undefined> => {
+    try {
+      return await syncQueue.current.request({
+        generation: historyLoadGeneration.current,
+        forceSnapshot,
+        advertisedPrevious,
+        targetRevision,
+      })
+    } catch {
+      return undefined
+    }
+  }, [])
 
   const recordingCreatedProjectName = useRef<string | null>(null)
   const ensureRecordingProject = useCallback(async (): Promise<SyncedProject | null> => {
@@ -508,44 +545,74 @@ export default function App() {
   scheduleReconciliation.current = queueReconciliation
   useEffect(() => () => {
     if (reconciliationTimer.current) clearTimeout(reconciliationTimer.current)
+    reconciliationTimer.current = null
+    // The coalescer may still hold a request across React's StrictMode effect
+    // cleanup/remount. Its generation must not become current again merely
+    // because the same component refs survived that development remount.
+    historyLoadGeneration.current += 1
+    projectFetchSeq.current += 1
+    projectSwitchSeq.current += 1
+    fullHistoryLoad.current = null
+    initialHistoryLoaded.current = false
   }, [])
 
   /** Full state resync — on connect and after reconnect (WS may have lagged). */
   const resync = useCallback(async () => {
-    const activeProject = await syncProject()
-    if (activeProject === null) {
-      requestLayout((current) => (
-        !shouldReturnToProjectsAfterResync(activeProject, current.workspaceMode)
-          ? current
-          : current.leftTab === 'projects' && !current.leftCollapsed
+    const token = asyncBoundary.beginResync()
+    try {
+      const activeProject = await syncProject()
+      if (!asyncBoundary.isCurrentResync(token) || activeProject === undefined) return
+      const generation = historyLoadGeneration.current
+      if (activeProject === null) {
+        requestLayout((current) => (
+          !shouldReturnToProjectsAfterResync(activeProject, current.workspaceMode)
             ? current
-            : { ...current, leftTab: 'projects', leftCollapsed: false }
-      ))
+            : current.leftTab === 'projects' && !current.leftCollapsed
+              ? current
+              : { ...current, leftTab: 'projects', leftCollapsed: false }
+        ))
+      }
+      if (needsColdHistoryLoad(activeProject, initialHistoryLoaded.current)) {
+        const loaded = await loadFullHistory()
+        if (!asyncBoundary.isCurrentResync(token) || generation !== historyLoadGeneration.current) return
+        initialHistoryLoaded.current = loaded
+      }
+      // Receipts persist on disk (receipts/render_*.json) but receipt_ready
+      // only fires once — a tab opened AFTER a render must still see the
+      // verdict (open the UI at any moment and see live state).
+      // verify.checks{} returns the latest receipt; errors (no project / no
+      // renders yet) are the normal empty case.
+      try {
+        const rc = await callVerb('verify.checks', {})
+        const receipt = rc.ok ? renderReceiptFrom(rc.result) : null
+        if (receipt && asyncBoundary.isCurrentResync(token) && generation === historyLoadGeneration.current) {
+          setReceipts((prev) => generation !== historyLoadGeneration.current || prev.some((p) => p.render_id === receipt.render_id) ? prev : [...prev, receipt])
+        }
+      } catch {
+        // The cached receipt is optional; a rejected or malformed response must
+        // not prevent the independent Doctor pull or reject detached resyncs.
+      }
+      if (!asyncBoundary.isCurrentResync(token) || generation !== historyLoadGeneration.current) return
+      // Pull the cached environment doctor on (re)connect. Auto-surface the first-run
+      // wizard ONCE this session ONLY when the essential dep (ffmpeg) is CONFIRMED
+      // missing — readiness tri-state: never on an UNVERIFIED probe-timeout ('unknown'), which
+      // must not pop a sticky "essential missing" modal (shouldAutoPopWizard gates
+      // this precisely, independent of the broader essential_ok flag).
+      const d = await refreshDoctor(false)
+      if (!asyncBoundary.isCurrentResync(token) || generation !== historyLoadGeneration.current) return
+      if (shouldAutoPopWizard(d) && !wizardAutoShown.current) {
+        wizardAutoShown.current = true
+        setWizardOpen(true)
+      }
+    } catch {
+      // Event and panel callbacks intentionally detach resync. A transient
+      // transport failure must settle this App-owned task.
     }
-    if (needsColdHistoryLoad(activeProject, initialHistoryLoaded.current)) {
-      initialHistoryLoaded.current = await loadFullHistory()
-    }
-    // Receipts persist on disk (receipts/render_*.json) but receipt_ready
-    // only fires once — a tab opened AFTER a render must still see the
-    // verdict (open the UI at any moment and see live state).
-    // verify.checks{} returns the latest receipt; errors (no project / no
-    // renders yet) are the normal empty case.
-    const rc = await callVerb('verify.checks', {})
-    if (rc.ok && rc.result?.checks) {
-      setReceipts((prev) => (prev.some((p) => p.render_id === rc.result!.render_id) ? prev : [...prev, rc.result!]))
-    }
-    // Pull the cached environment doctor on (re)connect. Auto-surface the first-run
-    // wizard ONCE this session ONLY when the essential dep (ffmpeg) is CONFIRMED
-    // missing — readiness tri-state: never on an UNVERIFIED probe-timeout ('unknown'), which
-    // must not pop a sticky "essential missing" modal (shouldAutoPopWizard gates
-    // this precisely, independent of the broader essential_ok flag).
-    const d = await refreshDoctor(false)
-    if (shouldAutoPopWizard(d) && !wizardAutoShown.current) {
-      wizardAutoShown.current = true
-      setWizardOpen(true)
-    }
-  }, [loadFullHistory, refreshDoctor, requestLayout, syncProject])
+  }, [asyncBoundary, loadFullHistory, refreshDoctor, requestLayout, syncProject])
 
+  const [recoveryNoticeVisible, setRecoveryNoticeVisible] = useState(false)
+  // A project named at launch, or by a second launch of the app.
+  useShellOpenProject()
   const recordingSession = useRecordingSession({
     project,
     onEnsureProject: ensureRecordingProject,
@@ -553,28 +620,29 @@ export default function App() {
   })
   const renderQueueOwner = useRenderQueueOwner(project, projectSession)
 
+  const playheadSeeks = useMemo(() => createPlayheadSeeks(setPlayheadMs, setSeekRevision), [])
+  const onSeek = playheadSeeks.seek
   useUiCommandController({
     stateRef: uiStateRef,
     project,
-    setPlayheadMs,
+    setPlayheadMs: onSeek,
     setSelectedClipIds,
     setHighlight,
     highlightNonce,
     openSurface: openUiSurface,
   })
 
-  const historyNavRef = useRef<Promise<void>>(Promise.resolve())
   const enqueueHistoryNav = useCallback((verbName: 'project.undo' | 'project.redo') => {
-    historyNavRef.current = historyNavRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        await callVerb(verbName, {})
-        // History navigation only changes project state. Keep it serialized,
-        // but do not put the next undo/redo behind reconnect-only receipt and
-        // environment-doctor probes from the broader resync routine.
-        await syncProject()
-      })
-  }, [syncProject])
+    const generation = historyLoadGeneration.current
+    asyncBoundary.enqueueHistory(() => generation === historyLoadGeneration.current, async () => {
+      const result = await callVerb(verbName, {})
+      if (!result.ok || generation !== historyLoadGeneration.current) return
+      // History navigation only changes project state. Keep it serialized,
+      // but do not put the next undo/redo behind reconnect-only receipt and
+      // environment-doctor probes from the broader resync routine.
+      await syncProject()
+    }, () => publishUserActionMessage('Could not navigate project history: the local engine is unreachable or returned invalid data.'))
+  }, [asyncBoundary, syncProject])
 
   useAppImportEvents({ project, onChanged: resync, setLayout: requestLayout })
 
@@ -593,8 +661,12 @@ export default function App() {
     // Invalidate in-flight snapshots and paged history before awaiting the
     // forced state pull; op ids restart at op_000001 across projects.
     const navigationEpoch = workspaceNavigationEpoch.current
+    const owner = asyncBoundary.captureOwner()
+    const switchSeq = ++projectSwitchSeq.current
     resetProjectScopedUi()
     const nextProject = await syncProject(true)
+    if (!asyncBoundary.isCurrentOwner(owner) || switchSeq !== projectSwitchSeq.current || nextProject === undefined) return
+    const generation = historyLoadGeneration.current
     if (workspaceNavigationEpoch.current === navigationEpoch) {
       requestLayout((l) => ({
         ...l,
@@ -603,8 +675,11 @@ export default function App() {
         workspaceMode: 'edit',
       }))
     }
-    if (nextProject) initialHistoryLoaded.current = await loadFullHistory()
-  }, [layout.workspaceMode, loadFullHistory, recordingWorkspaceAdmission.blocked, resetProjectScopedUi, requestLayout, syncProject])
+    if (nextProject) {
+      const loaded = await loadFullHistory()
+      if (asyncBoundary.isCurrentOwner(owner) && switchSeq === projectSwitchSeq.current && generation === historyLoadGeneration.current) initialHistoryLoaded.current = loaded
+    }
+  }, [asyncBoundary, layout.workspaceMode, loadFullHistory, recordingWorkspaceAdmission.blocked, resetProjectScopedUi, requestLayout, syncProject])
   useEffect(() => {
     if (recordingWorkspaceAdmission.blocked || !deferredProjectChange.current) return
     deferredProjectChange.current = false
@@ -644,7 +719,7 @@ export default function App() {
           // converges live. These snapshots share the revision coalescer: a
           // progress burst has one in-flight snapshot plus at most one trailing
           // snapshot. Job PILLS render in statusbar/ (self-subscribed).
-          if (ev.kind === 'import_chain' || ev.kind === 'enrich' || ev.progress >= 1) {
+          if (ev.kind === 'import_chain' || ev.kind === 'enrich' || ev.terminal) {
             void syncProject(true)
           }
           break
@@ -679,6 +754,8 @@ export default function App() {
           // missing and we never showed it (we never re-nag after a dismiss).
           // readiness tri-state: shouldAutoPopWizard requires ffmpeg === 'missing', so an
           // UNVERIFIED ('unknown') re-scan timeout never pops the modal.
+          asyncBoundary.supersedeDoctor()
+          doctorRef.current = ev.report
           setDoctor(ev.report)
           if (shouldAutoPopWizard(ev.report) && !wizardAutoShown.current) {
             wizardAutoShown.current = true
@@ -697,7 +774,7 @@ export default function App() {
       offStatus()
       offEvents()
     }
-  }, [onProjectSwitched, resync, syncProject])
+  }, [asyncBoundary, onProjectSwitched, resync, syncProject])
 
   // --- panel callbacks ------------------------------------------------------
   // Playhead and selection are UI-view state, not project mutations. Commit
@@ -705,9 +782,7 @@ export default function App() {
   // to the engine. Calling ui.playhead/ui.select here would relay the command
   // back into this same UI after the state already changed, so the confirmation
   // controller would correctly reject it as an already-applied conflict.
-  const onSeek = useCallback((atMs: number) => {
-    setPlayheadMs(Math.max(0, Math.round(atMs)))
-  }, [])
+  const onPlaybackSeek = playheadSeeks.playback
 
   const onSelect = useCallback((clipIds: string[]) => {
     setSelectedClipIds(clipIds)
@@ -753,7 +828,7 @@ export default function App() {
       className="app"
       data-cut-app-root
       data-cut-workspace-mode={layout.workspaceMode}
-      data-cut-recording-banner={recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record' ? 'true' : undefined}
+      data-cut-recording-banner={(recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record') || recoveryNoticeVisible ? 'true' : undefined}
       data-cut-drawer={activeDrawer ?? undefined}
     >
       {layout.workspaceMode === 'record' ? (
@@ -814,6 +889,8 @@ export default function App() {
       />
       )}
 
+      {/* One grid row for the recording status and the recovery notice. */}
+      <div style={(recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record') || recoveryNoticeVisible ? undefined : { display: 'none' }}>
       {recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record' && (
         <div
           className="app__recording-session"
@@ -824,14 +901,17 @@ export default function App() {
           <span>{recordingSession.state.message}</span>
           <RecordingInputHookWarning input={recordingSession.state.inputHook} saved={Boolean(recordingSession.state.rawPath)} />
           {recordingSession.state.indicatorWarning && <span> · {recordingSession.state.indicatorWarning}</span>}
-          {(recordingSession.state.phase === 'recording' || recordingSession.state.phase === 'recovery') && (
+          {(recordingSession.state.phase === 'recording' || recordingSession.state.phase === 'recovery' || (recordingSession.state.phase === 'starting' && recordingSession.state.captureId)) && (
             <button type="button" data-cut-action="record-session-stop" onClick={() => void (recordingSession.state.recoveryAction === 'check_status' ? recordingSession.refreshStopStatus() : recordingSession.stop())}>
-              {recordingSession.state.phase === 'recording' ? 'Stop' : recordingSession.state.recoveryAction === 'retry_stop' ? 'Retry Stop' : 'Check status'}
+              {recordingSession.state.phase !== 'recovery' ? 'Stop' : recordingSession.state.recoveryAction === 'retry_stop' ? 'Retry Stop' : 'Check status'}
             </button>
           )}
           {project && <button type="button" data-cut-action="record-session-open" onClick={() => requestLayout((current) => ({ ...current, workspaceMode: 'record' }))}>Open Record</button>}
         </div>
       )}
+
+      <RecordingRecoveryNotice projectKey={project?.name ?? null} onVisibleChange={setRecoveryNoticeVisible} />
+      </div>
 
       <div
         className={`app__middle${layout.workspaceMode === 'record' ? ' app__middle--record' : ''}`}
@@ -867,6 +947,8 @@ export default function App() {
           onCutWords={onCutWords}
           onRestore={onRestore}
           onSeek={onSeek}
+          onPlaybackSeek={onPlaybackSeek}
+          seekRevision={seekRevision}
           onSelect={onSelect}
           onExportRange={setExportRange}
           onCopyClip={copyClip}
@@ -988,6 +1070,9 @@ export default function App() {
         onClose={closeDrawer}
       />
       <UserActionFeedback />
+      <OddProjectSizeNotice settings={project?.settings} />
+      {/* At the root, so no bar or panel clips the question. */}
+      <QuitQuestion />
     </div>
     </VolumeAutomationProvider>
     </RecordingDeliveryProvider>

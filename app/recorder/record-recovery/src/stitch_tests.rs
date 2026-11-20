@@ -189,7 +189,7 @@ fn real_ffmpeg_stitch_normalizes_sparse_vfr_and_mixed_checkpoint_rates() {
 fn real_ffmpeg_stitch_accepts_bounded_encoder_drain_but_rejects_longer_overrun() {
     let dir = tempdir().unwrap();
     let mut owner = ManifestOwner::begin(dir.path(), CaptureStart::new("cap", 7_033)).unwrap();
-    // PC2's native 25 fps Stop produced 179 frames (7_160 ms) against a
+    // A native 25 fps Stop produced 179 frames (7_160 ms) against a
     // 7_033 ms capture-clock span. The checked media must not be discarded.
     let media = publish_ffmpeg_segment(&mut owner, 0, 0, 7_033, 179);
     assert_eq!(media.duration_ms, 7_160);

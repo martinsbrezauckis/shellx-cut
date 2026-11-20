@@ -46,12 +46,9 @@ pub fn measure(path: &Path) -> Result<Loudness, CutError> {
         "-hide_banner",
         "-nostats",
         "-nostdin",
-        "-protocol_whitelist",
-        crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-        "-format_whitelist",
-        crate::ffmpeg::LOCAL_INPUT_FORMATS,
-        "-i",
-        &path.to_string_lossy(),
+    ]);
+    crate::ffmpeg::push_ffmpeg_literal_input(&mut command, path)?;
+    command.args([
         "-vn",
         "-af",
         "loudnorm=print_format=json",

@@ -559,6 +559,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "reversible",
     "facets": []
   },
+  "project.get_output_dir": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "project_get_output_dir",
+    "project_state": "optional",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
   "project.group_preview": {
     "mutation_class": "read",
     "side_effects": {
@@ -1328,7 +1346,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "natural",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "none",
     "facets": []
@@ -1367,6 +1385,60 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "reversible",
+    "facets": []
+  },
+  "jobs.before_quit": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "jobs_before_quit",
+    "project_state": "optional",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "agent_only",
+    "agent_chat": "deny",
+    "risk": "destructive",
+    "facets": []
+  },
+  "jobs.interrupted": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "jobs_interrupted",
+    "project_state": "none",
+    "idempotency": "natural",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "jobs.interrupted_dismiss": {
+    "mutation_class": "project_metadata",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "jobs_interrupted_dismiss",
+    "project_state": "none",
+    "idempotency": "natural",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
     "facets": []
   },
   "edit.split": {
@@ -4467,7 +4539,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "project_state": "required",
     "idempotency": "none",
     "replayability": "not_applicable",
-    "async_job": "none",
+    "async_job": "render",
     "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
@@ -4525,6 +4597,78 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "none",
+    "facets": []
+  },
+  "screen_record.active": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_active",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.pending": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_pending",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.pending_dismiss": {
+    "mutation_class": "project_metadata",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_pending_dismiss",
+    "project_state": "none",
+    "idempotency": "natural",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.recover": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_recover",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
     "facets": []
   },
   "ui.state": {
@@ -4626,6 +4770,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
       "ui": true
     },
     "dispatch": "ui_select",
+    "project_state": "none",
+    "idempotency": "request_key",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "agent_only",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "ui.preview": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "ui_preview",
     "project_state": "none",
     "idempotency": "request_key",
     "replayability": "not_replayable",

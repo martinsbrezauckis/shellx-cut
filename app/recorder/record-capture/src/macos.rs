@@ -17,17 +17,15 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
 
 use crate::active_capture_preview::{
     ActiveCapturePreview, ControllerExclusionStatus, RecursionStatus,
 };
-use crate::macos_finalization::stop_audio_at_video_boundary;
 use crate::macos_region_capture::verified_region_output_size;
-use crate::macos_system_tap::{SystemAudioResult, SystemAudioTap};
+use crate::macos_system_tap::SystemAudioTap;
 use crate::{
     checkpoint::Checkpoints, macos_checkpoint::SegmentOutput, surface_coordinates, Capture,
     CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,
@@ -204,20 +202,19 @@ pub(super) fn recording_stream_config(
 
 /// Probe the produced file's dimensions (avfoundation picks the display's native size).
 fn probe_dims(path: &str) -> Option<(u32, u32)> {
-    let out = Command::new(ffprobe_bin())
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height",
-            "-of",
-            "csv=p=0:s=,",
-            path,
-        ])
-        .output()
-        .ok()?;
+    let mut command = Command::new(ffprobe_bin());
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0:s=,",
+    ]);
+    cut_media::ffmpeg::push_ffprobe_literal_input(&mut command, std::path::Path::new(path));
+    let out = cut_media::process_start::retry_busy_start(|| command.output()).ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
     let line = s.lines().next()?.trim();
     let mut it = line.split(',');
@@ -233,8 +230,8 @@ fn probe_dims(path: &str) -> Option<(u32, u32)> {
 /// the screen, so for the whole capture we hold an IOKit display-sleep assertion via
 /// the always-present `/usr/bin/caffeinate` (no extra crate): `-u` wakes a dimmed
 /// display (and the synchronous `-t 1` doubles as a settle so the panel is up before
-/// SCK grabs frame 0), then a held `caffeinate -d` child prevents it sleeping again
-/// until this guard drops at the end of the capture.
+/// SCK grabs frame 0), then a held `caffeinate -d -w <this pid>` child prevents it
+/// sleeping again until this guard drops, or this process ends even by kill -9.
 struct DisplayAwake(Option<std::process::Child>);
 
 impl Drop for DisplayAwake {
@@ -250,9 +247,9 @@ fn keep_display_awake() -> DisplayAwake {
     // Wake the display synchronously (turns it back on if it had blanked); the brief
     // 1 s blocks until the assertion is in effect, giving the panel time to come up.
     let _ = Command::new("caffeinate").args(["-u", "-t", "1"]).status();
-    // Hold display-sleep prevention for the capture's lifetime (reaped on drop).
-    let child = Command::new("caffeinate").arg("-d").spawn().ok();
-    DisplayAwake(child)
+    let pid = std::process::id().to_string();
+    let child = Command::new("caffeinate").args(["-d", "-w", &pid]).spawn();
+    DisplayAwake(child.ok())
 }
 
 /// Live macOS capture backend.
@@ -270,7 +267,6 @@ impl Capture for MacCapture {
         // With no duration, capture remains open until that flag is set. A bounded
         // capture stops at its deadline. The spawned screen process is interrupted
         // and finalized on either path, matching the Linux capture lifecycle.
-        let bounded_ms = cfg.duration_ms; // None ⇒ record until stop
         let fps = requested_fps(cfg.fps);
 
         let out_dir = cfg.out_dir.trim_end_matches('/').to_string();
@@ -354,6 +350,7 @@ impl Capture for MacCapture {
             source_stop.store(true, Ordering::Release);
         });
         let mut stream = SCStream::new_with_delegate(&filter, &stream_config, delegate);
+        let segment_frames = Arc::new(crate::macos_segment_frames::SegmentFrames::default());
         crate::macos_readiness::attach_screen_frame_observer(
             &mut stream,
             cfg.readiness.clone(),
@@ -362,10 +359,11 @@ impl Capture for MacCapture {
                 .zip(preview_generation)
                 .map(|(preview, generation)| (preview, generation, Instant::now())),
             window_clicks.clone(),
+            Some(segment_frames.clone()),
         )
         .map_err(|error| cap_err("attach ScreenCaptureKit frame observer", error))?;
         let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
-        let mut segment = checkpoints
+        let segment = checkpoints
             .as_mut()
             .map(|owner| owner.begin(0))
             .transpose()?;
@@ -373,7 +371,7 @@ impl Capture for MacCapture {
             .as_ref()
             .map(|(_, path)| path.clone())
             .unwrap_or_else(|| std::path::PathBuf::from(&path));
-        let mut recording =
+        let recording =
             SegmentOutput::new(&segment_path).map_err(|e| cap_err("create recording output", e))?;
         stream
             .add_recording_output(recording.output())
@@ -389,7 +387,7 @@ impl Capture for MacCapture {
         // input does not open until start_capture successfully accepts output.
         let (start, listener) =
             crate::macos_input::start(&mut stream, cfg, window_clicks.clone(), window_start)?;
-        let mut input = Some(listener);
+        segment_frames.set_origin(start);
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
             let mic_path = format!("{out_dir}/mic.wav");
@@ -416,7 +414,7 @@ impl Capture for MacCapture {
         // SCK start returning is the first encoder-start boundary available from
         // this API. The journal's open reservation is intentionally not reused as
         // a capture timestamp.
-        let mut segment_start_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let segment_start_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         // Desktop/system audio runs through the Core Audio process tap (mac_systemaudio.mm),
         // started in parallel with the video. Returns an opaque ctx pointer (null on failure). A
@@ -434,169 +432,41 @@ impl Capture for MacCapture {
             None
         };
 
-        // The stopped tap payload is held in memory while video checkpoint work
-        // completes. This freezes its real PCM at the capture-clock boundary;
-        // publishing the WAV later never extends it with stitch time.
-        let mut stopped_system_audio: Option<SystemAudioResult> = None;
-
-        // Rotate a detached, fully-finalized `SCRecordingOutput`; the stream itself
-        // stays live. This is the SCK equivalent of WGC encoder rotation.
-        let (duration_ms, sealed_input) = loop {
-            let full_end = bounded_ms.unwrap_or(u64::MAX / 4);
-            let checkpoint_end = checkpoints
-                .as_ref()
-                .map(|owner| segment_start_ms.saturating_add(owner.interval_ms()))
-                .unwrap_or(full_end)
-                .min(full_end);
-            while !stop.load(Ordering::Relaxed)
-                && start.elapsed() < Duration::from_millis(checkpoint_end)
-            {
-                thread::sleep(Duration::from_millis(50));
-            }
-            // This is the last elapsed instant the current output can contain. The
-            // asynchronous SCK close that follows is a real, padded restart gap.
-            let capture_end_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let final_segment =
-                stop.load(Ordering::Relaxed) || start.elapsed() >= Duration::from_millis(full_end);
-            let sealed_input = if final_segment {
-                // Stop native video and Core Audio as one capture-end boundary.
-                // `wait_complete`/checkpoint probing/stitching may take seconds on
-                // a 4K sparse desktop and must not become recorded audio.
-                if let Some(lifecycle) = cfg.source_lifecycle.as_ref() {
-                    lifecycle.expect_terminal_close();
-                }
-                stop.store(true, Ordering::Relaxed); // end mic + input at this boundary
-                preview_clear.clear();
-                stopped_system_audio = stop_audio_at_video_boundary(
-                    || {
-                        let _ = stream.stop_capture();
-                    },
-                    &mut sys_tap,
-                    SystemAudioTap::finish,
-                );
-                // `capture_end_ms` is the exact final-video boundary. Seal the
-                // listener before recording-output completion or any stitch/audio
-                // work can add late sidecar samples.
-                Some(
-                    input
-                        .take()
-                        .expect("input listener remains owned until the final segment")
-                        .seal(capture_end_ms)?,
-                )
-            } else {
-                None
-            };
-            let _ = stream.remove_recording_output(recording.output());
-            recording
-                .wait_complete()
-                .map_err(|e| cap_err("finalize ScreenCaptureKit checkpoint", e))?;
-            if final_segment {
-                if let (Some(owner), Some((sequence, staging))) =
-                    (checkpoints.as_mut(), segment.take())
-                {
-                    owner.publish(
-                        sequence,
-                        &staging,
-                        record_recovery::CheckpointFacts {
-                            start_ms: segment_start_ms,
-                            end_ms: capture_end_ms,
-                            event_offset_ms: segment_start_ms,
-                            // Neither mic nor Core Audio tap exposes a proven
-                            // first-packet offset at this video-finalize boundary.
-                            audio_offset_ms: None,
-                        },
-                    )?;
-                }
-                break (
-                    capture_end_ms,
-                    sealed_input.expect("final segment seals its input listener"),
-                );
-            }
-            let completed = segment.take();
-            // Seal the only open segment before reserving another. Completion, probe,
-            // and publication delay are deliberately reflected as a stitched gap.
-            if let (Some(owner), Some((sequence, staging))) = (checkpoints.as_mut(), completed) {
-                owner.publish(
-                    sequence,
-                    &staging,
-                    record_recovery::CheckpointFacts {
-                        start_ms: segment_start_ms,
-                        end_ms: capture_end_ms,
-                        event_offset_ms: segment_start_ms,
-                        audio_offset_ms: None,
-                    },
-                )?;
-            }
-            let reserved_start = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let next = checkpoints
-                .as_mut()
-                .expect("checkpoint rotation configured")
-                .begin(reserved_start)?;
-            let next_path = next.1.clone();
-            let next_recording = SegmentOutput::new(&next_path)
-                .map_err(|e| cap_err("create rotated recording output", e))?;
-            stream
-                .add_recording_output(next_recording.output())
-                .map_err(|e| cap_err("attach rotated recording output", format!("{e:?}")))?;
-            // `add_recording_output` returning is the SCK encoder-start boundary.
-            let next_start = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            segment_start_ms = next_start;
-            segment = Some(next);
-            recording = next_recording;
-        };
+        let done = crate::macos_segments::record(crate::macos_segments::SegmentRun {
+            stream: &mut stream,
+            recording,
+            segment,
+            attached_ms: segment_start_ms,
+            checkpoints: &mut checkpoints,
+            frames: segment_frames,
+            start,
+            cfg,
+            stop: &stop,
+            sys_tap: &mut sys_tap,
+            input: listener,
+            out_dir: std::path::Path::new(&out_dir),
+            clear_preview: &mut || preview_clear.clear(),
+            ffmpeg: ffmpeg_bin(),
+            ffprobe: ffprobe_bin(),
+        })?;
+        let (duration_ms, sealed_input) = (done.duration_ms, done.sealed_input);
+        let mut notes = done.notes;
+        // The sound is frozen at the video boundary; publish it before the
+        // stitch so a stitch failure cannot take the system sound with it.
+        crate::macos_system_audio::publish_stopped_tap(
+            std::path::Path::new(&out_dir),
+            done.stopped_system_audio,
+            done.spool,
+        );
         let (source_path, verified_media) = if let Some(owner) = checkpoints.as_ref() {
-            let (source, media) = owner.stitch(&ffmpeg_bin(), &ffprobe_bin(), "source.mp4")?;
+            let (source, media, stitch_notes) =
+                owner.stitch(&ffmpeg_bin(), &ffprobe_bin(), "source.mp4")?;
+            notes.extend(stitch_notes);
             (source.display().to_string(), Some(media))
         } else {
             (path.clone(), None)
         };
-
-        // Flush the Core Audio payload stopped at the video boundary to
-        // `<out_dir>/system.wav`. `sxc_sysaudio_stop` tears the tap down and hands back malloc'd
-        // interleaved f32 PCM (+ channel count + sample rate); we convert to 16-bit and write the
-        // WAV via hound. Only write when we actually captured samples — an empty file would mask
-        // "no desktop audio was playing" and block the cutd orchestrator's fall-back. The polish
-        // pass picks this up as the `a_system` track, trimmed to the video length.
-        if let Some(result) = stopped_system_audio {
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(format!("{out_dir}/sysaudio.debug"))
-                .map(|mut f| {
-                    use std::io::Write;
-                    let _ = writeln!(
-                        f,
-                        "coreaudio_stop rc={} samples={} channels={} rate={} first_packet_offset_ms={:?}",
-                        result.rc,
-                        result.count,
-                        result.channels,
-                        result.rate,
-                        result.first_packet_offset_ms,
-                    );
-                });
-            if result.rc == 0 {
-                let first_packet_offset_ms = result.first_packet_offset_ms;
-                if let Some(samples) = result.samples {
-                    let ch = result.channels.clamp(1, 8) as u16;
-                    let sr = if result.rate.is_finite()
-                        && (8_000.0..=384_000.0).contains(&result.rate)
-                    {
-                        result.rate.round() as u32
-                    } else {
-                        48_000
-                    };
-                    if let Err(error) = crate::macos_system_audio::publish_padded_system_wav(
-                        std::path::Path::new(&out_dir),
-                        samples.as_slice(),
-                        ch,
-                        sr,
-                        first_packet_offset_ms,
-                    ) {
-                        eprintln!("warning: {error}");
-                    }
-                }
-            }
-        }
+        crate::capture_notes::publish(std::path::Path::new(&out_dir), &notes);
 
         let (audio, microphone_outcome) = crate::microphone_result::finish(cfg.audio, mic_handle);
         // `SCStreamConfiguration` pins the requested physical frame dimensions. If

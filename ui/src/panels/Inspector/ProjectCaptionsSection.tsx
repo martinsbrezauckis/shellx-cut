@@ -95,12 +95,19 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
   const [lookName, setLookName] = useState('')
   const [lookPick, setLookPick] = useState('')
   const [looks, setLooks] = useState<Array<{ name: string; builtin: boolean; style: CaptionStyle }>>([])
-  const reloadLooks = async () => {
-    const r = await callVerb('captions.list_styles', {})
-    if (r.ok) setLooks((r.result as { presets?: typeof looks })?.presets ?? [])
+  const reloadLooks = async (signal?: AbortSignal) => {
+    try {
+      const r = await callVerb('captions.list_styles', {}, signal)
+      if (!signal?.aborted && r.ok) setLooks((r.result as { presets?: typeof looks })?.presets ?? [])
+    } catch {
+      if (!signal?.aborted) setCapNote('Could not load caption styles')
+    }
   }
   useEffect(() => {
-    if (project) void reloadLooks()
+    if (!project) return
+    const controller = new AbortController()
+    void reloadLooks(controller.signal)
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.name])
 

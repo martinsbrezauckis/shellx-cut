@@ -277,9 +277,11 @@
       "args": {
         "type": "object",
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+          "cancel_running_jobs": { "type": "boolean", "description": "Set true to cancel the old project's running jobs that someone asked for and change the project anyway. Without it a change that would cancel such a job (any kind except the automatic import follow-ups import_chain, proxy and enrich, the open-time proxy_check and title_remake, and a cache_purge: renders, exports, reviews, generation, analysis asked for by verb, tool downloads) is refused with code jobs_running and nothing is changed; the automatic follow-ups are always cancelled and listed in the result as cancelled_jobs." }
+        }
       },
-      "result": "{closed: true}",
+      "result": "{closed: true, cancelled_jobs?:[{job_id,kind,progress,message?}]} — cancelled_jobs lists the running jobs the close cancelled; a running job someone asked for is only cancelled with cancel_running_jobs:true, otherwise error jobs_running lists them and the project stays open",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -350,14 +352,14 @@
           "width": {
             "type": "integer",
             "minimum": 16,
-            "maximum": 7680,
-            "description": "Timeline canvas width in px"
+            "maximum": 8192,
+            "description": "Timeline canvas width in px, even. The frame is 16 to 8192 px on each side and at most 8192x4320 pixels in total (checked together with height)."
           },
           "height": {
             "type": "integer",
             "minimum": 16,
-            "maximum": 4320,
-            "description": "Timeline canvas height in px"
+            "maximum": 8192,
+            "description": "Timeline canvas height in px, even (same frame limit as width)."
           },
           "fps": {
             "type": "number",
@@ -393,7 +395,7 @@
     {
       "name": "project.color",
       "domain": "project",
-      "description": "Set the project's COLOR MANAGEMENT — the WORKING color space (the renderer converts each clip into it before grade/effects) and the OUTPUT color space (the delivered file's tagging + final pixels). A lightweight color-management workflow (ffmpeg zscale, not a full ACES engine). Supported spaces: rec709 (the DEFAULT — in and out), rec2020 (UHD/wide-gamut), srgb (sRGB display/screen-capture), linear (scene-linear working space). Every conversion among these four is supported via zscale; an unknown name is rejected with the supported list. At least one of working/output is required; the other is left unchanged. DEFAULT rec709/rec709 = today's behavior — a default config emits NO color transform, so the render is byte-identical to a pre-color-management render (setting it back to rec709/rec709 restores that). Recorded as a non-timeline metadata op like project.format — the config lives in the project file and survives reopen/revert. Forces the SOFTWARE render path (the zscale conversion is CPU + bit-exact).",
+      "description": "Set the project's COLOR MANAGEMENT — the WORKING color space (the renderer converts each clip into it before grade/effects) and the OUTPUT color space (the delivered file's tagging + final pixels). A lightweight color-management workflow (ffmpeg zscale, not a full ACES engine). Supported spaces: rec709 (the DEFAULT — in and out), rec2020 (UHD/wide-gamut), srgb (sRGB display/screen-capture), linear (scene-linear working space). Every conversion among these four is supported via zscale; an unknown name is rejected with the supported list. At least one of working/output is required; the other is left unchanged. DEFAULT rec709/rec709 = today's behavior — a default config emits NO color transform, so the render is byte-identical to a pre-color-management render (setting it back to rec709/rec709 restores that). Recorded as a non-timeline metadata op like project.format — the config lives in the project file and survives reopen/revert. Forces the SOFTWARE render path (the zscale conversion is CPU + bit-exact). A space that needs conversion is refused up front (code tool_missing) when no installed FFmpeg has zimg (zscale), with the way to get one.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -535,43 +537,6 @@
         "project_state": "required",
         "idempotency": "request_key",
         "replayability": "replayable",
-        "async_job": "none",
-        "ui_exposure": "human",
-        "agent_chat": "deny",
-        "risk": "reversible",
-        "facets": []
-      }
-    },
-    {
-      "name": "project.set_output_dir",
-      "domain": "project",
-      "description": "Choose the FOLDER where exports + renders are written when a verb isn't given an explicit `path` (the UI 'Choose folder…' / agent control over the destination). The folder must already exist; it is canonicalized and becomes an allowed output-fence root. Empty/omitted `dir` clears the choice (back to <project>/exports). A workspace preference for the open session — NOT a timeline op, never replayed.",
-      "args": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "dir": {
-            "type": "string",
-            "description": "Absolute path to an EXISTING folder for default-named exports. Empty/omitted = clear (revert to <project>/exports)."
-          },
-          "rationale": {
-            "type": "string"
-          }
-        }
-      },
-      "result": "{dir} — the resolved output folder, or {dir:null, cleared:true} when cleared",
-      "behavior": {
-        "mutation_class": "external_side_effect",
-        "side_effects": {
-          "filesystem": true,
-          "process": false,
-          "network": false,
-          "ui": false
-        },
-        "dispatch": "project_set_output_dir",
-        "project_state": "optional",
-        "idempotency": "request_key",
-        "replayability": "not_replayable",
         "async_job": "none",
         "ui_exposure": "human",
         "agent_chat": "deny",

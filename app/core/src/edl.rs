@@ -173,6 +173,29 @@ pub struct EdlSegment {
     /// Caption style ref (caption segments only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_ref: Option<String>,
+    /// Where this segment sits in the WHOLE timeline when it belongs to a render
+    /// window ([`Edl::window`]); `None` in a timeline's own EDL. The renderer
+    /// uses it to give a window exactly the frames the whole-timeline render
+    /// has there (row 194): window-local milliseconds cannot say which frame of
+    /// a clip a window starts on. Only render windows carry it; it is never
+    /// stored in a project and serde-skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowPlace>,
+}
+
+/// The whole-timeline place of a window segment (see [`EdlSegment::window`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowPlace {
+    /// Timeline ms (whole timeline) where the window's 0 is.
+    pub origin_ms: u64,
+    /// The whole segment this one is a part of: its timeline span (whole
+    /// timeline ms) and its untrimmed source range.
+    pub clip_timeline_in_ms: u64,
+    pub clip_timeline_out_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_src_in_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_src_out_ms: Option<u64>,
 }
 
 /// A non-destructive ADJUSTMENT LAYER flattened for the renderer (edit.adjustment).
@@ -281,17 +304,46 @@ impl Edl {
             let dt_in = a - seg.timeline_in_ms; // timeline ms trimmed off the front
             let dt_out = seg.timeline_out_ms - b; // timeline ms trimmed off the back
             let mut s = seg.clone();
+            s.window = Some(match seg.window {
+                // A window of a window keeps the whole clip; only the origin moves.
+                Some(place) => WindowPlace {
+                    origin_ms: place.origin_ms + w0,
+                    ..place
+                },
+                None => WindowPlace {
+                    origin_ms: w0,
+                    clip_timeline_in_ms: seg.timeline_in_ms,
+                    clip_timeline_out_ms: seg.timeline_out_ms,
+                    clip_src_in_ms: seg.src_in_ms,
+                    clip_src_out_ms: seg.src_out_ms,
+                },
+            });
             s.timeline_in_ms = a - w0;
             s.timeline_out_ms = b - w0;
             let new_dur = s.timeline_out_ms - s.timeline_in_ms;
 
             // Source range (media only): advance by the trimmed timeline span ×
-            // speed. Guard rounding so the range can never invert.
-            if let (Some(src_in), Some(src_out)) = (seg.src_in_ms, seg.src_out_ms) {
+            // speed. Guard rounding so the range can never invert. A frozen
+            // segment holds one frame at `src_in + freeze.at_ms` for its whole
+            // slot and consumes no source time, so its source range stays as is:
+            // every window part must hold the same frame. A reversed segment
+            // plays its source range backward (the renderer trims
+            // [src_in, src_out) and then reverses it), so its timeline front
+            // shows the END of the range: trimming the front of the slot
+            // removes source from src_out, and trimming the back removes it
+            // from src_in.
+            if let (Some(src_in), Some(src_out), None) =
+                (seg.src_in_ms, seg.src_out_ms, &seg.freeze)
+            {
                 let adv_in = (dt_in as f64 * seg.speed).round() as u64;
                 let adv_out = (dt_out as f64 * seg.speed).round() as u64;
-                let ni = src_in.saturating_add(adv_in).min(src_out);
-                let no = src_out.saturating_sub(adv_out).max(ni);
+                let (cut_from_in, cut_from_out) = if seg.reverse {
+                    (adv_out, adv_in)
+                } else {
+                    (adv_in, adv_out)
+                };
+                let ni = src_in.saturating_add(cut_from_in).min(src_out);
+                let no = src_out.saturating_sub(cut_from_out).max(ni);
                 s.src_in_ms = Some(ni);
                 s.src_out_ms = Some(no);
             }
@@ -478,6 +530,7 @@ fn ramp_segments(
             input_color_space: c.input_color_space,
             caption_text: None,
             style_ref: None,
+            window: None,
         });
         cursor = t_out;
         tail = sub.dur_ms;
@@ -572,6 +625,7 @@ pub fn edl_from_project(project: &Project) -> Edl {
                             input_color_space: c.input_color_space,
                             caption_text: None,
                             style_ref: None,
+                            window: None,
                         });
                         prev_media_dur = Some(dur);
                     }
@@ -609,6 +663,7 @@ pub fn edl_from_project(project: &Project) -> Edl {
                         input_color_space: None,
                         caption_text: None,
                         style_ref: None,
+                        window: None,
                     });
                     prev_media_dur = None; // a gap breaks media→media adjacency
                 }
@@ -645,6 +700,7 @@ pub fn edl_from_project(project: &Project) -> Edl {
                     input_color_space: None,
                     caption_text: Some(c.text.clone()),
                     style_ref: c.style_ref.clone(),
+                    window: None,
                 }),
             }
             // Caption clips on caption tracks still advance the cursor by their
@@ -737,6 +793,7 @@ mod window_tests {
             input_color_space: None,
             caption_text: None,
             style_ref: None,
+            window: None,
         }
     }
 
@@ -845,6 +902,99 @@ mod window_tests {
         assert_eq!((s.timeline_in_ms, s.timeline_out_ms), (0, 2500));
         assert_eq!((s.src_in_ms, s.src_out_ms), (Some(5000), Some(10000)));
         assert_eq!(s.speed, 2.0);
+    }
+
+    #[test]
+    fn frozen_segment_holds_the_same_frame_in_every_window() {
+        // A 0..30 s clip frozen 10 s into its source, split into 20 s windows.
+        let mut seg = media(0, 30000, 0, 30000, 1.0);
+        seg.freeze = Some(crate::types::ClipFreeze { at_ms: 10000 });
+        let edl = Edl {
+            segments: vec![seg],
+            duration_ms: 30000,
+            adjustments: vec![],
+        };
+        for (w0, w1, local) in [(0, 20000, (0, 20000)), (20000, 40000, (0, 10000))] {
+            let w = edl.window(w0, w1);
+            let s = one(&w);
+            assert_eq!((s.timeline_in_ms, s.timeline_out_ms), local);
+            assert_eq!(
+                (s.src_in_ms, s.src_out_ms),
+                (Some(0), Some(30000)),
+                "the held frame src_in + at_ms must not move with the window"
+            );
+            assert_eq!(s.freeze.as_ref().map(|f| f.at_ms), Some(10000));
+        }
+        // An overlay clip src 30..60 s at timeline 30..60 s, frozen 20 s in,
+        // cut by a window boundary at 40 s: both parts still hold source 50 s.
+        let mut overlay = media(30000, 60000, 30000, 60000, 1.0);
+        overlay.freeze = Some(crate::types::ClipFreeze { at_ms: 20000 });
+        let edl = Edl {
+            segments: vec![overlay],
+            duration_ms: 60000,
+            adjustments: vec![],
+        };
+        for (w0, w1) in [(20000, 40000), (40000, 60000)] {
+            let w = edl.window(w0, w1);
+            let s = one(&w);
+            let held = s.src_in_ms.unwrap() + s.freeze.as_ref().unwrap().at_ms;
+            assert_eq!(held, 50000);
+            assert!(held < s.src_out_ms.unwrap());
+        }
+    }
+
+    #[test]
+    fn reversed_segment_keeps_its_backward_source_order_in_every_window() {
+        // Timeline 10..45 s plays source 55 s back to 20 s; windows split it at
+        // 20 s and 40 s. Each part must show the next stretch of the backward
+        // run: 55→45, 45→25, 25→20 (src ranges [45,55), [25,45), [20,25)).
+        let mut seg = media(10000, 45000, 20000, 55000, 1.0);
+        seg.reverse = true;
+        let edl = Edl {
+            segments: vec![seg],
+            duration_ms: 45000,
+            adjustments: vec![],
+        };
+        for (w0, w1, local, src) in [
+            (0, 20000, (10000, 20000), (45000, 55000)),
+            (20000, 40000, (0, 20000), (25000, 45000)),
+            (40000, 45000, (0, 5000), (20000, 25000)),
+        ] {
+            let w = edl.window(w0, w1);
+            let s = one(&w);
+            assert_eq!((s.timeline_in_ms, s.timeline_out_ms), local);
+            assert_eq!(
+                (s.src_in_ms, s.src_out_ms),
+                (Some(src.0), Some(src.1)),
+                "window {w0}..{w1} of a reversed segment"
+            );
+            assert!(s.reverse);
+        }
+        // Reversed at 2x: timeline 65..85 s plays source 40 s back to 0 s;
+        // the 80 s seam leaves 15 s (30 s of source) before it and 5 s after.
+        let mut fast = media(65000, 85000, 0, 40000, 2.0);
+        fast.reverse = true;
+        let edl = Edl {
+            segments: vec![fast],
+            duration_ms: 85000,
+            adjustments: vec![],
+        };
+        let before = one(&edl.window(60000, 80000)).clone();
+        assert_eq!(
+            (before.src_in_ms, before.src_out_ms),
+            (Some(10000), Some(40000))
+        );
+        let after = one(&edl.window(80000, 85000)).clone();
+        assert_eq!((after.src_in_ms, after.src_out_ms), (Some(0), Some(10000)));
+        // A forward segment is unchanged by this rule.
+        let fwd = media(10000, 45000, 20000, 55000, 1.0);
+        let edl = Edl {
+            segments: vec![fwd],
+            duration_ms: 45000,
+            adjustments: vec![],
+        };
+        let mid = one(&edl.window(20000, 40000)).clone();
+        assert_eq!((mid.src_in_ms, mid.src_out_ms), (Some(30000), Some(50000)));
     }
 
     #[test]
@@ -961,6 +1111,7 @@ mod window_tests {
             input_color_space: None,
             caption_text: Some("hello".into()),
             style_ref: Some("brand1".into()),
+            window: None,
         };
         let edl = Edl {
             segments: vec![cap],

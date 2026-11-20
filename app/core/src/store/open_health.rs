@@ -49,7 +49,7 @@ impl ProjectSnapshotHealth {
 }
 
 /// Immutable recovery outcome from project creation/open.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectOpenHealth {
     pub cache: ProjectCacheHealth,
     pub snapshot: ProjectSnapshotHealth,
@@ -57,6 +57,9 @@ pub struct ProjectOpenHealth {
     /// quarantine paths remain local implementation detail; callers expose
     /// only the discarded byte range.
     pub journal_tail_recovery: Option<JournalRecovery>,
+    /// Formats that were larger than Cut makes and were reduced while the
+    /// project opened (item 141). Empty for every project Cut itself made.
+    pub format_fits: Vec<crate::frame_size::FormatFit>,
 }
 
 impl ProjectOpenHealth {
@@ -65,6 +68,7 @@ impl ProjectOpenHealth {
             cache: ProjectCacheHealth::Matched,
             snapshot: ProjectSnapshotHealth::NotPresent,
             journal_tail_recovery: None,
+            format_fits: Vec::new(),
         }
     }
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
@@ -15,7 +16,7 @@ import {
   writeManualPublicationBrowserReceipt,
 } from '../lib/manual-publication-browser-receipt.mjs'
 
-const root = resolve(new URL('../..', import.meta.url).pathname)
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const stage = resolve(root, 'scripts/public/stage-cut-manual.mjs')
 const vite = resolve(root, 'ui/node_modules/.bin/vite')
 const playwrightPackage = resolve(root, 'ui/node_modules/playwright/package.json')

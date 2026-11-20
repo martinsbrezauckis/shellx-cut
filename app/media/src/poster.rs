@@ -75,6 +75,8 @@ pub fn make_poster(
             "1".into(),
             "-q:v".into(),
             "4".into(), // mid JPEG quality — small file, fine for a card thumb
+            "-update".into(),
+            "1".into(),
             out_s,
         ],
         PosterKind::Image => vec![
@@ -86,6 +88,8 @@ pub fn make_poster(
             "1".into(),
             "-q:v".into(),
             "4".into(),
+            "-update".into(),
+            "1".into(),
             out_s,
         ],
         PosterKind::Audio => {
@@ -98,6 +102,8 @@ pub fn make_poster(
                 "-filter_complex".into(),
                 format!("showwavespic=s={w}x{h}:colors=0x8a93a6"),
                 "-frames:v".into(),
+                "1".into(),
+                "-update".into(),
                 "1".into(),
                 out_s,
             ]

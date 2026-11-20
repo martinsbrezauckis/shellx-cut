@@ -133,13 +133,19 @@ pub(in crate::dispatch) async fn edit_trim_edges(
         let store = guard.as_ref().ok_or_else(no_project)?;
         store.project.assets.keys().cloned().collect()
     };
+    // An asset without a transcript has no speech to anchor to. When NO asset
+    // has one the answer is the reason (captions not installed, or nothing
+    // transcribed yet), never an ok that reads like "no dead air".
+    let (transcribed, untranscribed) =
+        super::super::transcript_load::assets_with_transcript(state, &asset_ids).await?;
+    if transcribed.is_empty() && !asset_ids.is_empty() {
+        return Err(super::super::transcript_load::no_transcript_reason(None));
+    }
     let mut first_speech = u64::MAX;
     let mut last_speech = 0u64;
     let mut any_words = false;
-    for id in &asset_ids {
-        let Ok(t) = load_transcript(state, id).await else {
-            continue;
-        };
+    for id in &transcribed {
+        let t = load_transcript(state, id).await?;
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
         for w in &t.words {
@@ -160,7 +166,8 @@ pub(in crate::dispatch) async fn edit_trim_edges(
         return Ok(VerbResult::ok(json!({
             "leading_trimmed_ms": 0,
             "trailing_trimmed_ms": 0,
-            "note": "no speech on the timeline to anchor edges (silent footage) — nothing trimmed",
+            "note": "nothing found: the transcripts hold no spoken words on the timeline to anchor edges, so nothing was trimmed",
+            "untranscribed_assets": untranscribed,
         })));
     }
 
@@ -223,6 +230,7 @@ pub(in crate::dispatch) async fn edit_trim_edges(
             "trailing_trimmed_ms": trailing_trimmed,
             "first_speech_ms": first_speech,
             "last_speech_ms": last_speech,
+            "untranscribed_assets": untranscribed,
         }),
         op_ids,
     ))
@@ -302,7 +310,7 @@ pub(in crate::dispatch) async fn edit_mark_scenes(
     ))
 }
 
-pub(in crate::dispatch) async fn edit_split(
+pub(in crate::dispatch) async fn edit_split_at(
     state: &AppState,
     args: Value,
     actor: Actor,
@@ -329,10 +337,28 @@ const BEAT_CUT_EPSILON_MS: u64 = 16;
 const BEAT_SNAP_DEFAULT_MS: u64 = 120;
 
 fn is_benign_split_miss(err: &CutError) -> bool {
-    err.code == error_codes::NOT_FOUND
+    (err.code == error_codes::NOT_FOUND
         && (err.message.contains("no clip under")
             || err.message.contains("inside a gap")
-            || err.cause.contains("position is on a clip boundary"))
+            || err.cause.contains("position is on a clip boundary")))
+        // A beat or scene cut less than a frame from an existing cut is that
+        // cut (no edit may leave a piece shorter than a frame): nothing to do.
+        || (err.code == error_codes::INVALID_ARGS
+            && err.message.contains("a clip must be at least one frame"))
+}
+
+#[cfg(test)]
+#[test]
+fn a_cut_less_than_a_frame_from_another_is_a_benign_miss() {
+    let guard = CutError::new(
+        error_codes::INVALID_ARGS,
+        "edit.split would leave clip c2 20 ms long at 980 ms; a clip must be at least one frame: \
+         33.3 ms at 30 fps",
+        "large editors keep every edit on the frame grid",
+    );
+    assert!(is_benign_split_miss(&guard));
+    let other = CutError::new(error_codes::INVALID_ARGS, "track 'v9' not found", "x");
+    assert!(!is_benign_split_miss(&other));
 }
 
 /// edit.cut_to_beat{track?, mode?, every_n?, range_ms?, max_snap_ms?, rationale?}
@@ -788,7 +814,7 @@ pub(in crate::dispatch) async fn edit_trim(
     commit_core(state, "edit.trim", normalized_args, actor).await
 }
 
-pub(in crate::dispatch) async fn edit_move(
+pub(in crate::dispatch) async fn edit_move_at(
     state: &AppState,
     args: Value,
     actor: Actor,
@@ -808,16 +834,21 @@ pub(in crate::dispatch) async fn edit_move(
     let a: Args = parse_args(args.clone())?;
     let ripple = a.ripple.unwrap_or(false);
     let linked = a.linked.unwrap_or(true);
+    // Item 176: a live move without ripple overwrites its destination slot
+    // (Premiere/Resolve drag); with ripple it splices and opens the same time
+    // on the other tracks. Recorded so older logged moves keep their replay.
+    let placement = cut_core::edit::MovePlacement::for_live_move(ripple);
     let mut normalized_args = args;
     if let Some(obj) = normalized_args.as_object_mut() {
         obj.insert("ripple".into(), json!(ripple));
         obj.insert("linked".into(), json!(linked));
+        obj.insert("placement".into(), json!(placement.as_str()));
     }
 
     let linked_move = resolve_linked_media(state, &a.clip, linked, "edit.move").await?;
 
     let res = if let Some(link) = &linked_move {
-        let steps = link.move_steps(&a.clip, &a.to_track, a.at_ms, ripple);
+        let steps = link.move_steps(&a.clip, &a.to_track, a.at_ms, ripple, placement);
         commit_lowered(
             state,
             "edit.move",
@@ -1184,7 +1215,7 @@ fn is_base_track(project: &cut_core::Project, track_id: &str) -> bool {
     base == Some(track_id)
 }
 
-pub(in crate::dispatch) async fn edit_insert(
+pub(in crate::dispatch) async fn edit_insert_at(
     state: &AppState,
     args: Value,
     actor: Actor,
@@ -2555,7 +2586,7 @@ pub(in crate::dispatch) async fn edit_split_edit(
 /// the base audio track at the same `at_ms`. Two inserts ⇒ two ops ⇒ two undos
 /// (consistent with the linked-delete pair). No sibling, or `link_audio:false`,
 /// or a fallback (snapshot) paste ⇒ the single video insert only.
-pub(in crate::dispatch) async fn edit_paste(
+pub(in crate::dispatch) async fn edit_paste_at(
     state: &AppState,
     args: Value,
     actor: Actor,

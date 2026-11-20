@@ -35,7 +35,7 @@ pub(crate) fn resolve_motion_template_package(template: &str) -> Result<PathBuf,
         format!("set {ENV_MOTION_TEMPLATE_ROOT} or {ENV_MOTION_ROOT}"),
     )
     .with_suggested_action(
-        "Install or checkout ShellX Motion and expose its product-template root",
+        "Install ShellX Motion and point ShellX Cut at its product-template root",
     ))
 }
 

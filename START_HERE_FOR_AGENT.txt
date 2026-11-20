@@ -17,8 +17,10 @@ Post-render verification note:
 
 Running the installed app exposes the debug/agent API on loopback. Port 6161 is
 the normal default shown below. If it is occupied, read the live address from
-the OS-specific `engine.addr` described in docs/public/DEBUG_API.md; `cutd mcp` and
-`cutd verb` perform that discovery automatically.
+the OS-specific `engine.addr` described in docs/public/DEBUG_API.md (first line:
+the address; second line: the engine instance); `cutd mcp` and `cutd verb` perform
+that discovery automatically and send nothing to a program that does not identify
+itself as this ShellX Cut engine.
 - REST: POST http://127.0.0.1:6161/api/verb/<verb-name>
 - Verb registry: GET http://127.0.0.1:6161/api/verbs
 - Agent docs index: GET http://127.0.0.1:6161/api/agent
@@ -57,6 +59,26 @@ First-edit behavior:
   format is still untouched. These are timeline composition properties, not
   export-quality choices. Delivery aspect/size/codec/bitrate are chosen per
   render or export.
+
+Missing tools:
+- FFmpeg is not bundled. While system.doctor reports it missing, every verb that
+  needs ffmpeg or ffprobe refuses up front with `tool_missing` and the way to get
+  it. system.fetch_tool {"tool":"ffmpeg","accept_license":true} downloads the
+  pinned build for this system; passing accept_license is the person's consent
+  to the publisher's licence, so ask the person first, unless they asked for
+  the download themselves.
+- Captions and transcription need their own tools. Without them those verbs
+  refuse with a plain "not installed" message that names Install captions
+  (system.setup_perception); that is a download, so ask the person first. On
+  Windows they also need Microsoft's Visual C++ runtime: until it is installed,
+  Install captions refuses (`tool_missing`) and names
+  system.fetch_tool {"tool":"vc-runtime"}; Windows then asks the person for
+  administrator permission, which an agent cannot give.
+- Before a verb, system.doctor {"feature":"<verb>"} says whether it can run and
+  what is missing; a refusal for a missing tool carries `error.requirement`
+  {id, name, get} naming the Settings entry and the verb that gets it.
+- A job's `outcome` says whether it did what was asked (`partial` when it ran to
+  the end but did not fully deliver); `state:"done"` alone is not success.
 
 Important UI/debug verbs:
 - system.mcp_test (read-only MCP connection proof)

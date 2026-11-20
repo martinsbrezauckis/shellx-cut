@@ -53,6 +53,7 @@ fn live_mode(app: &tauri::AppHandle) -> EngineMode {
 /// a locked or mixed-version installation.
 #[cfg(windows)]
 pub(crate) fn stop_owned_engine_for_update(app: &tauri::AppHandle) -> Result<bool, String> {
+    crate::engine_watch::mark_ending();
     let mode = live_mode(app);
     let state = app
         .try_state::<EngineProcess>()
@@ -87,16 +88,25 @@ pub(crate) fn stop_owned_engine_for_update(app: &tauri::AppHandle) -> Result<boo
             .map_err(|e| format!("could not confirm the ShellX Cut engine stopped: {e}"))?;
     }
     slot.take();
+    crate::engine_stop::tidy_discovery();
     Ok(true)
 }
 
 /// Normal window/app exit stays best-effort: only the exact stored child is
 /// touched, and an adopted external engine remains outside our ownership.
 pub(crate) fn stop_owned_engine_best_effort(app: &tauri::AppHandle) {
+    if crate::close_guard::leave_engine_running(app) {
+        // The engine could not say whether a recording runs. It stops by
+        // itself when this shell is gone and saves a running recording first;
+        // stopping it here could cut a take off.
+        if let Some(state) = app.try_state::<EngineProcess>() {
+            drop(state.0.lock().unwrap().take());
+        }
+        return;
+    }
     if let Some(state) = app.try_state::<EngineProcess>() {
         if let Some(mut child) = state.0.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            crate::engine_stop::stop_and_tidy(&mut child);
         }
     }
 }

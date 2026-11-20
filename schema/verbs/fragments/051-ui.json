@@ -172,6 +172,43 @@
       }
     },
     {
+      "name": "ui.preview",
+      "domain": "ui",
+      "description": "Set the preview monitor's COMPOSED mode, the same switch as the COMPOSED button. composed:true (the default) draws the exact composed frame (titles, effects, fades, grades) over the paused live preview; composed:false shows only the live preview. The choice is remembered on this machine like the person's own switch. Read what the monitor shows from ui.state.preview (mode, showing, hidden_elements, composed_frame).",
+      "args": {
+        "type": "object",
+        "required": [
+          "composed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "composed": {
+            "type": "boolean",
+            "description": "true = exact composed frame while paused (default); false = live preview only"
+          }
+        }
+      },
+      "result": "Confirmed UI transition: {applied:true, verb, request_id, requested:{composed}, state} only after a later ui-state revision reports preview.mode 'composed' or 'live' accordingly. Already-current/no-op and uncommitted requests return ok:false with result.applied:false.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "ui_preview",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
       "name": "ui.highlight",
       "domain": "ui",
       "description": "Visually HIGHLIGHT a UI element on the connected client — an animated outline over the target plus an optional label/description chip, so an agent can point at what it is doing. Resolve the target by exactly one of selector, clip, panel, or clear:true. label is a short title; description a longer line; duration_ms auto-clears after N ms (default 3500; 0 stays until cleared/replaced). A persistent highlight can be dismissed in-app with the close button or Escape. scroll defaults true. The call is confirmed only after the exact UI client renders or clears the overlay.",

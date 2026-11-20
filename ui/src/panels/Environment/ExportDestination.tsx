@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { applyExportOutputDir, folderTail, getStoredOutputDir, setStoredOutputDir } from '../../lib/exportDestination'
+import { applyExportOutputDir, folderTail, refreshOutputFolder } from '../../lib/exportDestination'
+import { useOutputFolderStatus } from '../../lib/useOutputFolder'
 import { isTauri, pickFolder } from '../../lib/tauri'
 
 export default function ExportDestination() {
-  const [dir, setDir] = useState<string | null>(() => getStoredOutputDir())
+  // The engine holds the destination; this panel only shows it and changes it.
+  const status = useOutputFolderStatus()
+  const dir = status?.dir ?? null
   const [note, setNote] = useState('')
 
-  useEffect(() => {
-    if (dir) void applyExportOutputDir(dir)
-  }, [dir])
+  useEffect(() => { void refreshOutputFolder() }, [])
 
   const choose = async () => {
     setNote('')
@@ -19,8 +20,7 @@ export default function ExportDestination() {
     const picked = await pickFolder()
     if (!picked) return
     if (await applyExportOutputDir(picked)) {
-      setStoredOutputDir(picked)
-      setDir(picked)
+      await refreshOutputFolder()
       setNote('Default export folder updated.')
     } else {
       setNote('Could not use that folder.')
@@ -28,10 +28,12 @@ export default function ExportDestination() {
   }
 
   const clear = async () => {
-    await applyExportOutputDir(null)
-    setStoredOutputDir(null)
-    setDir(null)
-    setNote('Using each project exports folder.')
+    if (await applyExportOutputDir(null)) {
+      await refreshOutputFolder()
+      setNote('Using each project exports folder.')
+    } else {
+      setNote('Could not switch to the project exports folder.')
+    }
   }
 
   return (
@@ -42,6 +44,11 @@ export default function ExportDestination() {
         <code className="env-export-path" title={dir ?? undefined}>
           {dir ? folderTail(dir) : 'Each project /exports folder'}
         </code>
+        {status && !status.usable && (
+          <div className="env-export-note" data-cut-export-default-problem role="alert">
+            {status.problem} {status.suggested_action}
+          </div>
+        )}
       </div>
       <div className="env-export-actions">
         <button type="button" className="env-btn env-btn--secondary" data-cut-export-default-pick onClick={() => void choose()}>

@@ -26,7 +26,9 @@ interface TrimPopoverProps {
   onClose: () => void
 }
 
-function clampPopover(el: HTMLDivElement, x: number, y: number): void {
+/** Keep a fixed popover inside the window (8 px margin); shared with the
+ *  voiceover popover, which sits in the same timeline. */
+export function clampPopover(el: HTMLElement, x: number, y: number): void {
   const margin = 8
   const rect = el.getBoundingClientRect()
   el.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))}px`

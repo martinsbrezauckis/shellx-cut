@@ -15,16 +15,19 @@
 # a GPU or CPU. In a prepared native context it receives one sealed local model.
 # Ordinary mode passes its explicit ``--model`` source to Transformers, which
 # resolves that source through its normal local-cache/download API.
-from local_media_io import input_args
+from local_media_io import input_args, media_tool
 import argparse
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+# The review's no-follow file helpers, imported as part of the judge/ folder
+# beside this file (adding judge/ itself to sys.path would hide that package
+# behind judge/judge.py for the rest of the process).
+from judge import judge_files  # noqa: E402
 
 from native_runtime_models import (
     SIGLIP_MODEL_ID,
@@ -41,8 +44,8 @@ if _ff_dir:
     if _present:
         os.environ["PATH"] = os.pathsep.join(_present + [os.environ.get("PATH", "")])
 
-FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
-FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
+FFMPEG_BIN = media_tool("ffmpeg")
+FFPROBE_BIN = media_tool("ffprobe")
 MAX_VISUAL_INDEX_BYTES = 512 * 1024 * 1024  # Keep in sync with vissearch.rs.
 
 
@@ -66,6 +69,8 @@ def write_index_bounded(index: dict, path: str, max_bytes: int) -> None:
     else:
         if not stat.S_ISREG(leaf_stat.st_mode) or is_reparse(leaf_stat):
             raise ValueError("index is not a plain file")
+    # Every folder from the project folder down, not only the last one.
+    judge_files.require_replaceable(path, "visual index")
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=parent,
@@ -83,9 +88,10 @@ def write_index_bounded(index: dict, path: str, max_bytes: int) -> None:
 
 
 def is_reparse(info: os.stat_result) -> bool:
-    return stat.S_ISLNK(info.st_mode) or (
-        os.name == "nt" and bool(getattr(info, "st_file_attributes", 0) & 0x400)
-    )
+    """A link or junction. Other Windows reparse points (OneDrive and other
+    cloud-file placeholders, compressed files) are the folder or file itself,
+    the same rule as the engine and the review helpers."""
+    return judge_files.names_another_entry(info)
 
 
 def log(msg: str) -> None:
@@ -196,6 +202,12 @@ def main() -> int:
                     help="TEXT-QUERY mode: embed this string with the SigLIP2 text "
                          "tower and print {\"v\":[...]} to stdout (no indexing).")
     args = ap.parse_args()
+    try:
+        if args.out:
+            judge_files.require_replaceable(args.out, "visual index")
+    except judge_files.RefusedProjectFile as error:
+        print(f"siglip_index: {error}", file=sys.stderr)
+        return 2
 
     source, source_options, index_model = resolve_model_source(args.model, args.model_id)
 

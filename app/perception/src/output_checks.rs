@@ -70,6 +70,7 @@ mod tests {
             duration_ms: 1_000,
             loudness: None,
             output_report: None,
+            streams: Vec::new(),
         };
 
         let checks = output_checks_with_profile(&facts, FootageProfile::SilentScreenDemo);

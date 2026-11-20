@@ -7,6 +7,7 @@
 //! verb is the ONLY SRT exporter (the canonical-export contract). Dependencies: cut-core types.
 //! Primary callers: render.rs (burn-in).
 
+use crate::ffmpeg::escape::{ass_field, ass_text};
 use cut_core::{CaptionClip, CutError, Edl, Project, TrackKind};
 
 /// Collect all caption clips across caption tracks, sorted by start time.
@@ -71,7 +72,7 @@ fn ass_timestamp(ms: u64) -> String {
 /// ASS header + `[V4+ Styles]` block — project-wide (one ASS style per
 /// CaptionStyle: font/size/color/bg/pos), independent of which events follow.
 /// PlayRes matches project geometry so font sizes mean OUTPUT pixels.
-fn ass_header(project: &Project) -> String {
+fn ass_header(project: &Project) -> Result<String, CutError> {
     let (w, h) = (project.settings.width, project.settings.height);
     let mut ass = format!(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 0\n\n\
@@ -87,6 +88,9 @@ fn ass_header(project: &Project) -> String {
     );
     // One ASS style per project CaptionStyle (BTreeMap → deterministic order).
     for (name, st) in &project.caption_styles {
+        // Name and font are comma-separated fields Cut does not escape.
+        ass_field("style name", name)?;
+        ass_field("font", &st.font)?;
         ass.push_str(&format!(
             "Style: {name},{font},{size},{color},{color},&H00000000,{back},\
              0,0,0,0,100,100,0,0,3,2,0,{align},40,40,40,1\n",
@@ -104,16 +108,20 @@ fn ass_header(project: &Project) -> String {
     ass.push_str(
         "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
     );
-    ass
+    Ok(ass)
 }
 
 /// One ASS `Dialogue` per `(start_ms, end_ms, style_ref, text)`, in the given
 /// (already-resolved) timebase — centisecond-rounded. Caller orders the items.
-fn ass_events(items: &[(u64, u64, Option<&str>, &str)]) -> String {
+fn ass_events(items: &[(u64, u64, Option<&str>, &str)]) -> Result<String, CutError> {
     let mut s = String::new();
     for (start, end, style, text) in items {
-        // ASS line breaks are \N; a literal newline would corrupt the event.
-        let text = text.replace('\n', "\\N");
+        // Caption text is shown as typed: line breaks become \N, and braces
+        // and backslashes cannot form ASS tags or start a new line.
+        let text = ass_text(text);
+        if let Some(style) = style {
+            ass_field("style name", style)?;
+        }
         s.push_str(&format!(
             "Dialogue: 0,{},{},{},,0,0,0,,{}\n",
             ass_timestamp(*start),
@@ -122,11 +130,11 @@ fn ass_events(items: &[(u64, u64, Option<&str>, &str)]) -> String {
             text
         ));
     }
-    s
+    Ok(s)
 }
 
 pub fn captions_to_ass(project: &Project) -> Result<String, CutError> {
-    let mut ass = ass_header(project);
+    let mut ass = ass_header(project)?;
     let items: Vec<(u64, u64, Option<&str>, &str)> = caption_clips(project)
         .iter()
         .map(|c| {
@@ -138,7 +146,7 @@ pub fn captions_to_ass(project: &Project) -> Result<String, CutError> {
             )
         })
         .collect();
-    ass.push_str(&ass_events(&items));
+    ass.push_str(&ass_events(&items)?);
     Ok(ass)
 }
 
@@ -151,7 +159,7 @@ const KARAOKE_SECONDARY: &str = "&H00606060";
 /// fill is visible (the burn-in header keeps Secondary == Primary, which would show
 /// no fill). Self-contained — does NOT touch [`ass_header`] / the byte-identical burn
 /// path. One ASS style per project CaptionStyle, same field layout as the burn header.
-fn karaoke_header(project: &Project) -> String {
+fn karaoke_header(project: &Project) -> Result<String, CutError> {
     let (w, h) = (project.settings.width, project.settings.height);
     let mut ass = format!(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 0\n\n\
@@ -166,6 +174,8 @@ fn karaoke_header(project: &Project) -> String {
         sec = KARAOKE_SECONDARY
     ));
     for (name, st) in &project.caption_styles {
+        ass_field("style name", name)?;
+        ass_field("font", &st.font)?;
         ass.push_str(&format!(
             "Style: {name},{font},{size},{color},{sec},&H00000000,{back},\
              0,0,0,0,100,100,0,0,3,2,0,{align},40,40,40,1\n",
@@ -184,7 +194,7 @@ fn karaoke_header(project: &Project) -> String {
     ass.push_str(
         "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
     );
-    ass
+    Ok(ass)
 }
 
 /// Split a caption line into `{\k<cs>}word` syllables, distributing the clip's
@@ -216,7 +226,9 @@ fn karaoke_line(text: &str, start_ms: u64, end_ms: u64) -> String {
         used_cs += cs;
         // ASS line breaks are \N; words never contain one (split_whitespace), but a
         // brace in text would corrupt the override block — escape it defensively.
-        let safe = w.replace('{', "(").replace('}', ")");
+        // A backslash is neutralised as in burn-in text (it could pair with the
+        // next character into \N or a tag).
+        let safe = ass_text(&w.replace('{', "(").replace('}', ")"));
         out.push_str(&format!("{{\\k{cs}}}{safe} "));
     }
     out.trim_end().to_string()
@@ -230,8 +242,11 @@ fn karaoke_line(text: &str, start_ms: u64, end_ms: u64) -> String {
 /// `karaoke:false` path. Word timing is estimated from the line duration (no
 /// per-word transcript timing dependency) — honest and visually correct.
 pub fn captions_to_ass_karaoke(project: &Project) -> Result<String, CutError> {
-    let mut ass = karaoke_header(project);
+    let mut ass = karaoke_header(project)?;
     for c in caption_clips(project) {
+        if let Some(style) = c.style_ref.as_deref() {
+            ass_field("style name", style)?;
+        }
         let text = karaoke_line(&c.text, c.range_ms[0], c.range_ms[1]);
         if text.is_empty() {
             continue;
@@ -273,8 +288,8 @@ pub fn captions_to_ass_for_edl(project: &Project, edl: &Edl) -> Result<String, C
         .collect();
     // Match captions_to_ass's by-start order so a full EDL is byte-identical.
     items.sort_by_key(|i| i.0);
-    let mut ass = ass_header(project);
-    ass.push_str(&ass_events(&items));
+    let mut ass = ass_header(project)?;
+    ass.push_str(&ass_events(&items)?);
     Ok(ass)
 }
 

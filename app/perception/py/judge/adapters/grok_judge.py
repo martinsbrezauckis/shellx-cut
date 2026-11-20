@@ -24,6 +24,7 @@ sys.path.insert(0, _JUDGE_DIR)
 _PY_ROOT = os.path.dirname(_JUDGE_DIR)
 sys.path.insert(0, _PY_ROOT)
 import judge  # noqa: E402
+import judge_files  # noqa: E402
 import provider_child_launch  # noqa: E402
 
 # Shared pipeline (perception resolution by content hash, the post-filter,
@@ -276,9 +277,9 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
     # /tmp). If the write fails, that is an honest error (no fabricated verdict).
     prompt_file = os.path.join(cwd_abs, "_grok_prompt.json")
     try:
-        with open(prompt_file, "w") as f:
-            json.dump(blocks, f)
-    except OSError as e:
+        # Replaces the name; a link or shared file at this path is refused.
+        judge_files.write_text_replacing(prompt_file, json.dumps(blocks), "prompt file")
+    except (OSError, judge_files.RefusedProjectFile) as e:
         return None, {"available": True,
                       "tool_policy": grok_tool_policy.policy_metadata(cli)}, (
             f"grok adapter could not write the prompt-file {prompt_file}: {e}")
@@ -401,8 +402,7 @@ def main() -> int:
     ap.add_argument("--render")
     ap.add_argument("--perception",
                     help="instrument facts for THE RENDER (default: "
-                         "auto-resolve by content hash from the receipts dir, "
-                         "else generate via the app/perception sidecar)")
+                         "generate via the app/perception sidecar)")
     ap.add_argument("--intent", default="(no edit intent provided)")
     ap.add_argument("--cli-model", default=DEFAULT_CLI_MODEL,
                     help="grok model id (e.g. 'grok-build'); default: omit "
@@ -438,6 +438,12 @@ def main() -> int:
     if args.command == "detect":
         print(json.dumps(detect(launch), indent=2))
         return 0
+    if args.command == "review" and args.out:
+        try:
+            judge_files.require_replaceable(args.out, "review result")
+        except judge_files.RefusedProjectFile as error:
+            print(f"review refused: {error}", file=sys.stderr)
+            return 2
 
     if not args.render:
         print("review requires --render", file=sys.stderr)
@@ -454,6 +460,11 @@ def main() -> int:
     # file-watcher hits permission-denied noise under /tmp's systemd-private dirs).
     bundle = args.bundle_dir or tempfile.mkdtemp(prefix="grok_judge_",
                                                  dir=os.getcwd())
+    try:
+        judge_files.require_plain_directory(bundle, "--bundle-dir")
+    except judge_files.RefusedProjectFile as e:
+        print(f"review refused: {e}", file=sys.stderr)
+        return 2
     os.makedirs(bundle, exist_ok=True)
 
     # Perception facts for THE RENDER (the coordinate-space guard) — shared resolver, then the
@@ -461,6 +472,9 @@ def main() -> int:
     try:
         perception, perception_source, warnings = cli_judge.resolve_perception(
             args.render, args.perception, bundle)
+    except judge_files.RefusedProjectFile as e:
+        print(f"review refused: {e}", file=sys.stderr)
+        return 2
     except (ValueError, RuntimeError, OSError) as e:
         print(f"perception resolution failed: {e}", file=sys.stderr)
         return 2
@@ -558,8 +572,7 @@ def main() -> int:
     }
     text = json.dumps(envelope, indent=2)
     if args.out:
-        with open(args.out, "w") as f:
-            f.write(text + "\n")
+        judge_files.write_text_replacing(args.out, text + "\n", "review result")
     print(text)
     if not args.keep_bundle and not args.bundle_dir:
         shutil.rmtree(bundle, ignore_errors=True)

@@ -33,9 +33,9 @@
       "description": "Result of one verify check. evidence always carries the numbers that justify the verdict (never a bare boolean).",
       "required": ["name", "pass", "details", "evidence"],
       "properties": {
-        "name": { "type": "string", "description": "cut_on_word | lufs | caption_presence | black_or_frozen_frames | silence_at_edges | duration_matches_edl | uniform_border | cut_on_beat | j_l_cut | footage_profile" },
+        "name": { "type": "string", "description": "cut_on_word | lufs | caption_presence | black_or_frozen_frames | silence_at_edges | duration_matches_edl | uniform_border | sources_decodable | cut_on_beat | j_l_cut | footage_profile" },
         "pass": { "type": "boolean" },
-        "details": { "description": "Human-readable structured detail (thresholds, counts, waivers)." },
+        "details": { "description": "Human-readable structured detail (thresholds, counts, waivers). status:\"not_applicable\" (with applies_when and reason) = nothing to check on this export, pass stays true; status:\"unmeasured\" = applies but could not be measured here." },
         "evidence": { "description": "The measured facts behind the verdict (timestamps, LUFS, spans, violations)." }
       },
       "additionalProperties": false
@@ -59,7 +59,81 @@
           "type": "array",
           "items": { "$ref": "#/$defs/FixAction" },
           "description": "One entry per recognised FAILING check — the autopilot self-fix substrate. Empty when every check passed."
-        }
+        },
+        "encode": { "$ref": "#/$defs/EncodeReport", "description": "Which encoder produced the output and whether hardware was asked for and used. Absent on receipts written before this field." },
+        "outcome": { "$ref": "#/$defs/CheckOutcome", "description": "The checks' verdict in one line, each failing check in plain words, and the way forward. Absent on receipts written before this field." }
+      },
+      "additionalProperties": false
+    },
+    "CheckOutcome": {
+      "type": "object",
+      "description": "A render's checks in one verdict. problems = the written file is not the timeline (duration_matches_edl or sources_decodable failed); warnings = only quality or editorial checks failed; unmeasured = nothing measured failed but some checks could not run; passed = every check passed. The render job ends with outcome_reason checks_failed for problems and with warnings for warnings.",
+      "required": ["verdict", "summary"],
+      "properties": {
+        "verdict": { "type": "string", "enum": ["passed", "problems", "warnings", "unmeasured"] },
+        "summary": { "type": "string" },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "level", "meaning"],
+            "properties": {
+              "name": { "type": "string" },
+              "level": { "type": "string", "enum": ["problem", "warning"] },
+              "meaning": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "unmeasured": { "type": "array", "items": { "type": "string" } },
+        "not_applicable": { "type": "array", "items": { "type": "string" }, "description": "Checks with nothing to check on this export (details.status not_applicable): never a failure or a warning." },
+        "action": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "EncodeReport": {
+      "type": "object",
+      "description": "The video encoder a render really used. Also returned as `encode` in the render.final job result and in a dry_run plan. render.bundle and render.reframe receipts carry it too: they always encode in software and never ask for hardware, so hardware_requested and hardware_used are both false.",
+      "required": ["encoder", "hardware_requested", "hardware_used"],
+      "properties": {
+        "encoder": { "type": "string", "description": "ffmpeg's name for the video encoder that ran, e.g. libx264 or h264_nvenc." },
+        "hardware_requested": { "type": "boolean", "description": "true when the request allowed a hardware encoder (hardware:auto, the default); false for hardware:off." },
+        "hardware_used": { "type": "boolean", "description": "true when the encoder is a hardware encoder." },
+        "fallback_reason": { "type": "string", "description": "Present when hardware was requested and software was used: the plain reason and what the person can do about it." },
+        "fallback_detail": { "type": "string", "description": "ffmpeg's own error line behind the reason, when there is one." },
+        "color": { "$ref": "#/$defs/ColorReport", "description": "What the render did with colour. Absent on receipts written before this field." },
+        "memory_note": { "type": "string", "description": "Present when the render used fewer libx264 threads than this computer's automatic count so that it fit the memory free when it started: the plain sentence with both counts and the numbers (the render was slower)." },
+        "encoder_threads": { "type": "integer", "minimum": 1, "description": "The libx264 thread count of a reduced render (with memory_note), so the same bytes can be made again. Absent at the automatic count." },
+        "pipeline": { "type": "string", "enum": ["gpu", "standard"], "description": "Present only when the GPU render path was asked for (SHELLX_CUT_RENDER_GPU): the render path that ran." },
+        "pipeline_reason": { "type": "string", "description": "Present when the GPU render path was asked for and the standard path ran: why, in plain words." }
+      },
+      "additionalProperties": false
+    },
+    "ColorReport": {
+      "type": "object",
+      "description": "The colour handling of a render: every export is SDR BT.709 processed in 8 bits; an HDR (HLG/PQ) source is tone-mapped to SDR. Keeping HDR in the export is not available yet.",
+      "required": ["output", "processing_bit_depth", "file_bit_depth", "sources"],
+      "properties": {
+        "output": { "type": "string", "description": "The delivered picture, e.g. SDR BT.709." },
+        "processing_bit_depth": { "type": "integer", "description": "Bits per sample the picture is processed in (8)." },
+        "file_bit_depth": { "type": "integer", "description": "Bits per sample of the encoded file (10 for ProRes, else 8)." },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["asset", "file", "handling"],
+            "properties": {
+              "asset": { "type": "string" },
+              "file": { "type": "string" },
+              "transfer": { "type": "string", "description": "Source transfer as ffprobe names it (arib-std-b67 = HLG, smpte2084 = PQ)." },
+              "bit_depth": { "type": "integer" },
+              "handling": { "type": "string", "enum": ["sdr", "tone_mapped_to_sdr", "hdr_tagged_not_converted", "converted_bt601_to_bt709"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "note": { "type": "string", "description": "Plain sentences when a source was converted, reduced in bit depth, or not converted." }
       },
       "additionalProperties": false
     },
@@ -87,7 +161,8 @@
         "scope": { "const": "rendered_output" },
         "profile": { "type": "string", "enum": ["talking_head", "silent_screen_demo"] },
         "checks": { "type": "array", "items": { "$ref": "#/$defs/CheckResult" } },
-        "pass": { "type": "boolean" }
+        "pass": { "type": "boolean" },
+        "outcome": { "$ref": "#/$defs/CheckOutcome", "description": "The re-check's verdict in one line, each failing check in plain words, and the way forward." }
       },
       "additionalProperties": false
     },

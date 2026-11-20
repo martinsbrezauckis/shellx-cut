@@ -1,3 +1,4 @@
+import { engineMediaUrl } from '../../lib/mediaUrl'
 import type { GenerateStoryboardResult } from '../../lib/client'
 import { Icon } from '../../icons'
 import {
@@ -217,7 +218,7 @@ export default function StoryboardPanel({
                 {scene.url ? (
                   <img
                     data-cut-generate-storyboard-preview-img
-                    src={scene.url}
+                    src={engineMediaUrl(scene.url)}
                     alt={`${scene.scene_id} preview`}
                   />
                 ) : (

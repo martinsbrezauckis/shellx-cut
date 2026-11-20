@@ -34,6 +34,9 @@ pub struct CursorSample {
 pub enum ClickPositionQuality {
     #[default]
     Exact,
+    /// Last validated SPA position in this capture segment, with complete
+    /// evdev observation proving no intervening pointer movement.
+    Held,
     Approximate,
     Unavailable,
 }
@@ -73,6 +76,7 @@ pub enum CursorCoordinateSource {
 #[serde(rename_all = "snake_case")]
 pub enum CursorCoordinateState {
     Exact,
+    Held,
     Approximate,
     #[default]
     Unavailable,
@@ -86,6 +90,9 @@ pub struct CursorCorrelation {
     /// Counts button transitions (press and release), matching `clicks`.
     #[serde(default)]
     pub exact_clicks: u32,
+    /// Button transitions using a validated same-segment stationary position.
+    #[serde(default)]
+    pub held_clicks: u32,
     /// Counts button transitions (press and release), matching `clicks`.
     #[serde(default)]
     pub approximate_clicks: u32,
@@ -196,9 +203,13 @@ impl EventTrack {
 
     /// Press events only (button-down), in time order — the auto-zoom anchors.
     pub fn click_downs(&self) -> impl Iterator<Item = &ClickSample> {
-        self.clicks
-            .iter()
-            .filter(|c| c.down && c.position_quality == ClickPositionQuality::Exact)
+        self.clicks.iter().filter(|c| {
+            c.down
+                && matches!(
+                    c.position_quality,
+                    ClickPositionQuality::Exact | ClickPositionQuality::Held
+                )
+        })
     }
 
     /// A copy with all coordinates and screen dimensions scaled by `factor`.
@@ -343,6 +354,26 @@ mod tests {
     }
 
     #[test]
+    fn validated_held_click_roundtrips_and_drives_effects_without_becoming_exact() {
+        let mut track = track();
+        track.clicks[0].position_quality = ClickPositionQuality::Held;
+        track.cursor_correlation.source = CursorCoordinateSource::WaylandPipewireMetadata;
+        track.cursor_correlation.state = CursorCoordinateState::Held;
+        track.cursor_correlation.exact_clicks = 0;
+        track.cursor_correlation.held_clicks = 1;
+        let json = serde_json::to_string(&track).unwrap();
+        assert!(json.contains("\"position_quality\":\"held\""));
+        let restored: EventTrack = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.clicks[0].position_quality,
+            ClickPositionQuality::Held
+        );
+        assert_eq!(restored.cursor_correlation.held_clicks, 1);
+        assert_eq!(restored.cursor_correlation.exact_clicks, 0);
+        assert_eq!(restored.click_downs().count(), 1);
+    }
+
+    #[test]
     fn legacy_tracks_preserve_clicks_but_admit_unknown_provenance() {
         let legacy: EventTrack = serde_json::from_str(
             r#"{"duration_ms":1,"screen_w":1,"screen_h":1,"clicks":[{"t_ms":0,"x":0.0,"y":0.0,"button":"left","down":true}]}"#,
@@ -360,6 +391,7 @@ mod tests {
             legacy.cursor_correlation.state,
             CursorCoordinateState::Unavailable
         );
+        assert_eq!(legacy.cursor_correlation.held_clicks, 0);
     }
 
     #[test]

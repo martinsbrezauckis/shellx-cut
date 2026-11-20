@@ -148,8 +148,8 @@ export default function PreviewTransport({
           aria-label={composed ? 'Show raw source preview' : 'Show composed preview'}
           title={
             composed
-              ? 'COMPOSED preview ON — responsive live composite during playback; exact engine frame while paused. Click for the fastest source view.'
-              : `COMPOSED preview OFF — fast ${video?.kind ?? 'source'} playback. Click to inspect the exact composed frame when paused.`
+              ? 'COMPOSED ON: while paused the preview shows the exact picture with titles, effects and grades; playback shows the fast preview. Click to show only the fast preview.'
+              : `COMPOSED OFF: only the fast ${video?.kind ?? 'source'} preview; titles and effects are not shown. Click to show the exact picture while paused.`
           }
           onClick={onComposedToggle}
         >

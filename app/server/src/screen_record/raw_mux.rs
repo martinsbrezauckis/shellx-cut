@@ -4,6 +4,28 @@ use super::align_ffmpeg_env;
 use cut_core::{error_codes, CutError};
 use std::path::Path;
 
+/// Seconds of the copied video, formatted for an FFmpeg filter argument.
+/// Audio is padded and cut to this length instead of relying on `-shortest`:
+/// with an endless pad FFmpeg could keep encoding silence forever when the
+/// video stream had already ended.
+pub(super) fn video_duration_arg(source: &Path) -> Result<String, CutError> {
+    let video_duration_ms = cut_media::probe(source)?
+        .duration_ms
+        .filter(|duration_ms| *duration_ms > 0)
+        .ok_or_else(|| {
+            CutError::new(
+                error_codes::FFMPEG,
+                "raw source video has no measurable duration",
+                "cannot bound the mixed recording audio to its source video",
+            )
+        })?;
+    Ok(format!(
+        "{}.{:03}",
+        video_duration_ms / 1_000,
+        video_duration_ms % 1_000
+    ))
+}
+
 pub(crate) fn mux_raw_sources(
     source: &Path,
     mic: Option<&Path>,
@@ -14,29 +36,16 @@ pub(crate) fn mux_raw_sources(
     align_ffmpeg_env();
     let ffmpeg = cut_media::toolpath::ffmpeg();
     let mut cmd = std::process::Command::new(&ffmpeg);
-    cmd.arg("-y")
-        .args([
-            "-protocol_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-i",
-        ])
-        .arg(source);
+    cmd.arg("-y");
+    cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, source)?;
     match (mic, system) {
         (None, None) => {
             cmd.args(["-map", "0:v:0", "-c", "copy"]);
         }
         (Some(audio), None) => {
+            let video_duration = video_duration_arg(source)?;
+            cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, audio)?;
             cmd.args([
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-format_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                "-i",
-            ])
-            .arg(audio)
-            .args([
                 "-map",
                 "0:v:0",
                 "-map",
@@ -45,27 +54,21 @@ pub(crate) fn mux_raw_sources(
                 "copy",
                 "-c:a",
                 "aac",
-                // Keep copied video through its final packet when audio ends first.
+                // Keep copied video through its final packet when audio ends
+                // first, and stop the audio where the video stops.
                 "-af",
-                "apad",
-                "-shortest",
+                &format!("apad=whole_dur={video_duration},atrim=duration={video_duration}"),
             ]);
         }
         (None, Some(system)) => {
+            let video_duration = video_duration_arg(source)?;
             let offset = system_offset_ms.unwrap_or(0);
             if offset != 0 {
                 cmd.arg("-itsoffset")
                     .arg(format!("{:.3}", offset as f64 / 1_000.0));
             }
+            cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, system)?;
             cmd.args([
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-format_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                "-i",
-            ])
-            .arg(system)
-            .args([
                 "-map",
                 "0:v:0",
                 "-map",
@@ -75,46 +78,22 @@ pub(crate) fn mux_raw_sources(
                 "-c:a",
                 "aac",
                 "-af",
-                "apad",
-                "-shortest",
+                &format!("apad=whole_dur={video_duration},atrim=duration={video_duration}"),
             ]);
         }
         (Some(mic), Some(system)) => {
-            let video_duration_ms = cut_media::probe(source)?
-                .duration_ms
-                .filter(|duration_ms| *duration_ms > 0)
-                .ok_or_else(|| {
-                    CutError::new(
-                        error_codes::FFMPEG,
-                        "raw source video has no measurable duration",
-                        "cannot bound the mixed recording audio to its source video",
-                    )
-                })?;
-            let video_duration = format!(
-                "{}.{:03}",
-                video_duration_ms / 1_000,
-                video_duration_ms % 1_000
-            );
-            cmd.args([
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-format_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                "-i",
-            ])
-            .arg(mic);
-            cmd.args([
-                "-protocol_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                "-format_whitelist",
-                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                "-i",
-            ])
-            .arg(system);
+            let video_duration = video_duration_arg(source)?;
+            cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, mic)?;
+            cut_media::ffmpeg::push_ffmpeg_literal_input(&mut cmd, system)?;
+            // Pad each source to the video length before mixing instead of
+            // padding the mixed result: FFmpeg can end a mix early when the
+            // padding comes after the mixer, which cut the audio track short
+            // of the video on a busy machine.
             let filter = format!(
-                "[1:a]aresample=48000[m];[2:a]aresample=48000,adelay={}:all=1[s];\
+                "[1:a]aresample=48000,apad=whole_dur={video_duration}[m];\
+                 [2:a]aresample=48000,adelay={}:all=1,apad=whole_dur={video_duration}[s];\
                  [m][s]amix=inputs=2:duration=longest:normalize=0,\
-                 apad=whole_dur={video_duration},atrim=duration={video_duration}[a]",
+                 atrim=duration={video_duration}[a]",
                 system_offset_ms.unwrap_or(0)
             );
             cmd.args([

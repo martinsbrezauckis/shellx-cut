@@ -44,10 +44,6 @@ pub const ENV_FFMPEG_EXE: &str = "SHELLX_CUT_FFMPEG";
 pub const ENV_FFPROBE_EXE: &str = "SHELLX_CUT_FFPROBE";
 /// Env var the perception sidecar reads to locate instruments.py + the venv.
 pub const ENV_SIDECAR_DIR: &str = "SHELLX_CUT_SIDECAR_DIR";
-/// Env var that turns on the engine's auto-selection of the best HARDWARE-capable
-/// installed ffmpeg (so GPU "just works" — no user step). The desktop shell always
-/// enables it; a user's explicit `SHELLX_CUT_FFMPEG` override still wins.
-pub const ENV_FFMPEG_AUTO: &str = "SHELLX_CUT_FFMPEG_AUTO";
 
 // The focused resolver tests update the shared Runner locator. Keep every
 // module's environment mutation serial so parallel tests cannot cross-read it.
@@ -206,7 +202,7 @@ fn exe_name(stem: &str) -> String {
 
 /// %LOCALAPPDATA%\ShellX Cut\tools (and platform equivalents) — where the
 /// first-run bootstrap downloads ffmpeg. Mirrors cut-media::toolpath.
-fn appdata_tools_dir() -> Option<PathBuf> {
+pub(crate) fn appdata_tools_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("ShellX Cut").join("tools"))
     } else if cfg!(target_os = "macos") {
@@ -276,9 +272,13 @@ fn manual_override_ffmpeg() -> Option<PathBuf> {
 /// toolpath rung 3b): a GUI .app — and equally an SSH non-login shell on a QA
 /// host — gets a STRIPPED PATH without Homebrew's bin dirs, so a
 /// `brew install ffmpeg` would be reported missing while the engine finds it.
+/// Homebrew's `ffmpeg-full` is keg-only (never linked into `bin`), so its own
+/// `opt/ffmpeg-full/bin` comes first, as in the engine.
 #[cfg(target_os = "macos")]
 fn macos_system_tool_dirs() -> Vec<PathBuf> {
     vec![
+        PathBuf::from("/opt/homebrew/opt/ffmpeg-full/bin"),
+        PathBuf::from("/usr/local/opt/ffmpeg-full/bin"),
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
     ]
@@ -367,34 +367,40 @@ fn ffmpeg_missing_hint() -> String {
     // falsifiable at a glance). The lists mirror detect_with_resources.
     if cfg!(target_os = "macos") {
         "ffmpeg is not installed. Core editing + render needs it.\n\
-         One-time fix (no admin):\n\
-         - With Homebrew:  brew install ffmpeg-full\n\
-         \x20  Cut detects its keg-only path automatically after restart.\n\
-         - Or download a static macOS build and put ffmpeg + ffprobe in:\n\
+         Settings > Video processing shows the ways:\n\
+         - Apple silicon: choose Download (FFmpeg 9.0.2 from its publisher,\n\
+         \x20  GPL; cannot stabilize video)\n\
+         - Install Homebrew (https://brew.sh; needs your Mac password), then\n\
+         \x20  run in Terminal:  brew install ffmpeg-full\n\
+         - Or put ffmpeg + ffprobe from one build in:\n\
          \x20   ~/Library/Application Support/ShellX Cut/tools/ffmpeg/bin\n\
-         Then restart ShellX Cut.\n\
+         Then click Check again (no restart needed).\n\
          (Searched: SHELLX_CUT_FFMPEG / SHELLX_CUT_FFMPEG_DIR, the in-app\n\
          \x20ffmpeg choice, beside the app, the app-data tools dir above,\n\
-         \x20/opt/homebrew/bin, /usr/local/bin, and PATH.)"
+         \x20/opt/homebrew/opt/ffmpeg-full/bin, /opt/homebrew/bin,\n\
+         \x20/usr/local/bin, and PATH.)"
             .to_string()
     } else if cfg!(windows) {
         "ffmpeg is not installed. Core editing + render needs it.\n\
-         One-time fix (downloads ~120 MB into your app data, no admin):\n\
-         1. Download ffmpeg-master-latest-win64-gpl.zip from\n\
-         \x20  https://github.com/BtbN/FFmpeg-Builds/releases\n\
+         Settings > Video processing: choose Download (FFmpeg 9.0.2 from its\n\
+         publisher FFmpeg-Builds, GPL; no admin; 64-bit x86 Windows). Or by hand:\n\
+         1. Download a win64-gpl zip (winarm64-gpl on ARM) from\n\
+         \x20  https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases\n\
          \x20  This is a separate GPL-licensed runtime, not part of Cut.\n\
          2. Extract it to:  %LOCALAPPDATA%\\ShellX Cut\\tools\\ffmpeg\n\
          \x20  (so ffmpeg.exe is at ...\\tools\\ffmpeg\\bin\\ffmpeg.exe)\n\
-         3. Restart ShellX Cut.\n\
+         3. Click Check again in Settings > Video processing.\n\
          (Searched: SHELLX_CUT_FFMPEG / SHELLX_CUT_FFMPEG_DIR, the in-app\n\
          \x20ffmpeg choice, beside the app, the app-data tools dir above, and PATH.)"
             .to_string()
     } else {
         "ffmpeg is not installed. Core editing + render needs it.\n\
-         One-time fix: install it with your package manager so ffmpeg + ffprobe\n\
-         are on PATH (e.g. `apt install ffmpeg` or `dnf install ffmpeg`), or put\n\
-         them in:  ~/.local/share/shellx-cut/tools/ffmpeg/bin\n\
-         Then restart ShellX Cut.\n\
+         On x86_64: Settings > Video processing: choose Download (FFmpeg 9.0.2\n\
+         from its publisher FFmpeg-Builds, GPL). Or install your distribution's\n\
+         package so ffmpeg + ffprobe are on PATH (Debian/Ubuntu: `sudo apt install\n\
+         ffmpeg`; Fedora: `sudo dnf install ffmpeg-free`), or put them in:\n\
+         \x20 ~/.local/share/shellx-cut/tools/ffmpeg/bin\n\
+         Then click Check again in Settings > Video processing.\n\
          (Searched: SHELLX_CUT_FFMPEG / SHELLX_CUT_FFMPEG_DIR, the in-app\n\
          \x20ffmpeg choice, beside the app, the app-data tools dir above, and PATH.)"
             .to_string()
@@ -612,10 +618,9 @@ impl ToolResolution {
             )
         {
             // Platform-specific fix: the resolver looks beside the exe, then in
-            // the app-data tools/ffmpeg dir, then PATH (tools.rs::detect). Only
-            // Windows and Linux have an in-app auto-fetcher (fetch.rs BtbN
-            // builds); macOS relies on a package manager / PATH, so each OS gets its OWN
-            // honest one-command fix — never a win64 zip path on a Mac.
+            // the app-data tools/ffmpeg dir, then PATH (tools.rs::detect). The
+            // in-app download (fetch.rs) is a different pinned build per OS, so
+            // each OS gets its OWN honest fix — never a win64 zip path on a Mac.
             lines.push(ffmpeg_missing_hint());
         }
         if !self.sidecar_ok {
@@ -624,7 +629,7 @@ impl ToolResolution {
             lines.push(
                 "Transcription + perception (AI cuts, captions, receipts) need\n\
                  the Python sidecar - optional; core editing works without it.\n\
-                 Set it up later from Tools > Set up perception, or skip."
+                 Choose Install captions in the app later, or skip."
                     .to_string(),
             );
         }
@@ -1029,6 +1034,8 @@ mod tests {
             "pub const ENV_FFMPEG_DIR: &str = \"{ENV_FFMPEG_DIR}\";"
         )));
         // rung 3b system dirs (macOS) — mirrored by macos_system_tool_dirs().
+        assert!(engine.contains("/opt/homebrew/opt/ffmpeg-full/bin"));
+        assert!(engine.contains("/usr/local/opt/ffmpeg-full/bin"));
         assert!(engine.contains("/opt/homebrew/bin"));
         assert!(engine.contains("/usr/local/bin"));
         // manual override file location — mirrored by manual_override_ffmpeg().

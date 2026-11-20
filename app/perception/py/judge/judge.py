@@ -35,7 +35,9 @@ from __future__ import annotations
 from pathlib import Path as _LocalMediaPath
 import sys as _local_media_sys
 _local_media_sys.path.insert(0, str(_LocalMediaPath(__file__).resolve().parents[1]))
-from local_media_io import input_args
+from local_media_io import input_args, media_tool
+_local_media_sys.path.insert(0, str(_LocalMediaPath(__file__).resolve().parent))
+import judge_files
 import argparse
 import base64
 import json
@@ -224,7 +226,8 @@ def configured_media_tool(name: str) -> str:
         candidate = os.path.join(directory, name + (".exe" if os.name == "nt" else ""))
         if os.path.isfile(candidate):
             return candidate
-    return shutil.which(name) or name
+    # PATH only, never the current folder (it may be a received project).
+    return media_tool(name)
 
 
 def probe_duration_s(path: str) -> float:
@@ -246,6 +249,8 @@ def extract_frames(render: str, out_dir: str, fps: float,
     frames-only models can be told WHEN each frame is (they cannot infer it).
     Caps at max_frames (drops the tail, recorded by caller in the envelope).
     """
+    # A linked frames folder would send ffmpeg's output somewhere else.
+    judge_files.require_plain_directory(out_dir, "the frames folder")
     os.makedirs(out_dir, exist_ok=True)
     # A caller may reuse its bundle across reviews. Never enumerate or
     # overwrite that shared directory: ffmpeg writes one fresh run directory
@@ -275,8 +280,10 @@ def extract_frames(render: str, out_dir: str, fps: float,
 
 
 def load_perception(path: str) -> dict:
-    with open(path) as f:
-        p = json.load(f)
+    """Load an analysis report that is an ordinary file, without following links."""
+    p = json.loads(judge_files.read_plain_file(path, "the analysis file"))
+    if not isinstance(p, dict):
+        raise ValueError("perception report is not a JSON object")
     if p.get("schema") != PERCEPTION_SCHEMA:
         raise ValueError(
             f"perception schema {p.get('schema')!r} != {PERCEPTION_SCHEMA!r}")
@@ -707,7 +714,13 @@ def main() -> int:
     if not os.path.exists(args.render):
         print(f"render not found: {args.render}", file=sys.stderr)
         return 2
-    perception = load_perception(args.perception)
+    try:
+        if args.out:
+            judge_files.require_replaceable(args.out, "review result")
+        perception = load_perception(args.perception)
+    except judge_files.RefusedProjectFile as error:
+        print(f"review refused: {error}", file=sys.stderr)
+        return 2
     duration_s = probe_duration_s(args.render)
     # Coordinate-space guard (the coordinate-space guard): refuse source-asset perception
     # BEFORE any backend call — a judge fed wrong-space facts mis-reasons.
@@ -734,11 +747,15 @@ def main() -> int:
     frames: list[dict] = []
     frames_dir = args.frames_dir or tempfile.mkdtemp(prefix="judge_frames_")
     if args.backend in ("ollama", "dry-run") and args.command == "review":
-        frames = extract_frames(
-            args.render, frames_dir, fps,
-            start_ms=window[0] if window else None,
-            end_ms=window[1] if window else None,
-            max_frames=args.max_frames)
+        try:
+            frames = extract_frames(
+                args.render, frames_dir, fps,
+                start_ms=window[0] if window else None,
+                end_ms=window[1] if window else None,
+                max_frames=args.max_frames)
+        except judge_files.RefusedProjectFile as error:
+            print(f"review refused: {error}", file=sys.stderr)
+            return 2
 
     sys_p, user_p = build_prompts(
         args.mode, perception, duration_s, fps, args.intent,
@@ -797,8 +814,7 @@ def main() -> int:
     }
     text = json.dumps(envelope, indent=2)
     if args.out:
-        with open(args.out, "w") as f:
-            f.write(text + "\n")
+        judge_files.write_text_replacing(args.out, text + "\n", "review result")
     print(text)
     return 0
 

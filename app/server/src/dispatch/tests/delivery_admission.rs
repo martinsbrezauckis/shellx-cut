@@ -124,6 +124,7 @@ async fn real_queue_preflight_holds_transition_until_it_finishes() {
     let _reset = ResetGate;
     let root = tempfile::tempdir().unwrap();
     let state = Arc::new(AppState::new());
+    super::transition_test_support::allow_slow_worker_stop(&state);
     create(&state, "a", root.path()).await;
     let a_digest = digest(&state).await;
     let media = root.path().join("fixture.mp4");

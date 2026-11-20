@@ -6,15 +6,18 @@ use std::collections::BTreeSet;
 
 fn embed_text(query: &str) -> Result<(Vec<f32>, crate::vissearch::Runtime), CutError> {
     let runtime = crate::vissearch::runtime()?.ok_or_else(|| {
-        CutError::new(
+        crate::requirements::refusal(
             error_codes::UNIMPLEMENTED,
-            "visual query encoder is unavailable",
-            "non-visual evidence remains searchable; install the local captions/search runtime for visuals",
+            "captions_runtime",
+            "Searching the pictures needs Captions and transcription, which are not installed",
+            "the query is turned into a picture-search vector by the captions runtime; words, speakers and markers stay searchable without it",
         )
+        .with_suggested_action(cut_perception::captions_setup_action())
     })?;
     let mut command = std::process::Command::new(&runtime.python);
     runtime.configure_command(&mut command);
-    command.arg("--embed-text").arg(query);
+    // One argument, so a query that starts with `-` stays the query.
+    command.arg(format!("--embed-text={query}"));
     let output = run_bounded_foreground_command(&mut command, "media intelligence text encoder")?;
     if !output.status.success() {
         return Err(CutError::new(

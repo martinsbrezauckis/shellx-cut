@@ -57,6 +57,10 @@ pub mod check_names {
     pub const BLACK_OR_FROZEN_FRAMES: &str = "black_or_frozen_frames";
     pub const SILENCE_AT_EDGES: &str = "silence_at_edges";
     pub const DURATION_MATCHES_EDL: &str = "duration_matches_edl";
+    /// Every source on the timeline decodes as far as it claims (from the
+    /// decode check made with its proxy). Appended only when a used source was
+    /// checked; fails by file name when one is cut off or damaged inside.
+    pub const SOURCES_DECODABLE: &str = "sources_decodable";
     /// Framing correctness: the rendered output carries no baked-in
     /// uniform-colour border (cropdetect on the render). NOT waived by any
     /// footage profile — a margin is a defect on talking-head AND screen-demo
@@ -100,6 +104,92 @@ pub struct RenderReceipt {
     /// receipts written before this field load fine (read back as empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fix_actions: Vec<FixAction>,
+    /// Which video encoder really produced the file, and whether the hardware
+    /// tier was asked for and used. Absent on receipts written before this field
+    /// and on renders that do not choose an encoder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode: Option<EncodeReport>,
+    /// The checks' verdict in one line (`passed` / `problems` / `warnings` /
+    /// `unmeasured`), with each failing check in plain words and the way
+    /// forward. Filled by `compute_pass`; absent on older receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<crate::check_outcome::CheckOutcome>,
+}
+
+/// The encoder a render really used, recorded on the receipt and in the render
+/// job result so the output can be traced to the choice that made it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncodeReport {
+    /// ffmpeg's name for the video encoder that ran, e.g. "libx264" or
+    /// "h264_nvenc".
+    pub encoder: String,
+    /// True when the request allowed a hardware encoder (`hardware:"auto"`, the
+    /// default); false for `hardware:"off"`.
+    pub hardware_requested: bool,
+    /// True when `encoder` is a hardware encoder.
+    pub hardware_used: bool,
+    /// Set when hardware was requested and software was used: the plain reason
+    /// and what the person can do about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// ffmpeg's own error line behind the reason, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_detail: Option<String>,
+    /// What the render did with colour: the output's colour space and bit
+    /// depth, and each source's handling (an HDR source is tone-mapped to
+    /// SDR). Absent on receipts written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<ColorReport>,
+    /// Set when the render used fewer libx264 threads than this computer's
+    /// automatic count so that it fit the memory free when it started: the
+    /// plain sentence with both counts and the numbers (the render was slower).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_note: Option<String>,
+    /// The libx264 thread count of a reduced render (with `memory_note`), so
+    /// the same bytes can be made again; absent at the automatic count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_threads: Option<u32>,
+    /// Set only when the GPU render path was asked for (`SHELLX_CUT_RENDER_GPU`):
+    /// the render path that ran, `"gpu"` or `"standard"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<String>,
+    /// Set when the GPU render path was asked for and the standard path ran:
+    /// why, in plain words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_reason: Option<String>,
+}
+
+/// The colour handling of one render.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorReport {
+    /// The delivered picture, e.g. "SDR BT.709".
+    pub output: String,
+    /// Bits per sample the picture is processed in (8: the render graph is 8-bit).
+    pub processing_bit_depth: u8,
+    /// Bits per sample of the encoded file (10 for ProRes, else 8).
+    pub file_bit_depth: u8,
+    /// Each video source on the timeline and what happened to it.
+    pub sources: Vec<SourceColorReport>,
+    /// Plain sentences for the person when a source was converted, reduced in
+    /// bit depth, or could not be converted. Absent when nothing changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One source's colour handling in a render.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceColorReport {
+    pub asset: String,
+    pub file: String,
+    /// The source transfer as ffprobe names it ("arib-std-b67", "bt709"), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u8>,
+    /// "sdr" | "tone_mapped_to_sdr" | "hdr_tagged_not_converted" (the person tagged
+    /// the HDR clip with edit.color_space, so it was not tone-mapped) |
+    /// "converted_bt601_to_bt709" (an SD source's BT.601 matrix was converted).
+    pub handling: String,
 }
 
 impl RenderReceipt {
@@ -109,6 +199,7 @@ impl RenderReceipt {
     pub fn compute_pass(&mut self) {
         self.pass = !self.checks.is_empty() && self.checks.iter().all(|c| c.pass);
         self.fix_actions = self.fix_actions();
+        self.outcome = Some(crate::check_outcome::check_outcome(&self.checks));
     }
 
     /// Derive the fix-action list for THIS receipt: one [`FixAction`] per
@@ -334,6 +425,8 @@ mod fix_action_tests {
             pass: false,
             judge: None,
             fix_actions: vec![],
+            encode: None,
+            outcome: None,
         };
         r.compute_pass();
         assert!(!r.pass);
@@ -548,9 +641,16 @@ pub fn fix_action(check: &CheckResult) -> Option<FixAction> {
             fix_args: serde_json::json!({}),
             targets: vec![],
             measured: check.evidence.clone(),
-            rationale: format!(
-                "'{other}' has no mechanical auto-fix — needs a human edit or verify.judge"
-            ),
+            // A check that states its own plain reason (duration_matches_edl
+            // names the short stream) leads with it.
+            rationale: match d.get("reason").and_then(|r| r.as_str()) {
+                Some(reason) => format!(
+                    "{reason} '{other}' has no mechanical auto-fix — needs a human edit or verify.judge"
+                ),
+                None => format!(
+                    "'{other}' has no mechanical auto-fix — needs a human edit or verify.judge"
+                ),
+            },
             auto_fixable: false,
         },
     })

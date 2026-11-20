@@ -17,13 +17,16 @@ pub(super) fn selected_render_receipt(
     receipts: &Path,
     requested_id: &str,
 ) -> Result<cut_core::RenderReceipt, CutError> {
-    selected_render_receipt_with_path(receipts, requested_id).map(|(_, receipt)| receipt)
+    selected_render_receipt_with_path(receipts, requested_id).map(|(_, receipt, _)| receipt)
 }
 
+/// Also answers, from the very bytes it parsed, whether this engine wrote that
+/// receipt (`cache_trust`): a re-check relies on a receipt's own decisions only
+/// then.
 pub(super) fn selected_render_receipt_with_path(
     receipts: &Path,
     requested_id: &str,
-) -> Result<(PathBuf, cut_core::RenderReceipt), CutError> {
+) -> Result<(PathBuf, cut_core::RenderReceipt, bool), CutError> {
     // Persisted retry descriptors bypass the public render_id schema. Reject
     // path syntax before any ID-derived lookup, including Windows UNC paths.
     validate_receipt_id(requested_id)?;
@@ -66,7 +69,9 @@ pub(super) fn selected_render_receipt_with_path(
         )
         .with_suggested_action("render again to create a fresh local render receipt"));
     }
-    let receipt: cut_core::RenderReceipt = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let bytes = receipt_file::render_receipt_bytes(receipts, &path)?;
+    let written_here = cut_media::cache_trust::trusted_bytes(&path, &bytes);
+    let receipt: cut_core::RenderReceipt = serde_json::from_slice(&bytes)?;
     if receipt.render_id != requested_id {
         return Err(CutError::new(
             error_codes::CONFLICT,
@@ -78,7 +83,7 @@ pub(super) fn selected_render_receipt_with_path(
         )
         .with_suggested_action("select the matching render receipt or render again"));
     }
-    Ok((path, receipt))
+    Ok((path, receipt, written_here))
 }
 
 pub(super) fn plain_receipt_dir(receipts: &Path) -> Result<(), CutError> {

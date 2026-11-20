@@ -27,7 +27,7 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
-    fn env_value(command: &Command, name: &str) -> Option<&OsStr> {
+    fn env_value<'a>(command: &'a Command, name: &str) -> Option<&'a OsStr> {
         command
             .get_envs()
             .find_map(|(key, value)| (key == OsStr::new(name)).then_some(value).flatten())
@@ -66,14 +66,14 @@ mod tests {
         assert_eq!(
             command
                 .get_envs()
-                .find(|(key, _)| key == OsStr::new(ENV_CONTROLLER_OWNER))
+                .find(|(key, _)| *key == OsStr::new(ENV_CONTROLLER_OWNER))
                 .and_then(|(_, value)| value),
             None
         );
         assert_eq!(
             command
                 .get_envs()
-                .find(|(key, _)| key == OsStr::new(ENV_CONTROLLER_OWNER_PID))
+                .find(|(key, _)| *key == OsStr::new(ENV_CONTROLLER_OWNER_PID))
                 .and_then(|(_, value)| value),
             None
         );

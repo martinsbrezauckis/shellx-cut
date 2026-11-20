@@ -127,7 +127,7 @@ pub fn run_faces(
                 format!("face runner spawn failed: {e}"),
                 "the local face-detect runtime could not be started",
             )
-            .with_suggested_action("install the perception sidecar (opencv) in its venv")
+            .with_suggested_action(cut_perception::captions_setup_action())
         })?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);

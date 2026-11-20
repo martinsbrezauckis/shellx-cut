@@ -14,8 +14,8 @@ Covered:
   - codex_judge._extract_json recovers the real verdict from a prose
         preamble that itself contains braces (returns the validating object,
         not the first {...}); unchanged on already-clean JSON.
-  - codex_judge.detect is limited to binary/version detection and never opens
-        or JSON-parses Codex's canonical authentication content.
+  - codex_judge.detect probes binary/version and tool-free image/schema
+        transport without opening canonical authentication content.
   - cli_judge.detect_frame_read_failure does not reclassify a legitimate all-black
         `fail` verdict (populated issues / high confidence / no OS token) to
         infrastructure, while still catching a real EACCES sweep.
@@ -117,7 +117,7 @@ def test_text_prompt_subprocesses_pin_utf8():
                     # Byte-oriented stdin (for example prompt.encode("utf-8"))
                     # is already locale-independent and outside this contract.
                     continue
-                relative = os.path.relpath(path, _ROOT)
+                relative = os.path.relpath(path, _ROOT).replace(os.sep, "/")
                 location = f"{relative}:{node.lineno}"
                 prompt_calls.append(location)
                 encoding = keywords.get("encoding")
@@ -333,13 +333,18 @@ def test_codex_detection_never_reads_canonical_auth_content():
     codex_path = "/fixture/bin/codex"
     commands: list[list[str]] = []
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, *_args):
         commands.append(command)
-        return types.SimpleNamespace(stdout="codex fixture 1.2.3\n", stderr="")
+        return (b"codex-cli 1.2.3\n" if command[-1] == "--version"
+                else " ".join(codex_judge.codex_judge_policy.TRANSPORT_FLAGS).encode())
 
     with (
+        mock.patch.object(codex_judge, "NATIVE_ADMISSION_VERIFIED", False),
         mock.patch.object(codex_judge.shutil, "which", return_value=codex_path),
-        mock.patch.object(codex_judge.subprocess, "run", side_effect=fake_run),
+        mock.patch.object(codex_judge, "_child_route", return_value=([codex_path], None)),
+        mock.patch.object(codex_judge.codex_judge_runtime, "run_bounded", side_effect=fake_run),
+        mock.patch.object(codex_judge.codex_judge_runtime, "premodel_probe",
+                          side_effect=AssertionError("unadmitted detect probed policy")),
         mock.patch("builtins.open", side_effect=AssertionError("detect opened auth content"))
                 as forbidden_open,
         mock.patch.object(codex_judge.json, "load",
@@ -350,11 +355,15 @@ def test_codex_detection_never_reads_canonical_auth_content():
 
     check("Codex detect reports the resolved binary", detected.get("found") is True
           and detected.get("path") == codex_path, repr(detected))
-    check("Codex detect reports its version", detected.get("version") == "codex fixture 1.2.3",
+    check("Codex detect reports its version", detected.get("version") == "codex-cli 1.2.3",
           repr(detected))
+    check("Codex detect reports image/schema transport without native promotion",
+          detected.get("capabilities", {}).get("direct_image_and_schema") is True
+          and detected.get("judge_ready") is False, repr(detected))
     check("Codex detect leaves authentication unknown", detected.get("logged_in") is None
           and "auth_mode" not in detected, repr(detected))
-    check("Codex detect runs only --version", commands == [[codex_path, "--version"]],
+    check("Codex detect runs only version and exec help probes",
+          commands == [[codex_path, "--version"], [codex_path, "exec", "--help"]],
           repr(commands))
     check("Codex detect did not open canonical auth content", not forbidden_open.called)
     check("Codex detect did not JSON-load canonical auth content",
@@ -549,7 +558,7 @@ def test_frame_extraction_uses_only_its_fresh_output_dir():
         check("stale JPEG and symlink canary are neither listed nor overwritten",
               stale not in first_paths + second_paths and canary not in first_paths + second_paths
               and stale_bytes == b"stale-frame"
-              and (not canary_linked or os.readlink(canary) == secret),
+              and (not canary_linked or os.path.realpath(canary) == os.path.realpath(secret)),
               repr((first_paths, second_paths)))
         blocks, image_bytes = grok_judge.build_content_blocks("fixture", second_paths)
         check("Grok content blocks read only the fresh second-run frame",

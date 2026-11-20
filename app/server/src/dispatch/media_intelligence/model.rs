@@ -122,6 +122,56 @@ fn relative_receipt_hash(project_dir: &Path, relative: Option<&str>) -> Option<S
     hash_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES).ok()
 }
 
+/// The analysis report that may feed search for one asset, as read once.
+pub(super) struct AssetReport {
+    pub(super) bytes: Vec<u8>,
+    pub(super) sha256: String,
+}
+
+/// An asset's analysis report feeds search only when it is this asset's own:
+/// the asset's pointer names `receipts/<asset id>.perception.json`, that file
+/// is read once as a bounded ordinary file, those exact bytes are what this
+/// engine wrote there (`cut_media::cache_trust`), and the report's
+/// `asset_hash` is the asset's source hash. Another asset's report, even one
+/// this engine made, is never used. Otherwise the asset's scene/beat kinds
+/// are simply not ready in the index `coverage`.
+pub(super) fn asset_report(
+    project_dir: &Path,
+    asset_id: &str,
+    pointer: Option<&str>,
+    asset_hash: &str,
+) -> Option<AssetReport> {
+    let single_name = !asset_id.is_empty()
+        && asset_id != ".."
+        && !asset_id.contains(['/', '\\', ':'])
+        && asset_id != ".";
+    let expected = format!("receipts/{asset_id}.perception.json");
+    if !single_name || pointer? != expected {
+        return None;
+    }
+    crate::output_paths::existing_plain_project_relative_dir(project_dir, Path::new("receipts"))
+        .ok()?;
+    let path = project_dir.join(&expected);
+    let cut_core::store::BoundedCacheRead::Bytes(bytes) =
+        cut_core::store::read_bounded_cache(&path, MAX_EVIDENCE_RECEIPT_BYTES)
+    else {
+        return None;
+    };
+    if !cut_media::cache_trust::trusted_bytes(&path, &bytes) {
+        return None;
+    }
+    let described = serde_json::from_slice::<Value>(&bytes)
+        .ok()?
+        .get("asset_hash")
+        .and_then(Value::as_str)
+        .map(str::to_owned)?;
+    if described != asset_hash {
+        return None;
+    }
+    let sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
+    Some(AssetReport { bytes, sha256 })
+}
+
 fn hash_bounded_file(path: &Path, max_bytes: u64) -> io::Result<String> {
     let metadata = std::fs::metadata(path)?;
     if !metadata.is_file() {
@@ -223,7 +273,13 @@ pub(super) fn current_bindings_for_visual_runtime(
             video,
             audio,
             transcript_sha256: relative_receipt_hash(&snapshot.dir, asset.transcript.as_deref()),
-            perception_sha256: relative_receipt_hash(&snapshot.dir, asset.perception.as_deref()),
+            perception_sha256: asset_report(
+                &snapshot.dir,
+                id,
+                asset.perception.as_deref(),
+                &asset.hash,
+            )
+            .map(|report| report.sha256),
             visual_sha256: visual_index_sha256(&snapshot.dir, id, visual_runtime),
         });
     }

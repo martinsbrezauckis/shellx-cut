@@ -5,6 +5,7 @@ import { callVerb } from './client'
 // cycle through client.ts). Re-exported so every existing importer of
 // EXPORT_OUTPUT_DIR_STORAGE_KEY from this module keeps working.
 import { EXPORT_OUTPUT_DIR_STORAGE_KEY } from './clientUrls'
+import { outputFolderStatusFrom, type OutputFolderStatus } from './outputFolderStatus'
 
 export { EXPORT_OUTPUT_DIR_STORAGE_KEY }
 
@@ -36,6 +37,50 @@ export async function applyExportOutputDir(dir: string | null): Promise<boolean>
   }
 }
 
+// ---------------------------------------------------------------------------
+// The export destination is held by the ENGINE (project.get_output_dir, the
+// output_folder_changed event). Everything below mirrors that one value: the
+// localStorage copy above is only a cache of the engine's last answer, kept so
+// URL construction can stay synchronous. Nothing here pushes the UI's copy back
+// to the engine, so a folder an agent chose is shown as chosen and never
+// overwritten by a stale browser value.
+// ---------------------------------------------------------------------------
+
+let engineStatus: OutputFolderStatus | null = null
+// While a Save As authorizes ONE folder for one export, the engine changes
+// are our own and must not show as the person's destination.
+let authorizing = 0
+const statusListeners = new Set<() => void>()
+
+export function getOutputFolderStatus(): OutputFolderStatus | null {
+  return engineStatus
+}
+
+export function subscribeOutputFolderStatus(listener: () => void): () => void {
+  statusListeners.add(listener)
+  return () => { statusListeners.delete(listener) }
+}
+
+/** Adopt the engine's answer: refresh the status and the cached folder. */
+export function applyOutputFolderStatus(status: OutputFolderStatus): void {
+  if (authorizing > 0) return
+  engineStatus = status
+  if (getStoredOutputDir() !== status.dir) setStoredOutputDir(status.dir)
+  for (const listener of statusListeners) listener()
+}
+
+/** Ask the engine where exports go now, and adopt the answer. */
+export async function refreshOutputFolder(): Promise<OutputFolderStatus | null> {
+  try {
+    const reply = await callVerb('project.get_output_dir', {})
+    const status = reply.ok ? outputFolderStatusFrom(reply.result) : null
+    if (status) applyOutputFolderStatus(status)
+    return status
+  } catch {
+    return null
+  }
+}
+
 export async function clearStoredOutputDirIfAccepted(
   apply: () => Promise<boolean> = () => applyExportOutputDir(null),
 ): Promise<boolean> {
@@ -44,14 +89,19 @@ export async function clearStoredOutputDirIfAccepted(
   return true
 }
 
-export async function ensureStoredOutputDirApplied(
-  apply: (dir: string | null) => Promise<boolean> = applyExportOutputDir,
+/**
+ * Before an export that uses the default folder: read the engine's destination
+ * and refuse, in plain words, a chosen folder that is gone or cannot be
+ * written, instead of letting the encoder fail at the end.
+ */
+export async function ensureExportDestinationUsable(
+  read: () => Promise<OutputFolderStatus | null> = refreshOutputFolder,
 ): Promise<string | null> {
-  const dir = getStoredOutputDir()
-  if (dir && !await apply(dir)) {
-    throw new Error('could not use the selected export folder')
+  const status = await read()
+  if (status && !status.usable) {
+    throw new Error(`${status.problem ?? 'The export folder cannot be used.'}${status.suggested_action ? ` ${status.suggested_action}` : ''}`)
   }
-  return dir
+  return status ? status.dir : getStoredOutputDir()
 }
 
 /**
@@ -85,19 +135,35 @@ export async function withAuthorizedOutputPath<T>(
   action: () => Promise<T>,
 ): Promise<T> {
   if (!path) {
-    await ensureStoredOutputDirApplied()
+    await ensureExportDestinationUsable()
     return action()
   }
   const parent = outputDirectoryForPath(path)
-  const stored = getStoredOutputDir()
-  if (!parent || !await applyExportOutputDir(parent)) {
-    throw new Error('could not authorize the selected output folder')
-  }
+  // Restore what the ENGINE held (a person's or an agent's choice), not the
+  // browser copy.
+  const before = (await refreshOutputFolder())?.dir ?? getStoredOutputDir()
+  authorizing += 1
   try {
-    return await action()
+    if (!parent || !await applyExportOutputDir(parent)) {
+      throw new Error('could not authorize the selected output folder')
+    }
+    try {
+      return await action()
+    } finally {
+      // A restore the engine refuses (the folder it held has vanished meanwhile)
+      // falls back to the project exports folder, which the status bar then shows.
+      if (!await applyExportOutputDir(before)) await applyExportOutputDir(null)
+    }
   } finally {
-    await applyExportOutputDir(stored)
+    authorizing -= 1
+    void refreshOutputFolder()
   }
+}
+
+/** The folder's own name (the last segment): what fits in the status bar chip. */
+export function folderName(dir: string): string {
+  const parts = dir.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : dir
 }
 
 export function folderTail(dir: string): string {

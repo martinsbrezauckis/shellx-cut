@@ -15,6 +15,7 @@
 // Callers: App.tsx (mounted when activeDrawer === 'clips'). Deps: lib/client,
 // ../drawer.css, ./clips.css.
 
+import { noTranscriptKind, noTranscriptSentence, type NoTranscriptKind } from '../../lib/noTranscript'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   callVerb,
@@ -25,6 +26,7 @@ import {
   type BundlePlatform,
 } from '../../lib/client'
 import { Icon } from '../../icons'
+import ClipThumb from './ClipThumb'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
 import '../drawer.css'
 import './clips.css'
@@ -63,6 +65,7 @@ export default function ClipsDrawer({ onClose }: ClipsDrawerProps) {
   const [bundleOf, setBundleOf] = useState<Record<number, BundleResult>>({})
   const [platforms, setPlatforms] = useState<Set<string>>(new Set(PLATFORMS))
   const pollTimer = useRef<number | null>(null)
+  const [noTranscript, setNoTranscript] = useState<NoTranscriptKind | null>(null)
 
   // Esc closes (drawer family convention).
   // Clear the bundle poll ONLY on unmount (not tied to onClose, whose ref
@@ -74,8 +77,11 @@ export default function ClipsDrawer({ onClose }: ClipsDrawerProps) {
     setLoading(true)
     setErr(null)
     const r = await callVerb('clip.candidates', { count: 6 })
+    const missing = noTranscriptKind(r.error)
     if (r.ok && r.result) setResult(r.result)
+    else if (missing) { setResult(null); setNoTranscript(missing) }
     else setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'clip.candidates failed'}`)
+    if (!missing) setNoTranscript(null)
     setLoading(false)
   }, [])
   useEffect(() => {
@@ -197,7 +203,7 @@ export default function ClipsDrawer({ onClose }: ClipsDrawerProps) {
           {err && <div className="cd-err" data-cut-clips-error role="alert">{err}</div>}
           {!loading && !err && candidates.length === 0 && (
             <div className="cd-empty" data-cut-clips-empty>
-              No candidates yet — import a video and let it transcribe, then reopen.
+              {noTranscript ? noTranscriptSentence(noTranscript) : 'No candidates yet — import a video and let it transcribe, then reopen.'}
               {result?.note && <div className="cd-note">{result.note}</div>}
             </div>
           )}
@@ -214,22 +220,7 @@ export default function ClipsDrawer({ onClose }: ClipsDrawerProps) {
               const isBundling = bundling === c.at_ms
               return (
                 <div className="clip-card" data-cut-clip-card={c.at_ms} key={c.at_ms}>
-                  <div className="clip-thumb-wrap" data-cut-clip-thumb-wrap>
-                    <span className="clip-thumb-fallback" data-cut-clip-thumb-fallback aria-hidden="true">
-                      <Icon name="image" size={20} />
-                    </span>
-                    <img
-                      className="clip-thumb"
-                      data-cut-clip-thumb
-                      alt={`frame at ${c.at_ms}ms`}
-                      src={`/api/frame?at_ms=${c.at_ms}&h=120`}
-                      loading="lazy"
-                      onError={(e) => {
-                        e.currentTarget.hidden = true
-                        e.currentTarget.parentElement?.setAttribute('data-cut-thumb-error', 'true')
-                      }}
-                    />
-                  </div>
+                  <ClipThumb atMs={c.at_ms} />
                   <div className="clip-meta">
                     <div className="clip-row1">
                       <span className={`clip-score ${scoreClass(c.score)}`} data-cut-clip-score>

@@ -43,35 +43,28 @@ impl FfmpegFrameGridPauseProjectionSourceStager {
             ffprobe: ffprobe.into(),
         }
     }
-}
 
-impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSourceStager {
-    fn stage_frame_grid(
+    fn stage_frame_grid_with_control(
         &mut self,
         capture_dir: &Path,
         sources: &[VerifiedPauseProjectionSource],
         grid: &FrameGridStitchPlan,
         output: &Path,
+        control: &OwnedProcessControl,
     ) -> Result<(), CutError> {
-        let control = OwnedProcessControl::bounded(STAGE_TIMEOUT, || false);
         let snapshots = snapshot_sources(capture_dir, sources)?;
         for (snapshot, source) in snapshots.iter().zip(sources) {
-            super::timestamps::verify(&self.ffprobe, snapshot.path(), source, &control)?;
+            super::timestamps::verify(&self.ffprobe, snapshot.path(), source, control)?;
         }
         let filter = filter_graph(sources, grid)?;
         let mut command = Command::new(&self.ffmpeg);
         command.args(["-v", "error", "-nostdin", "-n"]);
-        for snapshot in &snapshots {
-            command
-                .args([
-                    "-protocol_whitelist",
-                    cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-                    "-format_whitelist",
-                    cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
-                    "-i",
-                ])
-                .arg(snapshot.path());
-        }
+        cut_media::ffmpeg::with_render_process_control(control, || {
+            for snapshot in &snapshots {
+                cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, snapshot.path())?;
+            }
+            Ok::<(), CutError>(())
+        })?;
         let rate = format!(
             "{}/{}",
             grid.output_frame_rate.num, grid.output_frame_rate.den
@@ -83,7 +76,7 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
             .arg(output);
         let result = run_owned_command(
             &mut command,
-            &control,
+            control,
             "assemble exact pause-session source stage",
         )
         .map_err(stage_error)?;
@@ -97,6 +90,19 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
             )));
         }
         Ok(())
+    }
+}
+
+impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSourceStager {
+    fn stage_frame_grid(
+        &mut self,
+        capture_dir: &Path,
+        sources: &[VerifiedPauseProjectionSource],
+        grid: &FrameGridStitchPlan,
+        output: &Path,
+    ) -> Result<(), CutError> {
+        let control = OwnedProcessControl::bounded(STAGE_TIMEOUT, || false);
+        self.stage_frame_grid_with_control(capture_dir, sources, grid, output, &control)
     }
 }
 

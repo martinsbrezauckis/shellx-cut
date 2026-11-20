@@ -39,6 +39,36 @@ export function isSupportedMediaPath(path: string): boolean {
   return supportedMediaKind(path) !== null
 }
 
+export interface DropPlan {
+  /** Dropped paths the import can take (supported media files). */
+  media: string[]
+  /** What to tell the person about every other dropped item, or null. */
+  skippedNotice: string | null
+}
+
+const SKIPPED_NAMES_SHOWN = 3
+
+/** Split a drop into what is imported and what is not, and say plainly which
+ *  items were left out and why. Only files are imported (the Assets import
+ *  dialog and media.import work the same way), so a folder, or a file of a type
+ *  Cut cannot read, is named rather than dropped without a word. The page cannot
+ *  tell a folder from a file of an unknown type, so the reason covers both. */
+export function planDrop(paths: readonly string[]): DropPlan {
+  const media = paths.filter(isSupportedMediaPath)
+  const skipped = paths.filter((path) => !isSupportedMediaPath(path))
+  if (skipped.length === 0) return { media, skippedNotice: null }
+  const names = skipped.map((path) => path.split(/[\\/]/).filter(Boolean).pop() ?? path)
+  const shown = names.slice(0, SKIPPED_NAMES_SHOWN).map((name) => `\u201c${name}\u201d`).join(', ')
+  const more = names.length > SKIPPED_NAMES_SHOWN ? ` and ${names.length - SKIPPED_NAMES_SHOWN} more` : ''
+  const noun = skipped.length === 1 ? 'is' : 'are'
+  return {
+    media,
+    skippedNotice:
+      `Not imported: ${shown}${more}. ${skipped.length === 1 ? 'It' : 'They'} ${noun} not ${skipped.length === 1 ? 'a supported media file' : 'supported media files'}. `
+      + 'Folders are not imported: open the folder and drop the files inside it.',
+  }
+}
+
 /** Turn either a POSIX or Windows media path into a portable project name. */
 export function projectNameFromMediaPath(path: string): string {
   const filename = path.split(/[\\/]/).pop() ?? ''

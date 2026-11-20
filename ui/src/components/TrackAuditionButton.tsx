@@ -116,6 +116,7 @@ export function TrackAuditionButton({
       const result = await callVerb('export.audio', {
         format: 'mp3',
         track: trackId,
+        scratch: `listen_${trackId.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 25)}`,
         rationale: `${surface} per-track listen`,
       })
       if (!mountedRef.current || request !== requestRef.current || activeAudition?.token !== tokenRef.current) return

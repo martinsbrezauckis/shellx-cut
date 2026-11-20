@@ -215,6 +215,7 @@ impl WindowClicks {
                 CursorCoordinateState::Exact
             },
             exact_clicks: exact,
+            held_clicks: 0,
             approximate_clicks: 0,
             unavailable_clicks: unavailable,
             max_metadata_age_ms: age,

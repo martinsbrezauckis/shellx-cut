@@ -570,6 +570,7 @@ mod perception_receipt_bounds_tests {
             br#"{"schema":"shellx-cut/perception/1","asset_hash":"x","source_path":"clip.mp4"}"#,
         )
         .unwrap();
+        cut_media::cache_trust::remember(&receipt); // this engine's report (item 155)
         assert_eq!(
             read_expected_perception_report(&receipts, "a1", "receipts/a1.perception.json")
                 .unwrap()
@@ -2082,6 +2083,11 @@ pub(super) async fn transcript_timeline(
         }
     }
 
+    // No referenced asset has a transcript: say why, never an empty ok.
+    if !segs.is_empty() && cache.values().all(|t| t.is_none()) {
+        return Err(super::transcript_load::no_transcript_reason(None));
+    }
+
     // 3) Map each clip's words to timeline entries.
     let mut entries: Vec<Value> = Vec::new();
     for s in &segs {
@@ -3109,10 +3115,17 @@ pub(super) async fn transcript_remove_fillers(
     };
     let mut ranges = Vec::new();
     let pad = cut_perception::CUT_ON_WORD_TOLERANCE_MS;
-    for id in &asset_ids {
-        let Ok(t) = load_transcript(state, id).await else {
-            continue;
-        };
+    // No transcript anywhere in scope: say why (captions not installed, or not
+    // transcribed yet), never an ok that reads like "no fillers".
+    let (transcribed, _untranscribed) =
+        super::transcript_load::assets_with_transcript(state, &asset_ids).await?;
+    if transcribed.is_empty() {
+        return Err(super::transcript_load::no_transcript_reason(
+            a.asset.as_deref(),
+        ));
+    }
+    for id in &transcribed {
+        let t = load_transcript(state, id).await?;
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
         // Group consecutive filler words into runs → one source span per run.
@@ -3497,12 +3510,7 @@ async fn transcript_remove_retakes_with_work(
         if let Some(id) = &a.asset {
             load_transcript(state, id).await?;
         }
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            "no transcribed asset in scope",
-            "transcribe the footage first, then re-run",
-        )
-        .with_suggested_action("call media.transcribe{asset} and wait for the job to finish"));
+        return Err(super::transcript_load::no_transcript_reason(None));
     }
 
     // Reuse the filler/silence cut machinery for the actual ripple-deletes, then
@@ -4327,6 +4335,10 @@ pub(super) async fn captions_set_style(
         style: cut_core::CaptionStyle,
     }
     let a: Args = parse_args(args.clone())?;
+    // Style name and font are written as fields of the subtitle file that
+    // burns captions in; refuse what would break or add fields there.
+    cut_media::ffmpeg::escape::ass_field("style name", &a.style_ref)?;
+    cut_media::ffmpeg::escape::ass_field("font", &a.style.font)?;
     // Committed as a lowered edit._set_timeline step (caption_styles ride on
     // the snapshot) so the op replays and is undoable like every mutation.
     let mut guard = state.project.write().await;

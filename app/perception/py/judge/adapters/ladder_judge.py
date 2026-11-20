@@ -30,6 +30,7 @@ sys.path.insert(0, _JUDGE_DIR)
 sys.path.insert(0, _PY_ROOT)
 sys.path.insert(0, _ADAPTERS_DIR)
 import judge              # noqa: E402  (SCHEMA, now_iso)
+import judge_files        # noqa: E402  (no-follow review result files)
 import provider_child_launch  # noqa: E402
 import cli_judge          # noqa: E402  (claude detect)
 import codex_judge        # noqa: E402  (codex detect)
@@ -69,18 +70,34 @@ def detect_ladder(launches: dict | None = None) -> dict:
             "availability_reason": "provider is absent from the admitted provider handoff",
         }
 
-    claude = (cli_judge.detect_providers(launches.get("claude")).get("claude", {"found": False})
+    def detect_one(provider: str, detector, launch: dict | None) -> dict:
+        try:
+            return detector(launch)
+        except ValueError:
+            # An admitted provider may have a wrapper this adapter cannot
+            # safely execute. Keep the other rungs available without exposing
+            # wrapper contents or silently launching it through a shell.
+            return {
+                "provider": provider,
+                "found": bool(launch and launch.get("executable")),
+                "judge_ready": False,
+                "availability_reason": "provider launch wrapper is unsupported",
+            }
+
+    claude = (detect_one("claude", lambda launch: cli_judge.detect_providers(launch).get(
+                  "claude", {"found": False}), launches.get("claude"))
               if not admitted_only or "claude" in launches else unavailable("claude"))
     # Normalize the claude entry to the {provider, found, ...} shape the others
     # use (cli_judge keys it under the name; add the provider field).
     claude = {"provider": "claude", **claude}
     rungs = {
         "claude": claude,
-        "codex": (codex_judge.detect(launches.get("codex"))
+        "codex": (detect_one("codex", codex_judge.detect, launches.get("codex"))
                   if not admitted_only or "codex" in launches else unavailable("codex")),
-        "antigravity": (antigravity_judge.detect(launches.get("antigravity"))
+        "antigravity": (detect_one("antigravity", antigravity_judge.detect,
+                                    launches.get("antigravity"))
                         if not admitted_only or "antigravity" in launches else unavailable("antigravity")),
-        "grok": (grok_judge.detect(launches.get("grok"))
+        "grok": (detect_one("grok", grok_judge.detect, launches.get("grok"))
                  if not admitted_only or "grok" in launches else unavailable("grok")),
     }
     # Presence and admission are distinct. Claude has a restricted-Read gate;
@@ -238,16 +255,14 @@ def run_adapter(provider: str, passthrough: list[str],
     # never fail the run because the trace splice failed).
     env: dict | None = None
     out_path = _arg_value(passthrough, "--out")
-    if out_path and os.path.exists(out_path):
+    if out_path and os.path.lexists(out_path):
         try:
-            with open(out_path) as f:
-                env = json.load(f)
+            env = json.loads(judge_files.read_plain_file(out_path, "review result"))
             env["ladder"] = {**detect_ladder(launches), "selected": provider,
                              "skipped": False}
-            with open(out_path, "w") as f:
-                json.dump(env, f, indent=2)
-                f.write("\n")
-        except (OSError, json.JSONDecodeError):
+            judge_files.write_text_replacing(
+                out_path, json.dumps(env, indent=2) + "\n", "review result")
+        except (OSError, ValueError, TypeError):
             env = None
     return cp.returncode, env
 
@@ -304,10 +319,9 @@ def run_auto_with_stepdown(ladder: dict, passthrough: list[str],
             env["ladder"]["selected"] = provider
             if out_path:
                 try:
-                    with open(out_path, "w") as f:
-                        json.dump(env, f, indent=2)
-                        f.write("\n")
-                except OSError:
+                    judge_files.write_text_replacing(
+                        out_path, json.dumps(env, indent=2) + "\n", "review result")
+                except (OSError, ValueError):
                     pass
         return rc
     return last_rc
@@ -341,9 +355,8 @@ def _emit_all_failed(ladder: dict, attempted: list[dict],
     text = json.dumps(envelope, indent=2)
     if out_path:
         try:
-            with open(out_path, "w") as f:
-                f.write(text + "\n")
-        except OSError:
+            judge_files.write_text_replacing(out_path, text + "\n", "review result")
+        except (OSError, ValueError):
             pass
     print(text)
     return 0  # a produced, honest terminal envelope (engine reads status=error)
@@ -391,6 +404,15 @@ def main() -> int:
               + ", ".join(sorted(VALID_PROVIDERS)), file=sys.stderr)
         return 2
 
+    # The result path may sit inside a project received from someone else.
+    # Refuse a planted link before any provider is detected or started.
+    if known.command == "review" and known.out:
+        try:
+            judge_files.require_replaceable(known.out, "review result")
+        except judge_files.RefusedProjectFile as error:
+            print(f"review refused: {error}", file=sys.stderr)
+            return 2
+
     ladder = detect_ladder(launches)
 
     if known.command == "detect":
@@ -425,8 +447,7 @@ def main() -> int:
         envelope = make_skip_envelope(ladder)
         text = json.dumps(envelope, indent=2)
         if known.out:
-            with open(known.out, "w") as f:
-                f.write(text + "\n")
+            judge_files.write_text_replacing(known.out, text + "\n", "review result")
         print(text)
         return 0  # skip is a COMPLETED job outcome, not an error
 

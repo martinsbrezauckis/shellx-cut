@@ -5,6 +5,7 @@ use record_core::{
     ClickPositionQuality, ClickSample, CursorCoordinateSource, CursorCoordinateState, CursorSample,
     MouseButton, ScrollSample,
 };
+use std::time::{Duration, SystemTime};
 
 fn wayland_mode() -> SessionInputMode {
     session_input_mode_from(Some("wayland"), true, false, None, None)
@@ -28,6 +29,11 @@ fn geometry() -> PortalCursorGeometry {
 fn capture(samples: Vec<CursorMetadataSample>) -> PipewireCursorCapture {
     PipewireCursorCapture {
         metadata: samples,
+        invalidations: vec![],
+        segments: vec![CaptureSegment {
+            start_ms: 0,
+            end_ms: 1000,
+        }],
         frame_width: 1000,
         frame_height: 500,
         capture_start_ms: 0,
@@ -35,8 +41,23 @@ fn capture(samples: Vec<CursorMetadataSample>) -> PipewireCursorCapture {
     }
 }
 
+fn kernel_ms(ms: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_millis(ms)
+}
+
+fn quiet_evidence(button_ms: &[u64]) -> EvdevEvidence {
+    EvdevEvidence {
+        complete: true,
+        motion: vec![],
+        button_times: button_ms.iter().copied().map(kernel_ms).collect(),
+    }
+}
+
+#[path = "cursor_correlation_held_tests.rs"]
+mod held;
+
 #[test]
-fn exact_click_uses_nearest_fresh_absolute_metadata() {
+fn exact_click_uses_fresh_preceding_absolute_metadata() {
     let mut clicks = [click(105)];
     let output = correlate_clicks(
         wayland_mode(),
@@ -50,10 +71,67 @@ fn exact_click_uses_nearest_fresh_absolute_metadata() {
         }])),
         Some(geometry()),
         None,
+        Some(&quiet_evidence(&[105])),
     );
     assert_eq!((clicks[0].x, clicks[0].y), (400.0, 200.0));
     assert_eq!(clicks[0].position_quality, ClickPositionQuality::Exact);
     assert_eq!(output.status.state, CursorCoordinateState::Exact);
+}
+
+#[test]
+fn fresh_preceding_metadata_cannot_be_exact_after_intervening_motion() {
+    for observed_ms in [450, 600, 1005] {
+        let mut clicks = [click(480)];
+        let mut evidence = quiet_evidence(&[480]);
+        evidence.motion.push(ObservedMotion {
+            observed_ms,
+            kernel_time: kernel_ms(450),
+        });
+        let output = correlate_clicks(
+            wayland_mode(),
+            &mut clicks,
+            vec![],
+            vec![],
+            Some(capture(vec![CursorMetadataSample {
+                t_ms: 418,
+                x: 400.0,
+                y: 200.0,
+            }])),
+            Some(geometry()),
+            None,
+            Some(&evidence),
+        );
+        assert_eq!(
+            clicks[0].position_quality,
+            ClickPositionQuality::Approximate
+        );
+        assert_eq!(output.status.exact_clicks, 0);
+        assert_eq!(output.status.held_clicks, 0);
+    }
+}
+
+#[test]
+fn later_metadata_does_not_infer_a_click_position() {
+    let mut clicks = [click(450)];
+    let output = correlate_clicks(
+        wayland_mode(),
+        &mut clicks,
+        vec![],
+        vec![],
+        Some(capture(vec![CursorMetadataSample {
+            t_ms: 480,
+            x: 400.0,
+            y: 200.0,
+        }])),
+        Some(geometry()),
+        None,
+        Some(&quiet_evidence(&[450])),
+    );
+    assert_eq!(
+        clicks[0].position_quality,
+        ClickPositionQuality::Approximate
+    );
+    assert_eq!(output.status.exact_clicks, 0);
 }
 
 #[test]
@@ -78,6 +156,7 @@ fn late_out_of_order_metadata_selects_the_closest_clock_sample() {
         ])),
         Some(geometry()),
         None,
+        Some(&quiet_evidence(&[100])),
     );
     assert_eq!((clicks[0].x, clicks[0].y), (95.0, 100.0));
     assert_eq!(clicks[0].position_quality, ClickPositionQuality::Exact);
@@ -98,6 +177,7 @@ fn stale_or_missing_metadata_stays_approximate() {
         }])),
         Some(geometry()),
         None,
+        None,
     );
     assert_eq!(stale[0].position_quality, ClickPositionQuality::Approximate);
     assert_eq!(
@@ -111,6 +191,7 @@ fn stale_or_missing_metadata_stays_approximate() {
         &mut missing,
         vec![],
         vec![],
+        None,
         None,
         None,
         None,
@@ -141,6 +222,11 @@ fn native_fractional_scale_spa_position_is_already_in_video_pixels() {
                 x: 2402.0,
                 y: 846.0,
             }],
+            invalidations: vec![],
+            segments: vec![CaptureSegment {
+                start_ms: 0,
+                end_ms: 1000,
+            }],
             frame_width: 3840,
             frame_height: 2160,
             capture_start_ms: 0,
@@ -148,6 +234,7 @@ fn native_fractional_scale_spa_position_is_already_in_video_pixels() {
         }),
         PortalCursorGeometry::from_portal(Some((0, 0)), Some((3072, 1728))),
         None,
+        Some(&quiet_evidence(&[50])),
     );
     assert_eq!((clicks[0].x, clicks[0].y), (2402.0, 846.0));
     assert_eq!((output.cursor[0].x, output.cursor[0].y), (2402.0, 846.0));
@@ -168,6 +255,11 @@ fn nonzero_portal_origin_is_not_subtracted_from_video_local_spa_position() {
                 x: 1200.0,
                 y: 720.0,
             }],
+            invalidations: vec![],
+            segments: vec![CaptureSegment {
+                start_ms: 0,
+                end_ms: 1000,
+            }],
             frame_width: 3840,
             frame_height: 2160,
             capture_start_ms: 0,
@@ -175,6 +267,7 @@ fn nonzero_portal_origin_is_not_subtracted_from_video_local_spa_position() {
         }),
         PortalCursorGeometry::from_portal(Some((-1600, 100)), Some((2560, 1440))),
         None,
+        Some(&quiet_evidence(&[50])),
     );
     assert_eq!((clicks[0].x, clicks[0].y), (1200.0, 720.0));
     assert_eq!((output.cursor[0].x, output.cursor[0].y), (1200.0, 720.0));
@@ -200,6 +293,11 @@ fn spa_cursor_requires_finite_coordinates_inside_the_negotiated_video() {
             vec![],
             Some(PipewireCursorCapture {
                 metadata: vec![CursorMetadataSample { t_ms: 50, x, y }],
+                invalidations: vec![],
+                segments: vec![CaptureSegment {
+                    start_ms: 0,
+                    end_ms: 1000,
+                }],
                 frame_width: 3840,
                 frame_height: 2160,
                 capture_start_ms: 0,
@@ -207,6 +305,7 @@ fn spa_cursor_requires_finite_coordinates_inside_the_negotiated_video() {
             }),
             PortalCursorGeometry::from_portal(Some((0, 0)), Some((3072, 1728))),
             None,
+            Some(&quiet_evidence(&[50])),
         );
         assert_eq!(
             clicks[0].position_quality == ClickPositionQuality::Exact,
@@ -231,12 +330,18 @@ fn missing_or_invalid_frame_dimensions_cannot_claim_exact_cursor_position() {
                     x: 2402.0,
                     y: 846.0,
                 }],
+                invalidations: vec![],
+                segments: vec![CaptureSegment {
+                    start_ms: 0,
+                    end_ms: 1000,
+                }],
                 frame_width,
                 frame_height,
                 capture_start_ms: 0,
                 capture_end_ms: 0,
             }),
             PortalCursorGeometry::from_portal(Some((0, 0)), Some((3072, 1728))),
+            None,
             None,
         );
         assert_eq!(
@@ -264,6 +369,7 @@ fn clicks_before_first_or_after_last_metadata_do_not_clamp_endpoints() {
             y: 200.0,
         }])),
         Some(geometry()),
+        None,
         None,
     );
     assert!(clicks
@@ -304,6 +410,7 @@ fn x11_uses_finalized_video_dimensions_not_portal_logical_size() {
         None,
         PortalCursorGeometry::from_portal(Some((-1920, 0)), Some((1920, 1080))),
         Some((3840, 2160)),
+        None,
     );
     assert_eq!((clicks[0].x, clicks[0].y), (1920.0, 1080.0));
     assert_eq!((output.cursor[0].x, output.cursor[0].y), (1920.0, 1080.0));
@@ -365,6 +472,7 @@ fn x11_unknown_finalized_dimensions_keep_global_input_unavailable() {
         None,
         PortalCursorGeometry::from_portal(Some((-1920, 0)), Some((1920, 1080))),
         None,
+        None,
     );
     assert_eq!(
         clicks[0].position_quality,
@@ -395,6 +503,7 @@ fn x11_window_geometry_maps_global_input_to_the_negotiated_frame() {
         None,
         PortalCursorGeometry::from_portal(Some((100, 200)), Some((800, 600))),
         Some((1600, 1200)),
+        None,
     );
     assert_eq!((clicks[0].x, clicks[0].y), (800.0, 600.0));
     assert_eq!(output.status.state, CursorCoordinateState::Exact);
@@ -423,6 +532,7 @@ fn x11_absent_portal_geometry_makes_raw_input_unavailable() {
         None,
         None,
         Some((1600, 1200)),
+        None,
     );
     assert_eq!(
         clicks[0].position_quality,
@@ -448,6 +558,7 @@ fn no_click_transitions_never_claims_vacuous_exactness() {
         None,
         PortalCursorGeometry::from_portal(Some((100, 200)), Some((800, 600))),
         Some((1600, 1200)),
+        None,
     );
     assert_eq!(output.status.state, CursorCoordinateState::Unavailable);
     assert_eq!(output.status.exact_clicks, 0);

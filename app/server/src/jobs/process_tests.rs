@@ -355,3 +355,37 @@ async fn caps_retained_diagnostics_while_draining_pipes() {
         started.elapsed()
     );
 }
+
+/// A command that prints a reason on stderr and exits with code 7 at once,
+/// without ever reading its stdin.
+fn exits_without_reading_stdin() -> Command {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("cmd");
+        command.args(["/c", "echo no-input-wanted 1>&2 & exit /b 7"]);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo no-input-wanted >&2; exit 7"]);
+        command
+    }
+}
+
+#[tokio::test]
+async fn a_child_that_exits_before_reading_its_input_reports_its_own_status_and_stderr() {
+    // Far more than any pipe buffer (Windows pipes grow), so the write cannot finish
+    // before the child is gone.
+    let input = vec![b'x'; 16 * 1024 * 1024];
+    let mut command = exits_without_reading_stdin();
+    let output = run_owned(
+        &mut command,
+        Some(&input),
+        &ProcessControl::with_cancellation(Duration::from_secs(10), JobCancellation::test_active()),
+    )
+    .await
+    .expect("a broken pipe must not replace the child's own exit status");
+    assert_eq!(output.status.code(), Some(7));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no-input-wanted"));
+}

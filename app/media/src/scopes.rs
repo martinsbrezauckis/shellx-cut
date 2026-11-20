@@ -44,29 +44,20 @@ pub struct Scopes {
     pub hue_med: f64,
 }
 
-fn measure_command(path: &Path) -> Command {
+fn measure_command(path: &Path) -> Result<Command, CutError> {
     let mut command = Command::new(ffmpeg_bin());
-    command
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            crate::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-i",
-        ])
-        .arg(path)
-        .args([
-            "-vf",
-            "signalstats,metadata=print:file=-",
-            "-frames:v",
-            "1",
-            "-f",
-            "null",
-            "-",
-        ]);
-    command
+    command.args(["-v", "error"]);
+    crate::ffmpeg::push_ffmpeg_literal_input(&mut command, path)?;
+    command.args([
+        "-vf",
+        "signalstats,metadata=print:file=-",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]);
+    Ok(command)
 }
 
 /// Measure a decodable image/frame file (PNG/JPEG) with `signalstats`. The path
@@ -74,7 +65,7 @@ fn measure_command(path: &Path) -> Command {
 /// lavfi `movie=` expression, which keeps Windows drive/extended paths out of
 /// filter syntax. Errors if ffmpeg fails or the stats are absent.
 pub fn measure(path: &Path) -> Result<Scopes, CutError> {
-    let mut command = measure_command(path);
+    let mut command = measure_command(path)?;
     let out = run_bounded_command(&mut command, "measure video scopes")?;
     if !out.status.success() {
         return Err(CutError::new(
@@ -203,19 +194,10 @@ impl ScopeKind {
 /// ([`measure`]) is the agent-readable part.
 pub fn render_scope(frame_path: &Path, kind: ScopeKind, out_path: &Path) -> Result<(), CutError> {
     let mut command = Command::new(ffmpeg_bin());
+    command.args(["-y", "-v", "error"]);
+    crate::ffmpeg::push_ffmpeg_literal_input(&mut command, frame_path)?;
     command
-        .args([
-            "-y",
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
-            "-format_whitelist",
-            crate::ffmpeg::LOCAL_INPUT_FORMATS,
-            "-i",
-        ])
-        .arg(frame_path)
-        .args(["-frames:v", "1", "-vf", kind.filter()])
+        .args(["-frames:v", "1", "-vf", kind.filter(), "-update", "1"])
         .arg(out_path);
     let st = run_bounded_command(&mut command, "render video scope")?.status;
     if !st.success() {
@@ -345,12 +327,14 @@ mod tests {
     #[test]
     fn windows_paths_are_normal_input_arguments_not_filtergraph_text() {
         let path = Path::new(r"\\?\C:\Users\Example\Documents\ShellX Cut Projects\frame.jpg");
-        let command = measure_command(path);
+        let command = measure_command(path).unwrap();
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(args.iter().any(|arg| arg == &path.to_string_lossy()));
+        assert!(args
+            .iter()
+            .any(|arg| arg == r"C:\Users\Example\Documents\ShellX Cut Projects\frame.jpg"));
         assert!(args
             .iter()
             .any(|arg| arg == "signalstats,metadata=print:file=-"));

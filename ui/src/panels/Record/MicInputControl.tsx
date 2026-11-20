@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
+import { microphoneProblemText, type MicrophoneProblem } from '../../app/microphoneMessages'
 
 interface MicWarm {
   live: boolean
@@ -11,6 +12,7 @@ interface MicWarm {
 }
 
 interface PublicMicrophone { token: string; label: string }
+type MicrophoneBlocked = MicrophoneProblem
 interface MicrophoneSelection {
   mode: 'system_default' | 'selected'
   label?: string
@@ -56,13 +58,20 @@ export function MicInputControl({ audio, disabled, idle, onAudioChange, onTestin
   const [state, setState] = useState<TestState>({ kind: 'idle' })
   const [microphones, setMicrophones] = useState<PublicMicrophone[]>([])
   const [selection, setSelection] = useState<MicrophoneSelection>({ mode: 'system_default', status: 'ready' })
+  const [blocked, setBlocked] = useState<MicrophoneBlocked | null>(null)
   const requestId = useRef(0)
   const previousAudio = useRef(audio)
 
   const refreshSelection = useCallback(async () => {
-    const response = await callVerb('screen_record.doctor', {})
+    // The microphone list needs no screen read or capture check.
+    const response = await callVerb('screen_record.doctor', { mode: 'microphone' })
     if (!response.ok || !response.result) return
-    const result = response.result as { microphones?: PublicMicrophone[]; microphone_selection?: MicrophoneSelection }
+    const result = response.result as {
+      microphones?: PublicMicrophone[]
+      microphone_selection?: MicrophoneSelection
+      microphone_blocked?: MicrophoneBlocked | null
+    }
+    setBlocked(result.microphone_blocked ?? null)
     setMicrophones(result.microphones ?? [])
     setSelection(result.microphone_selection ?? { mode: 'system_default', status: 'ready' })
   }, [])
@@ -78,13 +87,19 @@ export function MicInputControl({ audio, disabled, idle, onAudioChange, onTestin
     setState({ kind: 'testing' })
     onTestingChange(true)
     try {
-      const response = await callVerb('screen_record.doctor', { warm_mic: true })
+      const response = await callVerb('screen_record.doctor', { mode: 'microphone', warm_mic: true })
       if (id !== requestId.current) return
       const result = response.ok && response.result
         ? (response.result as { mic_warm?: MicWarm }).mic_warm
         : undefined
       if (!result) {
         setState({ kind: 'error', detail: response.error?.suggested_action ?? response.error?.message ?? 'Microphone test did not complete.' })
+        return
+      }
+      // A missing microphone permission explains a silent test in plain words.
+      const blocked = (response.result as { microphone_blocked?: { message?: string; suggested_action?: string } | null } | undefined)?.microphone_blocked
+      if (!result.live && blocked?.suggested_action) {
+        setState({ kind: 'error', detail: `${blocked.message ?? 'Microphone permission is needed'}. ${blocked.suggested_action}` })
         return
       }
       setState({ kind: 'result', result })
@@ -129,8 +144,10 @@ export function MicInputControl({ audio, disabled, idle, onAudioChange, onTestin
   const result = state.kind === 'result' ? state.result : undefined
   const peak = result?.peak_dbfs
   const meter = meterPercent(peak)
+  const blockedNote = state.kind === 'idle' ? microphoneProblemText(blocked) : null
   const statusKind = selection.status === 'unavailable'
     ? 'unavailable'
+    : blockedNote ? 'blocked'
     : state.kind === 'testing' ? 'testing'
       : state.kind === 'error' ? 'error'
         : result?.live && typeof peak === 'number' ? peak > -60 ? 'signal' : 'quiet'
@@ -167,7 +184,7 @@ export function MicInputControl({ audio, disabled, idle, onAudioChange, onTestin
           <div className="rec__mic-meter" data-cut-rec-mic-meter={typeof peak === 'number' ? 'measured' : 'none'} role="meter" aria-label="Microphone test peak" aria-valuemin={0} aria-valuemax={100} aria-valuenow={meter} aria-valuetext={typeof peak === 'number' ? `${peak} dBFS peak from the last test` : 'No measurable signal'}>
             <span className="rec__mic-meter-fill" style={{ width: `${meter}%` }} />
           </div>
-          <p className="rec__mic-status" data-cut-rec-mic-status={statusKind} aria-live="polite">{selection.status === 'unavailable' ? 'Selected microphone is unavailable. Start is blocked until you choose another input or System Default.' : statusFor(state)}</p>
+          <p className="rec__mic-status" data-cut-rec-mic-status={statusKind} data-cut-rec-mic-blocked={blocked?.reason ?? 'none'} aria-live="polite">{selection.status === 'unavailable' ? 'Selected microphone is unavailable. Start is blocked until you choose another input or System Default.' : blockedNote ?? statusFor(state)}</p>
           <p className="rec__source-note" data-cut-rec-mic-identity-boundary>
             Device choices use expiring opaque tokens and safe display labels. Cut stores the native endpoint privately and never exposes it here.
           </p>

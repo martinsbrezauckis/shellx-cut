@@ -12,7 +12,7 @@
 //! validator (no extra dep) — enough to catch the drift that matters (a missing
 //! contract key) without pulling a validator crate into the workspace.
 
-use cut_core::{check_names, CheckResult, FixAction, FixTarget, RenderReceipt};
+use cut_core::{check_names, CheckResult, EncodeReport, FixAction, FixTarget, RenderReceipt};
 use serde_json::Value;
 
 /// Load schema/receipts.schema.json from the repo (relative to cut-core's
@@ -98,10 +98,59 @@ fn rust_receipt_types_match_typed_schema_contract() {
         pass: false,
         judge: None,
         fix_actions: vec![],
+        encode: Some(EncodeReport {
+            encoder: "libx264".into(),
+            hardware_requested: true,
+            hardware_used: false,
+            fallback_reason: Some("No usable hardware encoder was found.".into()),
+            fallback_detail: None,
+            memory_note: Some(
+                "Software encoding uses 12 of 54 threads so this export fits in the 16.0 GB of \
+                 memory free now (about 15.6 GB instead of 25.0 GB); it will take longer."
+                    .into(),
+            ),
+            encoder_threads: Some(12),
+            pipeline: Some("standard".into()),
+            pipeline_reason: Some(
+                "The GPU render path was asked for (SHELLX_CUT_RENDER_GPU), but the timeline has \
+                 captions, which the GPU render path cannot draw, so this export used the \
+                 standard render path."
+                    .into(),
+            ),
+            color: Some(cut_core::ColorReport {
+                output: "SDR BT.709".into(),
+                processing_bit_depth: 8,
+                file_bit_depth: 8,
+                sources: vec![cut_core::SourceColorReport {
+                    asset: "a1".into(),
+                    file: "hlg.mp4".into(),
+                    transfer: Some("arib-std-b67".into()),
+                    bit_depth: Some(10),
+                    handling: "tone_mapped_to_sdr".into(),
+                }],
+                note: Some("converted".into()),
+            }),
+        }),
+        outcome: None,
     };
     receipt.compute_pass();
     let rv = serde_json::to_value(&receipt).unwrap();
     assert_has_required(&rv, &s, "RenderReceipt");
+    // The encoder report conforms to its contract, and every key it serializes is
+    // declared (the schema has additionalProperties:false).
+    assert_has_required(&rv["encode"], &s, "EncodeReport");
+    for key in rv["encode"].as_object().unwrap().keys() {
+        assert!(
+            s["$defs"]["EncodeReport"]["properties"].get(key).is_some(),
+            "EncodeReport serializes '{key}' but the schema does not declare it"
+        );
+    }
+    assert!(
+        s["$defs"]["RenderReceipt"]["properties"]
+            .get("encode")
+            .is_some(),
+        "RenderReceipt.encode must be declared"
+    );
     // The computed fix_actions are present (a failing lufs check → one action).
     assert!(
         rv["fix_actions"].as_array().map(|a| a.len()).unwrap_or(0) >= 1,
@@ -110,3 +159,5 @@ fn rust_receipt_types_match_typed_schema_contract() {
     // And each fix_action conforms to the FixAction contract.
     assert_has_required(&rv["fix_actions"][0], &s, "FixAction");
 }
+
+cut_core::isolate_test_process!();

@@ -38,17 +38,24 @@ pub(super) struct RecoveredJobs {
     pub(super) notices: Vec<JobPersistenceNotice>,
 }
 
+/// Largest job record read back from a project. Records the engine writes are
+/// far smaller; the limit matches the other project report ceilings.
+const MAX_JOB_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Prepare a project's job directory and recover its valid history. A bad
 /// `.json` record is retained under `jobs/quarantine/` and reported to callers
 /// through `jobs.list`; a failed quarantine aborts attach rather than hiding it.
 pub(super) fn recover(project_dir: &Path) -> Result<RecoveredJobs, CutError> {
+    recover_within(project_dir, LoadBudget::default())
+}
+
+fn recover_within(project_dir: &Path, mut history: LoadBudget) -> Result<RecoveredJobs, CutError> {
     cut_core::store::validate_job_output_roots(project_dir)?;
     let dir = project_dir.join("jobs");
     paths::prepare_jobs_dir(&dir)?;
     let mut records = Vec::new();
     let mut record_ids = HashSet::new();
     let mut next_seq = 0;
-    let mut notices = Vec::new();
 
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
@@ -63,57 +70,59 @@ pub(super) fn recover(project_dir: &Path) -> Result<RecoveredJobs, CutError> {
         let filename = entry.file_name().to_string_lossy().into_owned();
         next_seq = next_seq.max(sequence_from_filename(&filename).unwrap_or(0));
 
-        let file_type = entry.file_type()?;
-        if !file_type.is_file() {
-            notices.push(quarantine(
-                &dir,
-                &path,
-                &filename,
-                "job record is not a regular file",
-            )?);
+        if history.full(records.len()) {
+            // Left on disk unread; its sequence number above still counts.
+            history.left += 1;
             continue;
         }
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) => {
-                notices.push(quarantine(
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() {
+            history.set_aside(&dir, &path, &filename, "job record is not a regular file")?;
+            continue;
+        }
+        // A received project may hold a huge or linked file at a record name;
+        // it is set aside unread instead of being loaded.
+        let text = match cut_core::store::read_bounded_cache(&path, MAX_JOB_RECORD_BYTES) {
+            cut_core::store::BoundedCacheRead::Bytes(bytes) => bytes,
+            cut_core::store::BoundedCacheRead::Oversized => {
+                history.set_aside(
                     &dir,
                     &path,
                     &filename,
-                    &format!("job record could not be read: {error}"),
-                )?);
+                    "job record is larger than 64 MiB and was not read",
+                )?;
+                continue;
+            }
+            cut_core::store::BoundedCacheRead::Unavailable => {
+                history.set_aside(&dir, &path, &filename, "job record could not be read: it is a link, a file shared with another path, or not an ordinary file")?;
                 continue;
             }
         };
-        let record = match serde_json::from_str::<JobRecord>(&text) {
+        history.bytes += text.len() as u64;
+        let record = match serde_json::from_slice::<JobRecord>(&text) {
             Ok(record) => record,
             Err(error) => {
-                notices.push(quarantine(
+                history.set_aside(
                     &dir,
                     &path,
                     &filename,
                     &format!("job record is invalid JSON: {error}"),
-                )?);
+                )?;
                 continue;
             }
         };
         next_seq = next_seq.max(sequence_from_job_id(&record.job_id).unwrap_or(0));
         if filename != format!("{}.json", record.job_id) {
-            notices.push(quarantine(
+            history.set_aside(
                 &dir,
                 &path,
                 &filename,
                 "job record id does not match its filename",
-            )?);
+            )?;
             continue;
         }
         if !record_ids.insert(record.job_id.clone()) {
-            notices.push(quarantine(
-                &dir,
-                &path,
-                &filename,
-                "duplicate job record id",
-            )?);
+            history.set_aside(&dir, &path, &filename, "duplicate job record id")?;
             continue;
         }
         records.push(record);
@@ -140,8 +149,85 @@ pub(super) fn recover(project_dir: &Path) -> Result<RecoveredJobs, CutError> {
         dir,
         records,
         next_seq,
-        notices,
+        notices: history.into_notices(),
     })
+}
+
+/// Most job records loaded when a project opens, and most bytes they may add
+/// up to. A received project can hold any number of files in `jobs/`; past
+/// these the rest stay on disk unread and one notice says so.
+const MAX_LOADED_JOB_RECORDS: usize = 50_000;
+const MAX_LOADED_JOB_BYTES: u64 = 512 * 1024 * 1024;
+/// Most bad records moved to quarantine on one open; the rest stay in place.
+const MAX_QUARANTINED_PER_OPEN: usize = 1_000;
+/// Highest job sequence number taken from a name: a planted
+/// `job_18446744073709551615.json` must not wrap the counter.
+const MAX_JOB_SEQUENCE: u64 = 1_000_000_000_000;
+
+struct LoadBudget {
+    max_records: usize,
+    max_bytes: u64,
+    max_quarantined: usize,
+    notices: Vec<JobPersistenceNotice>,
+    bytes: u64,
+    left: usize,
+}
+
+impl Default for LoadBudget {
+    fn default() -> Self {
+        Self::new(
+            MAX_LOADED_JOB_RECORDS,
+            MAX_LOADED_JOB_BYTES,
+            MAX_QUARANTINED_PER_OPEN,
+        )
+    }
+}
+
+impl LoadBudget {
+    fn new(max_records: usize, max_bytes: u64, max_quarantined: usize) -> Self {
+        Self {
+            max_records,
+            max_bytes,
+            max_quarantined,
+            notices: Vec::new(),
+            bytes: 0,
+            left: 0,
+        }
+    }
+
+    fn full(&self, loaded: usize) -> bool {
+        loaded >= self.max_records || self.bytes >= self.max_bytes
+    }
+
+    fn set_aside(
+        &mut self,
+        dir: &Path,
+        path: &Path,
+        filename: &str,
+        reason: &str,
+    ) -> Result<(), CutError> {
+        if self.notices.len() >= self.max_quarantined {
+            self.left += 1;
+            return Ok(());
+        }
+        self.notices.push(quarantine(dir, path, filename, reason)?);
+        Ok(())
+    }
+
+    fn into_notices(mut self) -> Vec<JobPersistenceNotice> {
+        if self.left > 0 {
+            self.notices.push(JobPersistenceNotice {
+                code: "job_history_not_loaded".into(),
+                record: String::new(),
+                message: format!(
+                    "{} job records were left unread in jobs/: the project holds more job history than is loaded at once ({MAX_LOADED_JOB_RECORDS} records, 512 MiB, {MAX_QUARANTINED_PER_OPEN} set aside)",
+                    self.left
+                ),
+                quarantine: String::new(),
+            });
+        }
+        self.notices
+    }
 }
 
 pub(super) fn persist(path: &Path, record: &JobRecord) -> Result<(), CutError> {
@@ -176,6 +262,7 @@ fn sequence_from_job_id(job_id: &str) -> Option<u64> {
     (!suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
         .then(|| suffix.parse().ok())
         .flatten()
+        .filter(|sequence| *sequence <= MAX_JOB_SEQUENCE)
 }
 
 fn quarantine(

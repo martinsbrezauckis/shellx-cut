@@ -60,3 +60,24 @@ fn failed_recorder_stage_leaves_previous_output_and_cleans_private_stage() {
     assert!(!owned.exists());
     assert_eq!(std::fs::read(&plan).unwrap(), b"previous plan");
 }
+
+/// A polished clip that came with a project (planted at the content-addressed
+/// name) is not this engine's bake: it is made again, and only a clip baked
+/// here is reused.
+#[test]
+fn a_planted_bake_is_made_again_and_only_an_own_bake_is_reused() {
+    let project = tempfile::tempdir().unwrap();
+    let dir = super::super::screen_record_cache_dir(project.path()).unwrap();
+    let baked = dir.join("sha256_planted_v.mp4");
+    std::fs::write(&baked, b"the sender's clip").unwrap();
+    let mut made = 0;
+    bake_seed(&baked, |path| {
+        made += 1;
+        std::fs::write(path, b"baked here")?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(made, 1, "a planted bake is not reused");
+    assert_eq!(std::fs::read(&baked).unwrap(), b"baked here");
+    bake_seed(&baked, |_| panic!("an own bake is reused")).unwrap();
+}

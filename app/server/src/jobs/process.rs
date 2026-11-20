@@ -15,8 +15,10 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
+mod busy_start;
 mod cleanup;
 mod tree;
+pub(crate) use busy_start::spawn_retrying_busy;
 use tree::ProcessTree;
 
 const PROCESS_POLL: Duration = Duration::from_millis(20);
@@ -167,8 +169,8 @@ pub(crate) async fn run_owned(
         // Drop is not a substitute for ownership.  We explicitly stop and
         // wait below, including descendants.
         .kill_on_drop(false);
-    let mut child = command
-        .spawn()
+    let mut child = spawn_retrying_busy(command)
+        .await
         .map_err(|error| ManagedProcessError::io("start external worker", error))?;
     let mut tree = match ProcessTree::establish(&child) {
         Ok(tree) => tree,
@@ -194,7 +196,15 @@ pub(crate) async fn run_owned(
                 io::Error::new(io::ErrorKind::BrokenPipe, "stdin pipe unavailable"),
             ))
         };
-        if let Err(error) = input_result {
+        // A child that exits before reading its input (a CLI that rejects its
+        // arguments or login) closes the pipe: its exit status and stderr explain
+        // it, so a broken pipe alone is not the result. Any other failure, and a
+        // cancellation or deadline, still stops the worker.
+        if let Err(error) = input_result.or_else(|e| {
+            (e.io_kind() == Some(io::ErrorKind::BrokenPipe))
+                .then_some(())
+                .ok_or(e)
+        }) {
             return Err(cleanup::cleanup_error(
                 error,
                 &mut child,

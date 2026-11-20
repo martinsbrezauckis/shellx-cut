@@ -31,7 +31,15 @@ pub(super) async fn execute_rebuild(
         .await;
     clear_active(&state, &job_id).await;
     match outcome {
-        Ok(result) => state.jobs.finish(&job_id, result),
+        Ok(result) => {
+            // A rebuilt HDR proxy without zimg previews unconverted: said, not silent.
+            let warned = result["warnings"].as_array().is_some_and(|w| !w.is_empty());
+            if warned {
+                state.jobs.finish_with_warnings(&job_id, result)
+            } else {
+                state.jobs.finish(&job_id, result)
+            }
+        }
         Err(RebuildWorkerError::Cancelled(reason)) => {
             state.jobs.cancel_from_worker(&job_id, reason)
         }
@@ -70,6 +78,7 @@ async fn execute_rebuild_inner(
     let total = plans.len().max(1) as f32;
     let mut rebuilt_outputs = 0u64;
     let mut backfilled_outputs = 0u64;
+    let mut warnings: Vec<String> = Vec::new();
 
     for (index, plan) in plans.iter().enumerate() {
         if let Some(reason) = cancellation.reason() {
@@ -88,6 +97,8 @@ async fn execute_rebuild_inner(
             )));
         }
 
+        // The decode check of a rebuilt video proxy (see proxy_facts).
+        let mut decode_check: Option<Value> = None;
         for (kind, action) in &plan.outputs {
             if let Some(reason) = cancellation.reason() {
                 return Err(RebuildWorkerError::Cancelled(reason));
@@ -96,15 +107,19 @@ async fn execute_rebuild_inner(
                 backfilled_outputs = backfilled_outputs.saturating_add(1);
                 continue;
             }
-            rebuild_output(
+            if let Some(check) = rebuild_output(
                 state,
                 job_id,
                 project_dir,
                 &plan.asset,
                 *kind,
                 &process_control,
+                &mut warnings,
             )
-            .await?;
+            .await?
+            {
+                decode_check = Some(check);
+            }
             rebuilt_outputs = rebuilt_outputs.saturating_add(1);
         }
 
@@ -128,12 +143,13 @@ async fn execute_rebuild_inner(
                 )?;
             }
         }
-        apply_backfill(state, project_dir, plan).await?;
+        apply_backfill(state, project_dir, plan, decode_check).await?;
     }
 
     Ok(json!({
         "rebuilt_outputs": rebuilt_outputs,
         "backfilled_outputs": backfilled_outputs,
+        "warnings": warnings,
         "retention_minimum_age_ms": CACHE_RETENTION_MS,
         "note": "only current-source, ledger-reserved proxy and base filmstrip outputs were rebuilt",
     }))
@@ -146,9 +162,20 @@ async fn rebuild_output(
     asset: &RebuildAsset,
     kind: CacheKind,
     process_control: &cut_media::ffmpeg::OwnedProcessControl,
-) -> Result<(), RebuildWorkerError> {
+    warnings: &mut Vec<String>,
+) -> Result<Option<Value>, RebuildWorkerError> {
     match kind {
         CacheKind::Proxies => {
+            // Same as the import's proxy: an HDR source previews tone-mapped.
+            let probe = asset.probe.clone();
+            let (tone_map, warning) = run_blocking("cache.rebuild zscale probe", move || {
+                Ok(super::proxy_facts::tone_map_for(
+                    &probe,
+                    cut_media::hwencode::zscale_available,
+                ))
+            })
+            .await?;
+            warnings.extend(warning);
             let source = asset.source.clone();
             let proxies = project_dir.join("proxies");
             let asset_id = asset.asset_id.clone();
@@ -165,12 +192,35 @@ async fn rebuild_output(
                             Some("rebuilding editing proxy".into()),
                         );
                     };
-                    cut_media::make_proxy_with_progress(
-                        &source, &proxies, &asset_id, total, &progress,
+                    cut_media::make_proxy_with_progress_and_tone_map(
+                        &source, &proxies, &asset_id, total, &progress, &tone_map,
                     )
                 })
             })
             .await?;
+            // ... and records how much of the source really decodes.
+            if asset.kind == "video" {
+                let probe = asset.probe.clone();
+                let proxy = project_dir
+                    .join("proxies")
+                    .join(format!("{}.mp4", asset.asset_id));
+                match run_blocking("cache.rebuild decode check", move || {
+                    super::proxy_facts::decode_check_for(&probe, &proxy)
+                })
+                .await
+                {
+                    Ok(check) => {
+                        if let Some(w) = check.get("warning").and_then(Value::as_str) {
+                            warnings.push(w.to_string());
+                        }
+                        return Ok(Some(check));
+                    }
+                    Err(e) => warnings.push(format!(
+                        "Could not check how much of the file can be read: {} ({})",
+                        e.message, e.cause
+                    )),
+                }
+            }
         }
         CacheKind::Thumbnails if asset.kind == "video" => {
             let proxy = project_dir
@@ -219,7 +269,7 @@ async fn rebuild_output(
             )));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn abandon_generated_outputs(project_dir: &Path, plan: &RebuildAssetPlan) -> Result<(), CutError> {
@@ -235,6 +285,7 @@ async fn apply_backfill(
     state: &AppState,
     project_dir: &Path,
     plan: &RebuildAssetPlan,
+    decode_check: Option<Value>,
 ) -> Result<(), RebuildWorkerError> {
     let mut guard = state.project.write().await;
     let store = guard.as_mut().ok_or_else(|| {
@@ -249,6 +300,8 @@ async fn apply_backfill(
             "a different project became active before rebuilt cache metadata could be saved",
         )));
     }
+    // A decode check extends the probe; it stays verified only if it was.
+    let was_verified = store.project.probe_is_verified(&plan.asset.asset_id);
     let asset = store
         .project
         .assets
@@ -268,11 +321,32 @@ async fn apply_backfill(
     for (kind, _) in &plan.outputs {
         let relative = relative_output(*kind, &plan.asset.asset_id)?;
         match kind {
-            CacheKind::Proxies => asset.proxy = Some(relative),
+            CacheKind::Proxies => {
+                // Only a proxy this engine made, for this asset's source, is
+                // used by a later preview.
+                cut_media::cache_trust::remember_bound(
+                    &store.dir.join(&relative),
+                    &crate::dispatch::proxy_binding(&plan.asset.asset_id, &plan.asset.hash),
+                );
+                asset.proxy = Some(relative)
+            }
             CacheKind::Thumbnails => asset.filmstrip = Some(relative),
         }
     }
+    let probe = match (decode_check, asset.probe.as_mut()) {
+        (Some(check), Some(probe)) if probe.is_object() => {
+            probe["decode_check"] = check;
+            Some(probe.clone())
+        }
+        _ => None,
+    };
+    if was_verified {
+        store.project.mark_probe_verified(&plan.asset.asset_id);
+    }
     store.save()?;
+    if let Some(probe) = probe {
+        super::proxy_facts::persist_probe(project_dir, &plan.asset.asset_id, &probe);
+    }
     Ok(())
 }
 

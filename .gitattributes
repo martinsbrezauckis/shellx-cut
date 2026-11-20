@@ -1,0 +1,4 @@
+# Every text file is checked out with LF on every OS. Source-pinning tests, generated files
+# (schema/verbs.json, ui action manifest) and Git file modes assume LF; a Windows checkout with
+# Git for Windows default core.autocrlf=true otherwise turns them into CRLF and those checks fail.
+* text=auto eol=lf

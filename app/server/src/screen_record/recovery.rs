@@ -7,15 +7,19 @@ use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use record_recovery::{
     is_plain_dir, is_plain_regular_file, owner_state, read_manifest, recover_interrupted,
-    recovery_status, seal_torn_receipt, CaptureRecoveryStatus, CaptureStart, ManifestOwner,
-    RecoveryReceipt, RecoveryState, MANIFEST_FILE,
+    seal_torn_receipt, CaptureStart, ManifestOwner, RecoveryReceipt, RecoveryState, MANIFEST_FILE,
 };
-use serde::Serialize;
 
+pub(crate) mod audio_parts;
+pub(crate) mod background;
 mod identity;
+pub(crate) mod owner;
 mod ownership;
+pub(crate) mod private_output;
+mod seal;
 pub(crate) use identity::validate_capture_id;
 use ownership::{has_sealed_normal_project, pause_session_ownership, PauseSessionOwnership};
+pub(crate) use seal::seal_after_failure;
 
 pub(crate) const CHECKPOINT_INTERVAL_MS: u64 = 15_000;
 const MAX_RECOVERY_CAPTURE_ENTRIES: usize = 512;
@@ -49,19 +53,6 @@ pub(crate) struct RecoveryScan {
     /// a pause-session capture as an ordinary interrupted capture.
     pub pause_session_deferred: Vec<String>,
     pub failed_closed: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct RecoveryStatusPage {
-    pub captures: Vec<RecoveryStatusItem>,
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct RecoveryStatusItem {
-    pub capture_id: String,
-    #[serde(flatten)]
-    pub status: CaptureRecoveryStatus,
 }
 
 pub(crate) fn begin(
@@ -193,76 +184,11 @@ pub(crate) fn scan(cache: &Path, ffmpeg: &str, ffprobe: &str) -> RecoveryScan {
             Ok(Some(_)) => scan.recovered.push(id),
             Ok(None) if manifest.receipt.is_none() => scan.deferred.push(id),
             Ok(None) => {}
-            Err(error) => failed_closed(&mut scan, &id, "recovery_failed", &error),
+            Err(error) => recovery_failed(&mut scan, &id, &error),
         }
     }
     scan
 }
-/// Enumerate the capture-cache status without calling a media tool or changing
-/// anything on disk. Cursor values and source paths never escape this owner.
-pub(crate) fn status_page(
-    cache: &Path,
-    after: Option<&str>,
-    limit: usize,
-) -> Result<RecoveryStatusPage, CutError> {
-    if !cache.exists() {
-        return Ok(RecoveryStatusPage {
-            captures: Vec::new(),
-            next_cursor: None,
-        });
-    }
-    let entries = std::fs::read_dir(cache).map_err(|_error| {
-        CutError::new(
-            error_codes::IO,
-            "could not read screen-record recovery cache",
-            "check that the project cache directory is readable",
-        )
-    })?;
-    let mut ids: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .file_type()
-                .ok()
-                .filter(|kind| kind.is_dir())
-                .filter(|_| is_plain_dir(&entry.path()).unwrap_or(false))
-                .and_then(|_| entry.file_name().into_string().ok())
-        })
-        .filter(|id| validate_capture_id(id).is_ok())
-        .collect();
-    ids.sort_unstable();
-    let start = match after {
-        None => 0,
-        Some(cursor) => ids
-            .iter()
-            .position(|id| id == cursor)
-            .map(|index| index + 1)
-            .ok_or_else(|| {
-                CutError::new(
-                    error_codes::INVALID_ARGS,
-                    "recovery-status cursor was not emitted for this project",
-                    "request the first page, then pass its exact next_cursor value",
-                )
-                .with_suggested_action("pass an exact next_cursor from the previous response")
-            })?,
-    };
-    let limit = limit.clamp(1, 100);
-    let selected = ids.iter().skip(start).take(limit);
-    let captures: Vec<_> = selected
-        .map(|capture_id| RecoveryStatusItem {
-            capture_id: capture_id.clone(),
-            status: recovery_status(&cache.join(capture_id)),
-        })
-        .collect();
-    let next_cursor = (start.saturating_add(captures.len()) < ids.len())
-        .then(|| captures.last().map(|item| item.capture_id.clone()))
-        .flatten();
-    Ok(RecoveryStatusPage {
-        captures,
-        next_cursor,
-    })
-}
-
 /// `screen_record.recovery_status{after?, limit?}` — expose only the safe,
 /// project-scoped recovery receipt projection.  This is deliberately separate
 /// from `scan`: asking for status cannot invoke ffmpeg, repair a journal, or
@@ -337,6 +263,17 @@ fn failed_closed(scan: &mut RecoveryScan, id: &str, code: &str, error: &impl std
     scan.failed_closed.push(format!("{id}: {code}"));
 }
 
+fn recovery_failed(scan: &mut RecoveryScan, id: &str, error: &record_recovery::ManifestError) {
+    if matches!(error, record_recovery::ManifestError::StitchLimit(_)) {
+        tracing::warn!(capture_id = %id, error = %error, "screen-record recovery stopped at stitch limit");
+        scan.failed_closed.push(format!("{id}: {error}"));
+    } else {
+        failed_closed(scan, id, "recovery_failed", error);
+    }
+}
+
 mod status;
+#[cfg(test)]
+use status::status_page;
 #[cfg(test)]
 mod tests;

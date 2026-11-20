@@ -9,6 +9,7 @@ const ROOT_FILES = [
   'README.md',
   'SECURITY.md',
   'START_HERE_FOR_AGENT.txt',
+  'THIRD-PARTY-NOTICES.txt',
   'testdata/test_lut_invert.cube',
 ]
 const ROOT_DIRS = ['.github', 'app', 'docs', 'schema', 'scripts', 'skill', 'ui']

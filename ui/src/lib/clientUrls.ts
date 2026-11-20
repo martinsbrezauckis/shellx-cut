@@ -4,6 +4,8 @@
 // client.ts. These helpers are pure and intentionally small because path bugs
 // usually show up only on specific host/platform combinations.
 
+import { scopeMediaUrl } from './mediaScope'
+
 /** Base URL — relative in prod (cutd serves us); vite proxies /api in dev. */
 export const API_BASE = ''
 
@@ -16,7 +18,7 @@ export const API_BASE = ''
  * the Preview falls back to the composed-frame poster.
  */
 export function sourceUrl(assetId: string): string {
-  return `${API_BASE}/api/source/${encodeURIComponent(assetId)}`
+  return scopeMediaUrl(`${API_BASE}/api/source/${encodeURIComponent(assetId)}`)
 }
 
 /**
@@ -83,6 +85,10 @@ function isInsideDir(norm: string, dirNorm: string): boolean {
  * `outputDir` is a parameter (defaulted from localStorage) so the pure tests can
  * drive every branch without a DOM. */
 export function exportUrl(path: string, outputDir: string | null = storedOutputDir()): string {
+  return scopeMediaUrl(exportUrlUnscoped(path, outputDir))
+}
+
+function exportUrlUnscoped(path: string, outputDir: string | null): string {
   const norm = normalizeHostPath(path)
   const exact = () => `${API_BASE}/api/export-file?path=${encodeURIComponent(path)}`
   // 1. In the user's chosen export folder → only the exact shape can name it.
@@ -113,5 +119,5 @@ function encodeRel(rel: string): string {
 export function frameUrl(atMs: number, version?: string, compose?: boolean): string {
   let base = `${API_BASE}/api/frame?at_ms=${Math.max(0, Math.round(atMs))}`
   if (compose) base += '&compose=1'
-  return version ? `${base}&v=${encodeURIComponent(version)}` : base
+  return scopeMediaUrl(version ? `${base}&v=${encodeURIComponent(version)}` : base)
 }

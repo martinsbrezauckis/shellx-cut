@@ -209,9 +209,8 @@ pub(crate) async fn audio_dub(
             "the dubbing synth bridge is not available",
             "dub_runner.py or its python (perception sidecar) was not found",
         )
-        .with_suggested_action(
-            "install the perception sidecar, or set DUB_RUNNER_PY / DUB_RUNNER_SCRIPT (dev)",
-        )
+        .with_suggested_action(cut_perception::captions_setup_action())
+        .with_requirement("captions_runtime")
     })?;
 
     // Load the source transcript and split into translation/synth segments.
@@ -669,7 +668,8 @@ pub async fn synthesize_track(
         .with_suggested_action(
             "verify the service is reachable at <CUT_DUB_ENDPOINT>/health, or set \
              CUT_DUB_ENDPOINT to the running dubbing service URL",
-        ));
+        )
+        .with_requirement("dub_service"));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     parse_receipt(&stdout).ok_or_else(|| {

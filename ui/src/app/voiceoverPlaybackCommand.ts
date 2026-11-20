@@ -1,4 +1,4 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { MutableRefObject } from 'react'
 import type { Project } from '../lib/client'
 import type { UiObservableState } from './uiControlState'
 import { waitForCommittedState, waitForUiCommitTick } from './uiCommandCommit'
@@ -19,7 +19,7 @@ interface VoiceoverPlaybackCommandArgs {
   project: Project | null
   beforeRevision: number
   stateRef: MutableRefObject<UiObservableState>
-  setPlayheadMs: Dispatch<SetStateAction<number>>
+  setPlayheadMs: (atMs: number) => void
   answer: (
     requested: Record<string, unknown>,
     state: UiObservableState,

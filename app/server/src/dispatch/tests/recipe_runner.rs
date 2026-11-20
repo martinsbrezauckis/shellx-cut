@@ -149,7 +149,18 @@ async fn recipe_run_stops_and_reports_on_gate_fail() {
     assert!(r.ok, "{:?}", r.error);
     let job_id = r.result.unwrap()["job_id"].as_str().unwrap().to_string();
     let rec = wait_job(&state, &job_id, 30).await;
-    assert_eq!(rec.state, crate::jobs::JobState::Done);
+    // A recipe stopped by a gate is a failed job, its report kept in the result.
+    assert_eq!(rec.state, crate::jobs::JobState::Failed, "{rec:?}");
+    assert_eq!(
+        rec.outcome_reason,
+        Some(crate::jobs::JobOutcomeReason::TrueFailure)
+    );
+    assert!(rec
+        .error
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("Stopped at stage 1"));
     let report = rec.result.unwrap();
     assert_eq!(report["status"], "gate_failed", "report: {report}");
     assert_eq!(report["stages_run"], 1, "stopped after stage 1");
@@ -336,6 +347,15 @@ fn bundled_first_edit_completes_with_an_honest_degraded_render_receipt() {
             .to_string();
         let imported = wait_job(&state, &import_job, 30).await;
         assert_eq!(imported.state, crate::jobs::JobState::Done, "{imported:?}");
+        // The starter ships its own analysis receipts, so its enrich job is served
+        // from them. With them removed, the captions runtime is needed and its
+        // absence is one plain refusal with the setup action.
+        let enrich_job = imported.result.as_ref().unwrap()["enrich_job"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let enrich = wait_job(&state, &enrich_job, 60).await;
+        assert_eq!(enrich.state, crate::jobs::JobState::Done, "{enrich:?}");
 
         let run = dispatch(
             &state,
@@ -347,6 +367,39 @@ fn bundled_first_edit_completes_with_an_honest_degraded_render_receipt() {
         assert!(run.ok, "recipe start: {:?}", run.error);
         let recipe_job = run.result.unwrap()["job_id"].as_str().unwrap().to_string();
         let finished = wait_job(&state, &recipe_job, 120).await;
+
+        // With the starter's cached analysis removed, a transcription needs the
+        // captions runtime: one plain refusal with the setup action.
+        for name in ["a1.words.json", "a1.perception.json"] {
+            let _ = std::fs::remove_file(project_dir.join("receipts").join(name));
+        }
+        let transcribe = dispatch(
+            &state,
+            "media.transcribe",
+            json!({"asset": "a1"}),
+            test_actor(),
+        )
+        .await;
+        assert!(transcribe.ok, "{:?}", transcribe.error);
+        let transcribe_job = transcribe.result.unwrap()["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let transcribe = wait_job(&state, &transcribe_job, 60).await;
+        assert_eq!(
+            transcribe.state,
+            crate::jobs::JobState::Failed,
+            "{transcribe:?}"
+        );
+        let error = transcribe.error.expect("a failed job carries its error");
+        assert_eq!(
+            error.message,
+            "Captions and transcription are not installed"
+        );
+        assert!(!error.cause.contains("Python was not found"), "{error:?}");
+        let action = error.suggested_action.unwrap();
+        assert!(action.contains("Install captions"), "{action}");
+        assert!(action.contains("system.setup_perception"), "{action}");
 
         match old_sidecar {
             Some(value) => std::env::set_var("SHELLX_CUT_SIDECAR_DIR", value),
@@ -368,10 +421,35 @@ fn bundled_first_edit_completes_with_an_honest_degraded_render_receipt() {
             .unwrap();
         assert_eq!(render_stage["gate"]["pass"], true, "{render_stage}");
         assert_eq!(render_stage["job_result"]["verified"], false);
+        assert_eq!(
+            render_stage["job_result"]["verification_reason"],
+            "not measured, because captions and transcription are not installed"
+        );
+        assert_eq!(
+            render_stage["job_result"]["verification_error"]["message"],
+            "Captions and transcription are not installed"
+        );
+        let skipped_text = render_stage["job_result"]["checks_skipped"]
+            .as_str()
+            .unwrap();
+        assert!(
+            !skipped_text.contains("Python was not found"),
+            "{skipped_text}"
+        );
         let render_job_id = render_stage["job_id"].as_str().unwrap();
         assert_eq!(
             state.jobs.get(render_job_id).unwrap().completion,
-            Some(crate::jobs::JobCompletion::DoneWithWarnings)
+            Some(crate::jobs::JobCompletion::Success),
+            "a render on a machine without the analysis tools is finished, not a warning"
+        );
+        assert!(render_stage["job_result"]["pass"].is_null());
+        assert_eq!(
+            render_stage["job_result"]["setup_needed"]["setup_verb"],
+            "system.setup_perception"
+        );
+        assert_eq!(
+            render_stage["job_result"]["setup_needed"]["person_action"],
+            "Install captions"
         );
         let receipt_path = render_stage["job_result"]["receipt"].as_str().unwrap();
         let receipt: serde_json::Value =
@@ -390,8 +468,17 @@ fn bundled_first_edit_completes_with_an_honest_degraded_render_receipt() {
         assert!(check("caption_presence"));
         assert!(check("duration_matches_edl"));
         assert!(
-            !check("lufs"),
-            "unmeasured output loudness must not fake a pass"
+            !check("black_or_frozen_frames"),
+            "an unmeasured output check must not fake a pass"
         );
+        // No loudness target and no profile on this plain export: loudness is
+        // not judged at all (not applicable, said so), not "unmeasured".
+        let lufs = receipt["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "lufs")
+            .unwrap();
+        assert_eq!(lufs["details"]["status"], "not_applicable", "{lufs}");
     });
 }

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import <CoreAudio/CoreAudio.h>
 
 #include <stdlib.h>
@@ -94,4 +95,23 @@ extern "C" char* shellx_cut_mic_endpoints_json(void) {
 
 extern "C" void shellx_cut_free_mic_endpoints_json(char* value) {
     free(value);
+}
+
+// Microphone permission as AVFoundation reports it, read without a prompt:
+// 2 granted, 0 not answered yet, 1 denied, 3 restricted.
+extern "C" int32_t shellx_cut_microphone_authorization(void) {
+    switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio]) {
+        case AVAuthorizationStatusAuthorized: return 2;
+        case AVAuthorizationStatusDenied: return 1;
+        case AVAuthorizationStatusRestricted: return 3;
+        case AVAuthorizationStatusNotDetermined: return 0;
+    }
+    return 3;
+}
+
+// Show the macOS microphone prompt when the person has not answered yet. The
+// answer arrives asynchronously; the caller reads the state again later.
+extern "C" void shellx_cut_request_microphone_access(void) {
+    if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] != AVAuthorizationStatusNotDetermined) return;
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL) {}];
 }

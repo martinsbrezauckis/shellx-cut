@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const SCHEMA: &str = "shellx-cut/record-checkpoints/1";
+/// Recorded when the owner's own process identity could not be read.
+pub(crate) const UNAVAILABLE_IDENTITY: &str = "unavailable";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestError {
@@ -19,6 +21,8 @@ pub enum ManifestError {
     Json(#[from] serde_json::Error),
     #[error("checkpoint input is invalid: {0}")]
     Invalid(String),
+    #[error("recording recovery stopped: {0}")]
+    StitchLimit(&'static str),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,7 +51,7 @@ impl CaptureStart {
             owner_pid: std::process::id(),
             owner_identity: match owner_probe(std::process::id()) {
                 OwnerProbe::Identity(identity) => identity,
-                OwnerProbe::Dead | OwnerProbe::Ambiguous => "unavailable".into(),
+                OwnerProbe::Dead | OwnerProbe::Ambiguous => UNAVAILABLE_IDENTITY.into(),
             },
             owner_nonce: owner_nonce(),
             started_unix_ms: std::time::SystemTime::now()
@@ -266,6 +270,12 @@ impl CaptureManifest {
     pub fn has_open_segment(&self) -> bool {
         !self.openings.is_empty()
     }
+
+    /// Capture-clock start of the latest checkpoint that was opened but never
+    /// published: the recording was still running at that moment.
+    pub fn open_segment_start_ms(&self) -> Option<u64> {
+        self.openings.iter().map(|open| open.start_ms).max()
+    }
 }
 
 pub(crate) enum OwnerProbe {
@@ -303,41 +313,9 @@ pub(crate) fn owner_probe(pid: u32) -> OwnerProbe {
 }
 #[cfg(windows)]
 pub(crate) fn owner_probe(pid: u32) -> OwnerProbe {
-    windows_owner_probe(pid)
+    crate::windows_owner::owner_probe(pid)
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(crate) fn owner_probe(_pid: u32) -> OwnerProbe {
     OwnerProbe::Ambiguous
-}
-
-#[cfg(windows)]
-fn windows_owner_probe(pid: u32) -> OwnerProbe {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return if GetLastError() == ERROR_INVALID_PARAMETER {
-                OwnerProbe::Dead
-            } else {
-                OwnerProbe::Ambiguous
-            };
-        }
-        let mut created = std::mem::zeroed();
-        let mut exited = std::mem::zeroed();
-        let mut kernel = std::mem::zeroed();
-        let mut user = std::mem::zeroed();
-        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0;
-        CloseHandle(handle);
-        if ok {
-            OwnerProbe::Identity(format!(
-                "{}:{}",
-                created.dwLowDateTime, created.dwHighDateTime
-            ))
-        } else {
-            OwnerProbe::Ambiguous
-        }
-    }
 }

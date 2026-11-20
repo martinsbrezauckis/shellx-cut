@@ -1,17 +1,22 @@
 //! Bounded ownership for ffmpeg processes started by one render operation.
-//!
 //! The server passes one [`RenderProcessControl`] across the `spawn_blocking`
 //! boundary. Every render child shares its deadline and cancellation signal;
 //! the owner reaps the direct child and closes its owned tree before a job can
 //! report a terminal result.
 
+mod activity;
 mod child;
+mod control;
+mod exhaustion;
+mod hw_exit;
 mod pipes;
+mod stall;
 #[cfg(test)]
 mod tests;
 mod tree;
 
 use child::{exit_error, spawn_error, ManagedChild};
+pub(crate) use control::bounded_current_control;
 use cut_core::{error_codes, CutError};
 use pipes::{
     finish_progress, finish_reader, finish_writer, read_capped, read_capped_lines, read_progress,
@@ -37,6 +42,7 @@ pub struct RenderProcessControl {
     deadline: Instant,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     output_cap_bytes: usize,
+    stall_after: Option<Duration>, // no work for this long ends a render (`stall`)
 }
 
 /// Generic name for the same cross-platform owner when a caller is not a
@@ -57,6 +63,7 @@ impl RenderProcessControl {
             deadline: Instant::now() + timeout,
             cancelled: Arc::new(cancelled),
             output_cap_bytes: OUTPUT_CAP_BYTES,
+            stall_after: stall::stall_after_from_env(),
         }
     }
 
@@ -290,7 +297,9 @@ fn drive_with_control(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let exhaustion = exhaustion::Watch::start();
     let mut child = ManagedChild::spawn(command, control.clone(), "ffmpeg render")?;
+    let mut stall = stall::Watch::new(control.stall_after);
     let progress = read_progress(child.take_stdout("ffmpeg render")?);
     let stderr = read_capped(
         child.take_stderr("ffmpeg render")?,
@@ -298,8 +307,8 @@ fn drive_with_control(
     );
     on_progress(0.0);
     let status = loop {
-        if let Err(error) = control.check("ffmpeg render") {
-            let mut error = error;
+        let stop = control.check("ffmpeg render").err();
+        if let Some(mut error) = stop.or_else(|| stall.poll(&child.tree)) {
             if let Err(cleanup) = child.stop_and_reap("ffmpeg render") {
                 error.cause = format!("{}; cleanup failed: {cleanup}", error.cause);
             }
@@ -308,8 +317,11 @@ fn drive_with_control(
         match child.try_wait("ffmpeg render")? {
             Some(status) => break Ok(status),
             None => match progress.done.recv_timeout(PROCESS_POLL) {
-                Ok(Some(us)) if total_ms > 0 => {
-                    on_progress(((us / 1000) as f32 / total_ms as f32).clamp(0.0, 1.0));
+                Ok(Some(us)) => {
+                    stall.output(us);
+                    if total_ms > 0 {
+                        on_progress(((us / 1000) as f32 / total_ms as f32).clamp(0.0, 1.0));
+                    }
                 }
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break Ok(child.wait("ffmpeg render")?),
@@ -326,7 +338,12 @@ fn drive_with_control(
             on_progress(1.0);
             Ok(())
         }
-        (Ok(status), Ok(()), Ok(stderr)) => Err(exit_error(status, &stderr)),
+        // A hardware encoder's own failure is read from the FULL stderr first
+        // (item 133); out of memory or disk is named as such, with the way out;
+        // any other failure keeps ffmpeg's own words.
+        (Ok(status), Ok(()), Ok(stderr)) => Err(hw_exit::hardware_failure_error(status, &stderr)
+            .or_else(|| exhaustion.classify(status, &stderr))
+            .unwrap_or_else(|| exit_error(status, &stderr))),
         (Err(error), _, _) => Err(error),
         (_, Err(error), _) | (_, _, Err(error)) => Err(spawn_error("ffmpeg render", error)),
     }

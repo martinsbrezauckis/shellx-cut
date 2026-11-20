@@ -35,7 +35,7 @@ async function fixture(t, { raw = true, keys = false } = {}) {
       })
     } }], server: { host: '127.0.0.1', port: 0 },
   })
-  await server.listen(); t.after(() => server.close())
+  t.after(() => server.close()); await server.listen()
   const browser = await chromium.launch({ headless: true }); t.after(() => browser.close())
   const page = await browser.newPage({ viewport: { width: 1100, height: 850 } })
   const errors = []; const requests = []
@@ -52,7 +52,7 @@ async function fixture(t, { raw = true, keys = false } = {}) {
     if (name === 'screen_record.start') take += 1
     const result = name === 'screen_record.doctor' ? doctor
       : name === 'screen_record.start' ? { capture_id: `take-${take}`, pause: { enabled: false } }
-      : name === 'screen_record.status' ? { capture_id: statusId ?? `take-${take}`, terminal: false, input_hook: hook }
+      : name === 'screen_record.status' ? { capture_id: statusId ?? `take-${take}`, ready: true, terminal: false, since_first_screen_frame_ms: 0, input_hook: hook }
       : name === 'screen_record.stop' ? { capture_id: `take-${take}`, raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json', input_hook: stopHook }
       : name === 'screen_record.studio_event' ? { last_event: route.request().postDataJSON().event }
       : name === 'screen_record.polish' ? { clip_id: `clip-${take}` } : {}

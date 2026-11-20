@@ -22,7 +22,7 @@
           }
         }
       },
-      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, message?, queue?:{resource,max_running}, waiting_on?:{job_id,kind}, retry?:{eligible,reason?,root_job_id,attempt,retry_of?,retried_by?}, error?, result?}. retry is the engine-authored public eligibility and lineage projection; its replay descriptor and fingerprints remain private. message is the latest durable human-readable progress or terminal phase; it is absent on queued/legacy records until a worker reports one. queue is present only while a limited job waits for the named shared local resource and states its concurrency capacity; it clears when the slot is acquired or the job becomes terminal. waiting_on is present only while an orchestrator awaits the named active child and is relationship evidence, not a retry promise. state remains backward-compatible; outcome/outcome_reason explain terminal cause and are absent on legacy persisted records. completion is present on newly completed jobs; done_with_warnings means the result is usable but partial and its result.warnings must be inspected.",
+      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|partial|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|checks_failed|items_failed|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, message?, queue?:{resource,max_running}, waiting_on?:{job_id,kind}, retry?:{eligible,reason?,root_job_id,attempt,retry_of?,retried_by?}, error?, result?}. retry is the engine-authored public eligibility and lineage projection; its replay descriptor and fingerprints remain private. message is the latest durable human-readable progress or terminal phase; it is absent on queued/legacy records until a worker reports one. queue is present only while a limited job waits for the named shared local resource and states its concurrency capacity; it clears when the slot is acquired or the job becomes terminal. waiting_on is present only while an orchestrator awaits the named active child and is relationship evidence, not a retry promise. Did the job do what was asked? Read outcome: succeeded = yes (completion done_with_warnings: usable, read result.warnings); partial = it ran to its end but did not fully deliver (outcome_reason checks_failed: a written file failed its own checks, see result.checks; items_failed: some batch items failed, see result.failures); failed, cancelled, interrupted, superseded = no. state done alone is not success. outcome fields are absent on legacy records.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -45,7 +45,7 @@
     {
       "name": "jobs.list",
       "domain": "jobs",
-      "description": "All job records of this server run, newest first (status bar + agent overview). Active records retain their latest human-readable message so a reconnect can restore the current phase without waiting for another progress event.",
+      "description": "All job records of this server run, newest first: the source of the status bar's running, retry and failed-job rows and of the Health & recovery jobs row, and the agent's way to see a job it did not start (a person's import, another agent's render) with its error. Active records retain their latest human-readable message so a reconnect can restore the current phase without waiting for another progress event.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -65,7 +65,7 @@
         "idempotency": "natural",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "none",
         "facets": []
@@ -74,7 +74,7 @@
     {
       "name": "jobs.cancel",
       "domain": "jobs",
-      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
+      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. A stop that arrives after a render has published its finished file cannot undo the export: the job ends done, the receipt is written, and checks the stop cut short are reported as not measured. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
       "args": {
         "type": "object",
         "required": [
@@ -145,6 +145,111 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.before_quit",
+      "domain": "jobs",
+      "description": "What closing the desktop app would cancel, and stopping it cleanly. The app asks this before its window closes or it quits. Running work someone asked for (the same rule as a project change: exports, renders, reviews, analysis, downloads; automatic import follow-ups do not count) refuses with jobs_running, naming each job, and nothing is stopped. With cancel_running_jobs:true every running job is cancelled the normal way (an export removes its staging and lock files) and the call returns once they have stopped. There is no verb that closes the app; an agent uses this to see what a quit would cancel.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "cancel_running_jobs": {
+            "type": "boolean",
+            "description": "Cancel every running job and wait until they have stopped (default false: refuse with jobs_running when work someone asked for runs)."
+          }
+        }
+      },
+      "result": "{running:[], cancelled_jobs:[{job_id, kind, progress, message?}]} | error jobs_running {message, cause:\"running: <job_id> (<kind>, <n>% done, <phase>); ...\", suggested_action} with result {running:[{job_id, kind, progress, message?}]}, one record per job (read these, not the cause line: a job message is free text and can hold ';' or ',')",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_before_quit",
+        "project_state": "optional",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.interrupted",
+      "domain": "jobs",
+      "description": "Jobs someone asked for that were cut off because the app or the computer stopped while they ran (a kill, a crash, a power cut, or a quit that could not ask). Needs no open project: the app shows them at start. Each item names the job, its kind and project, with a message and a way forward. A helper of the dead engine run that is still running (an export's ffmpeg after a kill) is stopped first, found by the mark that run gave its helpers, never by pid or name; then the export's leftover staging and lock files are removed from every folder it could write to (the project's exports folder and the app-wide export folder; only the names the engine writes, nothing this engine wrote, only when no export there still holds its lock). Both are counted. While this engine runs work itself, nothing is tidied and the earlier counts are listed.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{interrupted:[{key, job_id, kind, project_path, project_name, started_unix_ms, helpers_stopped, leftover_files_removed, export_folders, message, suggested_action}]}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_interrupted",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.interrupted_dismiss",
+      "domain": "jobs",
+      "description": "Forget one notice listed by jobs.interrupted.",
+      "args": {
+        "type": "object",
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "The key from jobs.interrupted."
+          }
+        }
+      },
+      "result": "{dismissed:true, key}",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_interrupted_dismiss",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
         "facets": []
       }
     }

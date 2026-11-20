@@ -122,3 +122,22 @@ fn append_stops_at_the_size_limit_without_mutating_the_journal() {
     assert!(append_record(&path, &record, at_limit.len() as u64).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), at_limit);
 }
+
+/// Item 140 sweep: a received capture folder can carry its Studio journal as a
+/// second name (hard link) of a file outside the project. A file without a
+/// newline reads as an uncommitted tail, which the append would truncate.
+#[test]
+fn a_hard_linked_studio_journal_is_neither_truncated_nor_appended_to() {
+    let temp = tempfile::tempdir().unwrap();
+    let outside = temp.path().join("outside.txt");
+    std::fs::write(&outside, b"KEEP THIS OUTSIDE FILE").unwrap();
+    let capture = temp.path().join("capture");
+    std::fs::create_dir(&capture).unwrap();
+    let path = capture.join(STUDIO_EVENTS_FILENAME);
+    std::fs::hard_link(&outside, &path).unwrap();
+    let error = StudioJournalOwner::default()
+        .append(&path, marker(10))
+        .expect_err("a journal with a second name is refused");
+    assert!(error.message.contains("second name"), "{error:?}");
+    assert_eq!(std::fs::read(&outside).unwrap(), b"KEEP THIS OUTSIDE FILE");
+}

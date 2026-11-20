@@ -221,6 +221,13 @@ pub(crate) fn begin_current_blocking_worker() -> Option<JobBlockingWorkerGuard> 
         .ok()
 }
 
+/// Make a stop of the current job cooperative only for as long as the guard
+/// lives: the task is never aborted mid-await, so a step whose result must
+/// be recorded (a published export) always reaches its terminal state.
+pub(crate) fn hold_cooperative_cancellation() -> Option<JobProcessWorkerGuard> {
+    begin_current_process_worker()
+}
+
 /// Track an async external-process owner while it performs cancellation and
 /// reaping. Outside a managed job this returns `None` for foreground callers.
 pub(crate) fn begin_current_process_worker() -> Option<JobProcessWorkerGuard> {

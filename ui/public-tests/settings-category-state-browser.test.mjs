@@ -46,7 +46,8 @@ test('ordinary Settings navigation reports the rendered category to its parent w
   const server = await createServer({ root: uiRoot, cacheDir, server: { host: '127.0.0.1', port: 0 }, plugins: [{
     name: 'settings-category-regression-entry',
     resolveId(id) { if (id === entryPath) return join(uiRoot, entryPath) },
-    load(id) { if (id === join(uiRoot, entryPath)) return entry },
+    // Vite hands `load` forward-slash ids on every system; join() gives backslashes on Windows.
+    load(id) { if (id.replaceAll('\\', '/') === join(uiRoot, entryPath).replaceAll('\\', '/')) return entry },
     configureServer(dev) {
       dev.middlewares.use(async (request, response, next) => {
         if (request.url !== '/__settings_category_regression__') return next()

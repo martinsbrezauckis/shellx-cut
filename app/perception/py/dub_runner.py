@@ -53,10 +53,9 @@ Primary caller: server/dub.rs (audio.dub).
 """
 from __future__ import annotations
 
-from local_media_io import input_args
+from local_media_io import input_args, media_tool
 import json
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -67,6 +66,10 @@ import urllib.request
 import wave
 import ipaddress
 from pathlib import Path
+# The review's no-follow file helpers, imported as part of the judge/ folder
+# beside this file (adding judge/ itself to sys.path would hide that package
+# behind judge/judge.py for the rest of the process).
+from judge import judge_files  # noqa: E402
 from safe_numbers import finite_number
 
 try:
@@ -85,7 +88,7 @@ if _ff_dir:
     if _present:
         os.environ["PATH"] = os.pathsep.join(_present + [os.environ.get("PATH", "")])
 
-FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
+FFMPEG_BIN = media_tool("ffmpeg")
 
 BYTES_PER_SAMPLE = 2  # s16le, mono
 _SERVICE_OPENER = urllib.request.build_opener()
@@ -106,6 +109,10 @@ def resolve_output_path(path_value) -> Path:
     path = Path(str(path_value)).expanduser()
     if not path.is_absolute():
         _die("dub_runner: 'out_wav' must be an absolute path")
+    try:
+        judge_files.require_replaceable(str(path), "dubbed audio")
+    except judge_files.RefusedProjectFile as error:
+        _die(f"dub_runner: {error}")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

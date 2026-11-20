@@ -1,4 +1,5 @@
 import type { ActiveVideo } from './model'
+import type { PosterChip } from './posterChip'
 
 interface PreviewMonitorBadgesProps {
   showVideo: boolean
@@ -7,8 +8,10 @@ interface PreviewMonitorBadgesProps {
   overlaysDropped: number
   posterActive: boolean
   showSpinner: boolean
-  composed: boolean
-  liveComposedPlayback: boolean
+  /** What the still frame is; null when it needs no explanation. */
+  posterChip: PosterChip | null
+  /** Plain notice while the live picture leaves out titles/effects at the playhead. */
+  livePreviewNotice: string | null
 }
 
 export default function PreviewMonitorBadges({
@@ -18,8 +21,8 @@ export default function PreviewMonitorBadges({
   overlaysDropped,
   posterActive,
   showSpinner,
-  composed,
-  liveComposedPlayback,
+  posterChip,
+  livePreviewNotice,
 }: PreviewMonitorBadgesProps) {
   return (
     <>
@@ -33,13 +36,18 @@ export default function PreviewMonitorBadges({
           +{overlaysDropped} layer{overlaysDropped > 1 ? 's' : ''} hidden
         </div>
       )}
-      {liveComposedPlayback && (
-        <div className="pv-chip" data-cut-live-composite-chip>LIVE COMPOSITE</div>
+      {livePreviewNotice && (
+        <div className="pv-chip pv-chip--note pv-live-notice" role="status" data-cut-live-preview-notice>{livePreviewNotice}</div>
       )}
       {!showVideo && posterActive && showSpinner && <div className="pv-spinner" data-cut-spinner />}
-      {!showVideo && posterActive && (
-        <div className="pv-chip" data-cut-proxy-chip>
-          <span className={proxyBuilding ? 'pv-chip-dot pv-chip-dot--live' : 'pv-chip-dot'} />{proxyBuilding ? 'PROXY RENDERING…' : composed ? 'COMPOSED FRAME' : 'no preview'}
+      {!showVideo && posterActive && posterChip && (
+        <div
+          className={posterChip.note ? 'pv-chip pv-chip--note' : 'pv-chip'}
+          title={posterChip.title}
+          data-cut-proxy-chip
+          data-cut-poster-chip={posterChip.kind}
+        >
+          <span className={proxyBuilding ? 'pv-chip-dot pv-chip-dot--live' : 'pv-chip-dot'} />{posterChip.label}
         </div>
       )}
     </>

@@ -1,4 +1,5 @@
-import { folderTail, getStoredOutputDir } from '../../lib/exportDestination'
+import { folderTail } from '../../lib/exportDestination'
+import { useOutputFolderStatus } from '../../lib/useOutputFolder'
 import { cardLabel, type DoctorReport } from '../../lib/doctor'
 import type { SettingsCategoryId } from './settingsModel'
 
@@ -20,7 +21,8 @@ function statusFor(report: DoctorReport | null, ids: string[]) {
 }
 
 export default function SettingsOverview({ report, onNavigate, onOpenRecording }: SettingsOverviewProps) {
-  const outputDir = getStoredOutputDir()
+  const outputFolder = useOutputFolderStatus()
+  const outputDir = outputFolder?.dir ?? null
   // Keep the overview focused on required capabilities. Optional accelerators
   // and matte tooling remain visible in their detailed categories without
   // making a healthy first-run setup look broken.
@@ -40,7 +42,7 @@ export default function SettingsOverview({ report, onNavigate, onOpenRecording }
     {
       id: 'destination',
       label: 'Default save folder',
-      detail: outputDir ? folderTail(outputDir) : 'Each project /exports folder',
+      detail: outputDir ? `${folderTail(outputDir)}${outputFolder && !outputFolder.usable ? ' (unavailable: ' + (outputFolder.problem ?? 'cannot be used') + ')' : ''}` : 'Each project /exports folder',
       tone: 'ok',
       action: 'Change folder',
       run: () => onNavigate('general'),

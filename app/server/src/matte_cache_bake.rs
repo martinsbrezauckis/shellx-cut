@@ -12,11 +12,20 @@ fn cached(
     let receipt = alpha.with_extension("json");
     let alpha_exists = output::cache_hit(alpha)?;
     let receipt_exists = output::cache_hit(&receipt)?;
-    if !alpha_exists || !receipt_exists {
+    // Item 155: only an alpha this engine baked counts as a cache hit; one
+    // that came with the project (planted, or baked on another computer, or a
+    // legacy name from an older version) is baked again.
+    if !alpha_exists || !receipt_exists || !cut_media::cache_trust::trusted(alpha) {
         return Ok(None);
     }
-    let body = std::fs::read_to_string(receipt)?;
-    Ok(serde_json::from_str::<MatteStats>(&body)
+    // A cached receipt holds a few numbers; a larger or linked one is a miss
+    // and is replaced by the bake.
+    let cut_core::store::BoundedCacheRead::Bytes(body) =
+        cut_core::store::read_bounded_cache(&receipt, 1024 * 1024)
+    else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_slice::<MatteStats>(&body)
         .ok()
         .filter(|stats| cache_matches_prepared_runtime(stats, expected)))
 }
@@ -47,6 +56,7 @@ pub(super) fn ensure(
                     &serde_json::to_vec(&stats).map_err(|e| io_err("serialize receipt", e))?,
                 )?;
                 output::publish_pair(alpha_stage, receipt_stage)?;
+                cut_media::cache_trust::remember(&alpha);
                 stats.cached = true;
                 return Ok(stats);
             }
@@ -58,6 +68,7 @@ pub(super) fn ensure(
     receipt_stage
         .write(&serde_json::to_vec(&stats).map_err(|e| io_err("serialize receipt", e))?)?;
     output::publish_pair(alpha_stage, receipt_stage)?;
+    cut_media::cache_trust::remember(&alpha);
     Ok(stats)
 }
 

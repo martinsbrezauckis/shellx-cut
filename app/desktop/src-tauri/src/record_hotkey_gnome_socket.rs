@@ -267,6 +267,7 @@ fn acquire_lock(directory: &Path) -> Result<SocketLock, String> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .map_err(|error| format!("could not open Global F9 ownership lock: {error}"))?;
     fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))

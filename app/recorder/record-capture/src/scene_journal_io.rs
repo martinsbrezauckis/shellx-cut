@@ -196,9 +196,11 @@ pub(super) fn preserve_failed_new_leaf(file: &File, path: &Path) -> SceneJournal
 
 pub(crate) fn ensure_open_regular(file: &File, path: &Path) -> SceneJournalResult<()> {
     let metadata = file.metadata().map_err(|source| io_error(path, source))?;
-    (metadata.file_type().is_file() && !is_reparse(&metadata))
+    // A second name (hard link) of another file is never truncated or appended to.
+    let single = record_recovery::has_single_name(file).map_err(|source| io_error(path, source))?;
+    (metadata.file_type().is_file() && !is_reparse(&metadata) && single)
         .then_some(())
-        .ok_or_else(|| invalid("opened scene journal is not a local regular file"))
+        .ok_or_else(|| invalid("opened scene journal is not a local regular file with one name"))
 }
 
 pub(crate) fn io_error(path: &Path, source: std::io::Error) -> SceneJournalError {

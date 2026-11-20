@@ -22,10 +22,13 @@
 // confirmed ops (rule 8 — in-flight cut shows a pending tint until op_applied).
 // Callers: App.tsx. Deps: lib/client, lib/events, Review/shared.
 
+import { noTranscriptKind, noTranscriptSentence, transcriptActionFailure, transcriptEmptyState } from '../../lib/noTranscript'
+import { useTopbarJobs } from '../../topbar/useTopbarJobs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callVerb, type OpRecord, type Project, type Transcript as TranscriptData } from '../../lib/client'
 import { events } from '../../lib/events'
-import { fetchDoctor, setupPerception, type DoctorCard } from '../../lib/doctor'
+import { fetchDoctor, missingVcRuntime, setupPerception, type DoctorCard } from '../../lib/doctor'
+import { openVcRuntimeSettings } from '../../lib/videoToolsSetup'
 import AssetWords from './AssetWords'
 import { cutSpansByAsset } from './cutWordProjection'
 import ChapterNavigation from './ChapterNavigation'
@@ -41,6 +44,8 @@ import { Icon } from '../../icons'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import { selectedSpeechAsset } from './speechServiceModel'
 import { useSpeechServiceActions } from './useSpeechServiceActions'
+import { useEnvironmentSetupJob } from '../Environment/useEnvironmentSetupJob'
+import { useTranscriptSources } from './useTranscriptSources'
 import './transcript.css'
 
 /** Typed props — contract between App.tsx and the transcript panel. */
@@ -76,7 +81,9 @@ const aggrFromInput = (value: string): '' | Aggressiveness =>
 
 export default function Transcript({ project, ops, playheadMs, selectedClipId, transcripts, onCutWords, onRestore, onSeek, onProjectChanged }: TranscriptProps) {
   // --- transcripts: prop wins; panel self-loads the rest via transcript.get --
-  const [loaded, setLoaded] = useState<Record<string, TranscriptData>>({})
+  const projectKey = project ? project.project_identity?.origin_path_sha256 || `name:${project.name}` : null
+  const { loaded, loadFailures, retrySources } = useTranscriptSources(project, projectKey, transcripts)
+  const [readRevision, retryReads] = useState(0)
   // Hold a successful ignore response until the authoritative App snapshot
   // catches up. A concurrent op_applied refresh can briefly deliver the
   // pre-mutation project and must not erase the confirmed ignored-word styling.
@@ -118,10 +125,12 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   /** null = probing/unknown, true = STT engine (onnx-asr/whisperX) ready, false = not set up. */
   const [perceptionReady, setPerceptionReady] = useState<boolean | null>(null)
   const [perceptionHint, setPerceptionHint] = useState<string | null>(null)
-  /** Setup job in flight + its live progress message (WS job_progress). */
-  const [setupBusy, setSetupBusy] = useState(false)
-  const [setupMsg, setSetupMsg] = useState('')
-  const [setupErr, setSetupErr] = useState<string | null>(null)
+  /** Windows: Microsoft's Visual C++ runtime is missing, so captions cannot be installed yet. */
+  const [vcRuntimeMissing, setVcRuntimeMissing] = useState(false)
+  const [doctorError, setDoctorError] = useState(false)
+  /** Setup job in flight, its live progress message and, when it fails, the
+   * engine's reason and next step (the same job hook the Environment cards use). */
+  const { job: setupJob, runJob: runSetupJob } = useEnvironmentSetupJob(() => {})
   /** Optional external speech services share the existing cached Doctor report.
    * Direct user controls stay disabled until Doctor marks the exact service ready. */
   const [speechServices, setSpeechServices] = useState<{ diarize: DoctorCard | null; dub: DoctorCard | null }>({
@@ -135,37 +144,54 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   /** Timeline scope: SELECTED-CLIP (default) or the whole PROGRAM output line. */
   const [txScope, setTxScope] = useState<'clip' | 'program'>('clip')
   /** transcript.timeline entries for the active scope. */
-  const [tlEntries, setTlEntries] = useState<TimelineWord[]>([])
+  const timelineKey = JSON.stringify([projectKey, txView, txScope, selectedClipId])
+  const [timelineState, setTimelineState] = useState<{ key: string; entries: TimelineWord[]; error: boolean }>(
+    { key: timelineKey, entries: [], error: false },
+  )
+  const tlEntries = timelineState.key === timelineKey ? timelineState.entries : []
+  const timelineError = timelineState.key === timelineKey && timelineState.error
   /** Diarization updates transcript metadata without a timeline operation. Keep
    * a separate refresh signal so a completed, current job re-reads the rendered
    * phrase data even when the project revision did not change. */
   const [speechRefreshRevision, setSpeechRefreshRevision] = useState(0)
 
   // Read the perception card from the doctor → ready/hint. Cheap (cached read).
-  const probePerception = useCallback(async () => {
-    const report = await fetchDoctor(false)
-    if (!report) return
-    const card: DoctorCard | undefined = report.cards.find((c) => c.id === 'perception')
-    setSpeechServices({
-      diarize: report.cards.find((c) => c.id === 'diarize') ?? null,
-      dub: report.cards.find((c) => c.id === 'dub') ?? null,
-    })
-    // Word-level transcription needs the STT runtime specifically. Gate on the card's
-    // `stt_ready` detail — NOT `status === 'ok'`: the card can be 'ok' (perception
-    // instruments installed: silence/scenes/beats) while word-level STT is still absent,
-    // which made the panel show "pending…" forever instead of the setup card (the
-    // honest-empty regression). This matches the release check's `details.stt_ready`.
-    setPerceptionReady(card ? card.details?.stt_ready === true : false)
-    setPerceptionHint(card?.hint ?? null)
-  }, [])
-
   // Probe on mount + whenever a project loads; live-update on doctor_updated
   // (system.setup_perception finishes → doctor_rescan → push) and surface the
   // setup job's progress message via job_progress.
   useEffect(() => {
+    let alive = true
+    let request = 0
+    setPerceptionReady(null)
+    setPerceptionHint(null)
+    setDoctorError(false)
+    const probePerception = async () => {
+      const id = ++request
+      try {
+        const report = await fetchDoctor(false)
+        if (!report || !Array.isArray(report.cards)) throw new Error('Doctor report unavailable')
+        if (!alive || id !== request) return
+        const card: DoctorCard | undefined = report.cards.find((c) => c.id === 'perception')
+        setSpeechServices({
+          diarize: report.cards.find((c) => c.id === 'diarize') ?? null,
+          dub: report.cards.find((c) => c.id === 'dub') ?? null,
+        })
+        // STT readiness comes from the capability detail, not card status.
+        setPerceptionReady(card ? card.details?.stt_ready === true : false)
+        setPerceptionHint(card?.hint ?? null)
+        setVcRuntimeMissing(missingVcRuntime(report) !== null)
+        setDoctorError(false)
+      } catch {
+        if (!alive || id !== request) return
+        setPerceptionReady(null)
+        setSpeechServices({ diarize: null, dub: null })
+        setDoctorError(true)
+      }
+    }
     void probePerception()
     const off = events.subscribe((ev) => {
       if (ev.type === 'doctor_updated') {
+        ++request
         const card = ev.report.cards.find((c) => c.id === 'perception')
         setSpeechServices({
           diarize: ev.report.cards.find((c) => c.id === 'diarize') ?? null,
@@ -174,49 +200,53 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
         const ready = card ? card.details?.stt_ready === true : false
         setPerceptionReady(ready)
         setPerceptionHint(card?.hint ?? null)
-        if (ready) {
-          setSetupBusy(false)
-          setSetupMsg('')
-        }
-      } else if (ev.type === 'job_progress' && ev.kind === 'setup_perception') {
-        setSetupMsg(ev.message ?? `setting up… ${Math.round(ev.progress * 100)}%`)
+        setVcRuntimeMissing(missingVcRuntime(ev.report) !== null)
+        setDoctorError(false)
       }
     })
-    return off
-  }, [probePerception, project?.name])
+    return () => { alive = false; ++request; off() }
+  }, [projectKey, readRevision])
 
   // One-click: provision the Python/Whisper sidecar. Long job (minutes) — the
   // WS job_progress drives the message; doctor_updated flips ready on finish.
-  const startPerceptionSetup = useCallback(async () => {
-    setSetupBusy(true)
-    setSetupErr(null)
-    setSetupMsg('starting…')
-    const r = await setupPerception()
-    if (!r) {
-      setSetupBusy(false)
-      setSetupErr('Could not start captions install (server unreachable?).')
-    }
-  }, [])
+  const startPerceptionSetup = useCallback(
+    // Captions setup downloads Python, packages and the speech model: allow an hour.
+    () => runSetupJob(setupPerception, 'Could not start captions install (server unreachable?)', 4800),
+    [runSetupJob],
+  )
 
   // Fetch the EDL-mapped transcript for the active scope. Re-runs on project /
   // edit (ops) / selection / scope changes. SELECTED-CLIP with no selection →
   // empty (the view shows a "select a clip" hint). PROGRAM → whole output line.
   useEffect(() => {
-    if (txView !== 'timeline' || !project) { setTlEntries([]); return }
-    if (txScope === 'clip' && !selectedClipId) { setTlEntries([]); return }
+    if (txView !== 'timeline' || !project || (txScope === 'clip' && !selectedClipId)) {
+      setTimelineState({ key: timelineKey, entries: [], error: false })
+      return
+    }
     let cancelled = false
+    setTimelineState({ key: timelineKey, entries: [], error: false })
     const run = async () => {
-      const args = txScope === 'clip' && selectedClipId ? { clip: selectedClipId } : {}
-      const r = await callVerb('transcript.timeline', args)
-      const entries = r.ok ? timelineEntriesFrom(r.result) : null
-      if (!cancelled && entries) setTlEntries(entries)
-      else if (!cancelled && !r.ok) setTlEntries([])
+      try {
+        const args = txScope === 'clip' && selectedClipId ? { clip: selectedClipId } : {}
+        const r = await callVerb('transcript.timeline', args)
+        // "No transcript yet" (captions missing, or nothing transcribed) is a
+        // normal state with its own empty view, not a read error.
+        if (!r.ok && noTranscriptKind(r.error)) {
+          if (!cancelled) setTimelineState({ key: timelineKey, entries: [], error: false })
+          return
+        }
+        const entries = r.ok ? timelineEntriesFrom(r.result) : null
+        if (!entries) throw new Error('Timeline transcript unavailable')
+        if (!cancelled) setTimelineState({ key: timelineKey, entries, error: false })
+      } catch {
+        if (!cancelled) setTimelineState({ key: timelineKey, entries: [], error: true })
+      }
     }
     void run()
     return () => { cancelled = true }
-    // `ops` re-fetches after every edit; project name covers project switches.
+    // `ops` re-fetches after every edit; timelineKey includes the project origin.
     // Speaker labels are receipt-backed transcript metadata, not an edit op.
-  }, [txView, txScope, selectedClipId, project?.name, ops, speechRefreshRevision])
+  }, [timelineKey, ops, speechRefreshRevision, readRevision])
 
   // Clip-scoped cut from the timeline view → transcript.cut_words{clip}.
   const cutTimelineWords = useCallback((asset: string, wordRange: [number, number], clipId: string | null) => {
@@ -248,38 +278,12 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   /** Auto-scroll pause: user wheel/drag pauses follow until this timestamp. */
   const pausedUntilRef = useRef(0)
 
-  // PRUNE cached transcripts when the project changes — drop any whose asset is
-  // no longer in the open project. Without this, creating/opening a NEW project
-  // left the previous project's words rendered in the sidebar after a project
-  // switch,
-  // because `loaded` is component-local and survives the project switch.
-  useEffect(() => {
-    setLoaded((prev) => {
-      const keep = Object.fromEntries(Object.entries(prev).filter(([id]) => project?.assets?.[id]))
-      return Object.keys(keep).length === Object.keys(prev).length ? prev : keep
-    })
-  }, [project])
-
   useEffect(() => {
     chapterRequestRef.current++
     setChapterResult(null)
     setChapterAvailability('checking')
     setPassBusy((busy) => busy === 'chapters' ? '' : busy)
-  }, [project?.active_sequence, project?.name])
-
-  // Load transcripts for assets that have one and aren't provided via props.
-  useEffect(() => {
-    if (!project) return
-    for (const [assetId, asset] of Object.entries(project.assets)) {
-      if (!asset.transcript || transcripts[assetId] || loaded[assetId]) continue
-      void callVerb('transcript.get', { asset: assetId }).then((r) => {
-        if (r.ok && r.result) {
-          const transcript = r.result
-          setLoaded((prev) => ({ ...prev, [assetId]: transcript }))
-        }
-      })
-    }
-  }, [project, transcripts, loaded])
+  }, [project?.active_sequence, projectKey])
 
   // The authoritative `ops` prop changes on a confirmed append, including
   // undo/redo navigation. It clears synchronously before App starts a new
@@ -686,7 +690,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setPassNote('')
     const r = await dispatchVerb('transcript.remove_fillers', {})
     setPassBusy('')
-    setPassNote(r.ok ? `filler pass: ${r.op_ids?.length ?? 0} cuts` : `filler pass failed: ${r.error?.message ?? 'error'}`)
+    setPassNote(r.ok ? `filler pass: ${r.op_ids?.length ?? 0} cuts` : transcriptActionFailure('filler pass', r.error))
   }, [])
 
   // "Remove retakes" — auto-remove repeated line attempts (retakes / do-overs),
@@ -698,7 +702,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setPassNote('')
     const r = await dispatchVerb('transcript.remove_retakes', {})
     setPassBusy('')
-    setPassNote(r.ok ? `retakes pass: ${r.op_ids?.length ?? 0} cuts` : `retakes pass failed: ${r.error?.message ?? 'error'}`)
+    setPassNote(r.ok ? `retakes pass: ${r.op_ids?.length ?? 0} cuts` : transcriptActionFailure('retakes pass', r.error))
   }, [])
 
   // "Generate chapters" segments the transcript non-destructively. Its starts
@@ -732,7 +736,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
         : undefined
       setChapterAvailability(row?.exists === true ? 'available' : row?.exists === false ? 'offline' : 'unknown')
     } else {
-      setPassNote(`chapters failed: ${r.error?.message ?? r.error?.code ?? 'error'}`)
+      setPassNote(noTranscriptKind(r.error) ? transcriptActionFailure('chapters', r.error) : `chapters failed: ${r.error?.message ?? r.error?.code ?? 'error'}`)
     }
     if (request === chapterRequestRef.current) setPassBusy('')
   }, [all])
@@ -746,7 +750,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setPassNote('')
     const r = await dispatchVerb('captions.generate', {})
     setPassBusy('')
-    setPassNote(r.ok ? 'captions generated' : `captions failed: ${r.error?.message ?? 'error'}`)
+    setPassNote(r.ok ? 'captions generated' : transcriptActionFailure('captions', r.error))
   }, [])
 
   // --- floating Cut toolbar geometry (above the selection start word) -------
@@ -792,6 +796,17 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   // --- render ----------------------------------------------------------------
   const hasProject = !!project
   const hasAssets = hasProject && Object.keys(project.assets).length > 0
+  // Which empty state the pane shows while no asset has a transcript.
+  const importJobs = useTopbarJobs().jobList
+  const emptyState = transcriptEmptyState({
+    captionsReady: perceptionReady,
+    transcribingNow: importJobs.some((job) => ['enrich', 'import_chain', 'transcribe'].includes(job.kind)),
+  })
+  const readError = doctorError || loadFailures.length > 0 || (txView === 'timeline' && timelineError)
+  const retryTranscriptReads = () => {
+    retrySources()
+    retryReads((revision) => revision + 1)
+  }
 
   return (
     <section className="panel tx" data-panel="transcript" data-cut-panel="transcript">
@@ -1040,6 +1055,12 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
         />
       )}
       <div className="panel__body tx__body" ref={bodyRef} onWheel={pauseFollow} onMouseDown={pauseFollow}>
+        {readError && <div className="tx__setup-err" data-cut-transcript-read-error role="status">
+          {loadFailures.length > 0 ? 'Could not load transcript words.'
+            : timelineError && txView === 'timeline' ? 'Could not load timeline words.'
+              : 'Could not check captions readiness.'}{' '}
+          <button type="button" className="tx__setup-btn" data-cut-action="retry-transcript-reads" onClick={retryTranscriptReads}>Retry</button>
+        </div>}
         {!hasAssets && (
           hasProject ? (
             <button
@@ -1054,19 +1075,30 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             <div className="tx__empty">Create a project in Projects to begin</div>
           )
         )}
-        {hasAssets && assetIds.length === 0 && (
-          perceptionReady === false ? (
+        {hasAssets && assetIds.length === 0 && !readError && (
+          emptyState === 'install' ? (
             <TranscriptSetupCard
               hint={perceptionHint}
-              error={setupErr}
-              busy={setupBusy}
-              message={setupMsg}
+              error={setupJob.err}
+              busy={setupJob.busy}
+              message={setupJob.msg ?? ''}
               onInstall={() => void startPerceptionSetup()}
+              runtimeMissing={vcRuntimeMissing}
+              onOpenRuntime={openVcRuntimeSettings}
             />
-          ) : (
-            // Engine ready (or still probing) → transcripts are genuinely coming.
+          ) : emptyState === 'checking' ? (
+            // The doctor has not answered yet: say so, never claim transcription.
+            <div className="tx__empty" data-cut-transcript-checking>
+              Checking what is installed…
+            </div>
+          ) : emptyState === 'transcribing' ? (
             <div className="tx__empty" data-cut-transcribe-pending>
               Transcribing… words appear here live
+            </div>
+          ) : (
+            // Captions are installed and nothing is transcribing: say what is true.
+            <div className="tx__empty" data-cut-transcript-none>
+              {noTranscriptSentence('not_transcribed')}
             </div>
           )
         )}

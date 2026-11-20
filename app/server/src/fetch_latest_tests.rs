@@ -1,4 +1,5 @@
-//! Local current-release rollover and fail-closed checksum tests.
+//! Retry, size-limit and fail-closed checksum tests for the registry route
+//! (uv: the publisher's per-asset `.sha256` read before each archive).
 
 use super::*;
 
@@ -14,6 +15,16 @@ fn retry_classification_excludes_permanent_http_errors() {
             FetchAttemptError::network("download", "https://example.test/archive", error).transient
         );
     }
+    let gone = FetchAttemptError::network(
+        "download",
+        "https://example.test/a",
+        ureq::Error::StatusCode(404),
+    );
+    assert_eq!(
+        gone.status,
+        Some(404),
+        "the status lets a pinned download say the file is gone"
+    );
     for error in [ureq::Error::StatusCode(400), ureq::Error::StatusCode(403)] {
         assert!(
             !FetchAttemptError::network("download", "https://example.test/archive", error)
@@ -23,7 +34,7 @@ fn retry_classification_excludes_permanent_http_errors() {
 }
 
 fn served_attempts(
-    responses: Vec<(&'static str, u16, Vec<u8>)>,
+    responses: Vec<(String, u16, Vec<u8>)>,
 ) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -107,26 +118,29 @@ fn false_oversized_content_length_is_rejected_before_staging() {
     assert!(!dest.exists());
 }
 
+/// The uv asset for Windows and its per-asset checksum file name.
+fn uv() -> (ToolSpec, String, String) {
+    let spec = tool_spec("uv", "windows", "x86_64").unwrap();
+    let asset = spec.asset.to_string();
+    let sum = format!("{asset}.sha256");
+    (spec, asset, sum)
+}
+
 #[test]
-fn latest_manifest_404_recovers_with_fresh_checksum_and_verified_archive() {
-    let spec = tool_spec("ffmpeg", "windows", "x86_64").unwrap();
+fn checksum_404_recovers_with_fresh_checksum_and_verified_archive() {
+    let (spec, asset, sum) = uv();
     let archive = b"current archive".to_vec();
     let digest = hex::encode(Sha256::digest(&archive));
     let (base, server) = served_attempts(vec![
-        ("checksums.sha256", 404, vec![]),
-        (
-            "checksums.sha256",
-            200,
-            format!("{digest}  {}\n", spec.asset).into_bytes(),
-        ),
-        (spec.asset, 200, archive.clone()),
+        (sum.clone(), 404, vec![]),
+        (sum, 200, format!("{digest}  {asset}\n").into_bytes()),
+        (asset.clone(), 200, archive.clone()),
     ]);
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(spec.asset);
+    let path = temp.path().join(&asset);
     let (size, got) = fetch_verified_archive(
         &spec,
-        &base,
-        &format!("{base}/{}", spec.asset),
+        &format!("{base}/{asset}"),
         &path,
         &|_, _| {},
         &[Duration::ZERO],
@@ -140,23 +154,22 @@ fn latest_manifest_404_recovers_with_fresh_checksum_and_verified_archive() {
 }
 
 #[test]
-fn archive_503_restarts_at_the_current_manifest() {
-    let spec = tool_spec("ffmpeg", "windows", "x86_64").unwrap();
+fn archive_503_restarts_at_the_current_checksum() {
+    let (spec, asset, sum) = uv();
     let archive = b"fresh archive".to_vec();
     let digest = hex::encode(Sha256::digest(&archive));
-    let manifest = format!("{digest}  {}\n", spec.asset).into_bytes();
+    let checksum = format!("{digest}  {asset}\n").into_bytes();
     let (base, server) = served_attempts(vec![
-        ("checksums.sha256", 200, manifest.clone()),
-        (spec.asset, 503, vec![]),
-        ("checksums.sha256", 200, manifest),
-        (spec.asset, 200, archive.clone()),
+        (sum.clone(), 200, checksum.clone()),
+        (asset.clone(), 503, vec![]),
+        (sum, 200, checksum),
+        (asset.clone(), 200, archive.clone()),
     ]);
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(spec.asset);
+    let path = temp.path().join(&asset);
     let (_, got) = fetch_verified_archive(
         &spec,
-        &base,
-        &format!("{base}/{}", spec.asset),
+        &format!("{base}/{asset}"),
         &path,
         &|_, _| {},
         &[Duration::ZERO],
@@ -170,18 +183,17 @@ fn archive_503_restarts_at_the_current_manifest() {
 
 #[test]
 fn persistent_404_preserves_the_last_status_and_never_downloads() {
-    let spec = tool_spec("ffmpeg", "windows", "x86_64").unwrap();
+    let (spec, asset, sum) = uv();
     let (base, server) = served_attempts(vec![
-        ("checksums.sha256", 404, vec![]),
-        ("checksums.sha256", 404, vec![]),
-        ("checksums.sha256", 404, vec![]),
+        (sum.clone(), 404, vec![]),
+        (sum.clone(), 404, vec![]),
+        (sum.clone(), 404, vec![]),
     ]);
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(spec.asset);
+    let path = temp.path().join(&asset);
     let error = fetch_verified_archive(
         &spec,
-        &base,
-        &format!("{base}/{}", spec.asset),
+        &format!("{base}/{asset}"),
         &path,
         &|_, _| {},
         &[Duration::ZERO, Duration::ZERO],
@@ -190,27 +202,26 @@ fn persistent_404_preserves_the_last_status_and_never_downloads() {
     .unwrap_err();
     server.join().unwrap();
     assert!(error.cause.contains("http status: 404"));
-    assert!(error.cause.contains("checksums.sha256"));
+    assert!(error.cause.contains(&sum));
     assert!(!path.exists());
 }
 
 #[test]
 fn publisher_checksum_mismatch_fails_closed_without_retry() {
-    let spec = tool_spec("ffmpeg", "windows", "x86_64").unwrap();
+    let (spec, asset, sum) = uv();
     let (base, server) = served_attempts(vec![
         (
-            "checksums.sha256",
+            sum,
             200,
-            format!("{}  {}\n", "f".repeat(64), spec.asset).into_bytes(),
+            format!("{}  {asset}\n", "f".repeat(64)).into_bytes(),
         ),
-        (spec.asset, 200, b"different archive".to_vec()),
+        (asset.clone(), 200, b"different archive".to_vec()),
     ]);
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(spec.asset);
+    let path = temp.path().join(&asset);
     let error = fetch_verified_archive(
         &spec,
-        &base,
-        &format!("{base}/{}", spec.asset),
+        &format!("{base}/{asset}"),
         &path,
         &|_, _| {},
         &[Duration::ZERO],

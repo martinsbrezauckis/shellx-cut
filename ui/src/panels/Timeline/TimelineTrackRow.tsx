@@ -40,6 +40,8 @@ interface TimelineTrackRowProps {
   baseVideoId: string | undefined
   contentW: number
   zoom: number
+  /** Project frame rate: a clip shorter than one frame is drawn as a marker. */
+  fps: number
   selectedClipIds: string[]
   draggingClipId: string | null
   filmstrips: Map<string, { url: string; assetDurMs: number }>
@@ -68,6 +70,7 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
   baseVideoId,
   contentW,
   zoom,
+  fps,
   selectedClipIds,
   draggingClipId,
   filmstrips,
@@ -185,6 +188,7 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
             key={it.id}
             item={it}
             zoom={zoom}
+            fps={fps}
             selected={selectedClipIds.includes(it.id)}
             dragging={draggingClipId === it.id}
             locked={locked}

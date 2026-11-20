@@ -145,3 +145,5 @@ fn real_ffmpeg_range_and_gif_allow_plain_overwrite_in_shared_output_folder() {
         );
     }
 }
+
+cut_core::isolate_test_process!();

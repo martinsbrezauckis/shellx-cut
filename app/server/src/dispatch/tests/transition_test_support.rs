@@ -7,7 +7,18 @@ use crate::dispatch::edit_tools::{
 use crate::state::AppState;
 use std::time::Duration;
 
-pub(super) const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound for every wait in these tests. Each wait ends as soon as the
+/// state it names is reached; the bound only catches a task that never gets
+/// there, so it stays far above what a slow or busy machine needs.
+pub(super) const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// These tests check what a project change does to work that is in flight, not
+/// how fast background workers stop. Let the change wait for them for as long
+/// as the other waits here, so a slow machine cannot turn a worker that is
+/// still stopping into a refused change.
+pub(super) fn allow_slow_worker_stop(state: &AppState) {
+    state.jobs.set_drain_timeout_for_test(TEST_TIMEOUT);
+}
 
 pub(super) const ONE_BY_ONE_PNG: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,

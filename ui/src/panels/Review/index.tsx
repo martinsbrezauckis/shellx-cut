@@ -10,7 +10,6 @@
 // ./DiffView.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { callVerb } from '../../lib/client'
 import type { OpRecord, Project, RenderReceipt } from '../../lib/client'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import DiffView from './DiffView'
@@ -19,6 +18,7 @@ import QC from './QC'
 import Receipts from './Receipts'
 import Scopes from './Scopes'
 import { Icon } from '../../icons'
+import { useUndoRedoAvailability } from './useUndoRedoAvailability'
 import './review.css'
 import {
   opSeekMs,
@@ -79,28 +79,9 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
   // Linear undo/redo availability — the engine's in-memory cursor state, not
   // derivable from the op list alone (the log doesn't encode cursor position).
   // Re-fetched whenever the op log changes (every undo/redo/edit publishes
-  // op_applied → App refreshes `ops` → this re-runs), so the Undo/Redo buttons'
-  // enabled-state always tracks the live cursor.
-  const [avail, setAvail] = useState({ undo: false, redo: false })
-  const readAvail = useCallback(async () => {
-    const r = await callVerb('project.ops', {})
-    if (!r.ok || !r.result) return null
-    const res = r.result as { undo_available?: boolean; redo_available?: boolean }
-    return { undo: !!res.undo_available, redo: !!res.redo_available }
-  }, [project?.name])
-  const refreshAvail = useCallback(async () => {
-    const next = await readAvail()
-    if (next) setAvail(next)
-  }, [readAvail])
-  useEffect(() => {
-    let alive = true
-    void readAvail().then((next) => {
-      if (alive && next) setAvail(next)
-    })
-    return () => {
-      alive = false
-    }
-  }, [ops, project?.name, tab, readAvail])
+  // op_applied → App refreshes `ops` → this re-runs). The owning hook disables
+  // the buttons when availability cannot be confirmed.
+  const { availability: avail, scheduleRefresh } = useUndoRedoAvailability(project, ops, tab)
   const undoTipOp = avail.undo ? tipOp : null
 
   // Dependents named by a refused rebase (parsed from the verbatim cause) →
@@ -178,13 +159,13 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
   const doUndo = useCallback(() => {
     if (onUndo) onUndo()
     else if (undoTipOp) void restore(undoTipOp.op_id, 'undo (tip)') // compatibility fallback
-    window.setTimeout(() => void refreshAvail(), 350)
-  }, [onUndo, undoTipOp, restore, refreshAvail])
+    scheduleRefresh()
+  }, [onUndo, undoTipOp, restore, scheduleRefresh])
   const doRedo = useCallback(() => {
     if (onRedo) onRedo()
     else void runUserVerb('project.redo', {}, 'Could not redo the edit.')
-    window.setTimeout(() => void refreshAvail(), 350)
-  }, [onRedo, refreshAvail])
+    scheduleRefresh()
+  }, [onRedo, scheduleRefresh])
 
   // --- RAIL keyboard scope: j/k cursor, x undo, Enter seek -----------------
   const onKeyDown = useCallback(
@@ -343,7 +324,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
             className="rr__undo-btn"
             data-cut-action="undo"
             disabled={!avail.undo}
-            title={avail.undo ? 'Undo (Ctrl+Z) — step back one edit' : 'nothing to undo'}
+            title={avail.unavailable ? 'Undo availability unavailable' : avail.undo ? 'Undo (Ctrl+Z) — step back one edit' : 'nothing to undo'}
             onClick={doUndo}
           >
             {/* undo arrow */}
@@ -354,7 +335,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
             className="rr__undo-btn"
             data-cut-action="redo"
             disabled={!avail.redo}
-            title={avail.redo ? 'Redo (Ctrl+Shift+Z / Ctrl+Y) — step forward one edit' : 'nothing to redo'}
+            title={avail.unavailable ? 'Redo availability unavailable' : avail.redo ? 'Redo (Ctrl+Shift+Z / Ctrl+Y) — step forward one edit' : 'nothing to redo'}
             onClick={doRedo}
           >
             <Icon name="redo" size={14} />
@@ -366,7 +347,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
                 tip: <span className="rr__undo-verb">{undoTipOp.verb}</span>
               </>
             ) : (
-              <span className="rr__undo-empty">nothing to undo</span>
+              <span className="rr__undo-empty">{avail.unavailable ? 'history availability unavailable' : 'nothing to undo'}</span>
             )}
           </span>
         </div>

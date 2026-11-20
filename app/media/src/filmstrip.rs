@@ -30,8 +30,8 @@ fn frame_count(duration_ms: u64) -> u32 {
 }
 
 /// Render `<out_dir>/<asset_id>.jpg`: N frames from `proxy`, tiled left→right,
-/// evenly spaced over the clip duration. Idempotent — an existing strip is
-/// returned as-is (callers cache by asset hash, so a present strip is valid).
+/// evenly spaced over the clip duration. Idempotent — an existing strip this
+/// engine made (cache_trust) and that is unchanged is returned as-is.
 pub fn make_filmstrip(
     proxy: &Path,
     out_dir: &Path,
@@ -41,7 +41,11 @@ pub fn make_filmstrip(
     let out = out_dir.join(format!("{asset_id}.jpg"));
     require_live_output_dir(out_dir)?;
     if crate::render::plain_internal_file_exists(&out)? {
-        if crate::image_cache::existing_image_cache_is_complete(&out) {
+        // Reused only when this engine made it (a received project can carry a
+        // complete image at this name showing anything).
+        if crate::image_cache::existing_image_cache_is_complete(&out)
+            && crate::cache_trust::trusted(&out)
+        {
             return Ok(out);
         }
         let _ = std::fs::remove_file(&out);
@@ -64,9 +68,12 @@ pub fn make_filmstrip(
         "1".into(),
         "-q:v".into(),
         "5".into(), // mid JPEG quality — small file, fine for thumbnails
+        "-update".into(),
+        "1".into(),
         out.display().to_string(),
     ];
     crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
+    crate::cache_trust::remember(&out);
     Ok(out)
 }
 
@@ -109,7 +116,11 @@ pub fn make_window_thumbs(
     let out = out_dir.join(window_thumb_name(asset_id, start_ms, end_ms, count, h));
     require_live_output_dir(out_dir)?;
     if crate::render::plain_internal_file_exists(&out)? {
-        if crate::image_cache::existing_image_cache_is_complete(&out) {
+        // Reused only when this engine made it (a received project can carry a
+        // complete image at this name showing anything).
+        if crate::image_cache::existing_image_cache_is_complete(&out)
+            && crate::cache_trust::trusted(&out)
+        {
             return Ok(out);
         }
         let _ = std::fs::remove_file(&out);
@@ -137,9 +148,12 @@ pub fn make_window_thumbs(
         "1".into(),
         "-q:v".into(),
         "5".into(),
+        "-update".into(),
+        "1".into(),
         out.display().to_string(),
     ];
     crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
+    crate::cache_trust::remember(&out);
     Ok(out)
 }
 
@@ -152,7 +166,11 @@ pub fn make_image_thumb(src: &Path, out_dir: &Path, asset_id: &str) -> Result<Pa
     let out = out_dir.join(format!("{asset_id}.jpg"));
     require_live_output_dir(out_dir)?;
     if crate::render::plain_internal_file_exists(&out)? {
-        if crate::image_cache::existing_image_cache_is_complete(&out) {
+        // Reused only when this engine made it (a received project can carry a
+        // complete image at this name showing anything).
+        if crate::image_cache::existing_image_cache_is_complete(&out)
+            && crate::cache_trust::trusted(&out)
+        {
             return Ok(out);
         }
         let _ = std::fs::remove_file(&out);
@@ -166,9 +184,12 @@ pub fn make_image_thumb(src: &Path, out_dir: &Path, asset_id: &str) -> Result<Pa
         "1".into(),
         "-q:v".into(),
         "5".into(),
+        "-update".into(),
+        "1".into(),
         out.display().to_string(),
     ];
     crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
+    crate::cache_trust::remember(&out);
     Ok(out)
 }
 
@@ -179,6 +200,52 @@ fn require_live_output_dir(dir: &Path) -> Result<(), CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A complete JPEG that a received project carries at the strip's name.
+    fn planted(dir: &Path, name: &str) -> (PathBuf, Vec<u8>) {
+        std::fs::create_dir(dir).ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = dir.join(name);
+        let bytes = vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b's', b'e', b'n', b't', 0xFF, 0xD9,
+        ];
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(crate::image_cache::existing_image_cache_is_complete(&path));
+        (path, bytes)
+    }
+
+    #[test]
+    fn a_complete_strip_this_engine_did_not_make_is_never_returned() {
+        let root = crate::atomic_output::private_test_tempdir();
+        let dir = root.path().join("filmstrip");
+        let missing_source = root.path().join("no-proxy.mp4");
+        let sent = |r: Result<PathBuf, CutError>, bytes: &[u8]| {
+            r.is_ok_and(|out| std::fs::read(out).is_ok_and(|now| now == bytes))
+        };
+        let (_, bytes) = planted(&dir, "a1.jpg");
+        assert!(!sent(
+            make_filmstrip(&missing_source, &dir, "a1", 1000),
+            &bytes
+        ));
+        let (_, bytes) = planted(&dir, &window_thumb_name("a1", 0, 1000, 12, 80));
+        assert!(!sent(
+            make_window_thumbs(&missing_source, &dir, "a1", 0, 1000, 12, 80),
+            &bytes
+        ));
+        let (_, bytes) = planted(&dir, "a2.jpg");
+        assert!(!sent(make_image_thumb(&missing_source, &dir, "a2"), &bytes));
+        // One this engine made and left unchanged is reused.
+        let (path, bytes) = planted(&dir, "a3.jpg");
+        crate::cache_trust::remember(&path);
+        assert!(sent(
+            make_filmstrip(&missing_source, &dir, "a3", 1000),
+            &bytes
+        ));
+    }
 
     #[test]
     fn frame_count_clamps() {

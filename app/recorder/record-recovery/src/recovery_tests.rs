@@ -8,6 +8,12 @@ use crate::{
     ManifestOwner, MediaFacts, OwnerState, RecoveryState,
 };
 
+/// Stand-ins for FFmpeg and FFprobe, the same on every system. What they
+/// promise is what the checkpoint verifier reads from a real FFmpeg:
+/// - a decode run (output `-`, `-progress pipe:1`) succeeds and reports its
+///   decoded frame count as `frame=N` lines, ending with `progress=end`;
+/// - any other run writes its last argument (the output file);
+/// - FFprobe reports a positive duration and one video stream.
 fn tools(dir: &Path) -> (String, String) {
     #[cfg(not(windows))]
     let ffmpeg = dir.join("ffmpeg");
@@ -18,9 +24,9 @@ fn tools(dir: &Path) -> (String, String) {
     #[cfg(windows)]
     let ffprobe = dir.join("ffprobe.cmd");
     #[cfg(not(windows))]
-    fs::write(&ffmpeg, "#!/bin/sh\nlast=\nfor arg do last=$arg; done\n[ \"$last\" = - ] || printf checkpoint > \"$last\"\n").unwrap();
+    fs::write(&ffmpeg, "#!/bin/sh\nlast=\nfor arg do last=$arg; done\n[ \"$last\" = - ] && { printf 'frame=1\\nprogress=end\\n'; exit 0; }\nprintf checkpoint > \"$last\"\n").unwrap();
     #[cfg(windows)]
-    fs::write(&ffmpeg, "@echo off\r\nset last=\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nset \"last=%~1\"\r\nshift\r\ngoto next\r\n:done\r\nif \"%last%\"==\"-\" exit /b 0\r\n>\"%last%\" <nul set /p =checkpoint\r\nexit /b 0\r\n").unwrap();
+    fs::write(&ffmpeg, "@echo off\r\nset last=\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nset \"last=%~1\"\r\nshift\r\ngoto next\r\n:done\r\nif \"%last%\"==\"-\" (\r\necho frame=1\r\necho progress=end\r\nexit /b 0\r\n)\r\n>\"%last%\" <nul set /p =checkpoint\r\nexit /b 0\r\n").unwrap();
     #[cfg(not(windows))]
     fs::write(&ffprobe, "#!/bin/sh\nprintf '{\"format\":{\"duration\":\"0.100\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_frames\":\"1\"}]}'\n").unwrap();
     #[cfg(windows)]
@@ -284,4 +290,30 @@ fn stitch_uses_a_private_workspace_not_preplanted_capture_root_temps() {
             .file_type()
             .is_symlink());
     }
+}
+
+#[test]
+fn a_reused_process_id_with_another_start_time_means_the_owner_is_gone() {
+    use crate::contract::OwnerProbe;
+    use crate::recovery::owner_state_from;
+    assert_eq!(
+        owner_state_from(OwnerProbe::Identity("100:7".into()), "100:7"),
+        OwnerState::Alive
+    );
+    assert_eq!(
+        owner_state_from(OwnerProbe::Identity("100:9".into()), "100:7"),
+        OwnerState::Dead
+    );
+    assert_eq!(
+        owner_state_from(OwnerProbe::Identity("100:9".into()), "unavailable"),
+        OwnerState::Ambiguous
+    );
+    assert_eq!(
+        owner_state_from(OwnerProbe::Dead, "100:7"),
+        OwnerState::Dead
+    );
+    assert_eq!(
+        owner_state_from(OwnerProbe::Ambiguous, "100:7"),
+        OwnerState::Ambiguous
+    );
 }

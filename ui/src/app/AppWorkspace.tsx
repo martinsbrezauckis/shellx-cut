@@ -44,6 +44,8 @@ interface AppWorkspaceProps {
   onCutWords: (asset: string, wordRange: [number, number], rationale?: string) => void
   onRestore: (opId: string) => void
   onSeek: (atMs: number) => void
+  onPlaybackSeek: (atMs: number, observedSeekRevision: number) => boolean
+  seekRevision: number
   onSelect: (clipIds: string[]) => void
   onExportRange: (range: [number, number] | null) => void
   onCopyClip: (clipId: string) => boolean
@@ -95,6 +97,8 @@ export default function AppWorkspace({
   onCutWords,
   onRestore,
   onSeek,
+  onPlaybackSeek,
+  seekRevision,
   onSelect,
   onExportRange,
   onCopyClip,
@@ -207,6 +211,8 @@ export default function AppWorkspace({
                 doctor={doctor}
                 playheadMs={playheadMs}
                 onSeek={onSeek}
+                onPlaybackSeek={onPlaybackSeek}
+                seekRevision={seekRevision}
                 headOpId={ops.length ? ops[ops.length - 1].op_id : ''}
                 selectedClipIds={selectedClipIds}
                 exportRange={exportRange}

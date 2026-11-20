@@ -1,6 +1,6 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.115",
+  "appVersion": "0.6.116",
   "featureCount": 201,
   "features": [
     {
@@ -9,8 +9,8 @@
       "group": "setup",
       "title": "Why FFmpeg is required",
       "where": "First-run setup and Settings",
-      "description": "FFmpeg powers probing, preview media, proxies, screen recording, and final renders. If it is missing, Preview shows a setup notice that opens the Video processing card.",
-      "requirement": "On Windows/Linux x86_64, use the consented Install action for Cut's verified runtime. On macOS, install a compatible local build such as ffmpeg-full, then restart Cut; you can also set a binary path in Cut.",
+      "description": "FFmpeg powers probing, preview media, proxies, screen recording, and final renders. If it is missing, the first start opens the Welcome setup window and Preview shows a setup notice that opens the Video processing card.",
+      "requirement": "On Windows/Linux x86_64 and Apple silicon Macs, choose Download in the Video processing card; the publisher, version, size, licence and source are shown beside it. The Apple silicon build cannot stabilize video: for Stabilize, and on Intel Macs, the card shows the Homebrew steps (install Homebrew, then run brew install ffmpeg-full, with Copy buttons). Check again finds a new install without a restart; you can also choose an ffmpeg that has ffprobe beside it. With several FFmpeg builds installed, Cut uses one that can encode with the graphics hardware; the Video processing card's Why this ffmpeg line says which build is in use and why, and Choose ffmpeg overrides it.",
       "api": "system.doctor, system.set_ffmpeg, system.fetch_tool"
     },
     {
@@ -30,7 +30,7 @@
       "title": "Set FFmpeg path",
       "where": "Settings",
       "description": "Point Cut at a specific FFmpeg binary when it is installed outside the normal system PATH.",
-      "requirement": "Requires a local ffmpeg executable.",
+      "requirement": "Requires a local ffmpeg executable and an ffprobe Cut can find, normally beside it; otherwise nothing is saved.",
       "api": "system.set_ffmpeg"
     },
     {
@@ -40,8 +40,8 @@
       "title": "Install captions and STT",
       "where": "Transcript tab and Settings",
       "description": "Captions need speech-to-text tooling in addition to FFmpeg. Install this when transcript actions show a setup message.",
-      "requirement": "Requires Python plus a supported speech-to-text engine.",
-      "api": "system.setup_perception, system.set_stt_model, media.transcribe"
+      "requirement": "Install captions sets up Cut's own captions environment and speech model; no Python of your own is needed, and one you installed is not used. Until then, transcript and caption actions say that captions and transcription are not installed and offer Install captions. Captions on Windows need the Microsoft Visual C++ Redistributable; ShellX Cut tells you when it is missing and gets it from Microsoft for you: Settings > AI & transcription > Microsoft Visual C++ runtime > Install downloads Microsoft's own installer, checks Microsoft's signature, and Windows asks for administrator permission. Uninstalling ShellX Cut keeps it.",
+      "api": "system.setup_perception, system.fetch_tool, system.set_stt_model, media.transcribe"
     },
     {
       "id": "cut.setup.cli_install",
@@ -70,7 +70,7 @@
       "title": "Record workspace",
       "where": "Top bar",
       "description": "Open Record to choose a display or, on Windows and macOS, an application window; confirm readiness, preview actual source pixels, choose Raw MP4 or Polished clip, and start capture. On Linux, Start opens the system picker for a display. F9 can also start from Edit using your current Record choices, or the saved setup when Record has not been opened, after fresh source, device, permission, and project checks.",
-      "requirement": "Requires a supported desktop capture backend and FFmpeg. Global F9 scope is reported only after OS callback proof.",
+      "requirement": "Requires screen recording support and FFmpeg. Opening Record shows the last readiness check without starting a capture; on macOS the screen-recording prompt can appear only when you check again or start. Record shows whether F9 works outside Cut or only while Cut has focus.",
       "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },
     {
@@ -99,8 +99,8 @@
       "group": "top",
       "title": "Settings and editing cache",
       "where": "Top bar",
-      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Health & Recovery can estimate and rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup with before/removed/after reconciliation. The Motion card can verify a discovered runtime and connector descriptor read-only; managed lifecycle controls remain unavailable until the verified MOTION-DIST-01 distribution exists.",
-      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; cleanup also requires a complete ownership-ledger preview. Partial, changed, foreign, or symlinked inventories are refused. Motion discovery never installs, repairs, updates, removes, logs in, or executes a connector.",
+      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > About shows the third-party notices: every library in the app with its licence. Health & Recovery can estimate and rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup with before/removed/after reconciliation. The Motion card can find an existing ShellX Motion installation and show its status. Connecting, installing, repairing, or updating Motion from Cut is not ready yet.",
+      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; review the complete cache preview before cleanup. Cut refuses files it cannot safely identify as its own. Motion status only checks an existing installation; it does not change it or sign you in.",
       "api": "system.doctor, system.mcp_test, system.motion_status, project.cache_rebuild, project.cache_preview, project.cache_purge, jobs.cancel"
     },
     {
@@ -859,7 +859,7 @@
       "group": "export",
       "title": "Tiny clips",
       "where": "Preflight warnings",
-      "description": "One or more clips are shorter than a video frame and may not visibly render.",
+      "description": "One or more clips are shorter than a video frame and may not visibly render. In the timeline such a clip is an amber marker: select it and press Delete. New edits never make a clip shorter than one frame.",
       "requirement": "Delete the stray clip or extend it.",
       "api": "verify.pregate tiny_or_zero_clips"
     },
@@ -880,7 +880,7 @@
       "title": "Transcript tab",
       "where": "Left sidebar",
       "description": "Browse a timeline-linked phrase and chapter list with exact start-end ranges. Clicking a range seeks the matching timeline occurrence; reused media asks you to choose the occurrence, and unavailable media explains why it cannot open.",
-      "requirement": "Requires speech-to-text tooling for generated transcripts. Offline transcripts remain readable even when their media occurrence cannot be opened.",
+      "requirement": "Requires speech-to-text tooling for generated transcripts. Without the captions tools the tab offers Install captions; while Cut checks what is installed it says so; with captions installed and no transcript yet it says one is made after a clip is imported. Offline transcripts remain readable even when their media occurrence cannot be opened.",
       "api": "media.transcribe, transcript.timeline"
     },
     {
@@ -929,7 +929,7 @@
       "group": "left",
       "title": "Proxy imports",
       "where": "Assets tab",
-      "description": "Turn proxy generation on for future imports when editing 4K, phone, or camera files that preview roughly from source media.",
+      "description": "Turn proxy generation on for future imports when editing 4K, phone, or camera files that preview roughly from source media. Opening a project also checks its proxies and makes the missing ones in the background.",
       "requirement": "Requires FFmpeg and newly imported video files.",
       "api": "media.import {proxy:true}, media.filmstrip"
     },
@@ -939,7 +939,7 @@
       "group": "left",
       "title": "Import media",
       "where": "Assets tab",
-      "description": "Bring video, audio, and image files into the current project. The first import can become the starting timeline. Use self-contained local media; playlist files are unsupported.",
+      "description": "Bring video, audio, and image files into the current project. The first import requested on an empty timeline is placed on it; later ones wait in Assets. Only files are imported: dropped folders and unsupported files are named in a notice, and a file Cut cannot read is not kept. Use self-contained local media; playlist files are unsupported.",
       "requirement": "Requires readable local media and FFmpeg for probe/proxy work.",
       "api": "media.import, media.probe"
     },
@@ -950,7 +950,7 @@
       "title": "Add at playhead",
       "where": "Asset card",
       "description": "Insert an asset at the current playhead on the base story timeline. A probed video with audio is placed as one aligned picture-and-sound action, so it cannot leave only one half behind.",
-      "requirement": "Requires an imported asset and an open project. Muxed video needs both an admitted video and audio destination.",
+      "requirement": "Requires an imported asset and an open project. Video with sound needs available video and audio tracks.",
       "api": "edit.insert, edit.insert_linked"
     },
     {
@@ -989,8 +989,8 @@
       "group": "left",
       "title": "Edit in Motion",
       "where": "Timeline and Inspector",
-      "description": "Open the selected linked Motion package in ShellX Motion without exposing the package or return-request paths. ShellX Motion publishes a new immutable ready revision only after its render is verified.",
-      "requirement": "Existing connection route; not qualified in v0.6.114. Requires a selected Motion-linked clip and an installed or configured ShellX Motion editor.",
+      "description": "This Motion editing connection is still in development. It is designed to open a linked clip in ShellX Motion and return a verified new render to Cut.",
+      "requirement": "Not ready for normal use. Settings can find an existing Motion installation without changing it.",
       "api": "motion.link.edit"
     },
     {
@@ -999,8 +999,8 @@
       "group": "left",
       "title": "Refresh linked Motion render",
       "where": "Timeline and Inspector",
-      "description": "Adopt the newest verified Canvas return for the same package, motion identity, and authored source revision, replacing pixels in the existing Cut clip without changing its editorial identity.",
-      "requirement": "Existing connection route; not qualified in v0.6.114. Run Edit in Motion and complete a verified Canvas render first. A mismatch or failed render leaves the last good Cut clip untouched.",
+      "description": "This Motion refresh connection is still in development. It is designed to replace the linked clip’s picture only after Cut verifies a new render from the same Motion project.",
+      "requirement": "Not ready for normal use. A mismatched or failed render must leave the last good Cut clip untouched.",
       "api": "motion.link.refresh, project.undo"
     },
     {
@@ -1009,8 +1009,8 @@
       "group": "left",
       "title": "Track and stabilize linked footage",
       "where": "Inspector",
-      "description": "Choose manifest-declared footage and a visual target, analyze a point or planar region, apply ordinary Motion transform keyframes, verify the attachment, or detach back to the exact prior keyframes.",
-      "requirement": "Existing connection route; not qualified in v0.6.114. Requires a Motion-linked package with footage and a target visual layer. Refresh remains explicit after applying or detaching.",
+      "description": "This Motion tracking connection is still in development. It is designed to track a point or region in linked footage, apply the motion to a visual layer, and restore the prior motion when detached.",
+      "requirement": "Not ready for normal use. The planned workflow needs linked footage and a visual layer; refreshing the Cut clip remains a separate step.",
       "api": "motion.link.tracking.inventory, motion.link.tracking.request, motion.link.tracking.apply, motion.link.tracking.verify, motion.link.tracking.detach"
     },
     {
@@ -1060,7 +1060,7 @@
       "title": "Video preview",
       "where": "Center editor surface",
       "description": "Preview the current frame, selected edit, and rendered composition while you work.",
-      "requirement": "Requires imported media for real playback.",
+      "requirement": "Requires imported media for real playback. On Linux, on a heavily loaded machine the picture can hold briefly at a cut while playing; the paused frame and exports are exact.",
       "api": "ui.screenshot, render.preview"
     },
     {
@@ -1119,9 +1119,9 @@
       "group": "preview",
       "title": "Composed toggle",
       "where": "Preview controls",
-      "description": "Switch composed preview on or off when checking generated frames, overlays, or render previews.",
-      "requirement": "Depends on the active render or preview mode.",
-      "api": "render.preview"
+      "description": "COMPOSED is on by default: when you pause, the preview shows the finished frame with titles, effects and fades. While playing, a note on the picture names anything that appears only when paused. Turn it off to see the live preview only; the choice is remembered.",
+      "requirement": "The exact frame appears shortly after the playhead stops; playing, seeking or editing removes it at once.",
+      "api": "ui.preview, ui.state, render.frame"
     },
     {
       "id": "cut.preview.compare",
@@ -1410,7 +1410,7 @@
       "title": "Timeline voiceover",
       "where": "Audio track header",
       "description": "Record into the selected audio track after a visible three-second count-in. Start at the playhead or use the current In-Out range; Stop places one sealed take as one Undoable edit, while Cancel adds nothing.",
-      "requirement": "Requires an unlocked audio track, an admitted native microphone, and a supported host. Direct monitoring stays off.",
+      "requirement": "Requires an unlocked audio track, a microphone and microphone permission; it never checks screen capture. If Windows privacy settings or macOS block the microphone, the control says which setting to turn on. Direct monitoring stays off.",
       "api": "voiceover.start, voiceover.tick, voiceover.stop, voiceover.cancel, voiceover.observe_playhead"
     },
     {
@@ -1419,8 +1419,8 @@
       "group": "timeline",
       "title": "Base track and overlays",
       "where": "Timeline tracks",
-      "description": "Normal Insert and normal drops build the base story timeline and ripple later clips. A probed video with audio is placed in one aligned picture-and-sound action; both destinations are checked or created together. Extra video tracks are overlays: use Alt-drag, a new overlay lane, or an existing overlay lane when the clip should appear on top.",
-      "requirement": "Requires an open project; overlay placement requires an overlay lane or Alt-drag. Muxed video needs both an admitted video and audio destination.",
+      "description": "Normal Insert and normal drops from Assets build the base story timeline and push later clips right. A probed video with audio is placed in one aligned picture-and-sound action; both destinations are checked or created together. Extra video tracks are overlays: use Alt-drag from Assets, a new overlay lane, or an existing overlay lane when the clip should appear on top.",
+      "requirement": "Requires an open project; overlay placement requires an overlay lane or Alt-drag. Video with sound needs available video and audio tracks.",
       "api": "edit.insert, edit.insert_linked, edit.add_track"
     },
     {
@@ -1669,8 +1669,8 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Focused Record workspace",
-      "description": "Screen and sound, the real selected-source preview, recording settings, and a persistent Start/Stop transport share the Record workspace. Native preview shows source pixels before Start; during capture the exact active capture supplies live frames, or Record shows an unavailable or stale state while keeping Stop usable. A selected whole display includes Cut when Cut is visible. Refresh sources after a source or device change, and use optional video-only rehearsal to check framing. Recording settings contain Camera, Background, Video timer, Capture timing, and Video quality. Advanced frame rate accepts whole-number custom 1–240 FPS only after Apply or Enter; an invalid draft leaves the prior rate active. Cut remembers one selected microphone as an app-local preference. Pre-Start controls bind to the current preview generation and opaque server-owner lease; the lease changes when Cut server restarts. A failed Stop is classified by status for its capture ID before Retry Stop is offered.",
-      "requirement": "Requires current native capture admission and a writable default export folder. Preview, camera, meters, and Pause depend on actual OS and backend capability.",
+      "description": "Screen and sound, the real selected-source preview, recording settings, and a persistent Start/Stop transport share the Record workspace. Native preview shows source pixels before Start; during capture the exact active capture supplies live frames, or Record shows an unavailable or stale state while keeping Stop usable. A selected whole display includes Cut when Cut is visible. Refresh sources after a source or device change, and use optional video-only rehearsal to check framing. Recording settings contain Camera, Background, Video timer, Capture timing, and Video quality. Advanced frame rate accepts whole-number custom 1–240 FPS only after Apply or Enter; an invalid draft leaves the prior rate active. Cut remembers one selected microphone as an app-local preference. If Cut restarts, refresh the source preview before Start. After a Stop error, Cut checks whether that take is still recording before offering Retry Stop.",
+      "requirement": "Requires a supported screen source, recording permission, FFmpeg, and a writable export folder. Preview, camera, meters, and Pause depend on your system and devices.",
       "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_frame, screen_record.live_frame, screen_record.rehearsal_start, screen_record.start, screen_record.status, screen_record.stop"
     },
     {
@@ -1680,7 +1680,7 @@
       "title": "Camera layout",
       "where": "Record workspace",
       "description": "Choose Camera on or off, then choose one of four corners, Circle or Rounded rectangle, size, and background. Manual placement survives internal scene changes until Reset camera layout.",
-      "requirement": "Camera requires an admitted device and Polished mode; unavailable controls show the reason.",
+      "requirement": "Camera requires an available device and Polished mode; unavailable controls show the reason.",
       "api": "screen_record.start {scenes}, screen_record.studio_event {source:\"camera\", kind:\"transform\"|\"reset\"}"
     },
     {
@@ -1699,8 +1699,8 @@
       "group": "record",
       "title": "Pause and resume",
       "where": "Record workspace",
-      "description": "On a supported macOS build, explicitly enable Pause & resume before Start. During the live recording the same button becomes Pause or Resume, and Cut changes its state only after the native owner durably acknowledges the transition.",
-      "requirement": "Requires one exact Display at a whole-number frame rate. Scenes, Camera, keystrokes, Window capture, and Quality remain unavailable for that take; other platforms explain that Pause is unavailable.",
+      "description": "On a supported macOS build, explicitly enable Pause & resume before Start. During the live recording the same button becomes Pause or Resume, and Cut changes its state only after the recording confirms the transition.",
+      "requirement": "Requires one selected display at a whole-number frame rate. Scenes, Camera, keystrokes, Window capture, and Quality remain unavailable for that take; other platforms explain that Pause is unavailable.",
       "api": "screen_record.doctor pause, screen_record.start {pause}, screen_record.pause, screen_record.resume"
     },
     {
@@ -1709,8 +1709,8 @@
       "group": "record",
       "title": "Camera take",
       "where": "Record workspace",
-      "description": "Turn Camera on in Polished mode and choose one current device. Cut retains the separate camera source on a hidden track. Its layout is set during recording and baked into the polished clip; editing the retained take does not update the bubble.",
-      "requirement": "In Polished mode, Camera is available when the current Doctor lists a supported native camera build and a device. A Linux build can support camera capture while listing no connected device. No device or unavailable discovery leaves Camera disabled while screen recording stays available. After Start opens the screen clock, the native owner checks the selected device, required Linux plugins when applicable, and a real first frame; the Start acknowledgement alone is not camera-media proof. Raw mode keeps Camera off.",
+      "description": "Turn Camera on in Polished mode when Doctor lists a current device. Choose a corner, Circle or Rounded rectangle, and size. Cut retains the camera video separately on a hidden track while baking the selected bubble into the editable polished clip; editing the retained camera take does not update that bubble.",
+      "requirement": "Camera is optional and available in Polished mode on Windows, macOS and Linux when a compatible device appears in the camera list. Allow camera access in your operating-system permissions. If the selected camera cannot record, Cut stops the take and reports the problem; choose another available device or turn Camera off before starting again. Raw mode keeps Camera off.",
       "api": "screen_record.doctor camera, screen_record.start {camera_id}"
     },
     {
@@ -1730,7 +1730,7 @@
       "title": "Camera position",
       "where": "Record workspace",
       "description": "Choose top left, top right, bottom right, or bottom left. The selected corner stays visible and survives internal scene changes until Reset camera layout.",
-      "requirement": "Requires an admitted Camera in Polished mode.",
+      "requirement": "Requires an available Camera in Polished mode.",
       "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y}; camera reset"
     },
     {
@@ -1769,7 +1769,7 @@
       "group": "record",
       "title": "Raw streams",
       "where": "Record workspace",
-      "description": "After a capture, Cut reports the raw screen, optional camera, microphone, system audio, and Studio metadata so you can diagnose or reuse exactly what was finalized. The separate camera take is retained on a hidden track; the polished bubble is baked. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen, camera, and microphone capture can still report their own terminal outcomes.",
+      "description": "After a capture, Cut reports the raw screen, optional camera, microphone, system audio, and Studio metadata so you can diagnose or reuse exactly what was finalized. The separate camera take is retained on a hidden track; the polished bubble is baked. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen, camera, and microphone capture can still finish separately.",
       "requirement": "Requires a completed capture. A new Windows build may need one audio-capture approval from security software.",
       "api": "screen_record.stop raw_streams, camera_artifact"
     },
@@ -1779,8 +1779,8 @@
       "group": "record",
       "title": "Recording hotkeys",
       "where": "Record transport",
-      "description": "F9 is one Start/Stop action across Cut, including Edit and another focused app when the OS global route has been observed. Start uses the open project when one exists; otherwise Cut creates a new recording project before capture. It revalidates your current Record choices, or the saved setup when Record has not been opened; first use without saved settings offers screen-only capture. Invalid setup reports a reason and starts no capture without switching workspaces. F12 adds a marker. Record shows a passive global, provisional, or focused-only indicator and the reason for degraded scope.",
-      "requirement": "Windows and macOS attempt registration automatically. GNOME Wayland attempts an owned binding on first launch. Global status requires observed callback proof; general Settings holds an advanced opt-out.",
+      "description": "F9 starts or stops recording in Cut, including Edit. It also works while another app is focused when your operating system allows the global shortcut. Start uses the open project when one exists; otherwise Cut creates a new recording project before capture. It checks your current Record choices, or the saved setup when Record has not been opened; first use without saved settings offers screen-only capture. Invalid setup reports a reason and starts no capture without switching workspaces. F12 adds a marker. Record shows whether F9 works globally or only while Cut has focus, and explains any limitation.",
+      "requirement": "Windows and macOS try to enable the global shortcut automatically; GNOME Wayland tries on first launch. Availability depends on your operating system and shortcut permissions. You can turn it off in Settings.",
       "api": "project.create, screen_record.start, screen_record.status, screen_record.stop, screen_record.studio_event"
     },
     {
@@ -1790,7 +1790,7 @@
       "title": "Raw MP4",
       "where": "Record workspace",
       "description": "Raw saves the unchanged original MP4 to the default export folder after Stop. Add to timeline or Save a copy are result actions; there is no destination picker before recording.",
-      "requirement": "Requires FFmpeg and a writable default export folder. A Stop error requires exact capture-status classification before retry.",
+      "requirement": "Requires FFmpeg and a writable default export folder. If Stop reports an error, Cut checks whether the take is still recording before offering Retry Stop.",
       "api": "screen_record.stop {mux_raw:true}, screen_record.copy_raw, media.import"
     },
     {
@@ -1799,8 +1799,8 @@
       "group": "record",
       "title": "Polished clip in Edit",
       "where": "Record workspace",
-      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the open project; when no project is open, Cut creates a new recording project first. The editable clip receives zoom-to-cursor, cursor smoothing, and framing. Show keystrokes is optional, off by default, and shown directly beneath this mode. Export MP4 or GIF chooses a file after Stop.",
-      "requirement": "Requires FFmpeg and a finalized capture. Camera composition requires an admitted camera artifact.",
+      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the open project; when no project is open, Cut creates a new recording project first. The polished clip follows recorded pointer movement and clicks with blue click rings and smooth zoom up to 2×. Display recording supports smooth cursor styling; Windows/macOS Window recording keeps the native cursor. On Wayland, stationary clicks may lack a fresh pointer position and produce no ring or zoom. Show keystrokes is optional, off by default, and shown directly beneath this mode. Export MP4 or GIF chooses a file after Stop.",
+      "requirement": "Requires FFmpeg and a finalized capture. A camera bubble needs a completed camera take.",
       "api": "project.create, screen_record.stop {mux_raw:true, autoedit:true}, screen_record.polish, screen_record.export"
     },
     {
@@ -1829,19 +1829,19 @@
       "group": "workflow",
       "title": "Build the base timeline, then overlays",
       "where": "Assets tab and timeline",
-      "description": "Drop ordinary clips onto the base timeline first. A muxed video validates its picture and sound destinations together. Use Alt-drag or drop on an overlay lane for B-roll, picture-in-picture, titles, masks, or any video that should composite above the main story.",
+      "description": "Drop ordinary clips onto the base timeline first. A muxed video validates its picture and sound destinations together. Use Alt-drag from Assets or drop on an overlay lane for B-roll, picture-in-picture, titles, masks, or any video that should composite above the main story.",
       "requirement": "Requires imported media; overlays need a video overlay lane and muxed video needs an audio destination.",
       "api": "edit.insert, edit.insert_linked, edit.add_track, edit.transform"
     },
     {
       "id": "cut.workflow.split_trim",
-      "label": "Split and trim clips",
+      "label": "Split, trim, and move clips",
       "group": "workflow",
-      "title": "Split and trim clips",
+      "title": "Split, trim, and move clips",
       "where": "Timeline",
-      "description": "Use Razor, Trim, Snap, Ripple delete, and Lift delete to shape the sequence.",
+      "description": "Use Razor, Trim, Snap, Ripple delete, and Lift delete to shape the sequence. Drag a clip to move it: a plain drag is Overwrite (it replaces what is under it; nothing else moves); hold Alt for Insert (it pushes the rest right). The label by the pointer names the mode while you drag.",
       "requirement": "Requires clips on the timeline.",
-      "api": "edit.split, edit.trim, edit.ripple_delete {ripple:false}"
+      "api": "edit.split, edit.trim, edit.move, edit.ripple_delete {ripple:false}"
     },
     {
       "id": "cut.workflow.captions",
@@ -1889,8 +1889,8 @@
       "group": "workflow",
       "title": "Edit a linked clip in Motion",
       "where": "Timeline, Inspector, and ShellX Motion",
-      "description": "Select a Motion-linked clip, choose Edit in Motion, make rich source changes in ShellX Motion, render the copy-on-write revision, return to Cut, and refresh the same clip. Cut rechecks package identity, authored revision, receipt identity, and media hash before replacing the linked render.",
-      "requirement": "Existing connection route; not qualified in v0.6.114. Only read-only Motion discovery is qualified; connection qualification and managed installation, repair, update, and removal remain deferred. Requires ShellX Motion and a current linked package. Refresh is explicit; stale or mismatched handbacks never replace the last good render.",
+      "description": "This Motion editing round trip is still in development. The planned workflow opens a linked clip in ShellX Motion, renders the changes, then explicitly refreshes that clip in Cut after checking the returned media.",
+      "requirement": "Not ready for normal use. Settings can find an existing Motion installation, but Cut cannot manage it or complete the editing round trip yet. A stale or mismatched return must leave the last good clip untouched.",
       "api": "motion.link.edit, motion.link.refresh, motion.link.relink, project.undo"
     },
     {
@@ -1919,8 +1919,8 @@
       "group": "workflow",
       "title": "Record, save, and export",
       "where": "Record workspace and status bar",
-      "description": "In Record, choose a real source, check readiness and native preview, select Raw MP4 or Polished clip, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview uses frames from the exact capture owner. If Stop fails, Cut checks that capture status: Retry Stop is offered only while live, terminal is shown as ended, and uncertain ownership stays unknown. Export or Save a copy chooses optional destinations after Stop.",
-      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Global F9, live preview, output, and native badge behavior need installed-host verification.",
+      "description": "In Record, choose a real source, check readiness and native preview, select Raw MP4 or Polished clip, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip with cursor, blue click rings, and smooth zoom up to 2× when valid pointer and click positions are available. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview shows frames from that take. If Stop fails, Cut offers Retry Stop only when the take is still recording; if it cannot tell, it says so. Closing or quitting Cut during a recording saves it first; a recording interrupted by a crash or power loss is offered at the next start with Add to timeline. Export or Save a copy chooses optional destinations after Stop.",
+      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. F9 from another app needs operating-system support; otherwise it works while Cut has focus. Camera and audio options depend on current devices and permissions.",
       "api": "project.create, screen_record.preview_start, screen_record.live_frame, screen_record.start, screen_record.status, screen_record.stop, screen_record.polish, screen_record.export, screen_record.copy_raw"
     },
     {
@@ -1939,7 +1939,7 @@
       "group": "workflow",
       "title": "Render and export",
       "where": "Top bar",
-      "description": "Render a preview, final file, range, or delivery bundle from the active project. Render Queue destinations use one native Save dialog per output and show path-light filenames instead of editable absolute paths.",
+      "description": "Render a preview, final file, range, or delivery bundle from the active project. Render Queue destinations use one native Save dialog per output and show path-light filenames instead of editable absolute paths. Closing or quitting while an export runs asks first (Keep working or Quit and stop it); after a crash the next start says which export was interrupted and that its unfinished files were removed.",
       "requirement": "Requires FFmpeg and a valid output folder. Render Queue destination selection requires the desktop app.",
       "api": "render.preview, render.final, export.publish"
     },
@@ -2000,7 +2000,7 @@
       "title": "Observe a Motion render",
       "where": "Debug API or MCP",
       "description": "Choose a job_id before starting a blocking Motion-backed render, then query that same id from another request without exposing another project's jobs or Motion runtime paths.",
-      "requirement": "Existing connection route; not qualified in v0.6.114. Requires an open Cut project and a current ShellX Motion CLI. Poll no faster than pollAfterMs and stop when it disappears.",
+      "requirement": "Motion rendering through this connection is still in development for normal use. For API experiments, use an open Cut project and a current ShellX Motion CLI; poll no faster than pollAfterMs and stop when the job disappears.",
       "api": "motion.template_to_cut, motion.script_to_cut, motion.link.refresh, motion.job.get, motion.job.list"
     },
     {

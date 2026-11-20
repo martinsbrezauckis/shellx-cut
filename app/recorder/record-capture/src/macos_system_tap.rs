@@ -12,7 +12,24 @@ extern "C" {
         out_rate: *mut f64,
         out_first_packet_ms: *mut u64,
     ) -> i32;
+    fn sxc_sysaudio_copy_new(
+        ctx: *mut std::ffi::c_void,
+        out_samples: *mut *mut f32,
+        out_count: *mut u64,
+        out_channels: *mut u32,
+        out_rate: *mut f64,
+        out_first_packet_ms: *mut u64,
+    ) -> i32;
     fn sxc_sysaudio_free(p: *mut f32);
+}
+
+/// Samples that arrived since the previous [`SystemAudioTap::copy_new`].
+pub(crate) struct NewSystemAudio {
+    pub(crate) samples: Option<SystemAudioBuffer>,
+    pub(crate) channels: u32,
+    pub(crate) rate: f64,
+    /// Capture-clock offset of the first packet, once one arrived.
+    pub(crate) first_packet_offset_ms: Option<u64>,
 }
 
 pub(crate) struct SystemAudioTap {
@@ -65,6 +82,41 @@ impl SystemAudioTap {
                     .saturating_add(first_packet_after_tap_ms)
             }),
         }
+    }
+
+    /// Copy what arrived since the last call while the tap keeps running. The
+    /// whole take is still handed over by [`Self::finish`] at Stop; this copy
+    /// only feeds the crash-safe `.system-wav-*.part` file.
+    pub(crate) fn copy_new(&self) -> Option<NewSystemAudio> {
+        let ctx = self.ctx?;
+        let mut out_ptr = std::ptr::null_mut();
+        let (mut count, mut channels, mut rate) = (0, 0, 0.0);
+        let mut first_packet_after_tap_ms = u64::MAX;
+        let rc = unsafe {
+            sxc_sysaudio_copy_new(
+                ctx.as_ptr(),
+                &mut out_ptr,
+                &mut count,
+                &mut channels,
+                &mut rate,
+                &mut first_packet_after_tap_ms,
+            )
+        };
+        if rc != 0 {
+            if !out_ptr.is_null() {
+                unsafe { sxc_sysaudio_free(out_ptr) };
+            }
+            return None;
+        }
+        Some(NewSystemAudio {
+            samples: unsafe { SystemAudioBuffer::from_ffi(out_ptr, count) },
+            channels,
+            rate,
+            first_packet_offset_ms: (first_packet_after_tap_ms != u64::MAX).then(|| {
+                self.clock_offset_ms
+                    .saturating_add(first_packet_after_tap_ms)
+            }),
+        })
     }
 
     /// Explicit terminal teardown for a tap whose samples must not be

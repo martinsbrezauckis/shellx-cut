@@ -122,7 +122,7 @@ fn zero_frame_final_wgc_checkpoint_holds_verified_frame_and_stitches_full_span()
     assert!(held.media.as_ref().unwrap().duration_ms.abs_diff(400) <= 100);
     assert_ne!(held.file, checkpoints.owner.manifest().checkpoints[0].file);
     assert!(root.path().join(&held.file).is_file());
-    let (source, media) = checkpoints
+    let (source, media, _notes) = checkpoints
         .stitch("ffmpeg", "ffprobe", "source.mp4")
         .unwrap();
     assert!(source.is_file());
@@ -134,6 +134,85 @@ fn zero_frame_final_wgc_checkpoint_holds_verified_frame_and_stitches_full_span()
         record_recovery::recovery_status(root.path()).held_last_frame_ms,
         Some(400)
     );
+}
+
+#[test]
+fn a_still_screen_checkpoint_holds_a_short_empty_tail_at_the_recording_cadence() {
+    // A still Windows desktop gives WGC a few frames per checkpoint (three in
+    // 15 s here), so the prior segment's average rate is about 0.2 fps. Stop
+    // half a second after a rollover leaves an empty segment. The held tail
+    // must last that half second, not one 5 s frame, or Stop fails.
+    let root = tempdir().unwrap();
+    let mut start = CaptureStart::new("still-wgc", 15_000);
+    start.output_cadence = record_core::FrameRate::new(30, 1).ok();
+    ManifestOwner::begin(root.path(), start).unwrap();
+    let config = CheckpointConfig {
+        manifest_dir: root.path().to_string_lossy().into_owned(),
+        interval_ms: 15_000,
+    };
+    let mut checkpoints = Checkpoints::open(Some(&config)).unwrap().unwrap();
+    let (sequence, first) = checkpoints.begin_windows_wgc(0).unwrap();
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=32x32:r=30:d=14.6"
+        ])
+        .args([
+            "-vf",
+            "select='eq(n\\,0)+eq(n\\,135)+eq(n\\,435)'",
+            "-fps_mode",
+            "vfr"
+        ])
+        .args(["-an", "-c:v", "libx264"])
+        .arg(&first)
+        .status()
+        .unwrap()
+        .success());
+    let prior = checkpoints
+        .publish_with_tools(
+            sequence,
+            &first,
+            record_recovery::CheckpointFacts {
+                start_ms: 0,
+                end_ms: 15_000,
+                event_offset_ms: 0,
+                audio_offset_ms: None,
+            },
+            "ffmpeg",
+            "ffprobe",
+            None,
+        )
+        .unwrap();
+    assert_eq!(prior.media.as_ref().unwrap().decoded_video_frames, 3);
+
+    let (sequence, empty) = checkpoints.begin_windows_wgc(15_315).unwrap();
+    // Media Foundation leaves the file it was given, with no samples in it.
+    fs::write(&empty, b"").unwrap();
+    let origin = Instant::now();
+    let timing = WgcTimingRecorder::new(origin, 30, &empty);
+    timing.control_stopped(origin + Duration::from_millis(15_779), true);
+    let held = checkpoints
+        .publish_with_tools(
+            sequence,
+            &empty,
+            record_recovery::CheckpointFacts {
+                start_ms: 15_315,
+                end_ms: 15_779,
+                event_offset_ms: 15_315,
+                audio_offset_ms: None,
+            },
+            "ffmpeg",
+            "ffprobe",
+            Some(&timing),
+        )
+        .unwrap();
+    let media = held.media.as_ref().unwrap();
+    assert!(media.duration_ms.abs_diff(464) <= 100, "{media:?}");
+    assert_eq!(media.decoded_video_frames, 14);
 }
 
 #[test]
@@ -372,7 +451,8 @@ fn checkpoint_strips_native_encoder_audio_before_publication() {
     let ffprobe = root.path().join("fake-ffprobe");
     fs::write(
         &ffmpeg,
-        "#!/bin/sh\nlast=\nfor arg in \"$@\"; do last=\"$arg\"; done\n[ \"$last\" = - ] && exit 0\nprintf video-only > \"$last\"\n",
+        // A decode (output `-`) reports its frame count as `ffmpeg -progress` does.
+        "#!/bin/sh\nlast=\nfor arg in \"$@\"; do last=\"$arg\"; done\n[ \"$last\" = - ] && { printf 'frame=3\\nprogress=end\\n'; exit 0; }\nprintf video-only > \"$last\"\n",
     )
     .unwrap();
     fs::write(

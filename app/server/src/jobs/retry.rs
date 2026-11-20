@@ -130,7 +130,7 @@ impl JobRetry {
                 self.eligible = false;
                 self.reason = Some("cancelled jobs are not retried automatically".into());
             }
-            JobOutcome::Succeeded | JobOutcome::Superseded => {
+            JobOutcome::Succeeded | JobOutcome::Partial | JobOutcome::Superseded => {
                 self.eligible = false;
                 self.reason = Some("only failed jobs are eligible for retry".into());
             }
@@ -193,6 +193,13 @@ impl JobManager {
                 rec.persistence_error = Some(error.to_string());
             }
         }
+        if let Some(project_dir) = inner
+            .persist_dir
+            .as_deref()
+            .and_then(std::path::Path::parent)
+        {
+            super::interrupted::note_started(project_dir, &rec.job_id, kind);
+        }
         inner.jobs.insert(rec.job_id.clone(), rec.clone());
         rec
     }
@@ -243,6 +250,9 @@ impl JobManager {
                 "retry was not admitted; resolve project storage and try again",
             )
         })?;
+        if let Some(project_dir) = dir.parent() {
+            super::interrupted::note_started(project_dir, &child.job_id, &child.kind);
+        }
         inner.jobs.insert(child_id.clone(), child.clone());
         let persist_dir = inner.persist_dir.clone();
         if let Some(source) = inner.jobs.get_mut(source_job_id) {

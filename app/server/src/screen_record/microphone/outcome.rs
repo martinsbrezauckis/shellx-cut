@@ -31,7 +31,11 @@ pub(crate) fn persist(
 
 pub(crate) fn projection(capture_dir: &Path) -> Value {
     let fallback = json!({"status": "unavailable", "mic_track_saved": false});
-    let Ok(bytes) = std::fs::read(capture_dir.join(FILE)) else {
+    // The outcome is a few bytes; a link, a shared file or anything larger is
+    // not the engine's and is read as unavailable.
+    let cut_core::store::BoundedCacheRead::Bytes(bytes) =
+        cut_core::store::read_bounded_cache(&capture_dir.join(FILE), 64 * 1024)
+    else {
         return fallback;
     };
     let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {

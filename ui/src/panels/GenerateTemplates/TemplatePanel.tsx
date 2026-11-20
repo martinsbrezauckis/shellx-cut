@@ -1,3 +1,4 @@
+import { engineMediaUrl } from '../../lib/mediaUrl'
 import type {
   GenerateInsertResult,
   GenerateParam,
@@ -289,7 +290,7 @@ export default function TemplatePanel({
           {preview?.url ? (
             <img
               data-cut-generate-template-preview-img
-              src={preview.url}
+              src={engineMediaUrl(preview.url)}
               alt={`${preview.id} preview`}
             />
           ) : preview ? (

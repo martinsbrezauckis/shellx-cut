@@ -159,16 +159,15 @@ pub fn run_tracker(
         .arg(every_ms.to_string())
         .arg("--engine")
         .arg(engine);
-    let out = crate::dispatch::run_bounded_foreground_command(&mut cmd, "track runner").map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("track runner spawn failed: {e}"),
-            "the local motion-tracking runtime could not be started",
-        )
-        .with_suggested_action(
-            "install the perception sidecar (system.doctor / system.setup_*) so its python+cv2 is available",
-        )
-    })?;
+    let out =
+        crate::dispatch::run_bounded_foreground_command(&mut cmd, "track runner").map_err(|e| {
+            CutError::new(
+                error_codes::IO,
+                format!("track runner spawn failed: {e}"),
+                "the local motion-tracking runtime could not be started",
+            )
+            .with_suggested_action(cut_perception::captions_setup_action())
+        })?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(CutError::new(

@@ -23,8 +23,7 @@ pub(crate) fn screen_probe() -> ScreenProbe {
     // SAFETY: CoreGraphics owns the permission state and takes no Rust pointers.
     if !unsafe { CGPreflightScreenCaptureAccess() } {
         return ScreenProbe::PermissionDenied(
-            "Screen Recording is not already granted; doctor will not trigger a new permission prompt"
-                .into(),
+            crate::doctor_probe::MACOS_SCREEN_PERMISSION_NEEDED.into(),
         );
     }
 

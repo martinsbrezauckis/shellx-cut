@@ -5,6 +5,7 @@
 // without depending on the verb client runtime.
 
 import type { MotionClipLink } from './motionLinkModel'
+import type { MissingRequirement } from './requirementsModel'
 import type { PortableB5RelinkReceipt } from './portableRelinkModel'
 import type { ProjectIdentity } from './projectIdentity'
 export type { MotionClipLink } from './motionLinkModel'
@@ -527,21 +528,8 @@ export interface FixAction {
   auto_fixable: boolean
 }
 
-export interface RenderReceipt {
-  render_id: string
-  ts: string
-  output_path: string
-  output_hash: string
-  duration_ms: number
-  preset: string
-  at_op: string
-  checks: CheckResult[]
-  pass: boolean
-  judge?: JudgeEnvelope | null
-  /** One entry per recognised FAILING check (empty when all pass). Drives the
-   *  status-bar "what changed" summary + the autopilot self-fix loop. */
-  fix_actions?: FixAction[]
-}
+// RenderReceipt and its verdict live in receiptModel.ts (one responsibility).
+export type { ReceiptCheckOutcome, RenderReceipt } from './receiptModel'
 
 export interface WordSpan {
   idx: number
@@ -596,6 +584,8 @@ export interface CutError {
    * cut-core CutError.suggested_action (serde-skipped when None). The rebase
    * guardrail sets it; the UI renders it VERBATIM. */
   suggested_action?: string
+  /** The missing tool or condition, with where to get it (schema/requirements.json). */
+  requirement?: MissingRequirement
 }
 
 export type { JobRecord } from './jobModel'

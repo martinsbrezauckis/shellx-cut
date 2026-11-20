@@ -18,7 +18,13 @@
 @keyframes sb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* Job pills (.tl-event pattern: orange dot, name, % mono tabular) */
+.sb-env, .sb-conn { flex: none; }
+/* A running-job pill keeps its full text and its cancel button. When the window
+   is too narrow for everything, the export-folder chip shortens its path (down
+   to a readable minimum) and the far right of the bar is cut off, never one chip
+   over another. */
 .sb-job {
+  flex: none;
   display: flex; align-items: center; gap: 6px;
   background: var(--surface-3); border: 1px solid var(--hairline-2);
   border-radius: var(--radius-pill); padding: 2px 10px;
@@ -28,7 +34,9 @@
   width: 6px; height: 6px; border-radius: 50%; background: var(--orange);
   animation: sb-pulse 1.2s ease-in-out infinite;
 }
-.sb-job-pct { font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.sb-job-dot { flex: none; }
+.sb-job-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sb-job-pct { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .sb-job-cancel {
   all: unset; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
@@ -52,18 +60,38 @@
 }
 .sb-job-retry:hover { background: color-mix(in srgb, var(--orange) 22%, transparent); }
 .sb-job-retry:disabled { cursor: wait; opacity: .55; }
+/* The pill may not shrink below its title, Details and dismiss controls: only
+   the reason text gives way (ellipsis). With min-width: 0 here, three rows in a
+   busy bar squeezed their pills under their content, so each pill's buttons
+   were covered by the next pill and could not be clicked. */
+.sb-job--failed { border-color: color-mix(in srgb, var(--err) 45%, var(--hairline-2)); max-width: 520px; flex: 0 1 auto; }
+.sb-job-dot--failed { background: var(--err); animation: none; flex: none; }
+.sb-job-failed-title { flex: none; color: var(--ink); }
+.sb-job-failed-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink-3);
+}
+.sb-job-failed-more { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  background: var(--surface-3); border: 1px solid color-mix(in srgb, var(--err) 45%, var(--hairline-2));
+  border-radius: var(--radius-pill); padding: 2px 10px;
+  font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--ink-2); }
 
 .sb-spacer { flex: 1; }
 
 .sb-output {
   all: unset; cursor: pointer; display: flex; align-items: center; gap: 5px;
-  min-width: 0; max-width: 280px;
+  /* The folder chip is the one that gives way (its path ends in an ellipsis);
+     it clips its own content, so nothing of it spills over the chip beside it. */
+  flex: 0 1 auto; min-width: 150px; max-width: 280px; overflow: hidden;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-pill); padding: 2px 8px;
   background: var(--surface-3); color: var(--ink-2);
   font: 600 var(--fs-mono-xs) var(--mono);
 }
 .sb-output:hover { border-color: var(--hairline-2); color: var(--ink); }
+.sb-output--unusable { border-color: var(--warn, #fbbf24); color: var(--warn, #fbbf24); }
+.sb-output > svg, .sb-output-label, .sb-output-warn { flex: none; }
+.sb-output-warn { color: var(--warn, #fbbf24); }
 .sb-output-label { color: var(--ink-4); }
 .sb-output-path {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

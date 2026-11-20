@@ -4,6 +4,109 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(unix)]
+#[test]
+fn raw_polish_preparatory_probes_obey_cancel_and_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.mp4");
+    video(&source, "red");
+    let patterned = dir.path().join("stall%03d.wav");
+    std::fs::write(&patterned, b"not media").unwrap();
+    let real_probe = cut_media::toolpath::ffprobe();
+    let fake = dir.path().join("slow-ffprobe");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\ncase \"$*\" in *stall%03d*) touch \"$CUT_RAW_PROBE_DIR/started-$CUT_RAW_PROBE_CASE\"; exec sleep 120;; esac\nif [ \"$CUT_RAW_PROBE_CASE\" = duration-cancel ]; then case \"$*\" in *-show_format*) touch \"$CUT_RAW_PROBE_DIR/started-$CUT_RAW_PROBE_CASE\"; exec sleep 120;; esac; fi\nexec \"$CUT_REAL_FFPROBE\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for case in [
+        "source-cancel",
+        "source-deadline",
+        "duration-cancel",
+        "audio-cancel",
+    ] {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "screen_record::media_boundary_tests::raw_polish_probe_child",
+                "--nocapture",
+            ])
+            .env("CUT_RAW_PROBE_CASE", case)
+            .env("CUT_RAW_PROBE_DIR", dir.path())
+            .env("CUT_REAL_FFPROBE", &real_probe)
+            .env("SHELLX_CUT_FFPROBE", &fake)
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "{case}: probe child failed");
+                assert!(
+                    dir.path().join(format!("started-{case}")).is_file(),
+                    "{case}: stand-in probe never started"
+                );
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(2) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{case}: preparatory probe outlived its operation control");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_polish_probe_child() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let Ok(case) = std::env::var("CUT_RAW_PROBE_CASE") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(std::env::var_os("CUT_RAW_PROBE_DIR").unwrap());
+    let stopped = Arc::new(AtomicBool::new(false));
+    let on_cancel = stopped.clone();
+    let control = ProcessControl::bounded(Duration::from_millis(500), move || {
+        on_cancel.load(Ordering::Relaxed)
+    });
+    if case.ends_with("cancel") {
+        let marker = dir.join(format!("started-{case}"));
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            while !marker.is_file() && started.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stopped.store(true, Ordering::Relaxed);
+        });
+    }
+    let source = if case.starts_with("source") {
+        dir.join("stall%03d.wav")
+    } else {
+        dir.join("source.mp4")
+    };
+    let audio = if case.starts_with("source") {
+        None
+    } else if case.starts_with("audio") {
+        Some(dir.join("stall%03d.wav"))
+    } else {
+        Some(dir.join("ordinary.wav"))
+    };
+    let error =
+        super::mux_raw_with_control(&source, audio.as_deref(), &dir.join("output.mp4"), &control)
+            .expect_err("stalled probe must stop");
+    assert!(
+        error.code == "render_cancelled" || error.message == "operation timed out",
+        "{case}: {error}"
+    );
+}
+
 fn video(path: &Path, color: &str) {
     assert!(std::process::Command::new(cut_media::toolpath::ffmpeg())
         .args([
@@ -113,6 +216,32 @@ fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
         }
     }
 
+    fn assert_audio_ends_with_video(output: &Path, label: &str) {
+        let probe = std::process::Command::new(cut_media::toolpath::ffprobe())
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(output)
+            .output()
+            .unwrap();
+        assert!(probe.status.success());
+        let duration: f64 = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            (0.38..0.45).contains(&duration),
+            "{label}: audio must end with the video, got {duration}s"
+        );
+    }
+
     fn assert_mixed_audio(output: &Path) {
         let decoded = std::process::Command::new(cut_media::toolpath::ffmpeg())
             .args(["-v", "error", "-i"])
@@ -133,7 +262,9 @@ fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
             .collect();
         assert!(
             samples.len() >= 48000 * 38 / 100,
-            "audio must span video tail"
+            "audio must span video tail: decoded {} samples, expected at least {}",
+            samples.len(),
+            48000 * 38 / 100
         );
         let tone = |start_ms: usize, end_ms: usize, frequency: f64| {
             let window = &samples[start_ms * 48..end_ms * 48];
@@ -201,30 +332,8 @@ fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
         if name == "both" {
             assert_mixed_audio(&output);
         }
-        if name == "both-longer-audio" {
-            let probe = std::process::Command::new(cut_media::toolpath::ffprobe())
-                .args([
-                    "-v",
-                    "error",
-                    "-select_streams",
-                    "a:0",
-                    "-show_entries",
-                    "stream=duration",
-                    "-of",
-                    "default=noprint_wrappers=1:nokey=1",
-                ])
-                .arg(&output)
-                .output()
-                .unwrap();
-            assert!(probe.status.success());
-            let duration: f64 = String::from_utf8_lossy(&probe.stdout)
-                .trim()
-                .parse()
-                .unwrap();
-            assert!(
-                (0.38..0.45).contains(&duration),
-                "long mixed audio must end with the video, got {duration}s"
-            );
+        if name != "no-audio" {
+            assert_audio_ends_with_video(&output, name);
         }
     }
 
@@ -233,6 +342,7 @@ fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
     let export = dir.path().join("raw-export.mp4");
     super::mux_raw_with_control(&source, Some(&mic), &export, &control).unwrap();
     assert_copied_video(&source_packets, &export);
+    assert_audio_ends_with_video(&export, "raw-export");
 }
 
 #[test]

@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 pub(crate) enum RecordStartAdmission {
     Strict,
     LinuxPortalPromptDeferred,
+    /// A status read did not check screen delivery; Start runs that check.
+    CheckedAtStart,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -100,23 +102,59 @@ pub(super) fn apply_capture_access_failure(cards: &mut [RecordCard]) {
 }
 
 /// In-process capability cards. A native backend is `ok` only after it delivers
-/// a discarded frame to Cut; `unknown` is not ready.
+/// a discarded frame to Cut; `unknown` is not ready. On Windows and macOS this
+/// runs a short real capture: use it only for Check, Test, or a start.
 pub(super) fn doctor() -> RecordDoctor {
     align_ffmpeg_env();
-    let mut cards: Vec<RecordCard> = record_capture::doctor()
+    let cards: Vec<RecordCard> = record_capture::doctor()
         .into_iter()
         .map(record_card)
         .collect();
+    project(cards, true)
+}
+
+/// The same projection for a status display. It never starts a capture and
+/// never shows a system prompt: the screen card is the last check or "not
+/// checked yet", and macOS source lists are read only once the OS already
+/// allows screen capture.
+pub(super) fn doctor_status() -> (RecordDoctor, record_capture::ScreenCheck) {
+    align_ffmpeg_env();
+    let status = record_capture::doctor_status();
+    let cards = status
+        .cards
+        .into_iter()
+        .map(record_card)
+        .map(|mut card| {
+            if card.name == "screen_capture"
+                && card.status == "unknown"
+                && status.screen_check == record_capture::ScreenCheck::NotChecked
+            {
+                card.start_admission = RecordStartAdmission::CheckedAtStart;
+            }
+            card
+        })
+        .collect();
+    let may_list = status.screen_check != record_capture::ScreenCheck::PermissionNeeded;
+    (project(cards, may_list), status.screen_check)
+}
+
+fn project(mut cards: Vec<RecordCard>, may_list: bool) -> RecordDoctor {
     // Preserve ScreenCaptureKit/TCC enumeration failures. The old Vec-only API
     // collapsed permission denial to an empty picker while leaving ready=true.
-    let monitor_probe = record_capture::list_monitors_checked();
+    let monitor_probe = if may_list {
+        record_capture::list_monitors_checked()
+    } else {
+        Ok(Vec::new())
+    };
     if monitor_probe.is_err() {
         apply_capture_access_failure(&mut cards);
     }
     let ready = ready_rollup(&cards);
     let start_allowed = start_readiness::start_allowed(&cards);
     let monitors = monitors(monitor_probe.unwrap_or_default());
-    let windows = record_capture::list_windows()
+    let windows = may_list
+        .then(record_capture::list_windows)
+        .unwrap_or_default()
         .into_iter()
         .map(|window| WindowInfo {
             id: window.id,
@@ -158,12 +196,29 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
         // enumeration itself must never open a microphone stream.
         #[serde(default)]
         warm_mic: bool,
+        // `check` (default) runs the short screen-delivery check; `status`
+        // never starts a capture or a prompt; `microphone` reads only the
+        // microphone choice and permission.
+        #[serde(default)]
+        mode: Option<String>,
     }
     let args: Args = parse_args(args)?;
-    let doctor = doctor();
+    let mode = args.mode.as_deref().unwrap_or("check");
+    if !matches!(mode, "check" | "status" | "microphone") {
+        return Err(CutError::new(
+            cut_core::error_codes::INVALID_ARGS,
+            format!("unknown Doctor mode `{mode}`"),
+            "mode must be check, status, or microphone",
+        )
+        .with_suggested_action("omit mode for a full check, or pass status or microphone"));
+    }
     let mic_warm = if args.warm_mic {
         // Keep a potentially unbounded native-driver call off the async runtime.
-        let task = tokio::task::spawn_blocking(microphone::warm_projection);
+        let task = tokio::task::spawn_blocking(|| {
+            // Held for the native work itself, which can outlive the 4 s wait below.
+            let _test = super::audio_test_gate::AudioTestGuard::enter();
+            microphone::warm_projection()
+        });
         Some(
             match tokio::time::timeout(std::time::Duration::from_secs(4), task).await {
                 Ok(Ok(result)) => result,
@@ -183,8 +238,24 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
     } else {
         None
     };
+    if mode == "microphone" {
+        let readiness = microphone::readiness::MicrophoneReadiness::current();
+        return Ok(VerbResult::ok(microphone::readiness::projection(
+            readiness, mic_warm,
+        )));
+    }
+    let (doctor, screen_check) = if mode == "status" {
+        doctor_status()
+    } else {
+        (doctor(), checked_screen())
+    };
     let microphone = microphone::doctor_projection();
+    let readiness = microphone::readiness::MicrophoneReadiness::current();
     Ok(VerbResult::ok(json!({
+        "mode": mode,
+        "microphone_access": readiness.access,
+        "microphone_blocked": microphone::readiness::blocked_projection(readiness),
+        "screen_check": screen_check,
         "cards": doctor.cards,
         "ready": doctor.ready,
         "start_allowed": doctor.start_allowed,
@@ -203,6 +274,16 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
             "detail": "Area capture remains unavailable pending compiled/native qualification of the foreground picker path. The private macOS source bridge is not exposed; Windows and Linux have no crop backend.",
         },
     })))
+}
+
+/// What a full check reports about screen delivery: Linux Doctor never runs
+/// one (its portal asks at Start), every other backend just did.
+fn checked_screen() -> record_capture::ScreenCheck {
+    if cfg!(target_os = "linux") {
+        record_capture::ScreenCheck::NotApplicable
+    } else {
+        record_capture::ScreenCheck::Checked
+    }
 }
 
 pub(super) fn monitors(

@@ -5,13 +5,13 @@
     {
       "name": "ui.state",
       "domain": "ui",
-      "description": "Revisioned, path-safe state from the connected UI: active workspace and left/right/review tabs, overlays/dialogs, available and agent-openable surface ids, playhead, selection, export range, safe project identity, and the currently rendered About version when its visible text has committed. Errors no_ui_client after the last UI socket disconnects.",
+      "description": "Revisioned, path-safe state from the connected UI: active workspace and left/right/review tabs, overlays/dialogs, available and agent-openable surface ids, playhead, selection, export range, safe project identity, the currently rendered About version when its visible text has committed, the operating-system dialogs the app waits behind (overlays.native_dialogs), the record shortcut registration (record_hotkey) and the person-facing notices shown now (notices). Errors no_ui_client after the last UI socket disconnects.",
       "args": {
         "type": "object",
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right:{collapsed,pinned,active_tab,body_status:'loaded'|'loading'|'blocked'|'failed'|null,recovery_selector:string|null}, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
+      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right:{collapsed,pinned,active_tab,body_status:'loaded'|'loading'|'blocked'|'failed'|null,recovery_selector:string|null}, review, about?:{displayed_version:string|null}, preview?:{media_problem:{kind:'cannot_decode',asset_ids,message}|null, mode:'composed'|'live', showing:'composed_frame'|'live_preview'|'source_frame'|'none', hidden_elements, media:'proxy'|'original'|null, composed_frame:{state,at_ms,reason,latency_ms,requests}|null}, overlays:{wizard,settings,comments,drawer,highlight,dialogs,native_dialogs:[{kind:'open'|'save'|'confirm'|'message',opened_by,title?}], quit_question:{message, running:string[], choices:['keep_working','quit_and_stop']}|null}, record_hotkey:{state,scope,reason}, export_folder:{destination:'chosen'|'project_exports',usable,folder:name|null}|null, notices:[{kind:'action_feedback'|'odd_project_size'|'recording_recovery'|'recording_recovery_more'|'failed_job'|'failed_jobs_more',...}], open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {

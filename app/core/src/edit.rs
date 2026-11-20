@@ -26,6 +26,7 @@
 //! server verb dispatch, transcript verbs (cut_words lowers to ripple_delete).
 
 use crate::error::{codes, CutError};
+pub use crate::move_placement::MovePlacement;
 use crate::ops::OpEffect;
 use crate::types::{
     Clip, ClipFade, FadeKind, GainWindow, GapClip, Marker, MediaClip, Nest, Project, Track,
@@ -884,6 +885,10 @@ fn trim_trailing_gaps(track: &mut Track) -> u64 {
 /// `edit.insert{ripple:true}`. When FALSE (the DEFAULT, legacy behavior),
 /// only the destination track changes — the float/overlay move. ops logged
 /// before the flag replay as `ripple:false`, byte-identical.
+///
+/// This entry point keeps the historical splice placement (logged moves
+/// without `placement`); live moves record [`MovePlacement::Overwrite`] for
+/// `ripple:false` — see `move_placement.rs` and [`move_clip_pinned`].
 pub fn move_clip(
     project: &mut Project,
     clip_id: &str,
@@ -891,7 +896,15 @@ pub fn move_clip(
     at_ms: u64,
     ripple: bool,
 ) -> Result<Vec<OpEffect>, CutError> {
-    move_clip_pinned(project, clip_id, to_track, at_ms, ripple, None)
+    move_clip_pinned(
+        project,
+        clip_id,
+        to_track,
+        at_ms,
+        ripple,
+        MovePlacement::Insert,
+        None,
+    )
 }
 
 /// Id-pinning variant of [`move_clip`]. `pinned_split` forces the destination
@@ -904,6 +917,7 @@ pub fn move_clip_pinned(
     to_track: &str,
     at_ms: u64,
     ripple: bool,
+    placement: MovePlacement,
     pinned_split: Option<&str>,
 ) -> Result<Vec<OpEffect>, CutError> {
     let (from_track, idx) = project
@@ -944,8 +958,25 @@ pub fn move_clip_pinned(
     // The destination splice may mint a right-half id when the move lands inside
     // a clip; record it as `split_clip` for replay/skip-replay pinning. `pinned`
     // is None on the live path; move's replay/skip path passes the recorded id.
-    let split_clip = splice_into_track(project, to_track, at_ms, clip, pinned_split)?;
-    let mut dest_detail = json!({"moved_clip": clip_id, "added_ms": [at_ms, at_ms + dur]});
+    let (split_clip, mut dest_detail) = match placement {
+        MovePlacement::Insert => (
+            splice_into_track(project, to_track, at_ms, clip, pinned_split)?,
+            json!({"added_ms": [at_ms, at_ms + dur]}),
+        ),
+        // Same split-id rule as the splice: the lifted clip is out of the
+        // project, so its own number is reserved explicitly.
+        MovePlacement::Overwrite => {
+            let incoming_n = clip_id.strip_prefix('c').and_then(|n| n.parse().ok());
+            let split_id = pinned_split.map(str::to_string).unwrap_or_else(|| {
+                format!("c{}", max_clip_n(project).max(incoming_n.unwrap_or(0)) + 1)
+            });
+            crate::move_placement::overwrite_place(project, to_track, at_ms, clip, split_id)?
+        }
+    };
+    dest_detail["moved_clip"] = json!(clip_id);
+    if placement == MovePlacement::Overwrite {
+        dest_detail["placement"] = json!(placement.as_str());
+    }
     if let Some(sc) = &split_clip {
         dest_detail["split_clip"] = json!(sc);
     }

@@ -10,11 +10,14 @@ use cut_core::{error_codes, CutError};
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
+pub mod escape;
+mod graph_file;
 #[cfg(test)]
 mod input_policy_tests;
 mod process;
+#[cfg(test)]
+mod real_tool_escape_tests;
 pub(crate) use process::current_render_process_control;
 pub(crate) use process::scoped_render_process_control;
 pub use process::{
@@ -45,6 +48,8 @@ pub const LOCAL_INPUT_PROTOCOLS: &str = "file,pipe,crypto,data";
 /// Names are demuxer identities, not filename extensions. Unknown names in a
 /// build do not enable additional formats; unsupported inputs fail closed.
 pub const LOCAL_INPUT_FORMATS: &str = "mov,matroska,webm,avi,asf,mpeg,mpegts,mpegtsraw,mxf,flv,ogg,flac,wav,aiff,mp3,aac,ac3,eac3,dts,amr,au,caf,wv,ape,tta,mpc,mpc8,loas,png_pipe,jpeg_pipe,jpegls_pipe,bmp_pipe,webp_pipe,tiff_pipe,jpegxl_pipe,exr_pipe,dpx_pipe,ppm_pipe,pgm_pipe,pbm_pipe,pam_pipe,pcx_pipe,tga_pipe,image2,gif,apng,ico,rawvideo,s16le,lavfi";
+
+const FORMAT_PROBE_OUTPUT_CAP_BYTES: usize = 8 * 1024;
 
 /// ffmpeg program path. Delegates to [`crate::toolpath::ffmpeg`]: resolves
 /// a CONFIGURED / BUNDLED / app-data ffmpeg before falling back to PATH, so the
@@ -113,26 +118,222 @@ fn normalize_ffmpeg_arg(arg: &str) -> String {
     arg.strip_prefix(r"\\?\").unwrap_or(arg).to_string()
 }
 
-fn normalize_ffmpeg_args(args: &[String]) -> Vec<String> {
-    normalize_input_args(args, false)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    /// Imported or single media files: `image2` must read the literal path.
+    Literal,
+    /// Cut-owned concat manifest (`render.rs`, `draft_preview.rs`).
+    OwnedConcat,
+    /// Cut-owned numbered image sequence (`render.storyboard`).
+    OwnedImageSequence,
 }
 
-fn normalize_input_args(args: &[String], owned_concat: bool) -> Vec<String> {
+/// True when `arg` contains characters FFmpeg's `image2` demuxer interprets as
+/// printf sequences (`%`) or filename globs (`*`, `?`, `[`). Assumes `\\?\` has
+/// already been stripped by [`normalize_ffmpeg_arg`].
+fn has_image2_pattern_chars(arg: &str) -> bool {
+    arg != "-" && arg.bytes().any(|b| matches!(b, b'%' | b'*' | b'?' | b'['))
+}
+
+/// Identify the literal file's demuxer before deciding whether FFmpeg needs
+/// image2's private `-pattern_type none` option. An undecidable answer must
+/// stop the operation before FFmpeg can interpret the name as a sequence.
+fn probe_selects_image2(path: &Path) -> Result<bool, CutError> {
+    let mut command = Command::new(ffprobe_bin());
+    command.args(["-v", "error"]);
+    push_ffprobe_literal_input(&mut command, path);
+    command.args([
+        "-show_entries",
+        "format=format_name",
+        "-of",
+        "default=nw=1:nk=1",
+    ]);
+    let control = process::bounded_current_control(std::time::Duration::from_secs(60))
+        .with_output_cap(FORMAT_PROBE_OUTPUT_CAP_BYTES);
+    let output = with_render_process_control(&control, || {
+        run_bounded_command(&mut command, "identify literal media format")
+    })
+    .map_err(|e| {
+        if e.code == error_codes::RENDER_CANCELLED
+            || e.code == error_codes::TOOL_MISSING
+            || e.message == "operation timed out"
+        {
+            e
+        } else {
+            literal_input_error(path, format!("ffprobe could not inspect this file: {e}"))
+        }
+    })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(literal_input_error(
+            path,
+            if detail.trim().is_empty() {
+                format!(
+                    "ffprobe exited with {} without identifying this file",
+                    output.status
+                )
+            } else {
+                format!("ffprobe exited with {}: {}", output.status, detail.trim())
+            },
+        ));
+    }
+    if output.stdout.len() >= FORMAT_PROBE_OUTPUT_CAP_BYTES {
+        return Err(literal_input_error(
+            path,
+            "ffprobe format answer exceeded its output limit",
+        ));
+    }
+    let answer = std::str::from_utf8(&output.stdout)
+        .ok()
+        .and_then(|text| {
+            let mut lines = text.lines();
+            let first = lines.next()?.trim();
+            (!first.is_empty() && lines.next().is_none()).then_some(first)
+        })
+        .ok_or_else(|| literal_input_error(path, "ffprobe gave no clear media format"))?;
+    if answer.split(',').any(|name| name == "image2") {
+        return Ok(true);
+    }
+    if answer.split(',').any(|name| {
+        LOCAL_INPUT_FORMATS
+            .split(',')
+            .any(|allowed| name == allowed)
+    }) {
+        return Ok(false);
+    }
+    Err(literal_input_error(
+        path,
+        format!("ffprobe reported an unsupported or unclear media format: {answer}"),
+    ))
+}
+
+fn literal_input_error(path: &Path, reason: impl std::fmt::Display) -> CutError {
+    CutError::new(
+        error_codes::UNREADABLE_MEDIA,
+        "cannot safely read media file with pattern characters",
+        format!("{}: {reason}", path.display()),
+    )
+    .with_suggested_action(
+        "use a readable copy of this file, or rename it without %, *, ? or [ and try again",
+    )
+}
+
+fn should_disable_image2_pattern(
+    explicit_format: Option<&str>,
+    has_pattern_type: bool,
+    normalized_input: &str,
+) -> Result<bool, CutError> {
+    if has_pattern_type {
+        return if has_image2_pattern_chars(normalized_input) {
+            Err(literal_input_error(
+                Path::new(normalized_input),
+                "an input pattern mode was already selected",
+            ))
+        } else {
+            Ok(false)
+        };
+    }
+    match explicit_format {
+        Some("image2") => Ok(true),
+        Some(_) => Ok(false),
+        None => {
+            if has_image2_pattern_chars(normalized_input) {
+                probe_selects_image2(Path::new(normalized_input))
+            } else {
+                Ok(false)
+            }
+        }
+    }
+}
+
+fn normalize_ffmpeg_args(args: &[String]) -> Result<Vec<String>, CutError> {
+    normalize_input_args_with(args, InputMode::Literal)
+}
+
+fn normalize_input_args(args: &[String], owned_concat: bool) -> Result<Vec<String>, CutError> {
+    normalize_input_args_with(
+        args,
+        if owned_concat {
+            InputMode::OwnedConcat
+        } else {
+            InputMode::Literal
+        },
+    )
+}
+
+fn normalize_input_args_with(args: &[String], mode: InputMode) -> Result<Vec<String>, CutError> {
     let mut restricted = Vec::with_capacity(args.len() + 2);
-    for arg in args {
+    let mut explicit_format: Option<&str> = None;
+    let mut has_pattern_type = false;
+    let mut expect_format = false;
+    let mut expect_input_path = false;
+    let mut skip_next_value = false;
+
+    for (idx, arg) in args.iter().enumerate() {
+        let normalized = normalize_ffmpeg_arg(arg);
+        if expect_input_path {
+            restricted.push(normalized);
+            expect_input_path = false;
+            continue;
+        }
+        if expect_format {
+            explicit_format = Some(arg.as_str());
+            expect_format = false;
+            restricted.push(normalized);
+            continue;
+        }
+        if skip_next_value {
+            skip_next_value = false;
+            restricted.push(normalized);
+            continue;
+        }
         if arg == "-i" {
             restricted.push("-protocol_whitelist".into());
             restricted.push(LOCAL_INPUT_PROTOCOLS.into());
             restricted.push("-format_whitelist".into());
-            restricted.push(if owned_concat {
+            restricted.push(if mode == InputMode::OwnedConcat {
                 format!("{LOCAL_INPUT_FORMATS},concat")
             } else {
                 LOCAL_INPUT_FORMATS.into()
             });
+            if mode != InputMode::OwnedImageSequence {
+                if let Some(target) = args.get(idx + 1) {
+                    let target_norm = normalize_ffmpeg_arg(target);
+                    if should_disable_image2_pattern(
+                        explicit_format,
+                        has_pattern_type,
+                        &target_norm,
+                    )? {
+                        restricted.push("-pattern_type".into());
+                        restricted.push("none".into());
+                    }
+                }
+            }
+            explicit_format = None;
+            has_pattern_type = false;
+            expect_input_path = true;
+            restricted.push(normalized);
+            continue;
         }
-        restricted.push(normalize_ffmpeg_arg(arg));
+        match arg.as_str() {
+            "-f" => expect_format = true,
+            "-pattern_type" => {
+                has_pattern_type = true;
+                skip_next_value = true;
+            }
+            "-filter_complex"
+            | "-vf"
+            | "-af"
+            | "-metadata"
+            | "-protocol_whitelist"
+            | "-format_whitelist" => {
+                skip_next_value = true;
+            }
+            _ => {}
+        }
+        restricted.push(normalized);
     }
-    restricted
+    Ok(restricted)
 }
 
 /// Whether the selected vidstab-capable ffmpeg exposes the optional
@@ -142,9 +343,9 @@ fn normalize_input_args(args: &[String], owned_concat: bool) -> Vec<String> {
 /// an unreadable `.trf`. Probe the two filters independently so render.rs can
 /// request portable ASCII only where the option exists.
 pub(crate) fn vidstab_fileformat_support() -> Result<(bool, bool), CutError> {
-    static SUPPORT: OnceLock<(bool, bool)> = OnceLock::new();
+    static SUPPORT: crate::toolpath::ToolCache<(bool, bool)> = crate::toolpath::ToolCache::new();
     if let Some(support) = SUPPORT.get() {
-        return Ok(*support);
+        return Ok(support);
     }
     let bin = crate::toolpath::ffmpeg_for(&[crate::toolpath::FfmpegFeature::Vidstab]);
     let detect = vidstab_filter_support(&bin, "filter=vidstabdetect")?;
@@ -155,7 +356,7 @@ pub(crate) fn vidstab_fileformat_support() -> Result<(bool, bool), CutError> {
         // state. Cancellation/deadline errors returned above remain terminal.
         return Ok((false, false));
     };
-    let _ = SUPPORT.set(support);
+    SUPPORT.set(support);
     Ok(support)
 }
 
@@ -333,7 +534,7 @@ fn render_thread_flags() -> Vec<String> {
 
 /// `(MemoryHigh, MemoryMax)` bytes for a render cgroup, or `None` if total RAM is
 /// unknown. High = soft throttle+spill ceiling (~75%); Max = total − 1GB backstop.
-fn render_mem_budget() -> Option<(u64, u64)> {
+pub(crate) fn render_mem_budget() -> Option<(u64, u64)> {
     let total = total_ram_bytes();
     if total == 0 {
         return None;
@@ -352,7 +553,10 @@ fn render_mem_budget() -> Option<(u64, u64)> {
 /// Build the ffmpeg `Command` for a RENDER, governed so it cannot wedge the box:
 /// a soft memory ceiling (cgroup `MemoryHigh`, throttle+spill — NOT a kill) + nice
 /// on Linux+systemd; a plain `nice`d spawn elsewhere. `flags` precede `args`.
-fn render_command(flags: &[&str], args: &[String]) -> Result<Command, CutError> {
+fn render_command(
+    flags: &[&str],
+    args: &[String],
+) -> Result<(Command, graph_file::GraphFiles), CutError> {
     render_command_governed(flags, args, None, None)
 }
 
@@ -367,9 +571,12 @@ fn render_command_governed(
     args: &[String],
     mem_override: Option<(u64, u64)>,
     threads_override: Option<u32>,
-) -> Result<Command, CutError> {
-    let normalized_args = normalize_ffmpeg_args(args);
+) -> Result<(Command, graph_file::GraphFiles), CutError> {
+    let normalized_args = normalize_ffmpeg_args(args)?;
     let bin = ffmpeg_bin_for_args(&normalized_args);
+    // After the build choice (it reads the graph): a long graph goes in a file,
+    // owned by the caller until ffmpeg has exited.
+    let (normalized_args, graphs) = graph_file::long_graphs_from_files(&bin, &normalized_args)?;
     let nice = render_nice();
     // Thread cap, injected after the global flags (precedes `-i`/`-filter_complex`/
     // output). An explicit override (parallel path) wins; else the env knob.
@@ -401,7 +608,7 @@ fn render_command_governed(
                 .args(flags)
                 .args(&threads)
                 .args(&normalized_args);
-            return Ok(cmd);
+            return Ok((cmd, graphs));
         }
     }
     // Fallback: nice'd plain ffmpeg (`nice` is POSIX — present on Linux/macOS).
@@ -414,13 +621,13 @@ fn render_command_governed(
             .args(flags)
             .args(&threads)
             .args(&normalized_args);
-        Ok(cmd)
+        Ok((cmd, graphs))
     }
     #[cfg(not(unix))]
     {
         let mut cmd = Command::new(&bin);
         cmd.args(flags).args(&threads).args(&normalized_args);
-        Ok(cmd)
+        Ok((cmd, graphs))
     }
 }
 
@@ -428,7 +635,7 @@ fn render_command_governed(
 /// CutError with code "ffmpeg" whose cause carries the stderr TAIL (last
 /// ~2KB) — that is where ffmpeg puts the actual reason.
 pub fn run_ffmpeg(args: &[String]) -> Result<(), CutError> {
-    let normalized_args = normalize_ffmpeg_args(args);
+    let normalized_args = normalize_ffmpeg_args(args)?;
     run_normalized_ffmpeg(&normalized_args)
 }
 
@@ -436,12 +643,15 @@ pub fn run_ffmpeg(args: &[String]) -> Result<(), CutError> {
 /// Imported files never receive concat admission, including renamed manifests.
 pub(crate) fn run_owned_concat_atomic_output(args: &[String], out: &Path) -> Result<(), CutError> {
     crate::atomic_output::run_with_atomic_output(args, out, |args| {
-        run_normalized_ffmpeg(&normalize_input_args(args, true))
+        run_normalized_ffmpeg(&normalize_input_args(args, true)?)
     })
 }
 
 fn run_normalized_ffmpeg(normalized_args: &[String]) -> Result<(), CutError> {
-    let mut command = Command::new(ffmpeg_bin_for_args(normalized_args));
+    let bin = ffmpeg_bin_for_args(normalized_args);
+    let mut command = Command::new(&bin);
+    let (normalized_args, _graphs) = graph_file::long_graphs_from_files(&bin, normalized_args)?;
+    let normalized_args = &normalized_args; // `_graphs` lives until ffmpeg exits
     command
         .args(["-hide_banner", "-nostdin", "-y"])
         .args(normalized_args);
@@ -490,11 +700,11 @@ pub fn run_ffmpeg_with_progress(
 ) -> Result<(), CutError> {
     // Renders run governed (cgroup MemoryHigh soft-limit + nice) so a heavy / long
     // timeline throttles+spills instead of OOM-wedging the box. See render_command.
-    let cmd = render_command(
+    let (cmd, _graphs) = render_command(
         &["-hide_banner", "-nostdin", "-y", "-progress", "pipe:1"],
         args,
     )?;
-    drive_ffmpeg(cmd, total_ms, on_progress)
+    drive_ffmpeg(cmd, total_ms, on_progress) // `_graphs` lives until ffmpeg exits
 }
 
 /// Progress-reporting counterpart to [`run_ffmpeg_atomic_output`]. Long final
@@ -528,7 +738,7 @@ pub(crate) fn run_ffmpeg_with_progress_validated_atomic_output(
 }
 
 /// Run ONE segmented-render window with an explicit per-window cgroup memory cap
-/// (`high`/`max` bytes) + thread count — the parallel path runs N of these at
+/// (`mem` = (high, max) bytes; None = the single-render budget) + thread count — the parallel path runs N of these at
 /// once, each capped at budget/N so they collectively fit under the RAM budget
 /// (and each pinned to cores/N threads). Falls back to the same streamed-progress
 /// driver. On non-Linux / no-systemd boxes the caps are inert (plain nice'd spawn).
@@ -536,17 +746,16 @@ pub fn run_render_window(
     args: &[String],
     total_ms: u64,
     on_progress: &dyn Fn(f32),
-    high: u64,
-    max: u64,
+    mem: Option<(u64, u64)>,
     threads: u32,
 ) -> Result<(), CutError> {
-    let cmd = render_command_governed(
+    let (cmd, _graphs) = render_command_governed(
         &["-hide_banner", "-nostdin", "-y", "-progress", "pipe:1"],
         args,
-        Some((high, max)),
+        mem,
         Some(threads),
     )?;
-    drive_ffmpeg(cmd, total_ms, on_progress)
+    drive_ffmpeg(cmd, total_ms, on_progress) // `_graphs` lives until ffmpeg exits
 }
 
 /// Spawn a prepared ffmpeg `Command`, stream its `-progress` to `on_progress`,
@@ -560,64 +769,133 @@ fn drive_ffmpeg(
     process::drive_with_current_control(&mut cmd, total_ms, on_progress)
 }
 
-/// Escape a filesystem path for use INSIDE a filter argument (e.g.
-/// `ass=filename=...`). Filter-graph parsing eats `\`, `:`, `'` and `,` —
-/// the documented escaping is backslash + single-quote wrapping; we escape
-/// the four metacharacters individually which survives both parse levels.
-/// Escape a filesystem path for embedding as a VALUE inside an ffmpeg
-/// `filter_complex` graph (e.g. `ass=filename=<here>`, `lut3d=file=<here>`).
+/// A filesystem path as one literal option value inside a filtergraph
+/// (`ass=filename=<here>`, `lut3d=file=<here>`, `sendcmd=f=<here>`).
 ///
-/// Returns a **single-quoted** token. ffmpeg parses a filtergraph in two
-/// levels — the graph tokenizer, then each filter's own `opt=val:opt=val`
-/// option parser — and a Windows path (`C:\Users\…`) trips BOTH: the drive
-/// colon looks like an option separator and the backslash looks like an
-/// escape. Empirically (ffmpeg N-125019, isolated via `-filter_complex_script`
-/// so argv/shell translation can't confound it) the ONLY robust form is
-/// quote-wrapped AND colon-escaped — quoting alone or escaping alone both fail
-/// with `No option name near '\Users…'`:
-///   - `filename=C\:\\Users\\…`   → FAIL   (old behaviour: escaped, not quoted)
-///   - `filename='C:/Users/…'`     → FAIL   (quoted, colon not escaped)
-///   - `filename=C\:/Users/…`      → FAIL   (escaped, not quoted)
-///   - `filename='C\:/Users/…'`    → PASS   ← this function's output
-///
-/// Backslashes are converted to forward slashes (Windows ffmpeg accepts `/`
-/// and it needs no escaping inside the quotes, unlike `\`). The colon is still
-/// escaped because the quote alone does not protect it from the filter-option
-/// parser. The single quotes also make paths containing spaces work on every
-/// platform. A literal apostrophe cannot remain inside an ffmpeg single-quoted
-/// token: close the token, send a triply escaped apostrophe through both parser
-/// levels, then reopen it (`'\\\''`). Verified with a real LUT file whose
-/// parent directory contains an apostrophe. Callers must embed the result
-/// WITHOUT adding their own quotes.
+/// Returns a single-quoted token; callers embed it WITHOUT adding their own
+/// quotes. Both parsing levels of a filtergraph are handled by
+/// [`escape::filter_path`]: quoting protects `[ ] , ;` at the graph level, and
+/// `\:`, `\\`, `\'` protect the option level. On Windows `\` is written as
+/// `/` and the drive colon is escaped (`'C\:/Users/…'`, the form verified
+/// against Windows FFmpeg); on Unix a backslash is part of the file name and
+/// is kept as one.
 pub fn escape_filter_path(path: &Path) -> String {
-    let inner = normalize_ffmpeg_arg(&path.display().to_string())
-        .replace('\\', "/") // Windows backslash → forward slash (ffmpeg-safe, no escaping needed)
-        .replace('\'', r"'\\\''") // close quote, preserve apostrophe across both parsers, reopen
-        .replace(':', "\\:"); // drive colon: escaped even though quoted (filter-option parser)
-    format!("'{inner}'")
+    escape::filter_path(path)
 }
 
 /// Build one concat-demuxer list-file line for `path`.
 ///
-/// The concat demuxer parses a small text format, not a shell command. It still
-/// treats backslash and single quote as token syntax, so raw paths like
-/// `exports/bob's cut/seg.mp4` corrupt the list unless escaped before writing
-/// `file '<path>'`.
-pub fn concat_demuxer_file_line(path: &Path) -> String {
-    let escaped = normalize_ffmpeg_arg(&path.display().to_string())
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'");
-    format!("file '{escaped}'")
+/// The concat demuxer reads one directive per line and the path as one quoted
+/// token, so an apostrophe or a line break in a folder name would otherwise
+/// end the path early or add directives of its own. A path with a line break
+/// is refused (see [`escape::concat_file_line`]).
+pub fn concat_demuxer_file_line(path: &Path) -> Result<String, CutError> {
+    escape::concat_file_line(path)
 }
 
 /// A generated list may open its entries only as ordinary media. Cached segment
 /// names alone do not prove their bytes are MP4; never inherit root concat
 /// admission into a child that may have been replaced by an imported project.
-pub(crate) fn owned_concat_file_lines(path: &Path) -> String {
-    format!(
+pub(crate) fn owned_concat_file_lines(path: &Path) -> Result<String, CutError> {
+    Ok(format!(
         "{}\noption format_whitelist {LOCAL_INPUT_FORMATS}",
-        concat_demuxer_file_line(path)
-    )
+        concat_demuxer_file_line(path)?
+    ))
+}
+
+/// The input of an ffprobe run, given as the value of `-i` so a file name
+/// that starts with `-` is read as a file, never as an option.
+/// Run ffmpeg for an internal numbered frame sequence generated by the engine
+/// itself (for example storyboard frame tiles `f%03d.jpg`). Imported paths must
+/// never use this entry point.
+pub fn run_ffmpeg_image_sequence(args: &[String]) -> Result<(), CutError> {
+    let normalized_args = normalize_input_args_with(args, InputMode::OwnedImageSequence)?;
+    run_normalized_ffmpeg(&normalized_args)
+}
+
+/// Escape `%` as `%%` in an internal folder path before joining a deliberate
+/// `image2` sequence filename pattern such as `f%03d.jpg`.
+pub fn escape_image2_pattern_dir(dir: &Path) -> String {
+    dir.to_string_lossy().replace('%', "%%")
+}
+
+/// Append a single literal FFmpeg input with local protocol/format whitelists
+/// and `-pattern_type none` when FFmpeg would select `image2`.
+pub fn push_ffmpeg_literal_input(command: &mut Command, path: &Path) -> Result<(), CutError> {
+    let normalized = normalize_ffmpeg_arg(&path.to_string_lossy());
+    let image2 = should_disable_image2_pattern(None, false, &normalized)?;
+    command.args([
+        "-protocol_whitelist",
+        LOCAL_INPUT_PROTOCOLS,
+        "-format_whitelist",
+        LOCAL_INPUT_FORMATS,
+    ]);
+    if image2 {
+        command.args(["-pattern_type", "none"]);
+    }
+    command.arg("-i").arg(normalized);
+    Ok(())
+}
+
+/// Return the argument list for a single literal FFmpeg input (whitelists,
+/// optional `-pattern_type none`, `-i`, and normalized path).
+pub fn ffmpeg_literal_input_args(path: &Path) -> Result<Vec<String>, CutError> {
+    let normalized = normalize_ffmpeg_arg(&path.to_string_lossy());
+    let image2 = should_disable_image2_pattern(None, false, &normalized)?;
+    let mut args = vec![
+        "-protocol_whitelist".into(),
+        LOCAL_INPUT_PROTOCOLS.into(),
+        "-format_whitelist".into(),
+        LOCAL_INPUT_FORMATS.into(),
+    ];
+    if image2 {
+        args.push("-pattern_type".into());
+        args.push("none".into());
+    }
+    args.push("-i".into());
+    args.push(normalized);
+    Ok(args)
+}
+
+/// Return the argument list for a single literal `ffprobe` input (whitelists,
+/// `-pattern_type none`, `-i`, and normalized path).
+pub fn ffprobe_literal_input_args(path: &Path) -> Vec<String> {
+    vec![
+        "-protocol_whitelist".into(),
+        LOCAL_INPUT_PROTOCOLS.into(),
+        "-format_whitelist".into(),
+        LOCAL_INPUT_FORMATS.into(),
+        "-pattern_type".into(),
+        "none".into(),
+        "-i".into(),
+        normalize_ffmpeg_arg(&path.to_string_lossy()),
+    ]
+}
+
+/// Append a single literal `ffprobe` input with local protocol/format
+/// whitelists and `-pattern_type none`.
+pub fn push_ffprobe_literal_input(command: &mut Command, path: &Path) {
+    command.args([
+        "-protocol_whitelist",
+        LOCAL_INPUT_PROTOCOLS,
+        "-format_whitelist",
+        LOCAL_INPUT_FORMATS,
+    ]);
+    push_ffprobe_input(command, path);
+}
+
+fn push_ffprobe_input(command: &mut Command, path: &Path) {
+    command.args(["-pattern_type", "none", "-i"]);
+    // Windows canonicalize() produces \\?\ paths, which ffprobe can misread as
+    // a different image format. Keep the original path for error reporting.
+    #[cfg(windows)]
+    {
+        if let Some(path_str) = path.to_str() {
+            command.arg(normalize_ffmpeg_arg(path_str));
+            return;
+        }
+    }
+    command.arg(path);
 }
 
 /// Run ffprobe in JSON mode against `path` → parsed `serde_json::Value`
@@ -636,19 +914,12 @@ pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
         "-show_format",
         "-show_streams",
     ]);
-    // Windows canonicalize() produces \\?\ paths, which ffprobe can misread as
-    // a different image format. Keep the original path for error reporting.
-    #[cfg(windows)]
-    {
-        if let Some(path_str) = path.to_str() {
-            command.arg(normalize_ffmpeg_arg(path_str));
-        } else {
-            command.arg(path);
-        }
-    }
-    #[cfg(not(windows))]
-    command.arg(path);
+    push_ffprobe_input(&mut command, path);
     let out = run_bounded_command(&mut command, "ffprobe").map_err(|e| {
+        // A missing ffprobe already carries its reason and the way to get it.
+        if e.code == error_codes::TOOL_MISSING {
+            return e;
+        }
         CutError::new(
             error_codes::FFMPEG,
             "failed to spawn ffprobe",
@@ -671,6 +942,54 @@ pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
     })
 }
 
+/// Count each stream's packets by reading the file (demux only, no decode):
+/// `(stream index, packets)`. For containers that do not state a frame count.
+pub fn ffprobe_packet_counts(path: &Path) -> Result<Vec<(u32, u64)>, CutError> {
+    let mut command = Command::new(ffprobe_bin());
+    command.args([
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        LOCAL_INPUT_PROTOCOLS,
+        "-format_whitelist",
+        LOCAL_INPUT_FORMATS,
+        "-count_packets",
+        "-print_format",
+        "json",
+        "-show_entries",
+        "stream=index,nb_read_packets",
+    ]);
+    push_ffprobe_input(&mut command, path);
+    let out = run_bounded_command(&mut command, "ffprobe")?;
+    if !out.status.success() {
+        return Err(CutError::new(
+            error_codes::FFMPEG,
+            format!("ffprobe could not count the packets of {}", path.display()),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ));
+    }
+    let raw: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+        CutError::new(
+            error_codes::FFMPEG,
+            "ffprobe emitted unparseable JSON",
+            e.to_string(),
+        )
+    })?;
+    Ok(raw["streams"]
+        .as_array()
+        .map(|streams| {
+            streams
+                .iter()
+                .filter_map(|s| {
+                    let index = s["index"].as_u64()? as u32;
+                    let n = s["nb_read_packets"].as_str()?.parse::<u64>().ok()?;
+                    Some((index, n))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,7 +1004,10 @@ mod tests {
     #[test]
     fn escape_filter_path_quotes_forward_slashes_and_escapes_colon() {
         // `\\` in the Rust literal = one real backslash → a Windows-style path.
-        let got = escape_filter_path(Path::new("C:\\Users\\Example\\proj\\burnin.ass"));
+        let got = escape::filter_path_for(
+            "C:\\Users\\Example\\proj\\burnin.ass",
+            escape::PathStyle::Windows,
+        );
         assert_eq!(got, "'C\\:/Users/Example/proj/burnin.ass'");
         assert!(
             got.starts_with('\'') && got.ends_with('\''),
@@ -704,13 +1026,16 @@ mod tests {
     #[test]
     fn escape_filter_path_preserves_apostrophe_across_both_parsers() {
         let got = escape_filter_path(Path::new("/home/u/editor's assets/identity.cube"));
-        assert_eq!(got, r"'/home/u/editor'\\\''s assets/identity.cube'");
+        // Option level `\'`, then the quote closed, escaped and reopened at
+        // the graph level. Checked against real FFmpeg in real_tool_escape_tests.
+        assert_eq!(got, r"'/home/u/editor\'\''s assets/identity.cube'");
     }
 
     #[test]
     fn concat_demuxer_file_line_escapes_token_syntax() {
-        let got = concat_demuxer_file_line(Path::new("/tmp/bob's cut/seg\\01.mp4"));
-        assert_eq!(got, "file '/tmp/bob\\'s cut/seg\\\\01.mp4'");
+        // Inside quotes a backslash is literal; a quote is written `'\''`.
+        let got = concat_demuxer_file_line(Path::new("/tmp/bob's cut/seg\\01.mp4")).unwrap();
+        assert_eq!(got, r"file '/tmp/bob'\''s cut/seg\01.mp4'");
     }
 
     #[test]
@@ -719,13 +1044,102 @@ mod tests {
             r"\\?\C:\Users\Example\project\concat.txt".into(),
             r"\\?\UNC\server\share\segment.mp4".into(),
             "-filter_complex".into(),
-        ]);
+        ])
+        .unwrap();
         assert_eq!(
             got,
             vec![
                 r"C:\Users\Example\project\concat.txt",
                 r"\\server\share\segment.mp4",
                 "-filter_complex",
+            ]
+        );
+    }
+
+    #[test]
+    fn image2_pattern_guards_handle_explicit_and_sequence_modes() {
+        assert!(!has_image2_pattern_chars("-"));
+        assert!(!has_image2_pattern_chars("clip.mp4"));
+        assert!(has_image2_pattern_chars("shot%03d.png"));
+        assert!(has_image2_pattern_chars("shot*.png"));
+        assert!(has_image2_pattern_chars("shot?.png"));
+        assert!(has_image2_pattern_chars("shot[0].png"));
+
+        let explicit_image2 = normalize_ffmpeg_args(&[
+            "-f".into(),
+            "image2".into(),
+            "-i".into(),
+            "plain.tga".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            explicit_image2,
+            vec![
+                "-f",
+                "image2",
+                "-protocol_whitelist",
+                LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                LOCAL_INPUT_FORMATS,
+                "-pattern_type",
+                "none",
+                "-i",
+                "plain.tga",
+            ]
+        );
+
+        let lavfi = normalize_ffmpeg_args(&[
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "color=c=red:s=16x16".into(),
+        ])
+        .unwrap();
+        assert!(!lavfi.iter().any(|arg| arg == "-pattern_type"));
+
+        let owned_sequence = normalize_input_args_with(
+            &[
+                "-framerate".into(),
+                "1".into(),
+                "-pattern_type".into(),
+                "sequence".into(),
+                "-i".into(),
+                "f%03d.jpg".into(),
+            ],
+            InputMode::OwnedImageSequence,
+        )
+        .unwrap();
+        assert_eq!(
+            owned_sequence,
+            vec![
+                "-framerate",
+                "1",
+                "-pattern_type",
+                "sequence",
+                "-protocol_whitelist",
+                LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                LOCAL_INPUT_FORMATS,
+                "-i",
+                "f%03d.jpg",
+            ]
+        );
+
+        assert_eq!(
+            escape_image2_pattern_dir(Path::new("/tmp/proj%03d/work")),
+            "/tmp/proj%%03d/work"
+        );
+        assert_eq!(
+            ffprobe_literal_input_args(Path::new("a%03d.png")),
+            vec![
+                "-protocol_whitelist",
+                LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                LOCAL_INPUT_FORMATS,
+                "-pattern_type",
+                "none",
+                "-i",
+                "a%03d.png",
             ]
         );
     }
@@ -826,7 +1240,7 @@ mod tests {
             temp.path().join("internal.ffcat"),
             format!(
                 "ffconcat version 1.0\n{}\n",
-                owned_concat_file_lines(&sample)
+                owned_concat_file_lines(&sample).unwrap()
             ),
         )
         .unwrap();
@@ -838,8 +1252,9 @@ mod tests {
 
     #[test]
     fn concat_demuxer_file_line_strips_windows_verbatim_prefix() {
-        let got = concat_demuxer_file_line(Path::new(r"\\?\C:\Users\Example\project\seg_01.mp4"));
-        assert_eq!(got, r"file 'C:\\Users\\Example\\project\\seg_01.mp4'");
+        let got = concat_demuxer_file_line(Path::new(r"\\?\C:\Users\Example\project\seg_01.mp4"))
+            .unwrap();
+        assert_eq!(got, r"file 'C:\Users\Example\project\seg_01.mp4'");
     }
 
     #[test]

@@ -55,12 +55,16 @@ const EDGE_SNAP_MS: u64 = 100;
 /// instruments/ffprobe over the render before checking).
 #[derive(Debug, Clone)]
 pub struct RenderFacts {
-    /// Measured output duration, ms (ffprobe).
+    /// Measured output duration, ms (ffprobe format duration: the LONGEST
+    /// stream, so it cannot show a short picture under long sound).
     pub duration_ms: u64,
     /// Loudness of the output (ebur128).
     pub loudness: Option<Loudness>,
     /// Perception run over the OUTPUT (silences at edges, black/frozen).
     pub output_report: Option<PerceptionReport>,
+    /// Each video and audio stream of the output, measured on its own.
+    /// Empty = not measured, and then `duration_matches_edl` cannot pass.
+    pub streams: Vec<cut_media::probe::StreamExtent>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1966,8 +1970,72 @@ pub fn silence_at_edges(facts: &RenderFacts, max_edge_silence_ms: u64) -> CheckR
     }
 }
 
-/// duration_matches_edl: measured output duration == EDL duration, within the
-/// larger of one rendered video frame or one output-audio sample.
+/// sources_decodable: every source used on the timeline decodes as far as it
+/// claims (`asset.probe.decode_check`, recorded when the asset's proxy was
+/// made). `None` when no used source was checked, so nothing is claimed about
+/// sources nobody decoded.
+pub fn sources_decodable(project: &Project, edl: &Edl) -> Option<CheckResult> {
+    let used: std::collections::BTreeSet<&str> = edl
+        .segments
+        .iter()
+        .filter_map(|s| s.asset.as_deref())
+        .collect();
+    let mut checked = Vec::new();
+    let mut problems = Vec::new();
+    for id in used {
+        let Some(asset) = project.assets.get(id) else {
+            continue;
+        };
+        // Only a decode check this engine made counts: a received project's
+        // cache could say every source decodes fully.
+        let Some(check) = project
+            .verified_probe(id)
+            .and_then(|p| p.get("decode_check"))
+        else {
+            continue;
+        };
+        let name = std::path::Path::new(&asset.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| asset.path.clone());
+        let warning = check.get("warning").and_then(|w| w.as_str());
+        if let Some(w) = warning {
+            problems.push(format!("{name}: {w}"));
+        }
+        checked.push(json!({"asset": id, "file": name, "warning": warning, "decode_check": check}));
+    }
+    if checked.is_empty() {
+        return None;
+    }
+    let mut details = json!({"checked_sources": checked.len(), "checked_by": "proxy decode"});
+    if !problems.is_empty() {
+        details["reason"] = json!(problems.join(" "));
+    }
+    Some(CheckResult {
+        name: check_names::SOURCES_DECODABLE.into(),
+        pass: problems.is_empty(),
+        details,
+        evidence: json!({"sources": checked}),
+    })
+}
+
+/// Seconds for a sentence a person reads ("1.72 s").
+fn secs_text(ms: u64) -> String {
+    format!("{:.2} s", ms as f64 / 1000.0)
+}
+
+/// duration_matches_edl: the rendered file spans the timeline. Checked per
+/// STREAM, not on the container (the container reports its longest stream, so
+/// a picture that stops early under full-length sound used to pass):
+/// - the container duration is within one frame (or one audio sample) of the
+///   EDL, as before;
+/// - every video stream is within one frame of the EDL in duration, and its
+///   frame count is within one frame of the expected count;
+/// - every audio stream is within one frame or one AAC packet (1024 samples)
+///   of the EDL.
+///
+/// Without measured streams the check cannot pass: it reports itself
+/// unmeasured rather than vouching for streams it did not look at.
 pub fn duration_matches_edl(
     edl: &Edl,
     facts: &RenderFacts,
@@ -1985,23 +2053,106 @@ pub fn duration_matches_edl(
     } else {
         0
     };
+    // AAC/Opus streams end on a packet boundary (1024 samples at 48 kHz = 22 ms).
+    let packet_ms = if audio_rate > 0 {
+        (1_024_000.0 / audio_rate as f64).ceil() as u64
+    } else {
+        0
+    };
     let tolerance_ms = frame_ms.max(sample_ms);
+    let audio_tolerance_ms = frame_ms.max(packet_ms);
+    let expected_frames = cut_core::timeline_frame_count(edl.duration_ms, fps);
     let delta = facts.duration_ms.abs_diff(edl.duration_ms);
+    let mut problems: Vec<String> = Vec::new();
+    if delta > tolerance_ms {
+        problems.push(format!(
+            "The file is {} long but the timeline is {}.",
+            secs_text(facts.duration_ms),
+            secs_text(edl.duration_ms)
+        ));
+    }
+    let mut streams = Vec::new();
+    for s in &facts.streams {
+        let duration_ok = s.duration_ms.map(|d| {
+            let tol = if s.kind == "video" {
+                tolerance_ms
+            } else {
+                audio_tolerance_ms
+            };
+            d.abs_diff(edl.duration_ms) <= tol
+        });
+        let frames_ok = (s.kind == "video")
+            .then(|| s.frames.map(|n| n.abs_diff(expected_frames) <= 1))
+            .flatten();
+        let what = if s.kind == "video" { "video" } else { "sound" };
+        match (duration_ok, frames_ok) {
+            (Some(false), _) | (_, Some(false)) => {
+                let length = s
+                    .duration_ms
+                    .map(secs_text)
+                    .unwrap_or_else(|| "of unknown length".into());
+                let frames = match (s.kind.as_str(), s.frames) {
+                    ("video", Some(n)) => format!(" ({n} frames)"),
+                    _ => String::new(),
+                };
+                let timeline_frames = if s.kind == "video" {
+                    format!(" ({expected_frames} frames)")
+                } else {
+                    String::new()
+                };
+                problems.push(format!(
+                    "The {what} in the file is {length}{frames} but the timeline is {}{timeline_frames}.",
+                    secs_text(edl.duration_ms)
+                ));
+            }
+            (None, _) => problems.push(format!(
+                "The {what} stream {} states no duration, so its length could not be checked.",
+                s.index
+            )),
+            _ => {}
+        }
+        streams.push(json!({
+            "kind": s.kind,
+            "index": s.index,
+            "duration_ms": s.duration_ms,
+            "frames": s.frames,
+            "duration_ok": duration_ok,
+            "frames_ok": frames_ok,
+        }));
+    }
+    let measured = !facts.streams.is_empty() && facts.streams.iter().any(|s| s.kind == "video");
+    if !measured {
+        problems.push(
+            "The video stream of the file was not measured, so the length of the picture is unknown."
+                .into(),
+        );
+    }
+    let mut details = json!({
+        "tolerance_ms": tolerance_ms,
+        "audio_tolerance_ms": audio_tolerance_ms,
+        "fps": fps,
+        "video_frame_tolerance_ms": frame_ms,
+        "audio_rate": audio_rate,
+        "audio_sample_tolerance_ms": sample_ms,
+        "per_stream": true,
+    });
+    if !measured {
+        details["status"] = json!("unmeasured");
+        details["measured"] = json!(false);
+    }
+    if !problems.is_empty() {
+        details["reason"] = json!(problems.join(" "));
+    }
     CheckResult {
         name: check_names::DURATION_MATCHES_EDL.into(),
-        pass: delta <= tolerance_ms,
-        details: json!({
-            "tolerance_ms": tolerance_ms,
-            "fps": fps,
-            "video_frame_tolerance_ms": frame_ms,
-            "audio_rate": audio_rate,
-            "audio_sample_tolerance_ms": sample_ms,
-        }),
+        pass: problems.is_empty(),
+        details,
         evidence: json!({
             "edl_duration_ms": edl.duration_ms,
             "measured_duration_ms": facts.duration_ms,
             "delta_ms": delta,
-            "expected_output_frames": cut_core::timeline_frame_count(edl.duration_ms, fps),
+            "expected_output_frames": expected_frames,
+            "streams": streams,
         }),
     }
 }
@@ -2037,6 +2188,34 @@ pub fn run_all_with_profile(
     beats: &[(String, BeatGrid)],
     profile: Option<FootageProfile>,
 ) -> Vec<CheckResult> {
+    run_all_for_export(
+        project,
+        edl,
+        transcripts,
+        facts,
+        beats,
+        profile,
+        None,
+        &crate::applicability::MeasuredSources::new(),
+    )
+}
+
+/// The battery for one export: `profile` chosen explicitly and a loudness
+/// target (`normalize_loudness`) decide which delivery standards apply
+/// (applicability.rs `apply_request`); `measured` is this engine's probe of
+/// the placed sources (nothing is waived on an asset missing from it, and the
+/// project's cached probe facts are never used); a plain export is not judged against
+/// a loudness target or an edge-silence budget nobody asked for.
+pub fn run_all_for_export(
+    project: &Project,
+    edl: &Edl,
+    transcripts: &[&Transcript],
+    facts: &RenderFacts,
+    beats: &[(String, BeatGrid)],
+    profile: Option<FootageProfile>,
+    loudness_target: Option<f64>,
+    measured: &crate::applicability::MeasuredSources,
+) -> Vec<CheckResult> {
     let active = profile.unwrap_or(FootageProfile::TalkingHead);
     let proposal = propose_profile(transcripts, facts);
     let output = crate::output_checks_with_profile(facts, active);
@@ -2065,12 +2244,34 @@ pub fn run_all_with_profile(
             project.settings.audio_rate,
         ),
     ];
+    // A quality check with nothing to check on this timeline (no captions,
+    // no transcript, no sound, no picture) is "not applicable", never a
+    // failure or a warning (applicability.rs).
+    crate::applicability::apply_scope(
+        &mut checks,
+        &crate::applicability::timeline_scope(project, edl, transcripts, measured),
+    );
+    crate::applicability::apply_request(
+        &mut checks,
+        facts,
+        crate::applicability::Requested {
+            editorial: profile.is_some(),
+            loudness_target,
+        },
+    );
     // cut_on_beat: a measurement receipt appended ONLY when a placed asset
     // carries a beat grid (a music-driven edit) — talking-head footage has no
     // music, so it never clutters the common receipt. Inserted before the
     // footage_profile metadata so that record stays last.
     if !beats.is_empty() {
         checks.push(cut_on_beat(edl, beats, CUT_ON_BEAT_TOLERANCE_MS));
+    }
+    // sources_decodable: appended when a source on the timeline has been
+    // decode-checked (its proxy was made). A cut-off or internally damaged
+    // source fails it by name, even when the export fills the gap with held
+    // frames and every stream still spans the timeline.
+    if let Some(check) = sources_decodable(project, edl) {
+        checks.push(check);
     }
     // j_l_cut: appended ONLY when the edit actually contains an offset
     // (J or L) cut — an aligned edit has none, so it never clutters the common
@@ -2868,6 +3069,7 @@ mod tests {
                 windows: vec![],
             }),
             output_report: None,
+            streams: Vec::new(),
         };
         assert!(lufs(&mk(-16.5, -2.0), -16.0, 2.0).pass);
         assert!(
@@ -2888,6 +3090,7 @@ mod tests {
             duration_ms: 0,
             loudness: None,
             output_report: None,
+            streams: Vec::new(),
         };
         assert!(!lufs(&none, -16.0, 2.0).pass);
     }
@@ -3073,6 +3276,7 @@ mod tests {
             duration_ms: 10_000,
             loudness: None,
             output_report: Some(report.clone()),
+            streams: Vec::new(),
         };
         assert!(black_or_frozen_frames(&facts_ok).pass);
         assert!(silence_at_edges(&facts_ok, 500).pass);
@@ -3092,6 +3296,7 @@ mod tests {
             duration_ms: 10_000,
             loudness: None,
             output_report: Some(report),
+            streams: Vec::new(),
         };
         assert!(!black_or_frozen_frames(&facts_bad).pass);
         let r = silence_at_edges(&facts_bad, 500);
@@ -3102,6 +3307,7 @@ mod tests {
             duration_ms: 0,
             loudness: None,
             output_report: None,
+            streams: Vec::new(),
         };
         assert!(!black_or_frozen_frames(&none).pass);
         assert!(!silence_at_edges(&none, 500).pass);
@@ -3115,16 +3321,167 @@ mod tests {
             .clips
             .push(media_clip("c1", 0, 5000));
         let edl = edl_from_project(&p); // 5000ms @ 30fps → 34ms tolerance
+                                        // Every stream as long as the container: the old container-only case.
         let mk = |d: u64| RenderFacts {
             duration_ms: d,
             loudness: None,
             output_report: None,
+            streams: vec![
+                stream(
+                    "video",
+                    0,
+                    Some(d),
+                    Some((d as f64 * 30.0 / 1000.0).round() as u64),
+                ),
+                stream("audio", 1, Some(d), None),
+            ],
         };
         assert!(duration_matches_edl(&edl, &mk(5020), 30.0, 48_000).pass);
         assert!(!duration_matches_edl(&edl, &mk(5100), 30.0, 48_000).pass);
         let ntsc = duration_matches_edl(&edl, &mk(5033), 30_000.0 / 1001.0, 48_000);
         assert_eq!(ntsc.details["video_frame_tolerance_ms"], 34);
         assert_eq!(ntsc.details["audio_sample_tolerance_ms"], 1);
+    }
+
+    fn stream(
+        kind: &str,
+        index: u32,
+        duration_ms: Option<u64>,
+        frames: Option<u64>,
+    ) -> cut_media::probe::StreamExtent {
+        cut_media::probe::StreamExtent {
+            kind: kind.into(),
+            index,
+            duration_ms,
+            frames,
+        }
+    }
+
+    /// The HQ-run truncated source: the container (and the sound) is 7.615 s,
+    /// the picture stops at 1.72 s. The container-only check passed this.
+    #[test]
+    fn duration_check_fails_a_short_picture_under_full_length_sound() {
+        let mut p = Project::new("t", ProjectSettings::default());
+        p.track_mut("v1")
+            .unwrap()
+            .clips
+            .push(media_clip("c1", 0, 7615));
+        let edl = edl_from_project(&p);
+        let facts = RenderFacts {
+            duration_ms: 7615,
+            loudness: None,
+            output_report: None,
+            streams: vec![
+                stream("video", 0, Some(1720), Some(52)),
+                stream("audio", 1, Some(7615), None),
+            ],
+        };
+        let check = duration_matches_edl(&edl, &facts, 30.0, 48_000);
+        assert!(
+            !check.pass,
+            "a 1.72 s picture on a 7.615 s timeline must fail"
+        );
+        let reason = check.details["reason"].as_str().unwrap();
+        assert!(
+            reason
+                .starts_with("The video in the file is 1.72 s (52 frames) but the timeline is 7.6"),
+            "{reason}"
+        );
+        assert!(reason.ends_with(" s (228 frames)."), "{reason}");
+        assert_eq!(check.evidence["streams"][0]["duration_ok"], false);
+        assert_eq!(check.evidence["streams"][1]["duration_ok"], true);
+        // A short SOUND under a full picture fails the same way.
+        let facts = RenderFacts {
+            streams: vec![
+                stream("video", 0, Some(7615), Some(228)),
+                stream("audio", 1, Some(3000), None),
+            ],
+            ..facts
+        };
+        let check = duration_matches_edl(&edl, &facts, 30.0, 48_000);
+        assert!(!check.pass);
+        assert!(check.details["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("The sound in the file is 3.00 s"));
+        // Right duration but frames missing (a frozen tail written as one long
+        // frame) fails on the count.
+        let facts = RenderFacts {
+            streams: vec![stream("video", 0, Some(7615), Some(60))],
+            ..facts
+        };
+        assert!(!duration_matches_edl(&edl, &facts, 30.0, 48_000).pass);
+    }
+
+    #[test]
+    fn sources_decodable_names_a_damaged_source_and_is_absent_when_unchecked() {
+        let mut p = Project::new("t", ProjectSettings::default());
+        p.track_mut("v1")
+            .unwrap()
+            .clips
+            .push(media_clip("c1", 0, 5000));
+        let asset = |probe: serde_json::Value| cut_core::Asset {
+            path: "/media/mid.mp4".into(),
+            hash: "sha256:00".into(),
+            probe: Some(probe),
+            transcript: None,
+            perception: None,
+            proxy: None,
+            filmstrip: None,
+        };
+        p.assets
+            .insert("a1".into(), asset(json!({"kind": "video"})));
+        let edl = edl_from_project(&p);
+        assert!(
+            sources_decodable(&p, &edl).is_none(),
+            "nothing checked, nothing claimed"
+        );
+        p.assets.insert(
+            "a1".into(),
+            asset(json!({"kind": "video", "decode_check": {"checked_by": "proxy",
+                "warning": "59 of 780 frames of picture cannot be read: the file is damaged inside."}})),
+        );
+        assert!(
+            sources_decodable(&p, &edl).is_none(),
+            "a decode check this engine did not make (a received cache) is not a fact"
+        );
+        p.mark_probe_verified("a1");
+        let check = sources_decodable(&p, &edl).unwrap();
+        assert!(!check.pass);
+        assert_eq!(
+            check.details["reason"],
+            "mid.mp4: 59 of 780 frames of picture cannot be read: the file is damaged inside."
+        );
+        p.assets.insert(
+            "a1".into(),
+            asset(json!({"kind": "video", "decode_check": {"checked_by": "proxy"}})),
+        );
+        assert!(
+            sources_decodable(&p, &edl).is_none(),
+            "a received 'decodes fully' never passes the check"
+        );
+        p.mark_probe_verified("a1");
+        assert!(sources_decodable(&p, &edl).unwrap().pass);
+    }
+
+    /// No measured streams: the check says so and does not pass.
+    #[test]
+    fn duration_check_without_measured_streams_is_unmeasured_not_passed() {
+        let mut p = Project::new("t", ProjectSettings::default());
+        p.track_mut("v1")
+            .unwrap()
+            .clips
+            .push(media_clip("c1", 0, 5000));
+        let edl = edl_from_project(&p);
+        let facts = RenderFacts {
+            duration_ms: 5000,
+            loudness: None,
+            output_report: None,
+            streams: Vec::new(),
+        };
+        let check = duration_matches_edl(&edl, &facts, 30.0, 48_000);
+        assert!(!check.pass);
+        assert_eq!(check.details["status"], "unmeasured");
     }
 
     // ---------------- footage profiles (the footage-profile contract) ----------------
@@ -3176,11 +3533,36 @@ mod tests {
             duration_ms,
             loudness: report.loudness.clone(),
             output_report: Some(report),
+            // A correct render: every stream spans the timeline (30 fps).
+            streams: vec![
+                stream(
+                    "video",
+                    0,
+                    Some(duration_ms),
+                    Some(cut_core::timeline_frame_count(duration_ms, 30.0)),
+                ),
+                stream("audio", 1, Some(duration_ms), None),
+            ],
         }
     }
 
     fn silent_project(duration_ms: u64) -> Project {
         let mut p = Project::new("t", ProjectSettings::default());
+        // A screen recording WITH a (silent) sound stream: the sound checks
+        // apply and measure silence. Without a sound stream they would not
+        // apply at all (applicability.rs).
+        p.assets.insert(
+            "a1".into(),
+            cut_core::Asset {
+                path: "/screen.mp4".into(),
+                hash: "sha256:screen".into(),
+                probe: Some(json!({"kind": "video", "has_audio": true})),
+                transcript: None,
+                perception: None,
+                proxy: None,
+                filmstrip: None,
+            },
+        );
         p.track_mut("v1")
             .unwrap()
             .clips
@@ -3219,8 +3601,16 @@ mod tests {
         let edl = edl_from_project(&p);
         let facts = silent_screen_facts(dur);
 
-        // Default battery (talking_head): the 4 by-design failures fire.
-        let th = run_all(&p, &edl, &[], &facts, &[]);
+        // Explicit talking_head battery: the 3 by-design failures fire;
+        // caption_presence does not apply (the export has no captions).
+        let th = run_all_with_profile(
+            &p,
+            &edl,
+            &[],
+            &facts,
+            &[],
+            Some(FootageProfile::TalkingHead),
+        );
         let failing: Vec<&str> = th
             .iter()
             .filter(|c| !c.pass)
@@ -3228,14 +3618,11 @@ mod tests {
             .collect();
         assert_eq!(
             failing,
-            vec![
-                "lufs",
-                "caption_presence",
-                "black_or_frozen_frames",
-                "silence_at_edges"
-            ],
-            "talking_head must fail exactly the 4 silent-footage checks"
+            vec!["lufs", "black_or_frozen_frames", "silence_at_edges"],
+            "talking_head must fail exactly the 3 silent-footage checks"
         );
+        let captions = th.iter().find(|c| c.name == "caption_presence").unwrap();
+        assert_eq!(captions.details["status"], "not_applicable");
         // ... and the appended metadata entry PROPOSES the right profile.
         let meta = th
             .iter()
@@ -3243,7 +3630,7 @@ mod tests {
             .expect("metadata entry");
         assert!(meta.pass);
         assert_eq!(meta.details["active_profile"], "talking_head");
-        assert_eq!(meta.details["selection"], "default");
+        assert_eq!(meta.details["selection"], "explicit");
         assert_eq!(meta.details["proposed_profile"], "silent_screen_demo");
 
         // Explicit silent_screen_demo: everything passes, waivers recorded.
@@ -3263,7 +3650,7 @@ mod tests {
                 .map(|c| &c.name)
                 .collect::<Vec<_>>()
         );
-        for name in ["lufs", "caption_presence", "silence_at_edges"] {
+        for name in ["lufs", "silence_at_edges"] {
             let c = sd.iter().find(|c| c.name == name).unwrap();
             assert_eq!(
                 c.details["waived_by_profile"], "silent_screen_demo",
@@ -3286,6 +3673,36 @@ mod tests {
         assert_eq!(meta.details["selection"], "explicit");
     }
 
+    /// A plain export (no profile, no loudness target): the delivery standards
+    /// do not apply, so silent footage is judged only on what it shows.
+    #[test]
+    fn a_plain_export_is_not_judged_against_unasked_standards() {
+        let dur = 20_000;
+        let p = silent_project(dur);
+        let edl = edl_from_project(&p);
+        let facts = silent_screen_facts(dur);
+        let plain = run_all(&p, &edl, &[], &facts, &[]);
+        for name in ["lufs", "silence_at_edges"] {
+            let c = plain.iter().find(|c| c.name == name).unwrap();
+            assert_eq!(c.details["status"], "not_applicable", "{name}: {c:?}");
+        }
+        let target = run_all_for_export(
+            &p,
+            &edl,
+            &[],
+            &facts,
+            &[],
+            None,
+            Some(-23.0),
+            &crate::applicability::MeasuredSources::new(),
+        );
+        let lufs = target.iter().find(|c| c.name == "lufs").unwrap();
+        assert_eq!(
+            lufs.details["target_lufs"], -23.0,
+            "measured against the target set"
+        );
+    }
+
     #[test]
     fn screen_demo_still_fails_stuck_render_and_black() {
         // One frozen span covering 96% of the render = stuck output.
@@ -3299,6 +3716,7 @@ mod tests {
             duration_ms: dur,
             loudness: None,
             output_report: Some(report.clone()),
+            streams: Vec::new(),
         };
         let r = black_or_frozen_frames_screen_demo(&facts);
         assert!(
@@ -3317,6 +3735,7 @@ mod tests {
             duration_ms: dur,
             loudness: None,
             output_report: Some(report2),
+            streams: Vec::new(),
         };
         assert!(!black_or_frozen_frames_screen_demo(&facts2).pass);
 
@@ -3325,6 +3744,7 @@ mod tests {
             duration_ms: 0,
             loudness: None,
             output_report: None,
+            streams: Vec::new(),
         };
         assert!(!black_or_frozen_frames_screen_demo(&none).pass);
     }
@@ -3380,6 +3800,7 @@ mod tests {
                 duration_ms: 10_000,
                 loudness: None,
                 output_report: Some(r),
+                streams: Vec::new(),
             }
         };
         let full = crate::types::ContentBbox {
@@ -3436,6 +3857,7 @@ mod tests {
             duration_ms: 0,
             loudness: None,
             output_report: None,
+            streams: Vec::new(),
         };
         assert!(!uniform_border(&none).pass);
     }

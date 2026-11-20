@@ -73,6 +73,29 @@ pub(super) fn has_active_capture() -> bool {
         .is_empty()
 }
 
+/// The one active capture, if any: its id, its project (absent for a
+/// disposable rehearsal) and its control. Read-only; nothing is changed.
+pub(super) fn active_capture_snapshot() -> Option<(String, Option<PathBuf>, CaptureSessionControl)>
+{
+    capture_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .next()
+        .map(|(id, entry)| (id.clone(), entry.project_dir.clone(), entry.control.clone()))
+}
+
+/// True while `capture_id` is still reserved by this process (its worker has
+/// not finished publishing terminal evidence).
+/// Whether a capture worker still owns `capture_id` (it is recording, or it
+/// is still writing its take after Stop).
+pub(crate) fn is_capture_active(capture_id: &str) -> bool {
+    capture_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(capture_id)
+}
+
 fn camera_owners() -> &'static Mutex<HashMap<String, CameraOwnerEntry>> {
     CAMERA_OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -90,6 +113,15 @@ pub(super) fn active_capture_control(capture_id: &str) -> Option<CaptureSessionC
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(capture_id)
         .map(|entry| entry.control.clone())
+}
+
+/// The project folder of an active capture, as reserved.
+pub(super) fn active_capture_project_dir(capture_id: &str) -> Option<PathBuf> {
+    capture_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(capture_id)
+        .and_then(|entry| entry.project_dir.clone())
 }
 
 /// Atomically claim the exact active screen reservation before constructing a
@@ -251,7 +283,19 @@ fn reserve_capture_for_project(
     let mut map = capture_sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(active_id) = map.keys().next() {
+    if let Some((active_id, entry)) = map.iter().next() {
+        if entry.control.stop_requested() {
+            // Stop already returned (or gave up waiting) while the take is
+            // still being written: say so instead of "already active".
+            return Err(CutError::new(
+                error_codes::CONFLICT,
+                "the previous recording is still being saved",
+                format!("capture {active_id} stopped and is still writing its file"),
+            )
+            .with_suggested_action(
+                "wait until it is saved (screen_record.status shows it), then start the new recording",
+            ));
+        }
         return Err(CutError::new(
             error_codes::CONFLICT,
             "a screen recording is already active",
@@ -380,6 +424,19 @@ mod tests {
         assert!(
             capture_sessions().lock().unwrap().contains_key(&id),
             "ownership remains until worker cleanup"
+        );
+
+        // Row 183: after Stop, the next Start is told the take is still being
+        // saved, not that a recording is active or the audio is in use.
+        let saving = reserve_capture_for_project(
+            format!("cap_test_third_{}", std::process::id()),
+            CaptureSessionControl::new(None, false, false, false),
+            Some(project_root.path().to_path_buf()),
+        )
+        .expect_err("still owned while saving");
+        assert_eq!(
+            saving.message,
+            "the previous recording is still being saved"
         );
 
         drop(reservation);

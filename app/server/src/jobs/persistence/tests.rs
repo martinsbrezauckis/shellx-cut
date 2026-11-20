@@ -435,3 +435,87 @@ fn interrupted_records_are_recovered_with_an_atomic_terminal_write() {
     assert_eq!(persisted.outcome, Some(JobOutcome::Interrupted));
     assert_eq!(persisted.error.as_ref().unwrap().code, "job_failed");
 }
+
+#[test]
+fn an_oversized_job_record_is_set_aside_unread() {
+    let project = tempfile::tempdir().unwrap();
+    let jobs = project.path().join("jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    // A valid record followed by whitespace, one byte over the limit: before
+    // the limit it was read whole and accepted.
+    let mut body = serde_json::to_vec(&record("job_007", JobState::Done)).unwrap();
+    body.resize(64 * 1024 * 1024 + 1, b' ');
+    std::fs::write(jobs.join("job_007.json"), &body).unwrap();
+
+    let recovered = recover(project.path()).unwrap();
+
+    assert!(recovered.records.is_empty());
+    assert_eq!(recovered.notices.len(), 1);
+    assert_eq!(recovered.notices[0].record, "job_007.json");
+    assert!(
+        recovered.notices[0].message.contains("larger than 64 MiB"),
+        "{:?}",
+        recovered.notices[0]
+    );
+    assert!(!jobs.join("job_007.json").exists());
+}
+
+#[test]
+fn a_planted_huge_sequence_number_does_not_move_the_job_counter() {
+    let project = tempfile::tempdir().unwrap();
+    let jobs = project.path().join("jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(jobs.join("job_18446744073709551615.json"), b"{not json").unwrap();
+    std::fs::write(
+        jobs.join("job_004.json"),
+        serde_json::to_vec(&record("job_004", JobState::Done)).unwrap(),
+    )
+    .unwrap();
+
+    let recovered = recover(project.path()).unwrap();
+
+    assert_eq!(recovered.next_seq, 4);
+}
+
+#[test]
+fn job_history_past_the_budget_stays_on_disk_and_is_reported_once() {
+    let project = tempfile::tempdir().unwrap();
+    let jobs = project.path().join("jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    for sequence in 1..=5 {
+        let id = format!("job_{sequence:03}");
+        std::fs::write(
+            jobs.join(format!("{id}.json")),
+            serde_json::to_vec(&record(&id, JobState::Done)).unwrap(),
+        )
+        .unwrap();
+    }
+    for sequence in 6..=9 {
+        std::fs::write(jobs.join(format!("job_{sequence:03}.json")), b"{not json").unwrap();
+    }
+
+    let recovered = recover_within(project.path(), LoadBudget::new(3, u64::MAX, 1)).unwrap();
+
+    assert!(recovered.records.len() <= 3, "{}", recovered.records.len());
+    assert_eq!(recovered.next_seq, 9, "names left unread still count");
+    let summary = recovered.notices.last().expect("a summary notice");
+    assert_eq!(summary.code, "job_history_not_loaded");
+    let quarantined = recovered
+        .notices
+        .iter()
+        .filter(|notice| notice.code == "job_record_quarantined")
+        .count();
+    assert!(quarantined <= 1, "{quarantined}");
+    let on_disk = std::fs::read_dir(&jobs)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "json")
+        })
+        .count();
+    assert_eq!(on_disk + quarantined, 9, "nothing is deleted");
+}

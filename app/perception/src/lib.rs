@@ -12,7 +12,9 @@
 //!   uniform_border gates on BOTH profiles)
 //! Primary callers: server (cutd) job system + verify verbs.
 
+pub mod applicability;
 pub mod candidates;
+cut_core::isolate_test_process!();
 pub mod checks;
 pub mod diarize;
 pub mod output_checks;
@@ -20,12 +22,16 @@ pub mod prepared_stt;
 pub mod sidecar;
 pub mod types;
 
+pub use applicability::{
+    apply_request, apply_scope, timeline_scope, MeasuredSources, Requested, SourceFacts,
+    TimelineScope,
+};
 pub use candidates::{clip_candidates, CandidateOpts, ClipCandidate};
 pub use checks::{
     brand_check, caption_qc, delivery, pacing, pregate, propose_profile, run_all,
-    run_all_with_profile, uniform_border, BrandSpec, CaptionQcOpts, DeliveryOpts, FootageProfile,
-    PregateOpts, PregateReport, PregateRisk, ProfileProposal, RenderFacts,
-    CUT_ON_WORD_TOLERANCE_MS, FOOTAGE_PROFILE_CHECK, STUCK_RENDER_MIN_FRACTION,
+    run_all_for_export, run_all_with_profile, uniform_border, BrandSpec, CaptionQcOpts,
+    DeliveryOpts, FootageProfile, PregateOpts, PregateReport, PregateRisk, ProfileProposal,
+    RenderFacts, CUT_ON_WORD_TOLERANCE_MS, FOOTAGE_PROFILE_CHECK, STUCK_RENDER_MIN_FRACTION,
     UNIFORM_BORDER_MAX_INSET_PX,
 };
 pub use diarize::{apply_diarization, assign_word_speakers, ASSIGN_TOL_MS};
@@ -33,8 +39,9 @@ pub use output_checks::{output_checks_with_profile, OutputChecks};
 pub use prepared_stt::{prepared_stt_model, PreparedSttModel};
 pub use sidecar::{
     appdata_sidecar_dir, apply_python_command_policy, build_contact_sheet,
-    build_contact_sheet_owned, build_qc_sheet, build_qc_sheet_owned, configured_sidecar_python,
-    effective_stt_selection, load_report, native_runtime_context, premium_sidecar_runtime,
+    build_contact_sheet_owned, build_qc_sheet, build_qc_sheet_owned, captions_not_installed_error,
+    captions_setup_action, configured_sidecar_python, effective_stt_selection,
+    is_captions_not_installed, load_report, native_runtime_context, premium_sidecar_runtime,
     read_stt_setting, run_instruments, run_instruments_owned, run_instruments_owned_ephemeral,
     run_instruments_owned_progress, run_instruments_progress, run_subject, run_subject_owned,
     sidecar_paths, sidecar_runtime, stt_settings_path, transcribe, transcribe_owned_progress,

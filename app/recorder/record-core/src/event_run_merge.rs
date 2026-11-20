@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error_codes, ClickSample, CursorCorrelation, CursorSample, EventTrack, KeySample, RecordError,
-    Result, ScrollSample, Settings,
+    error_codes, ClickSample, CursorCoordinateState, CursorCorrelation, CursorSample, EventTrack,
+    KeySample, RecordError, Result, ScrollSample, Settings,
 };
 
 /// One input-event track from an already-sealed recording run.
@@ -84,6 +84,13 @@ pub fn merge_sealed_event_tracks(runs: &[SealedEventTrackRun]) -> Result<MergedE
                 &mut merged.cursor_correlation,
                 &run.events.cursor_correlation,
             )?;
+            if merged.cursor_correlation.state != run.events.cursor_correlation.state
+                || merged.cursor_correlation.detail != run.events.cursor_correlation.detail
+            {
+                merged.cursor_correlation.state = state_from_counts(&merged.cursor_correlation);
+                merged.cursor_correlation.detail =
+                    Some("coordinate quality varies across sealed recording segments".into());
+            }
         }
         previous_end = run_end;
     }
@@ -160,10 +167,24 @@ fn valid_fps(fps: f32) -> bool {
 }
 
 fn same_correlation_contract(left: &CursorCorrelation, right: &CursorCorrelation) -> bool {
-    left.source == right.source
-        && left.state == right.state
-        && left.max_metadata_age_ms == right.max_metadata_age_ms
-        && left.detail == right.detail
+    left.source == right.source && left.max_metadata_age_ms == right.max_metadata_age_ms
+}
+
+fn state_from_counts(correlation: &CursorCorrelation) -> CursorCoordinateState {
+    if correlation.approximate_clicks != 0
+        || (correlation.unavailable_clicks != 0
+            && (correlation.held_clicks != 0 || correlation.exact_clicks != 0))
+    {
+        CursorCoordinateState::Approximate
+    } else if correlation.unavailable_clicks != 0 {
+        CursorCoordinateState::Unavailable
+    } else if correlation.held_clicks != 0 {
+        CursorCoordinateState::Held
+    } else if correlation.exact_clicks != 0 {
+        CursorCoordinateState::Exact
+    } else {
+        CursorCoordinateState::Unavailable
+    }
 }
 
 fn validate_cursor(samples: &[CursorSample], events: &EventTrack, index: usize) -> Result<()> {
@@ -299,6 +320,7 @@ fn checked_timestamp(offset_ms: u64, timestamp_ms: u64, run_index: usize) -> Res
 
 fn add_correlation_counts(output: &mut CursorCorrelation, input: &CursorCorrelation) -> Result<()> {
     output.exact_clicks = checked_count(output.exact_clicks, input.exact_clicks)?;
+    output.held_clicks = checked_count(output.held_clicks, input.held_clicks)?;
     output.approximate_clicks = checked_count(output.approximate_clicks, input.approximate_clicks)?;
     output.unavailable_clicks = checked_count(output.unavailable_clicks, input.unavailable_clicks)?;
     Ok(())

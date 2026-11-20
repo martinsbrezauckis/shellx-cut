@@ -1,5 +1,6 @@
 // statusbar — bottom status bar (status-bar contract).
 // Left→right: connection dot+label · live job pills (orange dot, name, %) ·
+// failed-job pills (red dot, what failed and why, Details, dismiss) ·
 // spacer · last-receipt chip (PASS green / FAIL red — receipts are first-class
 // citizens, never toasts) · playhead/selection readout · build id.
 // Connection state comes from the shared event singleton. Active jobs use the
@@ -10,13 +11,16 @@
 import { useEffect, useState } from 'react'
 import { Icon } from '../icons'
 import { callVerb, type Project, type RenderReceipt } from '../lib/client'
-import { envHealthLevel, type DoctorReport } from '../lib/doctor'
+import { envHealthLevel, optionalExtrasNote, type DoctorReport } from '../lib/doctor'
 import { events, type ConnectionState } from '../lib/events'
-import { folderTail, getStoredOutputDir } from '../lib/exportDestination'
+import { folderName } from '../lib/exportDestination'
+import { outputFolderLabel, outputFolderTitle } from '../lib/outputFolderStatus'
+import { useOutputFolderStatus, useOutputFolderSync } from '../lib/useOutputFolder'
 import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import { useTimeDisplay } from '../lib/timedisplay'
 import { formatClock } from '../panels/Timeline/layout'
 import { useTopbarJobs } from '../topbar/useTopbarJobs'
+import { FailedJobRows } from './FailedJobRows'
 import { receiptSummary } from './receiptSummary'
 import '../panels/Environment/environment.css'
 import './statusbar.css'
@@ -62,8 +66,10 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [jobCancelErrors, setJobCancelErrors] = useState<Record<string, string>>({})
   const [jobCancelPending, setJobCancelPending] = useState<Record<string, true>>({})
-  const [outputDir, setOutputDir] = useState<string | null>(() => getStoredOutputDir())
-  const { jobList, retryJobList, removeJob } = useTopbarJobs()
+  useOutputFolderSync()
+  const outputFolder = useOutputFolderStatus()
+  const outputDir = outputFolder?.dir ?? null
+  const { jobList, retryJobList, failedJobs, removeJob, dismissFailedJob } = useTopbarJobs()
   const timeMode = useTimeDisplay() // keep the bar's readout in lockstep with the timeline toggle
   const fps = project?.settings.fps ?? 30
 
@@ -106,12 +112,6 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
     return offStatus
   }, [])
 
-  useEffect(() => {
-    const onExportDir = (event: Event) => setOutputDir((event as CustomEvent<string | null>).detail ?? null)
-    window.addEventListener('cut:export-output-dir', onExportDir)
-    return () => window.removeEventListener('cut:export-output-dir', onExportDir)
-  }, [])
-
   const lastReceipt = receipts.length ? receipts[receipts.length - 1] : null
   // Use the connected endpoint rather than an assumed default because cutd can
   // bind a caller-selected address.
@@ -134,7 +134,7 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
             className={`sb-env ${env.cls}`}
             data-cut-env-chip
             data-cut-env-essential-ok={doctor ? doctor.essential_ok : 'unknown'}
-            title="Open Settings for video tools, captions, optional services, and app information"
+            title={`Open Settings for video tools, captions, optional services, and app information.${optionalExtrasNote(doctor) ? ` ${optionalExtrasNote(doctor)}` : ''}`}
             onClick={() => onOpenEnvironment('overview')}
           >
             <span className="sb-env-dot" />
@@ -144,15 +144,17 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
       })()}
 
       <button
-        className="sb-output"
+        className={outputFolder && !outputFolder.usable ? 'sb-output sb-output--unusable' : 'sb-output'}
         data-cut-output-chip
         data-cut-output-dir={outputDir ?? ''}
-        title={outputDir ? `Default export folder: ${outputDir}` : 'Default export folder: each project /exports folder'}
+        data-cut-output-usable={outputFolder ? String(outputFolder.usable) : ''}
+        title={outputFolderTitle(outputFolder)}
         onClick={() => onOpenEnvironment('general')}
       >
         <Icon name="folder" size={14} />
         <span className="sb-output-label">export folder:</span>
-        <span className="sb-output-path">{outputDir ? folderTail(outputDir) : 'project exports'}</span>
+        {outputFolder && !outputFolder.usable && <span className="sb-output-warn">unavailable:</span>}
+        <span className="sb-output-path">{outputFolderLabel(outputFolder && outputFolder.dir ? { ...outputFolder, usable: true } : outputFolder, folderName)}</span>
       </button>
 
       {jobList.map((j) => {
@@ -162,7 +164,7 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
         return (
           <span key={j.job_id} className="sb-job" data-cut-job={j.job_id} title={`${label} · ${progress} · ${j.job_id}`}>
             <span className="sb-job-dot" />
-            {label}
+            <span className="sb-job-label">{label}</span>
             <span className="sb-job-pct">{progress}</span>
             <button
               type="button"
@@ -204,6 +206,12 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
           </span>
         )
       })}
+
+      <FailedJobRows
+        failed={failedJobs}
+        onDismiss={dismissFailedJob}
+        onOpenDetails={() => onOpenEnvironment('health-recovery')}
+      />
 
       <span className="sb-spacer" />
 

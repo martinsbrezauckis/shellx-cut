@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import type { OpRecord, Project, ProjectIdentity } from '../src/lib/client'
 import {
   applyProjectDelta,
+  loadProjectHistoryOnce,
   loadProjectOpsPages,
   mergeProjectOps,
   needsColdHistoryLoad,
@@ -197,6 +198,46 @@ projectHistoryGeneration += 1 // confirmed no_project invalidates the old histor
 releaseDeferredFinalPage()
 assert.equal(await discardedForConfirmedClose, null, 'a confirmed close before a deferred final page resolves discards the old project history')
 
+const unhandledHistoryFailures: unknown[] = []
+const observeHistoryFailure = (reason: unknown) => { unhandledHistoryFailures.push(reason) }
+process.on('unhandledRejection', observeHistoryFailure)
+try {
+  const pending: { current: Promise<boolean> | null } = { current: null }
+  let rejectHistory: (error: Error) => void = () => undefined
+  let historyLoads = 0
+  const failure = new Error('history transport interrupted')
+  const task = loadProjectHistoryOnce(pending, () => {
+    historyLoads += 1
+    return new Promise<boolean>((_resolve, reject) => { rejectHistory = reject })
+  })
+  assert.strictEqual(loadProjectHistoryOnce(pending, async () => {
+    historyLoads += 1
+    return true
+  }), task, 'concurrent history readers share the original request')
+  const observedFailure = task.catch((error: unknown) => error)
+  rejectHistory(failure)
+  assert.strictEqual(await observedFailure, failure, 'the caller receives the original failure')
+  await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+  assert.deepEqual(unhandledHistoryFailures, [], 'history cleanup must not create a detached rejected promise')
+  assert.equal(historyLoads, 1, 'concurrent readers never start a duplicate history load')
+  assert.equal(pending.current, null, 'failure releases the in-flight slot for a retry')
+  assert.equal(await loadProjectHistoryOnce(pending, async () => true), true, 'history can load after a failed request')
+
+  let completeOld: (value: boolean) => void = () => undefined
+  let completeNew: (value: boolean) => void = () => undefined
+  const oldTask = loadProjectHistoryOnce(pending, () => new Promise<boolean>((resolve) => { completeOld = resolve }))
+  pending.current = null // the App project reset invalidates the old request
+  const newTask = loadProjectHistoryOnce(pending, () => new Promise<boolean>((resolve) => { completeNew = resolve }))
+  completeOld(true)
+  await oldTask
+  assert.strictEqual(pending.current, newTask, 'old-project completion cannot clear the new history request')
+  completeNew(true)
+  await newTask
+  assert.equal(pending.current, null, 'successful completion releases its own request')
+} finally {
+  process.off('unhandledRejection', observeHistoryFailure)
+}
+
 let releaseBurst: () => void = () => undefined
 const burstGate = new Promise<void>((resolve) => { releaseBurst = resolve })
 let burstPulls = 0
@@ -322,7 +363,7 @@ assert.doesNotMatch(transcriptSource, /callVerb\(\s*['"]project\.ops['"]/, 'Tran
 assert.doesNotMatch(transcriptSource, /setOps\(/, 'Transcript does not maintain a competing history cache')
 assert.match(workspaceSource, /<LeftPanel[\s\S]*ops=\{ops\}/, 'AppWorkspace forwards the authoritative history to LeftPanel')
 assert.match(leftPanelSource, /<Transcript[\s\S]*ops=\{ops\}/, 'LeftPanel forwards the authoritative history to Transcript')
-assert.match(appSource, /if \(ev\.kind === 'import_chain' \|\| ev\.kind === 'enrich' \|\| ev\.progress >= 1\) \{\s*void syncProject\(true\)/, 'job-progress state refreshes enter the shared snapshot coalescer')
+assert.match(appSource, /if \(ev\.kind === 'import_chain' \|\| ev\.kind === 'enrich' \|\| ev\.terminal\) \{\s*void syncProject\(true\)/, 'job-progress state refreshes enter the shared snapshot coalescer')
 assert.match(appSource, /response\?\.mode === 'no_project'[\s\S]*setProject\(null\)/, 'a confirmed no_project reconnect clears the visible stale workspace')
 assert.match(appSource, /const resetProjectScopedUi[\s\S]*historyLoadGeneration\.current \+= 1[\s\S]*fullHistoryLoad\.current = null/, 'the shared hard reset invalidates in-flight paged history before it can merge')
 assert.match(appSource, /const resetProjectScopedUi[\s\S]*setSelectedClipIds\(\[\]\)[\s\S]*setExportRange\(null\)[\s\S]*setPlayheadMs\(0\)[\s\S]*setCommentsOpen\(false\)[\s\S]*setFocusComment\(null\)[\s\S]*clearClipboard\(\)/, 'the confirmed-close reset clears selection, export, playhead, comment, and clipboard state')

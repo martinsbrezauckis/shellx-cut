@@ -245,6 +245,16 @@ pub(super) async fn poll_sub_job(
     }
 }
 
+/// The job's own words when a batch sub-job finished with some items failed
+/// (`outcome_reason: items_failed`, e.g. "done, but 1 of 3 failed").
+pub(super) fn stage_items_failed(job: &crate::jobs::JobRecord) -> Option<String> {
+    (job.outcome_reason == Some(crate::jobs::JobOutcomeReason::ItemsFailed)).then(|| {
+        job.message
+            .clone()
+            .unwrap_or_else(|| "some items failed".into())
+    })
+}
+
 /// Thread the recipe-level provenance into a stage's args `rationale` —
 /// but ONLY for verbs whose schema declares a `rationale` property. media.transcribe
 /// / edit.trim_edges do NOT accept one (additionalProperties:false), so passing it
@@ -333,9 +343,7 @@ async fn finish_recipe(
                 .unwrap_or_else(|| "a stage failed".into())
         ),
     };
-    state.jobs.finish(
-        jid,
-        json!({
+    let result = json!({
             "summary_line": summary_line,
             "recipe": recipe,
             "status": status,
@@ -346,8 +354,26 @@ async fn finish_recipe(
             "checkpoint": start_checkpoint,
             "receipt_ids": receipt_ids,
             "restore_hint": format!("project.revert{{to:\"{start_checkpoint}\"}} undoes the whole recipe run"),
-        }),
-    );
+    });
+    // The job's own state says what happened: a stopped recipe is a failed
+    // job (its report stays in the result, with the checkpoint to restore);
+    // a run with warnings is "done with warnings"; only a clean run is "done".
+    match status {
+        "completed" => state.jobs.finish(jid, result),
+        "completed_with_warnings" => state.jobs.finish_with_warnings(jid, result),
+        _ => state.jobs.fail_with_result(
+            jid,
+            CutError::new(
+                error_codes::JOB_FAILED,
+                format!("recipe {recipe}: {summary_line}"),
+                stop_reason.unwrap_or_else(|| status.to_string()),
+            )
+            .with_suggested_action(format!(
+                "Read stage_results in the job result; project.revert{{to:\"{start_checkpoint}\"}} undoes the run"
+            )),
+            result,
+        ),
+    }
 }
 
 /// recipe.run{name, args?, policy?, rationale?} — execute (or dry_run-plan) a
@@ -535,11 +561,12 @@ pub(super) async fn run_resolved_recipe(
                 .await;
             }
             // Poll a sub-job to completion if the stage produced one (auto-detect
-            // from a {job_id} result unless await_job is explicitly false).
+            // from a {job_id} result, or a render queue's {queue_id}, unless
+            // await_job is explicitly false).
             let sub = res
                 .result
                 .as_ref()
-                .and_then(|r| r.get("job_id"))
+                .and_then(|r| r.get("job_id").or_else(|| r.get("queue_id")))
                 .and_then(|v| v.as_str())
                 .map(String::from);
             if let Some(sub) = sub {
@@ -551,6 +578,28 @@ pub(super) async fn run_resolved_recipe(
                         600_000
                     };
                     match poll_sub_job(&st, &sub, cap_ms).await {
+                        // A batch stage whose items partly failed is not done:
+                        // the next stage would build on deliveries that are
+                        // missing. Stop and say which.
+                        Ok(jr) if stage_items_failed(&jr).is_some() => {
+                            sr["job_result"] = jr.result.clone().unwrap_or(Value::Null);
+                            let said = stage_items_failed(&jr).unwrap_or_default();
+                            stage_results.push(sr);
+                            return finish_recipe(
+                                &st,
+                                &jid,
+                                &recipe_name,
+                                &policy,
+                                "failed",
+                                ran,
+                                stage_results,
+                                &start_at_op,
+                                &start_checkpoint,
+                                actor.clone(),
+                                Some(format!("stage '{}' ({}): {said}", stage.id, stage.verb)),
+                            )
+                            .await;
+                        }
                         Ok(jr) => {
                             let completion_warning = matches!(
                                 jr.completion,

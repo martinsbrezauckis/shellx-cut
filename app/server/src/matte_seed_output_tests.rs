@@ -23,6 +23,9 @@ fn ordinary_rvm_and_sam2_seeds_use_portable_plain_warm_cache_leaves() {
     let picked = dir.join(format!("sha256=a2.{}.seed.png", seed.short_hash()));
     std::fs::write(&auto, b"auto").unwrap();
     std::fs::write(&picked, b"picked").unwrap();
+    // Warm only because this engine baked them (a planted seed is baked again).
+    cut_media::cache_trust::remember(&auto);
+    cut_media::cache_trust::remember(&picked);
     assert_eq!(
         rvm_seed_mask(&dir, Path::new("unused"), "sha256:a2").unwrap(),
         auto
@@ -75,4 +78,24 @@ fn ordinary_seed_static_links_fail_before_runtime_resolution() {
             .contains("unsafe")
     );
     assert_eq!(std::fs::read(outside).unwrap(), b"sentinel");
+}
+
+/// A seed mask that came with the project (not baked by this engine) is baked
+/// again instead of being given to the matte runner.
+#[test]
+fn a_planted_seed_mask_is_baked_again() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = cut_core::matte_cache::cache_dir(root.path(), true).unwrap();
+    let out = dir.join("sha256=a2.seed.png");
+    std::fs::write(&out, b"planted seed").unwrap();
+    let mut baked_again = false;
+    output::bake_seed(&out, |stage| {
+        baked_again = true;
+        std::fs::write(stage, b"engine seed")?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(baked_again, "a planted seed must not be reused");
+    assert_eq!(std::fs::read(&out).unwrap(), b"engine seed");
+    output::bake_seed(&out, |_| panic!("the engine's own seed is reused")).unwrap();
 }

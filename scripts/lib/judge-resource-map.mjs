@@ -3,9 +3,13 @@ const JUDGE_TARGET_ROOT = 'perception/judge/'
 
 export const JUDGE_RESOURCE_FILES = Object.freeze([
   'judge.py',
+  'judge_files.py',
+  'project_folders.py',
   'adapters/antigravity_judge.py',
   'adapters/cli_judge.py',
   'adapters/codex_judge.py',
+  'adapters/codex_judge_policy.py',
+  'adapters/codex_judge_runtime.py',
   'adapters/diagnostics.py',
   'adapters/grok_judge.py',
   'adapters/grok_tool_policy.py',
