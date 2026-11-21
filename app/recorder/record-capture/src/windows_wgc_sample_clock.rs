@@ -22,6 +22,12 @@ impl WgcSampleClock {
         }
     }
 
+    /// A rotated writer shares the existing capture session. Its delayed
+    /// callbacks are real updates, even when stamped before the planned cut.
+    pub(crate) fn for_continuous_writer(capture_origin_hns: i64) -> Self {
+        Self::with_reserved_boundary(capture_origin_hns)
+    }
+
     #[cfg(test)]
     pub(crate) fn timestamp(&mut self, native: i64) -> Result<i64, &'static str> {
         self.admit_timestamp(native)?
@@ -222,6 +228,15 @@ mod tests {
         assert_eq!(second.admit_timestamp(229_500_000), Ok(Some(0)));
         assert_eq!(second.admit_timestamp(230_100_000), Ok(Some(100_000)));
         assert!(second.admit_timestamp(230_100_000).is_err());
+    }
+
+    #[test]
+    fn continuous_next_writer_keeps_every_late_delivered_native_update() {
+        let mut clock = WgcSampleClock::for_continuous_writer(80_000_000);
+        assert_eq!(clock.admit_timestamp(229_500_000), Ok(Some(0)));
+        assert_eq!(clock.admit_timestamp(229_666_667), Ok(Some(166_667)));
+        assert_eq!(clock.admit_timestamp(229_833_334), Ok(Some(333_334)));
+        assert_eq!(clock.admit_timestamp(230_100_000), Ok(Some(600_000)));
     }
 
     #[test]

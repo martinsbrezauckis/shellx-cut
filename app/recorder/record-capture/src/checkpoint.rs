@@ -95,13 +95,10 @@ impl Checkpoints {
         self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe, None)
     }
 
-    /// macOS rotation: publish after reading the closed file's container
-    /// facts without decoding it. A full decode of a 15 s 4K segment took about
-    /// 3.9 s, and the next segment cannot start before this publication, so
-    /// every rotation froze the take for that long. The frames are decoded
-    /// anyway when the constant-rate part is made (during the recording or at
-    /// Stop); a segment that cannot be decoded then is reported in the take's
-    /// notes and the picture before it is held.
+    /// Publish the closed macOS writer's container facts without a full decode.
+    /// Capture already feeds the next private writer. Constant-rate preparation
+    /// performs decoding in the background, retaining the existing recovery and
+    /// held-picture checks for a segment that cannot be decoded.
     #[cfg_attr(
         not(all(target_os = "macos", feature = "capture-macos")),
         allow(dead_code)
@@ -198,7 +195,7 @@ impl Checkpoints {
         // A segment with any accepted native frame still follows ordinary
         // verification; failures there must not be hidden by this fallback.
         let held_tail = timing.is_some_and(|observation| {
-            observation.accepted_frames() == 0 && observation.control_stop_succeeded()
+            observation.accepted_frames() == 0 && observation.successful_segment_seal()
         }) && sequence > 0;
         if held_tail {
             materialize_empty_wgc_tail(
@@ -391,7 +388,20 @@ fn materialize_held_frame(
     }
     let held = PrivateStaging::create(root, "held-frame", "segment.mp4")
         .map_err(|cause| error(&format!("reserve held frame: {cause}")))?;
-    let filter = format!("select=eq(n\\,{}),setpts=PTS-STARTPTS", frames - 1);
+    // A sparse native sample can last seconds. Clone its picture at the take's
+    // cadence so the one-frame file cannot exceed a short empty Stop tail.
+    let cadence = manifest
+        .start
+        .output_cadence
+        .filter(|rate| rate.den != 0 && rate.num != 0)
+        .map_or_else(
+            || "30/1".to_string(),
+            |rate| format!("{}/{}", rate.num, rate.den),
+        );
+    let filter = format!(
+        "select=eq(n\\,{}),setpts=PTS-STARTPTS,fps={cadence}",
+        frames - 1
+    );
     let control =
         cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(120), || false);
     let mut cmd = Command::new(ffmpeg);

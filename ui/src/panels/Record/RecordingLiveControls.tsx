@@ -44,11 +44,7 @@ export function RecordingLiveControls({
   const pauseAvailable = pauseEnabled && (
     pauseState === 'recording' || pauseState === 'paused' || pauseState === 'pausing' || pauseState === 'resuming'
   )
-  const pauseReason = pauseEnabled
-    ? pauseMessage
-    : pauseCapability.supported
-      ? 'Pause & resume was not enabled before this recording started.'
-      : pauseCapability.detail
+  const pauseReason = pauseMessage
   return (
     <section className="rec-live-controls" data-cut-rec-live-controls aria-label="Live recording controls">
       <div className="rec-live-controls__transport">

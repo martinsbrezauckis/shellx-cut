@@ -5,6 +5,7 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf
 
 const picker = read('../../app/recorder/record-capture/src/windows_picker.rs')
 const windowsCapture = read('../../app/recorder/record-capture/src/windows.rs')
+const windowsSource = read('../../app/recorder/record-capture/src/windows_capture_source.rs')
 const macosCapture = read('../../app/recorder/record-capture/src/macos.rs')
 const macosTarget = read('../../app/recorder/record-capture/src/macos_capture_target.rs')
 const identity = read('../../app/recorder/record-capture/src/window_target.rs')
@@ -18,13 +19,45 @@ assert.match(identity, /macos-scwindow-v1/, 'macOS ids are explicitly versioned'
 assert.match(identity, /hwnd != 0 && pid != 0/, 'Windows refuses zero native identities')
 assert.match(identity, /Fixture Window.*None/, 'a display title cannot parse as a Windows target')
 
-assert.match(picker, /GetWindowThreadProcessId/, 'Windows binds each HWND to its current process')
-assert.match(picker, /QueryFullProcessImageNameW/, 'Windows returns truthful owning-process metadata')
-assert.match(picker, /current_pid != expected_pid/, 'capture revalidates against HWND reuse')
-assert.match(picker, /window_is_capturable/, 'capture revalidates current window eligibility')
-assert.match(windowsCapture, /resolve_window\(window_id\)/, 'WGC consumes the exact enumerated identity')
-assert.match(windowsCapture, /from_raw_hwnd/, 'WGC opens the resolved HWND directly')
-assert.doesNotMatch(windowsCapture, /from_contains_name/, 'WGC never searches by title substring')
+function assertWindowsWindowIdentity(capture: string, source: string, currentPicker: string) {
+  assert.match(currentPicker, /GetWindowThreadProcessId/, 'Windows binds each HWND to its current process')
+  assert.match(currentPicker, /QueryFullProcessImageNameW/, 'Windows returns truthful owning-process metadata')
+  assert.match(currentPicker, /parse_windows_window_id\(id\)/, 'the resolver parses the supplied opaque identity')
+  assert.match(currentPicker, /current_pid != expected_pid \|\| !window_is_capturable\(hwnd,/,
+    'capture rejects both HWND reuse and a window that is no longer capturable')
+  assert.match(currentPicker, /let Some\(\(raw, expected_pid\)\) = crate::window_target::parse_windows_window_id\(id\) else \{\s*return Err\("[^"]*"\);\s*\};\s*let hwnd = HWND\(raw as \*mut std::ffi::c_void\);\s*let current_pid = window_pid\(hwnd\);\s*if current_pid != expected_pid \|\| !window_is_capturable\(hwnd, unsafe \{ GetCurrentProcessId\(\) \}\)\s*\{\s*return Err\("[^"]*"\);\s*\}\s*Ok\(hwnd\)/,
+    'the native resolver rejects malformed, reused and ineligible identities before returning the supplied HWND')
+  assert.match(capture, /if let Some\(ref window_id\) = cfg\.window\s*\{\s*let \(win, width, height\) = crate::windows_capture_source::window\(\s*window_id,\s*crate::windows_capture_source::WindowResolution::RecordingStart,\s*\)\?;\s*\(Src::Window\(win\),/,
+    'capture passes its exact configured window identity to the resolver and keeps that returned window')
+  assert.match(source, /pub\(crate\) fn window\(id: &str, mode: WindowResolution\) -> Result<\(Window, u32, u32\)> \{\s*let target = crate::windows_picker::resolve_window\(id\)\s*\.map_err\(crate::window_target::window_unavailable\)\?;\s*let window = Window::from_raw_hwnd\(target\.0\);/,
+    'the extracted owner resolves the unchanged identity, propagates refusal, and opens only its HWND')
+  assert.equal([...source.matchAll(/\blet\s+(?:mut\s+)?window\s*=/g)].length, 1,
+    'the resolved window is never rebound to a derived or fallback selection')
+  assert.match(source, /Ok\(\(window, width, height\)\)/, 'the owner returns that resolved window')
+  assert.match(capture, /Src::Window\(win\) => Handler::start_free_threaded\(WcSettings::new\(\s*win,/,
+    'WGC starts with the exact resolved window, not a fresh selection')
+  assert.doesNotMatch(capture + source, /from_contains_name/, 'WGC never searches by title substring')
+}
+
+assertWindowsWindowIdentity(windowsCapture, windowsSource, picker)
+// Guard the assertions themselves against the substitutions this contract forbids.
+for (const [label, original, before, after] of [
+  ['capture changes the selected identity', windowsCapture, '                window_id,', '                window_title,'],
+  ['resolver derives a different identity', windowsSource, 'resolve_window(id)', 'resolve_window(title)'],
+  ['resolver substitutes a native window', windowsSource, 'from_raw_hwnd(target.0)', 'from_raw_hwnd(std::ptr::null_mut())'],
+  ['native capture substitutes a window', windowsCapture, '                    win,\n                    CursorCaptureSettings::WithCursor', '                    WcWindow::from_raw_hwnd(std::ptr::null_mut()),\n                    CursorCaptureSettings::WithCursor'],
+  ['resolver loosens HWND reuse protection', picker, 'current_pid != expected_pid', 'current_pid == 0'],
+  ['resolver returns a reused window', picker, 'return Err("the selected window is no longer available; reopen the source picker");', 'return Ok(hwnd);'],
+  ['resolver rebinds the window', windowsSource, '    Ok((window, width, height))', '    let window = Window::from_raw_hwnd(std::ptr::null_mut());\n    Ok((window, width, height))'],
+] as const) {
+  assert.ok(original.includes(before), `mutation fixture exists: ${label}`)
+  const changed = original.replace(before, after)
+  assert.throws(() => assertWindowsWindowIdentity(
+    original === windowsCapture ? changed : windowsCapture,
+    original === windowsSource ? changed : windowsSource,
+    original === picker ? changed : picker,
+  ), { code: 'ERR_ASSERTION' }, label)
+}
 assert.match(macosCapture, /macos_capture_target::prepare_capture_target\(cfg, fps\)/,
   'ScreenCaptureKit delegates the unchanged config to its exact-target owner')
 assert.match(macosTarget, /parse_macos_window_id\(want\)/,

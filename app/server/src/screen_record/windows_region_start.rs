@@ -46,7 +46,7 @@ pub(super) async fn start_from_foreground_ticket(
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     let microphone_source = super::microphone::source_for_recording_start(request.audio)?;
     let recorder_doctor = doctor();
-    start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
+    start_readiness::ensure_start_ready(&recorder_doctor.cards, request.keys)?;
     let target =
         monitor_start_admission::admit(None, Some(&monitor_id), false, &recorder_doctor.monitors)?;
 

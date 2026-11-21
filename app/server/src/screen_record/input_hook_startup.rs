@@ -30,7 +30,8 @@ pub(crate) fn project_observation(project: &Value) -> Value {
         && match state {
             Some("registered") => rdevin && reason.is_none_or(Value::is_null),
             Some("unavailable") => {
-                rdevin && reason.and_then(Value::as_str) == Some("startup_failed")
+                (rdevin || backend == Some("wayland_evdev"))
+                    && reason.and_then(Value::as_str) == Some("startup_failed")
             }
             Some("unobserved") => {
                 matches!(backend, Some("unknown" | "wayland_evdev"))
@@ -70,10 +71,14 @@ mod tests {
             json!({}),
             json!({"input_hook":null}),
             json!({"input_hook":{"state":"unavailable"}}),
-            json!({"input_hook":{"state":"unavailable","backend":"wayland_evdev","reason":"startup_failed","capture_keys":false}}),
         ] {
             assert_eq!(project_observation(&input)["state"], "unobserved");
         }
+        let wayland_unavailable = json!({"state":"unavailable","backend":"wayland_evdev","reason":"startup_failed","capture_keys":false});
+        assert_eq!(
+            project_observation(&json!({"input_hook":wayland_unavailable.clone()})),
+            wayland_unavailable,
+        );
         let observation = json!({"state":"unavailable","backend":"rdevin_windows","reason":"startup_failed","capture_keys":true});
         assert_eq!(
             project_observation(&json!({"input_hook":observation.clone()})),

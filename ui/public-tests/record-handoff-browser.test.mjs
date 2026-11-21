@@ -45,6 +45,7 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
   const errors = []
   const starts = []
   const pauseActions = []
+  let pauseState = 'recording'
   const pendingPolishes = []
   page.on('pageerror', error => errors.push(String(error)))
   if (preset) await page.addInitScript(value => localStorage.setItem('shellx-cut.recording-preset.v1', JSON.stringify(value)), preset)
@@ -52,6 +53,8 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
     const name = new URL(route.request().url()).pathname.split('/').at(-1)
     if (name === 'screen_record.start') starts.push(route.request().postDataJSON())
     if (name === 'screen_record.pause' || name === 'screen_record.resume') pauseActions.push(name)
+    if (name === 'screen_record.pause') pauseState = 'paused'
+    if (name === 'screen_record.resume') pauseState = 'recording'
     if (holdPolish && name === 'screen_record.polish') { pendingPolishes.push(route); return }
     const custom = override?.(name)
     if (custom) { await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(custom) }); return }
@@ -59,7 +62,8 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
       : name === 'screen_record.start' ? { capture_id: 'capture-fixture', pause: { enabled: Boolean(starts.at(-1)?.pause) } }
         : holdPolish && name === 'screen_record.stop' ? { capture_id: 'capture-fixture', raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json' }
           : holdPolish && name === 'screen_record.studio_event' ? { last_event: route.request().postDataJSON().event }
-        : name === 'screen_record.status' ? { capture_id: 'capture-fixture', ready: true, terminal: false, since_first_screen_frame_ms: 0 }
+        : name === 'screen_record.status' ? { capture_id: 'capture-fixture', ready: true, terminal: false, since_first_screen_frame_ms: 0,
+          pause: { enabled: Boolean(starts.at(-1)?.pause), state: pauseState, reason: 'Pause was not enabled for this take.' } }
           : name === 'screen_record.pause' ? { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: 200 }
             : name === 'screen_record.resume' ? { action: 'resume', saved: true, state: 'recording', logical_media_time_ms: 200 }
           : {}
@@ -214,6 +218,85 @@ test('a durable Pause acknowledgement survives Edit and Record remount', async t
   await page.locator('[data-cut-rec-pause-state="recording"]').waitFor()
   assert.deepEqual(pauseActions, ['screen_record.pause', 'screen_record.resume'])
   assert.deepEqual(starts[0].pause, { mode: 'enabled' })
+  assert.deepEqual(errors, [])
+})
+
+for (const initialState of ['recording', 'paused']) {
+  test(`an externally started ${initialState} take reads pause from engine status after reload`, async t => {
+    let state = initialState
+    const { page, starts, errors } = await fixture(t, null, doctor, false, name => {
+      if (name === 'screen_record.active') return { ok: true, result: {
+        active: true, kind: 'recording', capture_id: 'capture-external', ready: true, since_first_screen_frame_ms: 2500,
+      } }
+      if (name === 'screen_record.status') return { ok: true, result: {
+        capture_id: 'capture-external', ready: true, terminal: false,
+        pause: { enabled: true, state, reason: null },
+      } }
+      if (name === 'screen_record.pause' || name === 'screen_record.resume') {
+        state = name === 'screen_record.pause' ? 'paused' : 'recording'
+        return { ok: true, result: { capture_id: 'capture-external', action: state === 'paused' ? 'pause' : 'resume',
+          saved: true, state, logical_media_time_ms: 200 } }
+      }
+    })
+    const assertState = async () => {
+      await page.locator(`[data-cut-rec-pause-state="${state}"]`).waitFor({ timeout: 5000 })
+      assert.match(await page.locator('[data-cut-action="record-pause-resume"]').textContent(), state === 'paused' ? /Resume/ : /Pause/)
+      assert.equal(await page.locator('[data-cut-rec-live-pause-unavailable]').count(), 0)
+    }
+    await assertState()
+    await page.reload()
+    await assertState()
+    if (process.env.CUT_PAUSE_SHOT_DIR) await page.locator('[data-cut-rec-live-controls]').screenshot({
+      path: `${process.env.CUT_PAUSE_SHOT_DIR}/external-${initialState}-after-reload.png`,
+    })
+    await page.locator('[data-cut-action="record-pause-resume"]').click()
+    await assertState()
+    // A control issued by another client must also reach the page through status.
+    state = initialState
+    await assertState()
+    assert.equal(starts.length, 0, 'this page never started the running take')
+    assert.deepEqual(errors, [])
+  })
+}
+
+test('an ordinary external take displays its exact engine pause reason on an unsupported platform', async t => {
+  const reason = 'Pause and resume are unavailable on this platform. Stop remains available to finalize an ordinary recording.'
+  const unsupported = { ...doctor, pause: { supported: false, detail: 'Setup capability differs from this take.', incompatible: [] } }
+  const { page, starts, errors } = await fixture(t, null, unsupported, false, name => {
+    if (name === 'screen_record.active') return { ok: true, result: {
+      active: true, kind: 'recording', capture_id: 'capture-ordinary', ready: true,
+    } }
+    if (name === 'screen_record.status') return { ok: true, result: {
+      capture_id: 'capture-ordinary', ready: true, terminal: false, pause: { enabled: false, state: 'unavailable', reason },
+    } }
+  })
+  const unavailable = page.locator('[data-cut-rec-live-pause-unavailable]')
+  await page.waitForFunction(text => document.querySelector('[data-cut-rec-live-pause-unavailable]')?.textContent.includes(text), reason, { timeout: 5000 })
+  assert.equal(await unavailable.locator('small').textContent(), reason)
+  assert.equal(await page.locator('[data-cut-action="record-pause-resume"]').count(), 0)
+  assert.equal(await page.locator('[data-cut-action="record-stop"]').isEnabled(), true)
+  if (process.env.CUT_PAUSE_SHOT_DIR) await unavailable.screenshot({ path: `${process.env.CUT_PAUSE_SHOT_DIR}/unsupported-reason.png` })
+  assert.equal(starts.length, 0)
+  assert.deepEqual(errors, [])
+})
+
+test('running status overrides this page\'s Start form and recovers after reconnect', async t => {
+  let connected = false
+  let unreachable = false
+  const { page, errors } = await fixture(t, null, doctor, false, name => {
+    if (name === 'screen_record.status' && unreachable) return { ok: false, error: { code: 'unavailable', message: 'Connection interrupted.' } }
+    if (name === 'screen_record.status' && connected) return { ok: true, result: {
+      capture_id: 'capture-fixture', ready: true, terminal: false, pause: { enabled: true, state: 'paused', reason: null },
+    } }
+  })
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  unreachable = true
+  await page.waitForResponse(async response => response.url().includes('screen_record.status') && !(await response.json()).ok)
+  unreachable = false
+  connected = true
+  await page.locator('[data-cut-rec-pause-state="paused"]').waitFor({ timeout: 5000 })
+  assert.match(await page.locator('[data-cut-action="record-pause-resume"]').textContent(), /Resume/)
   assert.deepEqual(errors, [])
 })
 

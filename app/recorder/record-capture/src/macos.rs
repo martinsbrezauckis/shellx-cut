@@ -1,7 +1,7 @@
 //! macos.rs — live screen + input capture on macOS.
 //!
 //! Compiled ONLY for `cfg(target_os = "macos")` + the `capture-macos` feature.
-//! - SCREEN: ScreenCaptureKit direct-to-file capture. Its stream configuration
+//! - SCREEN: ScreenCaptureKit sample capture with an independent file writer. Its stream configuration
 //!   respects `CaptureConfig.capture_cursor` for displays; window capture keeps
 //!   the OS cursor because its input geometry cannot support a synthetic cursor.
 //! - INPUT: the shared rdevin hook (see input.rs).
@@ -25,10 +25,11 @@ use crate::active_capture_preview::{
     ActiveCapturePreview, ControllerExclusionStatus, RecursionStatus,
 };
 use crate::macos_region_capture::verified_region_output_size;
+use crate::macos_screen_writer::{private_stage, NativeSegment, ScreenWriter};
 use crate::macos_system_tap::SystemAudioTap;
 use crate::{
-    checkpoint::Checkpoints, macos_checkpoint::SegmentOutput, surface_coordinates, Capture,
-    CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,
+    checkpoint::Checkpoints, surface_coordinates, Capture, CaptureConfig, CaptureOutput,
+    MonitorInfo, WindowInfo,
 };
 
 // ScreenCaptureKit (the Mac counterpart to windows-capture/WGC). The whole module is
@@ -278,12 +279,10 @@ impl Capture for MacCapture {
         // the "recording produced an error" seen when the machine had gone idle.
         let _display_awake = keep_display_awake();
 
-        // ScreenCaptureKit capture (the Mac counterpart to WGC). Honors cfg.window (TRUE
-        // per-window capture) else the chosen display, and records straight
-        // to source.mp4 via SCRecordingOutput (macOS 15+). The external
-        // stop / deadline ends it → stream.stop_capture() finalizes the mp4.
+        // The capture stream delivers samples for the whole take. File writers
+        // rotate independently, so checkpoint completion cannot freeze capture.
         sck_init_cg();
-        // The active SCRecordingOutput stream stays video-only. The target
+        // The active screen writer stays video-only. The target
         // owner builds the exact display/window filter without opening a
         // second ScreenCaptureKit stream for controller state or metering.
         let (
@@ -350,8 +349,26 @@ impl Capture for MacCapture {
             source_stop.store(true, Ordering::Release);
         });
         let mut stream = SCStream::new_with_delegate(&filter, &stream_config, delegate);
-        let segment_frames = Arc::new(crate::macos_segment_frames::SegmentFrames::default());
-        crate::macos_readiness::attach_screen_frame_observer(
+        let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
+        let segment = checkpoints
+            .as_mut()
+            .map(|owner| owner.begin(0))
+            .transpose()?;
+        let writer_stage = cfg
+            .checkpoint
+            .as_ref()
+            .map(private_stage)
+            .transpose()
+            .map_err(|e| cap_err("reserve screen writer", e))?;
+        let segment_path = writer_stage
+            .as_ref()
+            .map(|stage| stage.path())
+            .unwrap_or(std::path::Path::new(&path));
+        let writer = ScreenWriter::new(
+            NativeSegment::new(segment_path, requested_w, requested_h, fps)
+                .map_err(|e| cap_err("create screen writer", e))?,
+        );
+        crate::macos_readiness::attach_screen_writer_observer(
             &mut stream,
             cfg.readiness.clone(),
             preview
@@ -359,23 +376,9 @@ impl Capture for MacCapture {
                 .zip(preview_generation)
                 .map(|(preview, generation)| (preview, generation, Instant::now())),
             window_clicks.clone(),
-            Some(segment_frames.clone()),
+            writer.clone(),
         )
         .map_err(|error| cap_err("attach ScreenCaptureKit frame observer", error))?;
-        let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
-        let segment = checkpoints
-            .as_mut()
-            .map(|owner| owner.begin(0))
-            .transpose()?;
-        let segment_path = segment
-            .as_ref()
-            .map(|(_, path)| path.clone())
-            .unwrap_or_else(|| std::path::PathBuf::from(&path));
-        let recording =
-            SegmentOutput::new(&segment_path).map_err(|e| cap_err("create recording output", e))?;
-        stream
-            .add_recording_output(recording.output())
-            .map_err(|e| cap_err("attach recording output", format!("{e:?}")))?;
         // SCK can synchronously deliver its first pixel-bearing Window sample
         // during start_capture. Arm that owner before requesting capture and
         // reuse this actual origin for every later input/audio/checkpoint stamp.
@@ -387,7 +390,7 @@ impl Capture for MacCapture {
         // input does not open until start_capture successfully accepts output.
         let (start, listener) =
             crate::macos_input::start(&mut stream, cfg, window_clicks.clone(), window_start)?;
-        segment_frames.set_origin(start);
+        writer.set_origin(start);
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
             let mic_path = format!("{out_dir}/mic.wav");
@@ -411,11 +414,6 @@ impl Capture for MacCapture {
         } else {
             None
         };
-        // SCK start returning is the first encoder-start boundary available from
-        // this API. The journal's open reservation is intentionally not reused as
-        // a capture timestamp.
-        let segment_start_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
         // Desktop/system audio runs through the Core Audio process tap (mac_systemaudio.mm),
         // started in parallel with the video. Returns an opaque ctx pointer (null on failure). A
         // failure must NOT take down the running video capture — we just log + carry on mic-only.
@@ -434,11 +432,11 @@ impl Capture for MacCapture {
 
         let done = crate::macos_segments::record(crate::macos_segments::SegmentRun {
             stream: &mut stream,
-            recording,
+            writer,
+            writer_stage,
+            writer_size: (requested_w, requested_h, fps),
             segment,
-            attached_ms: segment_start_ms,
             checkpoints: &mut checkpoints,
-            frames: segment_frames,
             start,
             cfg,
             stop: &stop,

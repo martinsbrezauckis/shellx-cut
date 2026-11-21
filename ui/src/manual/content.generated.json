@@ -1,6 +1,6 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.116",
+  "appVersion": "0.6.117",
   "featureCount": 201,
   "features": [
     {
@@ -69,7 +69,7 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Top bar",
-      "description": "Open Record to choose a display or, on Windows and macOS, an application window; confirm readiness, preview actual source pixels, choose Raw MP4 or Polished clip, and start capture. On Linux, Start opens the system picker for a display. F9 can also start from Edit using your current Record choices, or the saved setup when Record has not been opened, after fresh source, device, permission, and project checks.",
+      "description": "Open Record to choose a display or, on Windows and macOS, an application window; confirm readiness, preview actual source pixels, choose Raw MP4 or Polished clip, and start capture. On Linux, Start opens the system picker for a display. On Wayland, screen and sound recording work without input-device access; Show keystrokes, click highlights and click-based automatic zoom need it: run sudo usermod -aG input $USER, then log out and back in to enable them. F9 can also start from Edit using your current Record choices, or the saved setup when Record has not been opened, after fresh source, device, permission, and project checks.",
       "requirement": "Requires screen recording support and FFmpeg. Opening Record shows the last readiness check without starting a capture; on macOS the screen-recording prompt can appear only when you check again or start. Record shows whether F9 works outside Cut or only while Cut has focus.",
       "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },
@@ -1919,7 +1919,7 @@
       "group": "workflow",
       "title": "Record, save, and export",
       "where": "Record workspace and status bar",
-      "description": "In Record, choose a real source, check readiness and native preview, select Raw MP4 or Polished clip, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip with cursor, blue click rings, and smooth zoom up to 2× when valid pointer and click positions are available. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview shows frames from that take. If Stop fails, Cut offers Retry Stop only when the take is still recording; if it cannot tell, it says so. Closing or quitting Cut during a recording saves it first; a recording interrupted by a crash or power loss is offered at the next start with Add to timeline. Export or Save a copy chooses optional destinations after Stop.",
+      "description": "In Record, choose a real source, check readiness and native preview, select Raw MP4 or Polished clip, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip with cursor, blue click rings, and smooth zoom up to 2× when valid pointer and click positions are available. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview shows frames from that take. On Windows and macOS, the picture keeps moving between saved parts. On Windows, Stop responds at once while the file finishes saving in the background; wait for the saved-file confirmation. Known Windows recording limits: about half a second at the start of a take can repeat the first picture. Short, separate system sounds can drift out of sync with the picture. If Stop fails, Cut offers Retry Stop only when the take is still recording; if it cannot tell, it says so. Closing or quitting Cut during a recording saves it first; a recording interrupted by a crash or power loss is offered at the next start with Add to timeline. Export or Save a copy chooses optional destinations after Stop.",
       "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. F9 from another app needs operating-system support; otherwise it works while Cut has focus. Camera and audio options depend on current devices and permissions.",
       "api": "project.create, screen_record.preview_start, screen_record.live_frame, screen_record.start, screen_record.status, screen_record.stop, screen_record.polish, screen_record.export, screen_record.copy_raw"
     },

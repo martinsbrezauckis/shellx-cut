@@ -98,10 +98,24 @@ pub fn microphone_privacy_block() -> Option<MicrophoneSwitch> {
     None
 }
 
-/// True when Windows lists no active microphone at all. Other platforms report
-/// `false`: macOS keeps its own readiness and Linux has no endpoint list.
+/// True when the native input inventory reports no microphone. This reads
+/// device/configuration availability without starting an audio stream.
 pub fn no_microphone_device() -> bool {
-    cfg!(windows) && list_microphone_endpoints().is_empty()
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        return list_microphone_endpoints().is_empty();
+    }
+    #[cfg(all(target_os = "linux", feature = "mic"))]
+    {
+        use cpal::traits::HostTrait;
+        // Linux has no selectable endpoint identities. Query CPAL's input
+        // inventory instead; an enumeration error does not prove absence.
+        return cpal::default_host()
+            .input_devices()
+            .is_ok_and(|mut devices| devices.next().is_none());
+    }
+    #[allow(unreachable_code)]
+    false
 }
 
 /// Rewrite an error raised while resolving or opening the microphone into its
@@ -385,5 +399,38 @@ mod tests {
     #[test]
     fn default_source_preserves_existing_callers() {
         assert_eq!(MicrophoneSource::default(), MicrophoneSource::SystemDefault);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "mic"))]
+    #[test]
+    fn no_input_is_absent_but_a_silent_input_is_present() {
+        use cpal::traits::HostTrait;
+        const CASE: &str = "CUT_MICROPHONE_INVENTORY_CASE";
+        if let Ok(case) = std::env::var(CASE) {
+            let count = cpal::default_host().input_devices().unwrap().count();
+            assert_eq!(
+                count,
+                usize::from(case == "silent"),
+                "controlled input inventory"
+            );
+            assert_eq!(super::no_microphone_device(), case == "empty");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for (case, config) in [
+            ("empty", ""),
+            ("silent", "pcm.silent_input { type null hint { show on description \"Silent input\" ioid \"Input\" } }"),
+        ] {
+            let path = dir.path().join(case);
+            std::fs::write(&path, config).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mic_endpoint::tests::no_input_is_absent_but_a_silent_input_is_present", "--nocapture"])
+                .env("ALSA_CONFIG_PATH", path)
+                .env(CASE, case)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{case}: {} {}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
     }
 }

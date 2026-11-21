@@ -6,36 +6,25 @@ use std::time::Instant;
 
 use crate::{active_capture_preview::ActiveCapturePreview, CaptureReadiness};
 
-/// Attach the observer before `start_capture`. ScreenCaptureKit invokes this
-/// only for a delivered screen sample on the same stream that owns the
-/// recording output; accepting stream startup is not readiness evidence.
-pub(crate) fn attach_first_screen_frame_observer(
-    stream: &mut SCStream,
-    readiness: Option<CaptureReadiness>,
-    preview: Option<(ActiveCapturePreview, u64, Instant)>,
-) -> Result<(), &'static str> {
-    attach_screen_frame_observer(stream, readiness, preview, None, None)
-}
-
-pub(crate) fn attach_screen_frame_observer(
+/// Attach the recorder and observations before starting the capture stream.
+pub(crate) fn attach_screen_writer_observer(
     stream: &mut SCStream,
     readiness: Option<CaptureReadiness>,
     preview: Option<(ActiveCapturePreview, u64, Instant)>,
     window_clicks: Option<crate::macos_window_clicks::WindowClickCapture>,
-    segment_frames: Option<std::sync::Arc<crate::macos_segment_frames::SegmentFrames>>,
+    writer: crate::macos_screen_writer::ScreenWriter,
 ) -> Result<(), &'static str> {
+    let delivery = writer.clone();
     stream
-        .add_output_handler(
+        .add_output_handler_with_queue(
             move |sample, output_type| {
                 if output_type == SCStreamOutputType::Screen {
-                    if let Some(frames) = segment_frames.as_ref() {
-                        let picture = crate::macos_segment_frames::status_carries_picture(
-                            crate::macos_frame_status::read_status(&sample),
-                            sample.image_buffer().is_some(),
-                        );
-                        if picture {
-                            frames.observe_picture(Instant::now());
-                        }
+                    let picture = crate::macos_segment_frames::status_carries_picture(
+                        crate::macos_frame_status::read_status(&sample),
+                        sample.image_buffer().is_some(),
+                    );
+                    if picture {
+                        writer.append(&sample);
                     }
                     if let Some(window_clicks) = window_clicks.as_ref() {
                         window_clicks.observe_frame(&sample);
@@ -49,6 +38,7 @@ pub(crate) fn attach_screen_frame_observer(
                 }
             },
             SCStreamOutputType::Screen,
+            Some(delivery.delivery_queue()),
         )
         .map(|_| ())
         .ok_or("ScreenCaptureKit rejected the screen-frame callback")

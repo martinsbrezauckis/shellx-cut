@@ -1,8 +1,10 @@
-import { recordCardLabel, type RecordCard } from './recordingUiModel'
+import { recordCardLabel, recordingInputUnavailable, type RecordCard } from './recordingUiModel'
+import { RECORDING_FRAME_RATE_MIN } from './recordingFrameRate'
 import type { ScreenCheck } from './recordDoctorRead'
 
 interface RecordingReadinessSummaryProps {
   readonly cards: readonly RecordCard[]
+  readonly videoEncoder?: unknown
   readonly ready: boolean | null
   readonly startAllowed: boolean | null
   /** What the status read knows about screen capture without capturing. */
@@ -18,7 +20,7 @@ function cardStatus(card: RecordCard): 'ok' | 'degraded' | 'unknown' | 'missing'
   return 'missing'
 }
 
-function readinessSummary(ready: boolean | null, startAllowed: boolean | null, screenCheck: ScreenCheck | null | undefined): { label: string; detail: string; state: string } {
+function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, ready: boolean | null, startAllowed: boolean | null, screenCheck: ScreenCheck | null | undefined): { label: string; detail: string; state: string } {
   if (screenCheck === 'permission_needed') {
     return {
       label: 'Screen recording permission needed',
@@ -34,6 +36,24 @@ function readinessSummary(ready: boolean | null, startAllowed: boolean | null, s
     }
   }
   if (startAllowed === false) {
+    const encoderCard = cards.find(card => card.name === 'video_encoder' && card.status === 'degraded')
+    if (encoderCard?.detail.trim()) {
+      const encoder = videoEncoder !== null && typeof videoEncoder === 'object'
+        ? videoEncoder as Record<string, unknown> : null
+      // Doctor checks the exact source/rate. Only its settings-specific refusal
+      // permits a lower-rate retry; it does not promise that retry will work.
+      const retry = encoder?.reason === 'video_encoder_unavailable' && encoder.ready === false
+        && encoder.checked === true && typeof encoder.fps === 'number' && Number.isFinite(encoder.fps)
+        && encoder.fps > RECORDING_FRAME_RATE_MIN
+      return {
+        label: encoderCard.detail,
+        detail: retry ? 'Try a lower frame rate, then check again.'
+          : encoder?.reason === 'video_encoder_unavailable'
+            ? "This PC's graphics adapter cannot record at these settings."
+            : '',
+        state: 'attention',
+      }
+    }
     return {
       label: 'Capture setup needs attention',
       detail: 'Screen capture is not ready on this machine. Review the checks before recording.',
@@ -62,11 +82,13 @@ function readinessSummary(ready: boolean | null, startAllowed: boolean | null, s
 }
 
 /** Compact outcome first; individual Doctor facts stay available without occupying setup flow. */
-export function RecordingReadinessSummary({ cards, ready, startAllowed, screenCheck, onCheck }: RecordingReadinessSummaryProps) {
-  const summary = readinessSummary(ready, startAllowed, screenCheck)
+export function RecordingReadinessSummary({ cards, videoEncoder, ready, startAllowed, screenCheck, onCheck }: RecordingReadinessSummaryProps) {
+  const inputUnavailable = recordingInputUnavailable(cards)
+  const summary = readinessSummary(cards, videoEncoder, ready, startAllowed, screenCheck)
+  const encoderBlocked = startAllowed === false && cards.some(card => card.name === 'video_encoder' && card.status === 'degraded')
   const offerCheck = onCheck && (screenCheck === 'not_checked' || screenCheck === 'permission_needed')
   return (
-    <section className="rec__readiness" data-cut-rec-cards data-cut-rec-readiness data-cut-rec-readiness-state={summary.state} data-cut-rec-screen-check={screenCheck ?? undefined}>
+    <section className="rec__readiness" data-cut-rec-cards data-cut-rec-encoder-blocked={encoderBlocked || undefined} data-cut-rec-readiness data-cut-rec-readiness-state={summary.state} data-cut-rec-screen-check={screenCheck ?? undefined}>
       <div className="rec__readiness-summary">
         <span className="rec__eyebrow">Capture readiness</span>
         <strong data-cut-rec-readiness-label>{summary.label}</strong>
@@ -77,6 +99,13 @@ export function RecordingReadinessSummary({ cards, ready, startAllowed, screenCh
           </button>
         )}
       </div>
+      {inputUnavailable !== null && (
+        <p className="rec__source-note rec__source-note--unavailable" data-cut-rec-input-unavailable role="status">
+          Show keystrokes, click highlights and click-based automatic zoom are unavailable. Scroll and input activity data will also be absent.
+          {' '}You can start a plain recording with screen and sound. Turn off Show keystrokes if it was selected.
+          {' '}{inputUnavailable}
+        </p>
+      )}
       <details className="rec__readiness-details" data-cut-rec-readiness-details>
         <summary data-cut-action="record-readiness-details-toggle">{cards.length} technical checks</summary>
         <div className="rec__cards">

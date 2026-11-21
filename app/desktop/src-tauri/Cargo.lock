@@ -693,7 +693,7 @@ checksum = "914a755b7c2d4af2bdcff7ce1739e2db9a1b81a9b07123d8015786ae03c0980d"
 
 [[package]]
 name = "cut-native-runtime-context"
-version = "0.6.116"
+version = "0.6.117"
 dependencies = [
  "serde",
  "serde_json",
@@ -3575,7 +3575,7 @@ dependencies = [
 
 [[package]]
 name = "shellx-cut"
-version = "0.6.116"
+version = "0.6.117"
 dependencies = [
  "base64 0.22.1",
  "cc",

@@ -387,12 +387,23 @@ pub fn autoedit(
             "writing the plan file failed",
         )
     })?;
-    Ok(format!(
+    let summary = format!(
         "autoedit: {} zoom keyframe(s), {} click effect(s), {} key-cast chip(s)",
         plan.zoom.keys.len(),
         plan.clicks.len(),
         plan.keycast.len(),
-    ))
+    );
+    if events
+        .cursor_correlation
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.starts_with("Input events unavailable:"))
+    {
+        return Ok(format!(
+            "{summary}; Input events unavailable: click effects, automatic zoom, scroll data and keystrokes were not recorded"
+        ));
+    }
+    Ok(summary)
 }
 
 /// Controlled counterpart for a tracked export job. The process control owns

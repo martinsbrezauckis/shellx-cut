@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.116 candidate source; v0.6.115 is the latest published release.
+This reference describes the Debug API in v0.6.117 candidate source; v0.6.116 is the latest published release.
 
 ## Starting the server
 
@@ -745,8 +745,9 @@ retains its existing picker admission and reports display placement inapplicable
 same active native source stream as the recording. Its frame is a generation-bound,
 in-memory BMP sampled to at most 640×360 pixels (with a 4 MiB hard ceiling);
 `frame:null` means no current frame and never pretends that capture succeeded.
-A checkpoint rollover clears the previous
-generation, and Stop or failure clears all retained pixels. `recursion` and
+A native stream restart clears the previous generation. Windows and macOS keep
+the same native stream and preview generation across ordinary saved parts; Stop
+or failure clears all retained pixels. `recursion` and
 `controller_exclusion` are independent facts: a `ready` frame can have possible
 controller recursion when the native source does not prove Cut-window exclusion.
 Whole-display capture includes Cut when it is visible and omits it naturally
@@ -859,7 +860,17 @@ or the legacy `monitor` ordinal. The existing full-display picker retains that
 ordinal path only when Doctor did not provide an `id`. Linux deliberately
 returns no in-app monitor rows because the system portal owns source choice.
 
-`screen_record.stop` waits with a bounded capture-work-derived budget: twice the
+For an ordinary live Windows take after its first frame, `screen_record.stop`
+answers at once with `{capture_id,status:"finalizing",job_id}` while saving
+continues, or returns the completed Stop result if saving has already finished.
+Poll `jobs.status{job_id}` with a deadline of at most 15 minutes. Before using saved
+paths, require `state:"done"` and the full Stop `VerbResult` envelope in the job's
+`result`, with `ok:true` and the same `capture_id`; when `mux_raw:true`, also require
+a nonempty `raw_path`. Failed, cancelled, missing or timed-out jobs do not confirm
+a saved file. The save cannot be cancelled, and Quit waits for it to finish.
+Linux, macOS and `reason:"app_exit"` wait for the completed Stop result.
+
+The complete Stop pipeline waits with a bounded capture-work-derived budget: twice the
 marker-declared or journal-observed capture span plus 15 seconds, with a 45-second
 minimum and 15-minute maximum. That allows real checkpoint stitch/audio finalization
 without calling it a failure after a fixed short poll; a truly stuck finalizer still
@@ -967,11 +978,10 @@ A recording is never lost silently:
   with frame progress ("Polishing the recording: frame N of M"); the clip is only
   ever added to the project the recording belongs to (`placed:false` with
   `waiting_in_project` otherwise).
-- Known limits in this version: a recording is saved in 15-second parts, and at
-  each part boundary the picture of a moving screen holds for about 0.5 s on
-  macOS and about 2 s on Windows while the sound keeps recording; on Windows a
-  Stop of a long moving recording takes several seconds (about 11 s for one
-  minute).
+- A recording is saved in 15-second parts. On Windows and macOS, the screen
+  keeps recording across part boundaries. Known Windows limits: about half a
+  second at the start of a take can repeat the first picture. Short, separate
+  system sounds can drift out of sync with the picture.
 
 A Stop that arrives before the first screen frame returns `capture` with message
 `nothing was recorded` and the action to start again and wait until the timer
@@ -1012,10 +1022,20 @@ their check button; voiceover reads `microphone`. In `check` mode,
 discarded frame reaches Cut. It does not persist image content. On Linux, the
 XDG ScreenCast portal could open a source picker or a new consent request, so
 doctor reports `unknown` instead of triggering it; `unknown` is never ready/green.
+Doctor accepts the recording's optional `fps` (default 30), `monitor`,
+`monitor_id`, or `window` selection. Record and Start check their current
+selection and frame rate. On Windows, `check` also tests whether the video
+encoder can prepare that selection in memory. `video_encoder` reports the
+checked dimensions and frame rate, readiness, a plain message, and a stable
+`video_encoder_unavailable` reason when preparation fails. A minimized window
+is not checked: Doctor leaves it minimized and returns `window_minimized` with
+"The window is minimized. Restore it, then check again." The matching card
+shows only that plain message. `status` reads a matching cached result or
+reports it unknown; it never starts a capture or encoder. Start checks again
+before creating a capture folder. Only explicit Start may restore a selected
+minimized window. Native failure details stay in diagnostics.
 `degraded` and `missing` are evidenced failures. The Doctor response separately
-reports `start_allowed`: it remains false for every missing, degraded, or arbitrary
-unknown required card, but on Linux is true for the one exact prompt-deferred XDG
-ScreenCast portal observation. That lets `screen_record.start` open the user-selected
+reports `start_allowed` for a plain take: required screen, FFmpeg, input-backend support and GStreamer failures still refuse, while Linux admits the exact prompt-deferred XDG ScreenCast portal observation and optional unavailable `wayland_input`. `keys:true` still requires readable input devices: turn keys off, or run `sudo usermod -aG input $USER`, then log out and back in. Screen pixels, microphone and system audio do not require evdev. That lets `screen_record.start` open the user-selected
 source picker without manufacturing a green Doctor result. On macOS,
 drive these verbs through the installed signed app: ScreenCaptureKit uses Screen
 Recording permission and `system_audio:true` uses the separate Audio Capture

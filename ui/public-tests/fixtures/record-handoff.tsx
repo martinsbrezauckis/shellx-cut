@@ -4,6 +4,7 @@ import Record from '../../src/panels/Record'
 import { RecordingSessionProvider } from '../../src/app/RecordingSessionContext'
 import { RecordingDeliveryProvider, useAppRecordingDelivery } from '../../src/app/RecordingDeliveryContext'
 import { VolumeAutomationProvider } from '../../src/app/VolumeAutomationContext'
+import RecordingRecoveryNotice from '../../src/app/RecordingRecoveryNotice'
 import { useRecordingSession } from '../../src/app/useRecordingSession'
 import type { Project } from '../../src/lib/client'
 const PROJECT_A = `sha256:${'a'.repeat(64)}`
@@ -45,6 +46,7 @@ function Fixture() {
   return <RecordingSessionProvider session={session}>
     <button data-test-unmount-delivery onClick={() => setDeliveryMounted(false)}>Unmount delivery owner</button>
     {deliveryMounted && <RecordingDeliveryProvider project={project}>
+    {location.search.includes('recovery') && <RecordingRecoveryNotice projectKey={project.project_identity.origin_path_sha256} />}
     <VolumeAutomationProvider key={project.project_identity.origin_path_sha256}>
     <button data-test-edit onClick={() => setMode('edit')}>Edit</button>
     <button data-test-library onClick={() => setMode('library')}>Library</button>

@@ -69,6 +69,13 @@
   border-radius: 9px;
   background: color-mix(in srgb, var(--surface-2) 62%, transparent);
 }
+.rec__readiness:has(> [data-cut-rec-input-unavailable]) { flex: 0 1 620px; min-width: 0; flex-wrap: wrap; }
+.rec__readiness > [data-cut-rec-input-unavailable] {
+  flex: 1 0 100%; order: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere;
+}
+.rec__readiness[data-cut-rec-encoder-blocked] { flex: 0 1 620px; min-width: 0; }
+.rec__readiness[data-cut-rec-encoder-blocked] .rec__readiness-summary { flex: 1; overflow-wrap: anywhere; }
+.rec__readiness[data-cut-rec-encoder-blocked] .rec__readiness-summary p { display: block; }
 .rec__readiness-summary { min-width: 0; }
 .rec__readiness-summary .rec__eyebrow,
 .rec__readiness-summary p { display: none; }
@@ -122,6 +129,8 @@
   min-width: 140px;
   background: color-mix(in srgb, var(--surface-2) 62%, transparent);
 }
+.rec__card[data-cut-rec-card="video_encoder"][data-cut-rec-card-status="degraded"] { grid-column: 1 / -1; grid-template-columns: 1fr; min-width: 0; }
+.rec__card[data-cut-rec-card="video_encoder"][data-cut-rec-card-status="degraded"] .rec__card-detail { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .rec__card--ok { border-color: rgba(52, 211, 153, 0.4); }
 .rec__card--degraded { border-color: rgba(245, 196, 81, 0.4); }
 .rec__card--unknown { border-color: rgba(148, 163, 255, 0.5); }

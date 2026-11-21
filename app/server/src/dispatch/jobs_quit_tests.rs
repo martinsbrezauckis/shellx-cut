@@ -57,6 +57,47 @@ async fn a_confirmed_quit_stops_every_job_the_normal_way() {
 }
 
 #[tokio::test]
+async fn confirmed_quit_waits_for_a_recording_save() {
+    let state = AppState::new();
+    let saving = pending_job(&state, "screen_record_stop");
+    let reply = dispatch(
+        &state,
+        "jobs.before_quit",
+        json!({"cancel_running_jobs": true}),
+        Actor::system(),
+    )
+    .await;
+    assert!(!reply.ok);
+    assert_eq!(reply.error.unwrap().code, "jobs_running");
+    assert_eq!(reply.result.unwrap()["running"][0]["job_id"], saving);
+    assert!(state
+        .jobs
+        .active_jobs()
+        .iter()
+        .any(|job| job.job_id == saving));
+}
+
+#[tokio::test]
+async fn recording_save_cannot_be_cancelled_mid_write() {
+    let state = AppState::new();
+    let saving = pending_job(&state, "screen_record_stop");
+    let reply = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": saving}),
+        Actor::system(),
+    )
+    .await;
+    assert!(!reply.ok);
+    assert_eq!(reply.error.unwrap().code, cut_core::error_codes::CONFLICT);
+    assert!(state
+        .jobs
+        .active_jobs()
+        .iter()
+        .any(|job| job.job_id == saving));
+}
+
+#[tokio::test]
 async fn automatic_work_alone_does_not_hold_a_quit() {
     let state = AppState::new();
     let _proxy = pending_job(&state, "proxy");

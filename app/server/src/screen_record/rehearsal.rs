@@ -61,7 +61,7 @@ pub(crate) async fn start(args: Value) -> Result<VerbResult, CutError> {
     let fps = args.fps.unwrap_or(30.0);
     super::validate_capture_settings(Some(duration_ms), fps)?;
     let recorder_doctor = doctor();
-    start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
+    start_readiness::ensure_start_ready(&recorder_doctor.cards, false)?;
     let target = monitor_start_admission::admit(
         args.monitor,
         args.monitor_id.as_deref(),

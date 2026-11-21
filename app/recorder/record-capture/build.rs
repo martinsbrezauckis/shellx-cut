@@ -26,6 +26,15 @@ fn main() {
     println!("cargo:rerun-if-changed=src/mac_systemaudio.mm");
     println!("cargo:rerun-if-changed=src/mic_endpoint/macos.mm");
     println!("cargo:rerun-if-changed=src/macos_camera_native.mm");
+    for source in [
+        "macos_screen_writer.mm",
+        "macos_screen_samples.mm",
+        "macos_screen_writer.h",
+        "macos_screen_writer_fixture.mm",
+        "macos_screen_writer_fixture.h",
+    ] {
+        println!("cargo:rerun-if-changed=src/{source}");
+    }
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let has_macos_capture = std::env::var("CARGO_FEATURE_CAPTURE_MACOS").is_ok();
     if target_os == "macos" && has_macos_capture {
@@ -47,6 +56,10 @@ fn main() {
             .file("src/mac_systemaudio.mm")
             .file("src/mic_endpoint/macos.mm")
             .file("src/macos_camera_native.mm")
+            .file("src/macos_screen_writer.mm")
+            .file("src/macos_screen_samples.mm")
+            .file("src/macos_screen_writer_fixture.mm")
+            .flag("-std=c++17")
             .flag("-fobjc-arc") // ARC for the CATapDescription / NSDictionary objects
             .cpp_link_stdlib(None) // we add libc++ explicitly below (rustc does the final link)
             .compile("sxc_mac_systemaudio");
@@ -56,6 +69,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreAudio");
         println!("cargo:rustc-link-lib=framework=AVFoundation");
         println!("cargo:rustc-link-lib=framework=CoreMedia");
+        println!("cargo:rustc-link-lib=framework=CoreVideo");
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
 

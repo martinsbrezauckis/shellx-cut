@@ -30,21 +30,19 @@ use windows_capture::{
     window::Window as WcWindow,
 };
 
-use crate::windows_wgc_factory::TimedWgcFactory;
 use crate::windows_wgc_handler::{EncFlags, Handler, LiveWgcControl};
-use crate::windows_wgc_publisher::WindowsCheckpointPublisher;
 use crate::{
     checkpoint::Checkpoints,
     region_geometry::NativePixelCrop,
     surface_coordinates,
     windows_wgc_run::{
-        WgcAcceptedCapture, WgcCaptureRange, WgcNativeControl, WgcRunOwner, WgcStartObservation,
+        WgcAcceptedCapture, WgcCaptureRange, WgcNativeControl, WgcStartObservation,
         WgcStartedControl,
     },
     Capture, CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,
 };
 
-fn even_capture_dimension(value: i32) -> Option<u32> {
+pub(crate) fn even_capture_dimension(value: i32) -> Option<u32> {
     let even = u32::try_from(value).ok()? & !1;
     (even >= 2).then_some(even)
 }
@@ -111,7 +109,6 @@ fn ffprobe_bin() -> String {
 // Window::enumerate uses EnumChildWindows(GetDesktopWindow()), which returns EMPTY from
 // cutd's sidecar thread; we use EnumWindows on a thread bound to the interactive desktop.
 use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_RESTORE};
 
 pub(crate) fn list_monitors() -> Vec<MonitorInfo> {
     crate::windows_picker::list_monitors()
@@ -162,73 +159,22 @@ impl Capture for WindowsCapture {
             Window(WcWindow),
         }
         let (src, parent_w, parent_h, parent_surface) = if let Some(ref window_id) = cfg.window {
-            let target = crate::windows_picker::resolve_window(window_id)
-                .map_err(crate::window_target::window_unavailable)?;
-            let win = WcWindow::from_raw_hwnd(target.0);
-            // The source picker lists minimized windows so the list is stable
-            // as windows are minimized/restored). A minimized window has a 0×0 capture
-            // area, so RESTORE the target before capturing — selecting a minimized window
-            // then records real content instead of erroring "is it minimized?".
-            let hwnd = HWND(win.as_raw_hwnd());
-            // SAFETY: hwnd is borrowed from the live windows-capture Window. Win32
-            // treats a stale handle as not iconic rather than dereferencing Rust memory.
-            if unsafe { IsIconic(hwnd).as_bool() } {
-                // SAFETY: hwnd remains owned by win; ShowWindow borrows the opaque
-                // handle and SW_RESTORE requires no caller-owned output storage.
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_RESTORE);
-                }
-                // Wait for it to leave the iconic state (so width/height read the real
-                // restored rect, not the 0×0 minimized one), bounded so a stuck restore
-                // can't hang the capture start.
-                for _ in 0..40 {
-                    // SAFETY: same live borrowed HWND contract as the initial check.
-                    if unsafe { !IsIconic(hwnd).as_bool() } {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                }
-            }
-            let ww = win.width().map_err(|e| cap_err("window width", e))?;
-            let wh = win.height().map_err(|e| cap_err("window height", e))?;
-            let Some(ww) = even_capture_dimension(ww) else {
-                return Err(cap_err(
-                    "capture the chosen window",
-                    "the window width is too small to encode (is it minimized?)",
-                ));
-            };
-            let Some(wh) = even_capture_dimension(wh) else {
-                return Err(cap_err(
-                    "capture the chosen window",
-                    "the window height is too small to encode (is it minimized?)",
-                ));
-            };
-            // yuv420p + the WGC encoder want even dimensions; the helper also
-            // rejects 0/1 rather than rounding a one-pixel surface down to zero.
-            // Startup dimensions only configure the encoded prefix. Click mapping
-            // separately checks fresh physical bounds and encoder-accepted content;
-            // synthetic window cursor samples remain unavailable.
-            (Src::Window(win), ww, wh, None)
+            let (win, width, height) = crate::windows_capture_source::window(
+                window_id,
+                crate::windows_capture_source::WindowResolution::RecordingStart,
+            )?;
+            (Src::Window(win), width, height, None)
         } else {
-            let monitor = if let Some(id) = cfg.monitor_id.as_deref() {
-                crate::windows_monitor_target::resolve_monitor(id)
-                    .map_err(|error| cap_err("resolve the selected monitor identity", error))?
-            } else {
-                match cfg.monitor {
-                    Some(i) => {
-                        let index = usize::try_from(i).map_err(|_| {
-                            cap_err("get monitor by index", "index is out of range")
-                        })?;
-                        WcMonitor::from_index(index)
-                            .map_err(|e| cap_err("get monitor by index", e))?
-                    }
-                    None => WcMonitor::primary().map_err(|e| cap_err("get primary monitor", e))?,
-                }
-            };
-            let mw = monitor.width().map_err(|e| cap_err("monitor width", e))?;
-            let mh = monitor.height().map_err(|e| cap_err("monitor height", e))?;
+            let monitor =
+                crate::windows_capture_source::monitor(cfg.monitor, cfg.monitor_id.as_deref())?;
+            let width = monitor
+                .width()
+                .map_err(|error| cap_err("monitor width", error))?;
+            let height = monitor
+                .height()
+                .map_err(|error| cap_err("monitor height", error))?;
             let surface = monitor_surface(&monitor);
-            (Src::Monitor(monitor), mw, mh, surface)
+            (Src::Monitor(monitor), width, height, surface)
         };
         crate::windows_controller_exclusion::admit_controller_placement(
             cfg.controller_placement.as_ref(),
@@ -441,16 +387,27 @@ impl Capture for WindowsCapture {
                 )),
             }
             .map_err(|e| cap_err("start capture", e))?;
+            let rotation_callback = control.callback();
+            let closing_callback = control.callback();
             Ok(WgcStartedControl::new(
                 LiveWgcControl {
-                    close: Some(Box::new(move || {
+                    rotate: Some(Box::new(move |next| {
+                        rotation_callback.lock().rotate_writer(next)
+                    })),
+                    close: Some(Box::new(move |boundary| {
                         if let Some(preview) = preview_on_close.as_ref() {
                             preview.clear_current_generation();
                         }
-                        let result = crate::windows_wgc_handler::stop_with_held_sample(control);
-                        timing.control_stopped(Instant::now(), result.is_ok());
-                        if let Err(error) = timing.persist() {
-                            eprintln!("WGC timing observation could not be retained: {error}");
+                        let timing = closing_callback.lock().current_timing();
+                        let result = crate::windows_wgc_handler::stop_with_held_sample(
+                            control,
+                            boundary.unwrap_or_else(Instant::now),
+                        );
+                        if let Some(timing) = timing {
+                            timing.control_stopped(Instant::now(), result.is_ok());
+                            if let Err(error) = timing.persist() {
+                                eprintln!("WGC timing observation could not be retained: {error}");
+                            }
                         }
                         result
                     })),
@@ -461,42 +418,29 @@ impl Capture for WindowsCapture {
         };
         let (duration_ms, checkpoints) = match Checkpoints::open(cfg.checkpoint.as_ref())? {
             Some(checkpoints) => {
-                let interval_ms = checkpoints.interval_ms();
-                let publisher = WindowsCheckpointPublisher {
+                let origin = qpc_origin
+                    .ok_or_else(|| cap_err("rotate recording writer", "capture clock missing"))?;
+                let (duration, checkpoints) = crate::windows_continuous::capture(
+                    cfg,
+                    &stop,
+                    start,
+                    &accepted.settings,
+                    origin,
                     checkpoints,
-                    include_native_startup: true,
-                    timing: Some(current_wgc_timing),
-                    qpc_origin,
-                };
-                let mut owner = WgcRunOwner::new(src, TimedWgcFactory(start_wgc), publisher);
-                let mut segment = owner.begin(0, || observe_wgc_start(start))?;
-                let duration_ms = loop {
-                    let end_at = segment.start_ms.saturating_add(interval_ms).min(dur);
-                    while !stop.load(Ordering::Relaxed)
-                        && start.elapsed() < Duration::from_millis(end_at)
-                    {
-                        thread::sleep(Duration::from_millis(50));
-                    }
-                    let ended_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    if stop.load(Ordering::Relaxed) || ended_ms >= dur {
-                        if let Some(lifecycle) = cfg.source_lifecycle.as_ref() {
-                            lifecycle.expect_terminal_close();
-                        }
-                        let sealed = owner
-                            .stop(|| {
-                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-                            })?
-                            .expect("active WGC run must seal before capture returns");
-                        break sealed.boundary.end_ms;
-                    }
-                    let (_sealed, resumed) = owner.rollover_checkpoint(
-                        || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        || observe_wgc_start(start),
-                    )?;
-                    segment = resumed;
-                };
-                (duration_ms, Some(owner.into_publisher().checkpoints))
+                    |destination, reserved_start_ms| {
+                        let started = start_wgc(&src, destination, reserved_start_ms)?;
+                        let timing = current_wgc_timing
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                            .cloned()
+                            .ok_or_else(|| {
+                                cap_err("rotate recording writer", "capture timing missing")
+                            })?;
+                        Ok((started.control, timing))
+                    },
+                )?;
+                (duration, Some(checkpoints))
             }
             None => {
                 let mut control = start_wgc(&src, Path::new(&path), 0)?.control;

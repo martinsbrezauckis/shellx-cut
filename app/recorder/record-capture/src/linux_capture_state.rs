@@ -12,6 +12,7 @@ pub(crate) struct CapPhase {
     pub(crate) microphone_outcome: crate::MicrophoneCaptureOutcome,
     pub(crate) input: CapturedInput,
     pub(crate) keys: Vec<KeySample>,
+    pub(crate) input_unavailable: bool,
 }
 
 pub(crate) struct RecordedInput {

@@ -181,7 +181,7 @@ pub(crate) fn transcode(
     let encoded_ms = frames_ms(frames.main + frames.unit, grid.num, grid.den);
     let timeout = Duration::from_millis(encoded_ms.saturating_mul(5));
     let mut last = None;
-    for encoder in super::encoder::encoder_choices(media) {
+    for encoder in super::encoder::encoder_choices(media, grid.admitted) {
         let mut command = Command::new(ffmpeg);
         command
             .args(["-v", "error", "-y", "-protocol_whitelist"])

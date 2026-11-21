@@ -145,7 +145,8 @@ mod pause_worker_protocol;
 mod pause_worker_protocol_tests;
 // The raw-capture stop path calls this muxer when `mux_raw:true`; it combines
 // the sealed video and optional mic/system tracks without inventing an edit.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod macos_pause_control;
 mod raw_mux;
 mod recording_controls;
@@ -185,6 +186,7 @@ mod start_project_identity;
 mod start_readiness;
 pub(crate) mod system_audio;
 pub(crate) mod system_audio_capture;
+mod video_encoder_readiness;
 mod windows_path;
 // REC-PAUSE-01 server-only translation. It has no public caller: a later
 // native lifecycle hook must supply a verified screen fragment/event factory.

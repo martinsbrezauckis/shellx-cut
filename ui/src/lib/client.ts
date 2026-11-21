@@ -732,7 +732,7 @@ export interface VerbArgs {
   'score.clip': { clip?: string; asset?: string; range_ms?: [number, number] }
   // Integrated Cut recorder (doctor + autoedit + the polish orchestrator
   // + a fenced file export). config (autoedit) is accepted but currently ignored.
-  'screen_record.doctor': { warm_mic?: boolean; mode?: 'check' | 'status' | 'microphone' }
+  'screen_record.doctor': { warm_mic?: boolean; mode?: 'check' | 'status' | 'microphone'; fps?: number; monitor?: number; monitor_id?: string; window?: string }
   'screen_record.microphone_selection': { mode: 'system_default' | 'selected'; microphone_token?: string }
   'screen_record.system_audio_probe': { max_ms?: number }
   'screen_record.recovery_status': { after?: string; limit?: number }

@@ -15,6 +15,10 @@ pub(crate) struct QpcCaptureOrigin {
     bracket_hns: i128,
 }
 
+#[cfg(test)]
+#[path = "windows_wgc_clock_origin_native_cut_tests.rs"]
+mod native_cut_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FirstFramePlacement {
     AtOrAfterStart { start_ms: u64 },
@@ -136,6 +140,37 @@ impl QpcCaptureOrigin {
             .checked_add(reserved_hns)
             .ok_or("native WGC boundary overflow")?;
         i64::try_from(boundary).map_err(|_| "native WGC boundary exceeds TimeSpan range")
+    }
+
+    /// The same native cut supplies the checkpoint millisecond boundary and
+    /// the old encoder's precise final sample time.
+    pub(crate) fn native_cut(
+        self,
+        capture_start: Instant,
+        native_hns: i64,
+    ) -> Result<(u64, Instant), &'static str> {
+        let elapsed = i128::from(native_hns)
+            .checked_sub(self.hns)
+            .ok_or("native cut elapsed time overflow")?;
+        if elapsed < 0 {
+            return Err("native cut predates capture start");
+        }
+        let millis = elapsed
+            .checked_add(HNS_PER_MS - 1)
+            .ok_or("native cut millisecond rounding overflow")?
+            / HNS_PER_MS;
+        let nanos = elapsed
+            .checked_mul(100)
+            .ok_or("native cut nanosecond overflow")?;
+        let at = capture_start
+            .checked_add(Duration::from_nanos(
+                u64::try_from(nanos).map_err(|_| "native cut exceeds Instant range")?,
+            ))
+            .ok_or("native cut exceeds Instant range")?;
+        Ok((
+            u64::try_from(millis).map_err(|_| "native cut millisecond range overflow")?,
+            at,
+        ))
     }
 
     /// Stop and input share `capture_start`; this is the final media PTS for

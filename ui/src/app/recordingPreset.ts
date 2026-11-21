@@ -1,3 +1,4 @@
+import { recordingInputUnavailable } from '../panels/Record/recordingUiModel'
 import type { ProjectIdentity } from '../lib/projectIdentity'
 import type { StudioBackground, StudioCameraShape } from '../panels/Record/studioTypes'
 import type { RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
@@ -137,7 +138,7 @@ export function firstUseRecordingPreset(doctor: unknown): RecordingPreset | null
   }
 }
 
-export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown): string | null {
+export function recordingReadinessFailure(doctor: unknown): string | null {
   if (!doctor || typeof doctor !== 'object') return 'Recorder checks did not return a current result.'
   const d = doctor as Record<string, unknown>
   if ((d.start_allowed ?? d.ready) !== true) {
@@ -146,10 +147,24 @@ export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown
     const screen = Array.isArray(d.cards)
       ? (d.cards as Array<{ name?: unknown; status?: unknown; detail?: unknown }>).find((card) => card.name === 'screen_capture' && card.status !== 'ok')
       : undefined
+    const encoder = Array.isArray(d.cards)
+      ? (d.cards as Array<{ name?: unknown; status?: unknown; detail?: unknown }>).find((card) => card.name === 'video_encoder' && card.status === 'degraded')
+      : undefined
     return typeof screen?.detail === 'string' && screen.detail
       ? `Screen capture is not ready: ${screen.detail}`
+      : typeof encoder?.detail === 'string' && encoder.detail
+        ? encoder.detail
       : 'Screen capture is not ready. Open Record and press Check to see what is missing.'
   }
+  return null
+}
+
+export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown): string | null {
+  const readinessFailure = recordingReadinessFailure(doctor)
+  if (readinessFailure) return readinessFailure
+  const d = doctor as Record<string, unknown>
+  const inputUnavailable = Array.isArray(d.cards) ? recordingInputUnavailable(d.cards) : null
+  if (preset.keys && !preset.raw && !preset.pause && inputUnavailable !== null) return `Show keystrokes is unavailable: ${inputUnavailable}. Turn it off to record screen and sound.`
   if (preset.source.kind === 'portal_display') {
     if (!doctorAllowsPortalDisplay(d)) return 'The Linux screen-sharing portal is not available. Review Recorder setup.'
   } else if (preset.source.kind === 'display') {

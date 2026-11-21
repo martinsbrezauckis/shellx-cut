@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { RecordingPauseControlLifetime } from '../src/panels/Record/recordingPause'
+import { RecordingPauseControlLifetime, recordingTakePause } from '../src/panels/Record/recordingPause'
+
+const engineStatus = { capture_id: 'capture-a', terminal: false,
+  pause: { enabled: true, state: 'paused', reason: null } }
+assert.deepEqual(recordingTakePause(engineStatus, 'capture-a'), { enabled: true, state: 'paused', message: 'Paused.' })
+assert.equal(recordingTakePause(engineStatus, 'capture-b'), null, 'another take cannot provide live pause facts')
+assert.equal(recordingTakePause({ ...engineStatus, terminal: true }, 'capture-a'), null)
+assert.equal(recordingTakePause({ ...engineStatus, pause: { enabled: true, state: 'unknown' } }, 'capture-a'), null)
+assert.equal(recordingTakePause({ capture_id: 'capture-a' }, 'capture-a'), null, 'missing engine facts are never guessed from a form')
+const reason = 'The native recorder cannot pause this take.'
+assert.deepEqual(recordingTakePause({ ...engineStatus, pause: { enabled: false, state: 'unavailable', reason } }, 'capture-a'),
+  { enabled: false, state: 'idle', message: reason })
 
 const lifetime = new RecordingPauseControlLifetime()
 lifetime.replaceCapture('capture-a')

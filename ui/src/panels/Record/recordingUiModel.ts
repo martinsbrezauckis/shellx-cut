@@ -7,6 +7,7 @@ export interface RecordCard {
 const RECORD_CARD_LABELS: Record<string, string> = {
   ffmpeg: 'Media tools',
   screen_capture: 'Screen capture',
+  video_encoder: 'Video recording',
   system_audio: 'System audio',
   input_hook: 'Pointer and keys',
   gstreamer: 'Linux capture',
@@ -38,4 +39,10 @@ export function outputFileLabel(path: string): string {
 export function failureReason(error: unknown): string {
   if (error instanceof TypeError) return 'server unreachable'
   return error instanceof Error && error.message ? error.message : 'server unreachable'
+}
+
+/** Optional Wayland event data is separate from screen and sound capture. */
+export function recordingInputUnavailable(cards: readonly RecordCard[]): string | null {
+  const input = cards.find(card => card.name === 'wayland_input' && card.status !== 'ok')
+  return input ? input.detail : null
 }

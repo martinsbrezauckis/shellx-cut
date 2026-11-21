@@ -80,6 +80,19 @@ pub(super) async fn jobs_cancel(state: &AppState, args: Value) -> Result<VerbRes
             ));
         }
     };
+    if record.kind == "screen_record_stop"
+        && matches!(
+            record.state,
+            crate::jobs::JobState::Queued | crate::jobs::JobState::Running
+        )
+    {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "the recording is still saving",
+            "stopping this job would interrupt the only finalizer for the recording",
+        )
+        .with_suggested_action("wait for the recording save job to finish"));
+    }
     let cancelled = if record.kind == "render_queue" {
         state.jobs.abort_render_queue(&a.job_id).await?
     } else {

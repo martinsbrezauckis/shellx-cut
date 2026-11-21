@@ -16,7 +16,6 @@ use windows::Media::Core::{
     MediaStreamSample, MediaStreamSource, MediaStreamSourceSampleRequestedEventArgs,
     MediaStreamSourceStartingEventArgs,
 };
-use windows::Media::Transcoding::MediaTranscoder;
 use windows::Storage::{FileAccessMode, StorageFile};
 use windows::System::Threading::{ThreadPool, WorkItemHandler, WorkItemOptions, WorkItemPriority};
 use windows_capture::{d3d11::SendDirectX, frame::Frame};
@@ -139,18 +138,8 @@ impl WgcVideoEncoder {
         let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
         let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))?.join()?;
         let stream = file.OpenAsync(FileAccessMode::ReadWrite)?.join()?;
-        let transcoder = MediaTranscoder::new()?;
-        transcoder.SetHardwareAccelerationEnabled(true)?;
-        let prepared = transcoder
-            .PrepareMediaStreamSourceTranscodeAsync(&source, &stream, &profile)?
-            .join()?;
-        if !prepared.CanTranscode()? {
-            return Err(format!(
-                "WGC video encoder cannot transcode: {:?}",
-                prepared.FailureReason()?
-            )
-            .into());
-        }
+        let (transcoder, prepared) =
+            crate::windows_wgc_encoder_setup::prepare(&source, &stream, &profile, None)?;
         let worker = std::thread::spawn(move || {
             let result = prepared.TranscodeAsync()?.join();
             drop(transcoder);
@@ -164,7 +153,7 @@ impl WgcVideoEncoder {
             requested,
             scheduling_failure,
             clock: timed_clock.map_or_else(Default::default, |(_, _, boundary)| {
-                crate::windows_wgc_sample_clock::WgcSampleClock::with_reserved_boundary(boundary)
+                crate::windows_wgc_sample_clock::WgcSampleClock::for_continuous_writer(boundary)
             }),
             timed_origin: timed_clock.map(|(start, origin, _)| (start, origin)),
             last_accepted: None,
@@ -250,9 +239,8 @@ impl WgcVideoEncoder {
         Ok(true)
     }
 
-    /// Called only after the native capture control joined successfully. A
-    /// still desktop gets one final same-pixel sample at the observed Stop
-    /// boundary, before EOS; failed Stop and source loss use ordinary close.
+    /// Close after native Stop or after this writer left the serialized frame
+    /// callback. Still pixels end at that owned boundary; source loss uses close.
     pub(crate) fn finish_after_control_stop(
         mut self,
         stop_at: Instant,

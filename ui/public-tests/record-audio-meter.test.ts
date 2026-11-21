@@ -115,8 +115,8 @@ assert.match(component, /data-cut-rec-audio-meter-status-error/, 'status-read er
 assert.match(css, /\.rec-audio-meter--compact/, 'compact unavailable styles are isolated with the component')
 assert.match(record, /useRecordingAudioMeters\(sceneCaptureId, phase === 'recording'\)/,
   'the meter polls only for the exact active recording capture')
-assert.match(record, /recordingAudioMeters\.captureEndDetail[\s\S]*void finalize\(sceneCaptureId, null\)[\s\S]*setNote\(captureEndedDetail\)/,
-  'terminal, source_lost, and not_found status use normal recovery-aware finalization once, with an informational note')
+assert.match(record, /recordingAudioMeters\.captureEndDetail[\s\S]*void session\.stop\('capture_ended'\)[\s\S]*setNote\(captureEndedDetail\)/,
+  'terminal, source_lost, and not_found status use ownership-aware automatic finalization, with an informational note')
 assert.match(session, /if \(captureRef\.current !== id \|\| busyRef\.current\) return[\s\S]*?if \(result\.capture_id === id\) \{\s*publish\(\{ inputHook: recordingInputHook\(result\.input_hook\) \}\)\s*if \(result\.terminal === true\) void stop\(\)/,
   'only the current capture publishes input-hook status and sends a bounded terminal through shared Stop')
 assert.match(session, /if \(!id \|\| !preset \|\| busyRef\.current[\s\S]*?return[\s\S]*?busyRef\.current = true[\s\S]*?callVerb\('screen_record\.stop'/,

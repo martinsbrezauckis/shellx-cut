@@ -60,6 +60,7 @@ pub(super) struct PauseRequest {
     action: PauseAction,
     response: SyncSender<Result<PauseReceipt, String>>,
     pending: Arc<AtomicBool>,
+    state: Arc<Mutex<&'static str>>,
 }
 
 impl PauseRequest {
@@ -68,20 +69,47 @@ impl PauseRequest {
     }
 
     pub(super) fn complete(self, result: Result<PauseReceipt, String>) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if let Ok(receipt) = &result {
+                *state = receipt.state;
+            }
+            self.pending.store(false, Ordering::Release);
+        }
         let _ = self.response.send(result);
-        self.pending.store(false, Ordering::Release);
     }
 }
 
 struct ControlSlot {
     sender: mpsc::Sender<PauseRequest>,
     pending: Arc<AtomicBool>,
+    state: Arc<Mutex<&'static str>>,
 }
 
 static ACTIVE_CONTROLS: OnceLock<Mutex<HashMap<String, Arc<ControlSlot>>>> = OnceLock::new();
 
 fn controls() -> &'static Mutex<HashMap<String, Arc<ControlSlot>>> {
     ACTIVE_CONTROLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(super) fn status(capture_id: &str) -> Option<Value> {
+    let slot = controls()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(capture_id)
+        .cloned()?;
+    let observed = slot.state.lock().unwrap_or_else(|error| error.into_inner());
+    let state = *observed;
+    let state = if slot.pending.load(Ordering::Acquire) {
+        if state == "paused" {
+            "resuming"
+        } else {
+            "pausing"
+        }
+    } else {
+        state
+    };
+    Some(json!({ "enabled": true, "state": state, "reason": null }))
 }
 
 /// The capture backend owns this registration for its complete native lifetime.
@@ -98,6 +126,7 @@ pub(super) fn register(capture_id: &str) -> Result<PauseControlRegistration, Cut
     let slot = Arc::new(ControlSlot {
         sender,
         pending: Arc::new(AtomicBool::new(false)),
+        state: Arc::new(Mutex::new("recording")),
     });
     let mut active = controls()
         .lock()
@@ -215,6 +244,7 @@ fn request(capture_id: &str, action: PauseAction) -> Result<PauseReceipt, CutErr
         action,
         response,
         pending: slot.pending.clone(),
+        state: slot.state.clone(),
     };
     if slot.sender.send(request).is_err() {
         slot.pending.store(false, Ordering::Release);
@@ -282,6 +312,7 @@ mod tests {
     fn one_request_stays_pending_until_a_durable_receipt() {
         let capture_id = "cap_pause_pending_test";
         let registration = register(capture_id).unwrap();
+        assert_eq!(status(capture_id).unwrap()["state"], "recording");
         let sender = std::thread::spawn(move || request(capture_id, PauseAction::Pause));
         let request = loop {
             if let Some(request) = registration.next_request() {
@@ -290,9 +321,40 @@ mod tests {
             std::thread::yield_now();
         };
         assert_eq!(request.action(), PauseAction::Pause);
+        assert_eq!(status(capture_id).unwrap()["state"], "pausing");
         request.complete(Ok(PauseReceipt::paused(42)));
         let receipt = sender.join().unwrap().unwrap();
         assert_eq!(receipt.logical_media_time_ms, 42);
         assert_eq!(receipt.state, "paused");
+        assert_eq!(status(capture_id).unwrap()["state"], "paused");
+        drop(registration);
+        assert!(status(capture_id).is_none());
+    }
+
+    #[test]
+    fn failed_transition_preserves_the_last_sealed_state() {
+        let capture_id = "cap_pause_status_failed";
+        let registration = register(capture_id).unwrap();
+        for (action, result, expected) in [
+            (PauseAction::Pause, Ok(PauseReceipt::paused(42)), "paused"),
+            (PauseAction::Resume, Err("not sealed".to_owned()), "paused"),
+            (
+                PauseAction::Resume,
+                Ok(PauseReceipt::resumed(42)),
+                "recording",
+            ),
+        ] {
+            registration.slot.pending.store(true, Ordering::Release);
+            let (response, receipt) = mpsc::sync_channel(1);
+            PauseRequest {
+                action,
+                response,
+                pending: registration.slot.pending.clone(),
+                state: registration.slot.state.clone(),
+            }
+            .complete(result);
+            let _ = receipt.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(status(capture_id).unwrap()["state"], expected);
+        }
     }
 }

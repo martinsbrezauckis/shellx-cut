@@ -3,12 +3,28 @@ use std::io::Read;
 
 mod camera_foundation;
 mod stop_files;
+mod stop_job;
 mod stop_log;
 mod stop_outcome;
+
+pub(super) use stop_job::screen_record_stop;
 
 use stop_files::{
     capture_marker_duration, capture_started_unix_ms, local_regular_file_nonempty, unix_ms_now,
 };
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)] // `rationale` is operator metadata only.
+struct StopArgs {
+    capture_id: String,
+    #[serde(default)]
+    autoedit: bool,
+    #[serde(default)]
+    mux_raw: bool,
+    raw_path: Option<String>,
+    rationale: Option<String>,
+    reason: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // screen_record.* — integrated Cut recorder orchestration. Low-level recorder
@@ -54,34 +70,14 @@ use stop_files::{
 /// `mux_raw:true`. Requires an open project. Errors: NO_PROJECT; NOT_FOUND if the
 /// capture dir or marker is absent; a CutError if the capture never finalized, the
 /// project JSON is malformed, or (raw mode) the ffmpeg combine fails.
-pub(super) async fn screen_record_stop(
+async fn screen_record_stop_complete(
     state: &AppState,
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
     const MAX_RECORDING_PROJECT_JSON_BYTES: u64 = 4 * 1024 * 1024;
 
-    #[derive(serde::Deserialize)]
-    #[allow(dead_code)] // `rationale` is operator metadata only.
-    struct Args {
-        capture_id: String,
-        #[serde(default)]
-        autoedit: bool,
-        // RAW MODE: produce a single standalone raw.mp4 (video + captured sound
-        // sources, no editing) and return its path. Default false → the unchanged
-        // pipeline behaviour. Mutually useful with `autoedit:false` (raw mode skips
-        // BOTH autoedit and polish).
-        #[serde(default)]
-        mux_raw: bool,
-        // Optional explicit output path for the standalone raw capture. Omitted =
-        // the default export folder (project.set_output_dir) or <project>/exports.
-        raw_path: Option<String>,
-        rationale: Option<String>,
-        // Why Stop was asked for. `app_exit`: the app is closing during the
-        // recording; the take is saved as usual and the next start says so.
-        reason: Option<String>,
-    }
-    let a: Args = parse_args(args)?;
+    let a: StopArgs = parse_args(args)?;
     let app_exit = stop_outcome::app_exit(a.reason.as_deref())?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     crate::screen_record::recovery::validate_capture_id(&a.capture_id)?;

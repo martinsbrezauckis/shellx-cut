@@ -62,7 +62,19 @@ fn note_path(capture_id: &str) -> Option<PathBuf> {
     notes_dir().map(|dir| dir.join(format!("{capture_id}.json")))
 }
 
+// A scan must not hold a file open while Windows replaces it. The same gate
+// also keeps a note's read-change-write together when two jobs update it.
+fn note_store_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn read_note(path: &Path) -> Option<Note> {
+    let _lock = note_store_lock();
+    read_note_unlocked(path)
+}
+
+fn read_note_unlocked(path: &Path) -> Option<Note> {
     let bytes = std::fs::read(path).ok()?;
     let note: Note = serde_json::from_slice(&bytes).ok()?;
     (note.schema == SCHEMA && validate_capture_id(&note.capture_id).is_ok()).then_some(note)
@@ -87,16 +99,18 @@ fn write_note(note: &Note) {
 }
 
 pub(crate) fn remove(capture_id: &str) {
+    let _lock = note_store_lock();
     if let Some(path) = note_path(capture_id) {
         let _ = std::fs::remove_file(path);
     }
 }
 
 fn update(capture_id: &str, change: impl FnOnce(&mut Note)) {
+    let _lock = note_store_lock();
     let Some(path) = note_path(capture_id) else {
         return;
     };
-    if let Some(mut note) = read_note(&path) {
+    if let Some(mut note) = read_note_unlocked(&path) {
         change(&mut note);
         write_note(&note);
     }
@@ -104,6 +118,7 @@ fn update(capture_id: &str, change: impl FnOnce(&mut Note)) {
 
 /// A recording is about to open its native capture.
 pub(crate) fn note_started(capture_id: &str, project_dir: &Path) {
+    let _lock = note_store_lock();
     write_note(&Note {
         schema: SCHEMA.into(),
         capture_id: capture_id.into(),
@@ -340,6 +355,7 @@ fn describe(note: &Note) -> Option<Value> {
 }
 
 fn all_notes() -> Vec<Note> {
+    let _lock = note_store_lock();
     let Some(dir) = notes_dir() else {
         return Vec::new();
     };
@@ -349,7 +365,7 @@ fn all_notes() -> Vec<Note> {
     let mut notes: Vec<Note> = entries
         .flatten()
         .take(MAX_NOTES)
-        .filter_map(|entry| read_note(&entry.path()))
+        .filter_map(|entry| read_note_unlocked(&entry.path()))
         .collect();
     notes.sort_by_key(|note| std::cmp::Reverse(note.started_unix_ms));
     notes

@@ -2,8 +2,8 @@
 //!
 //! The owner re-enumerates the opaque monitor at every start. It never accepts
 //! an ordinal, title, primary-display flag, or geometry fallback. A capture
-//! generation is only reported after SCK accepts its recording output; terminal
-//! close waits for that output to finish before publishing its checkpoint.
+//! generation is only reported after SCK accepts capture; terminal close
+//! waits for the independent writer before publishing its checkpoint.
 
 use super::{
     close::NativeCloseState, MacosPauseAcceptedScreen, MacosPausePilotProfile,
@@ -13,12 +13,13 @@ use super::{
 use crate::{
     active_capture_preview::{ActiveCapturePreview, ControllerExclusionStatus, RecursionStatus},
     checkpoint::Checkpoints,
-    macos_checkpoint::SegmentOutput,
+    macos_screen_writer::{Boundary, NativeSegment, ScreenWriter},
     CheckpointConfig,
 };
 use record_core::Settings;
 use record_recovery::CheckpointFacts;
 use screencapturekit::{prelude::*, shareable_content::SCShareableContentInfo};
+use std::cell::RefCell;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// One synchronous ScreenCaptureKit generation. There is no detached native
@@ -35,7 +36,8 @@ pub(crate) struct RequiredMacosPauseScreenOwner {
 
 struct ActiveScreen {
     stream: SCStream,
-    output: SegmentOutput,
+    output: ScreenWriter,
+    finishing: RefCell<Option<(NativeSegment, Boundary)>>,
     checkpoint_sequence: u64,
     staging: std::path::PathBuf,
     started: MacosPausePilotStarted,
@@ -68,17 +70,17 @@ impl ActiveScreen {
             stream,
             output,
             close,
+            finishing,
             ..
         } = self;
         close
             .close(
-                || stream.stop_capture().map_err(|_| ()),
                 || {
-                    stream
-                        .remove_recording_output(output.output())
-                        .map_err(|_| ())
+                    output.request_stop();
+                    stream.stop_capture().map_err(|_| ())
                 },
-                || output.wait_complete().map_err(|_| ()),
+                || detach_writer(output, finishing),
+                || finish_writer(finishing),
             )
             .map_err(|_| ())
     }
@@ -87,33 +89,40 @@ impl ActiveScreen {
 /// A failed native start has no retained `ActiveScreen` to hand back to the
 /// owner. Still use the identical close state machine while this local stream
 /// exists, and surface an exhausted close instead of ignoring it.
-fn close_failed_start(stream: &SCStream, output: &SegmentOutput) {
+fn detach_writer(
+    output: &ScreenWriter,
+    finishing: &RefCell<Option<(NativeSegment, Boundary)>>,
+) -> Result<(), ()> {
+    output.drain().map_err(|_| ())?;
+    *finishing.borrow_mut() = Some(output.switch(None).map_err(|_| ())?);
+    Ok(())
+}
+
+fn finish_writer(finishing: &RefCell<Option<(NativeSegment, Boundary)>>) -> Result<(), ()> {
+    let finishing = finishing.borrow();
+    let (output, boundary) = finishing.as_ref().ok_or(())?;
+    output.finish(boundary.pts_ns).map_err(|_| ())
+}
+
+fn close_failed_start(stream: &SCStream, output: &ScreenWriter) {
     let mut close = NativeCloseState::default();
-    let first = close.close(
-        || stream.stop_capture().map_err(|_| ()),
-        || {
-            stream
-                .remove_recording_output(output.output())
-                .map_err(|_| ())
-        },
-        || output.wait_complete().map_err(|_| ()),
-    );
-    let result = if first.is_err() {
-        close.close(
-            || stream.stop_capture().map_err(|_| ()),
-            || {
-                stream
-                    .remove_recording_output(output.output())
-                    .map_err(|_| ())
-            },
-            || output.wait_complete().map_err(|_| ()),
-        )
-    } else {
-        first
-    };
-    if result.is_err() {
-        eprintln!("private macOS pause start failed with unresolved native close state");
+    let finishing = RefCell::new(None);
+    for _ in 0..2 {
+        if close
+            .close(
+                || {
+                    output.request_stop();
+                    stream.stop_capture().map_err(|_| ())
+                },
+                || detach_writer(output, &finishing),
+                || finish_writer(&finishing),
+            )
+            .is_ok()
+        {
+            return;
+        }
     }
+    eprintln!("screen capture start failed with unresolved native close state");
 }
 
 impl RequiredMacosPauseScreenOwner {
@@ -183,8 +192,11 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
             .checkpoints
             .begin(observed_start_ms)
             .map_err(|_| MacosPauseStartError::NativeStartFailed)?;
-        let output =
-            SegmentOutput::new(&staging).map_err(|_| MacosPauseStartError::NativeStartFailed)?;
+        let output = ScreenWriter::new(
+            NativeSegment::new(&staging, width, height, profile.fps())
+                .map_err(|_| MacosPauseStartError::NativeStartFailed)?,
+        );
+        output.set_origin(self.origin);
         let mut stream = SCStream::new(
             &filter,
             &crate::macos::recording_stream_config(width, height, profile.fps(), false),
@@ -205,24 +217,18 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
             .clone()
             .zip(preview_generation)
             .map(|(preview, generation)| (preview, generation, Instant::now()));
-        if (self.readiness.is_some() || observer_preview.is_some())
-            && crate::macos_readiness::attach_first_screen_frame_observer(
-                &mut stream,
-                self.readiness.clone(),
-                observer_preview,
-            )
-            .is_err()
+        if crate::macos_readiness::attach_screen_writer_observer(
+            &mut stream,
+            self.readiness.clone(),
+            observer_preview,
+            None,
+            output.clone(),
+        )
+        .is_err()
         {
-            if self.readiness.is_some() {
-                return Err(MacosPauseStartError::NativeStartFailed);
-            }
-            // Preview alone remains optional; public readiness does not.
-            if let Some((preview, generation)) = preview.clone().zip(preview_generation) {
-                preview.mark_readback_unavailable(generation);
-            }
+            return Err(MacosPauseStartError::NativeStartFailed);
         }
-        if stream.add_recording_output(output.output()).is_err() || stream.start_capture().is_err()
-        {
+        if stream.start_capture().is_err() {
             close_failed_start(&stream, &output);
             return Err(MacosPauseStartError::NativeStartFailed);
         }
@@ -264,6 +270,7 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
         self.active = Some(ActiveScreen {
             stream,
             output,
+            finishing: RefCell::new(None),
             checkpoint_sequence,
             staging,
             started: started.clone(),
@@ -280,8 +287,8 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
         // `close_native` retains its exact partial phase/error, so retries do
         // not repeat a successful Stop or output detach.
         self.active.as_mut().ok_or(())?.close_native()?;
-        let observed_end_ms = self.elapsed_ms(Instant::now()).map_err(|_| ())?;
         let active = self.active.take().ok_or(())?;
+        let observed_end_ms = active.finishing.borrow().as_ref().ok_or(())?.1.elapsed_ms;
         if observed_end_ms <= active.started.observed_start_ms {
             return Err(());
         }

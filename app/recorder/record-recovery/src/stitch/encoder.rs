@@ -9,12 +9,18 @@ use crate::MediaFacts;
 /// Repeated frames cost x264 almost nothing; VideoToolbox encodes each one in
 /// full, so it is only the fallback. Other systems keep their previous preset.
 ///
+/// At 60 fps, use the faster software preset so a completed part is ready
+/// promptly while capture continues. The admitted frame grid still owns timing.
+///
 /// No B-frames anywhere: with B-frames the MP4 muxer writes an edit list whose
 /// length is rounded to whole milliseconds, the concat then started each next
 /// part up to a millisecond early and the take's average rate read 30.0001
 /// instead of 30 (a false "uneven frame timing" note on real 4K takes of
 /// an early 0.6.116 build). Screen content loses nothing measurable without them.
-pub(crate) fn encoder_choices(media: &MediaFacts) -> Vec<Vec<String>> {
+pub(crate) fn encoder_choices(
+    media: &MediaFacts,
+    cadence: Option<record_core::FrameRate>,
+) -> Vec<Vec<String>> {
     let software = |extra: &[&str]| {
         let mut args = vec!["-c:v".to_string(), "libx264".to_string()];
         args.extend(["-bf".to_string(), "0".to_string()]);
@@ -31,13 +37,19 @@ pub(crate) fn encoder_choices(media: &MediaFacts) -> Vec<Vec<String>> {
             media.height.unwrap_or(0),
         )
         .map(|(args, _)| args);
-        std::iter::once(software(&["-preset", "veryfast"]))
+        let preset =
+            if cadence.is_some_and(|rate| u128::from(rate.num) >= 60 * u128::from(rate.den)) {
+                "superfast"
+            } else {
+                "veryfast"
+            };
+        std::iter::once(software(&["-preset", preset]))
             .chain(hardware)
             .collect()
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = media;
+        let _ = (media, cadence);
         vec![software(&[])]
     }
 }

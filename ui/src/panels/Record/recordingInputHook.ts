@@ -19,7 +19,7 @@ export function recordingInputHook(value: unknown): RecordingInputHook {
   const rdevin = input.backend === 'rdevin_windows' || input.backend === 'rdevin_macos' || input.backend === 'rdevin_x11'
   const noReason = input.reason === undefined || input.reason === null
   const valid = input.state === 'registered' ? rdevin && noReason
-    : input.state === 'unavailable' ? rdevin && input.reason === 'startup_failed'
+    : input.state === 'unavailable' ? (rdevin || input.backend === 'wayland_evdev') && input.reason === 'startup_failed'
       : input.state === 'unobserved' && (input.backend === 'unknown' || input.backend === 'wayland_evdev') && noReason
   if (!valid) return UNOBSERVED_INPUT_HOOK
   return { state: input.state as RecordingInputHook['state'], backend: input.backend as RecordingInputHook['backend'],
@@ -28,5 +28,6 @@ export function recordingInputHook(value: unknown): RecordingInputHook {
 
 export function recordingInputHookWarning(input: RecordingInputHook, saved: boolean): string | null {
   if (input.state !== 'unavailable') return null
+  if (input.backend === 'wayland_evdev') return `Click, scroll and key events are unavailable. Click highlights and click-based automatic zoom are off; screen and sound recording remain available. ${saved ? 'Video saved.' : 'Video recording continues.'}`
   return `Mouse input could not start. This recording may lack pointer animation, click highlights and automatic zoom.${input.capture_keys ? ' Opted-in key capture was also unavailable.' : ''} ${saved ? 'Video saved.' : 'Video recording continues.'}`
 }

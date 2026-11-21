@@ -113,6 +113,10 @@ pub(crate) struct EvdevListener {
 }
 
 impl EvdevListener {
+    pub(crate) fn has_readers(&self) -> bool {
+        !self.readers.is_empty()
+    }
+
     fn new(external_stop: Arc<AtomicBool>, screen_w: u32, screen_h: u32) -> Self {
         Self {
             state: Arc::new(Mutex::new(EvdevState {

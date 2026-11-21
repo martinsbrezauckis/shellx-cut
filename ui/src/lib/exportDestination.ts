@@ -6,6 +6,7 @@ import { callVerb } from './client'
 // EXPORT_OUTPUT_DIR_STORAGE_KEY from this module keeps working.
 import { EXPORT_OUTPUT_DIR_STORAGE_KEY } from './clientUrls'
 import { outputFolderStatusFrom, type OutputFolderStatus } from './outputFolderStatus'
+import { runUserVerb } from './userActionFeedback'
 
 export { EXPORT_OUTPUT_DIR_STORAGE_KEY }
 
@@ -41,12 +42,28 @@ export async function applyExportOutputDir(dir: string | null): Promise<boolean>
 // The export destination is held by the ENGINE (project.get_output_dir, the
 // output_folder_changed event). Everything below mirrors that one value: the
 // localStorage copy above is only a cache of the engine's last answer, kept so
-// URL construction can stay synchronous. Nothing here pushes the UI's copy back
-// to the engine, so a folder an agent chose is shown as chosen and never
-// overwritten by a stale browser value.
+// URL construction can stay synchronous. Only the one-time carry-over of an
+// older UI-only choice can push it back, and only when the engine has no choice.
+// A folder an agent chose always replaces the browser copy.
 // ---------------------------------------------------------------------------
 
 let engineStatus: OutputFolderStatus | null = null
+let statusRevision = 0
+let refreshing: Promise<OutputFolderStatus | null> | null = null
+// Keep this beside the legacy UI preference: another UI installation must not
+// consume this one's carry-over. Claim BEFORE applying, including on refusal,
+// so a restart or later clear never resurrects a stale cached folder.
+const OUTPUT_DIR_MIGRATED_KEY = 'cut.outputDir.engine-owned.v1'
+function claimOutputDirMigration(): boolean {
+  try {
+    if (localStorage.getItem(OUTPUT_DIR_MIGRATED_KEY)) return false
+    localStorage.setItem(OUTPUT_DIR_MIGRATED_KEY, '1')
+    return true
+  } catch {
+    // Without a durable marker we cannot promise a one-time authorization.
+    return false
+  }
+}
 // While a Save As authorizes ONE folder for one export, the engine changes
 // are our own and must not show as the person's destination.
 let authorizing = 0
@@ -64,17 +81,35 @@ export function subscribeOutputFolderStatus(listener: () => void): () => void {
 /** Adopt the engine's answer: refresh the status and the cached folder. */
 export function applyOutputFolderStatus(status: OutputFolderStatus): void {
   if (authorizing > 0) return
+  claimOutputDirMigration()
+  statusRevision += 1
   engineStatus = status
   if (getStoredOutputDir() !== status.dir) setStoredOutputDir(status.dir)
   for (const listener of statusListeners) listener()
 }
 
 /** Ask the engine where exports go now, and adopt the answer. */
-export async function refreshOutputFolder(): Promise<OutputFolderStatus | null> {
+export function refreshOutputFolder(): Promise<OutputFolderStatus | null> {
+  refreshing ??= readOutputFolder().finally(() => { refreshing = null })
+  return refreshing
+}
+
+async function readOutputFolder(): Promise<OutputFolderStatus | null> {
+  const revision = statusRevision
   try {
     const reply = await callVerb('project.get_output_dir', {})
-    const status = reply.ok ? outputFolderStatusFrom(reply.result) : null
-    if (status) applyOutputFolderStatus(status)
+    let status = reply.ok ? outputFolderStatusFrom(reply.result) : null
+    if (!status) return null
+    // A change event (including an agent clearing the choice) beats an older
+    // read or carry-over response that was still in flight.
+    if (revision !== statusRevision) return engineStatus
+    const legacy = getStoredOutputDir()
+    if (claimOutputDirMigration() && !status.dir && legacy) {
+      const carried = await runUserVerb('project.set_output_dir', { dir: legacy }, 'Could not keep the previous export folder')
+      if (revision !== statusRevision) return engineStatus
+      if (carried?.ok) status = outputFolderStatusFrom(carried.result) ?? status
+    }
+    applyOutputFolderStatus(status)
     return status
   } catch {
     return null

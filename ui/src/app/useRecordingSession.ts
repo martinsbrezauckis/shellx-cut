@@ -13,10 +13,12 @@ import type { StudioRawStreams, CursorCorrelation, StudioEventPayload, StudioSta
 import type { RecordingSourceKind } from '../panels/Record/regionPickerModel'
 import type { RecordingOutputSize, RecordingQualityProfile } from '../panels/Record/recordingQuality'
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
-import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
+import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, recordingReadinessFailure, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { recordingInputHook, UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from '../panels/Record/recordingInputHook'
 import { RecordingToggleGate, classifyStopFailure, isNothingRecorded, nothingRecordedText, refusalText, savingProgressText, stopArgs, withSavedNotes } from './recordingSessionModel'
 import { waitForFirstFrame } from './recordingFirstFrame'
+import { resolveRecordingStopJob } from './recordingStopJob'
+import { recordingDoctorArgs } from './recordingDoctorArgs'
 import { SAVING_BEFORE_CLOSE, useRecordingCloseRequest } from './useRecordingCloseRequest'
 import { useActiveRecordingAdoption, type ActiveRecording } from './useActiveRecordingAdoption'
 
@@ -117,7 +119,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
   resultRef.current = onResult
   const presetRef = useRef<RecordingPreset | null>(loadRecordingPreset())
   // Live Pause/Resume acknowledgements must outlive Record panel navigation.
-  const recordingPause = useRecordingPause(Boolean(presetRef.current?.pause))
+  const recordingPause = useRecordingPause(Boolean(presetRef.current?.pause), state.phase === 'recording' ? state.captureId : null)
   // The mounted Record controls own the current draft. Keep its latest value
   // through an Edit handoff without promoting it to an admitted/saved preset.
   // `null` is an invalid or incomplete choice and must not fall back to a take.
@@ -185,7 +187,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         const discovery = await callVerb('screen_record.doctor', {})
         if (!discovery.ok) { showSetup(`Recorder checks failed: ${refusalText(discovery.error, 'unavailable')}`); return }
         preset = firstUseRecordingPreset(discovery.result)
-        if (!preset) { showSetup('No current screen source is available. Open Record to check capture setup.'); return }
+        if (!preset) { showSetup(recordingReadinessFailure(discovery.result) ?? 'No current screen source is available. Open Record to check capture setup.'); return }
       }
       const currentProject = await ensureCurrentProject()
       if (!currentProject) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
@@ -201,7 +203,13 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         rawStreams: null, inputHook: UNOBSERVED_INPUT_HOOK, cursorCorrelation: null, cadence: null, quality: null })
       // A fallback project may take time to create. Recheck the source again
       // immediately before Start, including on first use.
-      const doctor = await callVerb('screen_record.doctor', {})
+      const doctor = await callVerb('screen_record.doctor', recordingDoctorArgs({
+        fps: preset.fps,
+        sourceKind: preset.source.kind === 'window' ? 'window' : 'display',
+        monitor: null,
+        monitorId: preset.source.kind === 'display' ? preset.source.monitorId : null,
+        windowId: preset.source.kind === 'window' ? preset.source.windowId : null,
+      }))
       if (!doctor.ok) { showSetup(`Recorder checks failed: ${refusalText(doctor.error, 'unavailable')}`); return }
       const invalid = validateRecordingPreset(preset, doctor.result)
       if (invalid) { showSetup(invalid); return }
@@ -376,9 +384,10 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     publish(INITIAL)
   }, [publish])
 
-  const stop = useCallback(async (reason?: 'app_exit') => {
+  const stop = useCallback(async (reason?: 'app_exit' | 'capture_ended') => {
     const id = captureRef.current
     const preset = activePresetRef.current
+    if (reason === 'capture_ended' && adoptedRef.current === id) return
     if (!id || !preset || busyRef.current || (stateRef.current.phase === 'recovery' && stateRef.current.recoveryAction !== 'retry_stop')) return
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
@@ -395,7 +404,10 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
           if (saving && stateRef.current.phase === 'finalizing') publish({ message: savingProgressText(saving, plain) })
         }).catch(() => {})
       }, 1000)
-      const reply = await callVerb('screen_record.stop', stopArgs(id, preset.raw, reason)).finally(() => clearInterval(progress))
+      const reply = await callVerb('screen_record.stop', stopArgs(id, preset.raw, closing ? 'app_exit' : undefined))
+        .then((started) => resolveRecordingStopJob(started, id,
+          (jobId) => callVerb('jobs.status', { job_id: jobId })))
+        .finally(() => clearInterval(progress))
       if (!reply.ok) {
         await checkCaptureStatus(id, `Stop did not complete: ${refusalText(reply.error)}`,
           isNothingRecorded(reply.error) ? nothingRecordedText(reply.error) : undefined)

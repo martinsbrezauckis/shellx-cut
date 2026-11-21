@@ -17,6 +17,16 @@ pub(crate) fn explain(
     readiness: CaptureReadinessStatus,
     kept: Option<&RecoveryReceipt>,
 ) -> RecordError {
+    if error.code == record_capture::VIDEO_ENCODER_UNAVAILABLE {
+        return error;
+    }
+    if error
+        .cause
+        .contains(record_capture::VIDEO_ENCODER_UNAVAILABLE)
+        || (error.message == "start capture" && error.cause.contains("0xC00D6D60"))
+    {
+        return record_capture::encoder_error(error.cause);
+    }
     let kept_segments = kept.map_or(0, |receipt| receipt.recovered_segments);
     // Media Foundation's MF_E_SINK_NO_SAMPLES_PROCESSED: a frame may have
     // reached the capture path but none reached the file before Stop.
@@ -114,6 +124,24 @@ mod tests {
             "The operation failed because no samples were processed by the sink. (0xC00D4A44)",
         )
         .with_action("ensure this is a Windows desktop session with Graphics Capture available")
+    }
+
+    #[test]
+    fn encoder_setup_failure_is_not_misreported_as_an_early_stop() {
+        let detail = "start capture: New handler error: A valid type has not been set for this stream or a stream that it depends on. (0xC00D6D60)";
+        let error = explain(
+            RecordError::new(record_core::error_codes::CAPTURE, "start capture", detail),
+            true,
+            status(CaptureReadinessState::TerminalBeforeFirstScreenFrame),
+            None,
+        );
+        assert_eq!(error.code, "video_encoder_unavailable");
+        assert_eq!(
+            error.message,
+            "This PC cannot encode a screen recording at this size and frame rate."
+        );
+        assert_eq!(error.cause, detail);
+        assert!(!nothing_recorded(&error));
     }
 
     #[test]

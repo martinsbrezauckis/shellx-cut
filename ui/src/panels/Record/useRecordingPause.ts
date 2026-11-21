@@ -1,16 +1,17 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import {
   NO_RECORDING_PAUSE_CAPABILITY,
   recordingPauseAcknowledged,
   recordingPauseCapability,
+  recordingTakePause,
   RecordingPauseControlLifetime,
   type RecordingPauseCapability,
   type RecordingPauseState,
 } from './recordingPause'
 
 /** Keeps the live button tied to the durable Pause/Resume acknowledgements. */
-export function useRecordingPause(initialEnabled = false) {
+export function useRecordingPause(initialEnabled = false, activeCaptureId: string | null = null) {
   const [capability, setCapability] = useState<RecordingPauseCapability>(NO_RECORDING_PAUSE_CAPABILITY)
   const [enabled, setEnabled] = useState(initialEnabled)
   const [activeEnabled, setActiveEnabled] = useState(false)
@@ -18,12 +19,43 @@ export function useRecordingPause(initialEnabled = false) {
   const [message, setMessage] = useState('Enable Pause & resume before your next recording.')
   const [captureId, setCaptureId] = useState<string | null>(null)
   const controlLifetimeRef = useRef(new RecordingPauseControlLifetime())
+  const controlRevisionRef = useRef(0)
+  const controlPendingRef = useRef(false)
 
   useLayoutEffect(() => {
     const lifetime = controlLifetimeRef.current
     lifetime.mount()
     return () => lifetime.unmount()
   }, [])
+
+  useEffect(() => {
+    if (!activeCaptureId) return
+    let cancelled = false
+    let checking = false
+    const poll = async () => {
+      if (checking || controlPendingRef.current) return
+      checking = true
+      const revision = controlRevisionRef.current
+      try {
+        const reply = await callVerb('screen_record.status', { capture_id: activeCaptureId })
+        if (cancelled || revision !== controlRevisionRef.current) return
+        const pause = reply.ok ? recordingTakePause(reply.result, activeCaptureId) : null
+        if (!pause) return
+        setCaptureId(activeCaptureId)
+        setActiveEnabled(pause.enabled)
+        setState(pause.state)
+        setMessage(pause.message)
+      } catch { /* A later status poll can recover the same running take. */ }
+      finally { checking = false }
+    }
+    controlLifetimeRef.current.replaceCapture(activeCaptureId)
+    setActiveEnabled(false)
+    setState('idle')
+    setMessage('Waiting for the recorder’s pause status…')
+    void poll()
+    const timer = window.setInterval(() => { void poll() }, 1000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [activeCaptureId])
 
   // A project change invalidates the old Doctor result while a new one is
   // pending. Keep the user's setup choice until that result is known.
@@ -35,17 +67,17 @@ export function useRecordingPause(initialEnabled = false) {
     const next = recordingPauseCapability(value)
     setCapability(next)
     if (!next.supported) {
-      if (!activeEnabled) {
+      if (!activeCaptureId && !activeEnabled) {
         controlLifetimeRef.current.clearCapture()
         setCaptureId(null)
       }
       setEnabled(false)
-      if (!activeEnabled) {
+      if (!activeCaptureId && !activeEnabled) {
         setState('idle')
         setMessage(next.detail)
       }
     }
-  }, [activeEnabled])
+  }, [activeCaptureId, activeEnabled])
 
   const setPauseEnabled = useCallback((next: boolean) => {
     if (!next) {
@@ -83,6 +115,8 @@ export function useRecordingPause(initialEnabled = false) {
 
   const clearCapture = useCallback(() => {
     controlLifetimeRef.current.clearCapture()
+    ++controlRevisionRef.current
+    controlPendingRef.current = false
     setCaptureId(null)
     setActiveEnabled(false)
     setState('idle')
@@ -92,6 +126,8 @@ export function useRecordingPause(initialEnabled = false) {
     if (!captureId || (state !== 'recording' && state !== 'paused')) return
     const controlLease = controlLifetimeRef.current.begin(captureId)
     if (!controlLease) return
+    ++controlRevisionRef.current
+    controlPendingRef.current = true
     const action = state === 'paused' ? 'resume' : 'pause'
     setState(action === 'pause' ? 'pausing' : 'resuming')
     setMessage(action === 'pause' ? 'Waiting for the recorder to seal the pause…' : 'Waiting for the recorder to seal the resume…')
@@ -105,6 +141,8 @@ export function useRecordingPause(initialEnabled = false) {
         ? 'Pause control failed: recorder unreachable.'
         : 'Pause control failed before the recorder acknowledged it.')
       return
+    } finally {
+      if (controlLifetimeRef.current.isCurrent(controlLease)) controlPendingRef.current = false
     }
     if (!controlLifetimeRef.current.isCurrent(controlLease)) return
     const acknowledgement = response.ok ? recordingPauseAcknowledged(response.result, action) : null

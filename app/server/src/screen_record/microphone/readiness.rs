@@ -19,7 +19,7 @@ pub(crate) struct MicrophoneReadiness {
     pub access: MicrophoneAccess,
     /// The Windows privacy switch that is off, when one is.
     pub windows_switch: Option<MicrophoneSwitch>,
-    /// Windows lists no active microphone.
+    /// The native input inventory lists no microphone.
     pub no_device: bool,
 }
 
@@ -30,7 +30,7 @@ pub(crate) struct Blocker {
 }
 
 impl MicrophoneReadiness {
-    /// Read the current state. No read prompts or opens a device.
+    /// Read the current state without prompting or starting an audio stream.
     pub(crate) fn current() -> Self {
         #[cfg(test)]
         if let Some(readiness) = TEST_READINESS.with(std::cell::Cell::get) {
@@ -68,7 +68,16 @@ impl MicrophoneReadiness {
             return Some(windows_blocker(MicrophoneProblem::Blocked(switch)));
         }
         if self.no_device {
-            return Some(windows_blocker(MicrophoneProblem::NoDevice));
+            let mut blocker = windows_blocker(MicrophoneProblem::NoDevice);
+            if !cfg!(windows) {
+                blocker.error.cause = "native microphone inventory before any take".into();
+                blocker.error.suggested_action = Some(if cfg!(target_os = "macos") {
+                    "Connect a microphone, or enable an input in System Settings > Sound > Input, then try again".into()
+                } else {
+                    "Connect a microphone, or enable an input in your system sound settings, then try again".into()
+                });
+            }
+            return Some(blocker);
         }
         let (reason, cause) = match self.access {
             MicrophoneAccess::Denied => (
@@ -159,6 +168,28 @@ pub(crate) fn projection(readiness: MicrophoneReadiness, mic_warm: Option<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn missing_microphone_advice_names_the_current_system() {
+        let problem = MicrophoneReadiness {
+            no_device: true,
+            ..ready(MicrophoneAccess::NotApplicable)
+        }
+        .problem()
+        .unwrap();
+        assert_eq!(problem.reason, "no_microphone_device");
+        assert_eq!(problem.error.message, "No microphone was found");
+        let action = problem.error.suggested_action.unwrap();
+        assert!(
+            action.contains(if cfg!(target_os = "macos") {
+                "System Settings > Sound > Input"
+            } else {
+                "sound settings"
+            }),
+            "{action}"
+        );
+    }
 
     fn ready(access: MicrophoneAccess) -> MicrophoneReadiness {
         MicrophoneReadiness {

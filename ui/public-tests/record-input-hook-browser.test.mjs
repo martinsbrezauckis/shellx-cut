@@ -18,7 +18,7 @@ const doctor = {
 const unavailable = (keys = false) => ({ state: 'unavailable', backend: 'rdevin_windows', reason: 'startup_failed', capture_keys: keys })
 const warning = '[data-cut-rec-input-hook-warning]'
 
-async function fixture(t, { raw = true, keys = false } = {}) {
+async function fixture(t, { raw = true, keys = false, doctorResult = doctor } = {}) {
   const cacheDir = mkdtempSync(join(tmpdir(), 'cut-record-hook-'))
   t.after(() => rmSync(cacheDir, { recursive: true, force: true }))
   const server = await createServer({
@@ -50,7 +50,7 @@ async function fixture(t, { raw = true, keys = false } = {}) {
     const name = new URL(route.request().url()).pathname.split('/').at(-1)
     requests.push({ name, args: route.request().postDataJSON() })
     if (name === 'screen_record.start') take += 1
-    const result = name === 'screen_record.doctor' ? doctor
+    const result = name === 'screen_record.doctor' ? doctorResult
       : name === 'screen_record.start' ? { capture_id: `take-${take}`, pause: { enabled: false } }
       : name === 'screen_record.status' ? { capture_id: statusId ?? `take-${take}`, ready: true, terminal: false, since_first_screen_frame_ms: 0, input_hook: hook }
       : name === 'screen_record.stop' ? { capture_id: `take-${take}`, raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json', input_hook: stopHook }
@@ -89,7 +89,7 @@ test('legacy, malformed, unobserved and registered with zero events do not claim
   const f = await fixture(t)
   await f.start()
   for (const value of [undefined, { state: 'unavailable' },
-    { ...unavailable(), capture_keys: 'yes' }, { ...unavailable(), untrusted: true }, [], { ...unavailable(), backend: 'wayland_evdev' },
+    { ...unavailable(), capture_keys: 'yes' }, { ...unavailable(), untrusted: true }, [], { ...unavailable(), backend: 'unknown' },
     { state: 'unobserved', backend: 'wayland_evdev', reason: null, capture_keys: false },
     { state: 'registered', backend: 'rdevin_windows', reason: null, capture_keys: false }]) {
     await f.nextStatus(value, value?.state === 'registered' ? 'registered' : undefined)
@@ -136,5 +136,39 @@ test('another capture status cannot publish its startup failure', async t => {
   await f.nextStatus(unavailable())
   await f.page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recovery')
   assert.equal(await f.page.locator(warning).count(), 0)
+  assert.deepEqual(f.errors, [])
+})
+
+
+for (const keys of [false, true]) test(`Wayland without input admits a plain take and preserves selected keys=${keys}`, async t => {
+  const f = await fixture(t, { raw: false, keys, doctorResult: {
+    ...doctor, ready: false, start_allowed: true, monitors: [], window_capture_supported: false,
+    cards: [{ name: 'gstreamer', status: 'ok', detail: 'Available' },
+      { name: 'wayland_input', status: 'degraded', detail: 'Wayland input is not readable: sudo usermod -aG input $USER, then re-login' }],
+  } })
+  const notice = f.page.locator('[data-cut-rec-input-unavailable]')
+  await f.page.locator('[data-cut-rec-setup-state="pending"]').waitFor()
+  assert.equal(await notice.count(), 1, 'missing input is explained before Start')
+  const noticeBox = await notice.boundingBox()
+  assert.ok(noticeBox && noticeBox.width > 0 && noticeBox.x + noticeBox.width <= 1100, 'input advice fits inside the visible page')
+  assert.equal(await notice.evaluate(element => element.scrollWidth <= element.clientWidth), true, 'the command wraps without clipping')
+  assert.match(await notice.textContent(), /Show keystrokes.*click highlights.*automatic zoom.*sudo usermod/)
+  const toggle = f.page.locator('[data-cut-rec-keys-toggle-input]')
+  const start = f.page.locator('[data-cut-action="record-start"]')
+  assert.equal(await toggle.isChecked(), keys, 'a saved key request is never silently cleared')
+  assert.equal(await start.isEnabled(), !keys)
+  if (keys) {
+    assert.equal(await toggle.isEnabled(), true, 'a selected unavailable option can be turned off')
+    await toggle.uncheck()
+  }
+  assert.equal(await toggle.isEnabled(), false, 'unavailable key capture cannot be turned on')
+  assert.equal(await start.isEnabled(), true)
+  assert.equal(f.requests.some(request => request.name === 'screen_record.start'), false)
+  if (process.env.CUT_HOOK_SCREENSHOT) await f.page.screenshot({ path: `${process.env.CUT_HOOK_SCREENSHOT}-wayland-${keys}.png`, fullPage: true })
+  await start.click()
+  await f.page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  assert.equal(f.requests.find(request => request.name === 'screen_record.start')?.args.keys, false)
+  await f.nextStatus({ state: 'unavailable', backend: 'wayland_evdev', reason: 'startup_failed', capture_keys: false }, 'unavailable')
+  assert.match(await f.page.locator(warning).textContent(), /Click, scroll and key events are unavailable/)
   assert.deepEqual(f.errors, [])
 })

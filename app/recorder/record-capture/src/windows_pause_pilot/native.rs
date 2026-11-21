@@ -105,7 +105,8 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
         .map_err(|error| cap_err("start pause pilot", error))?;
         Ok(WgcStartedControl::new(
             LiveWgcControl {
-                close: Some(Box::new(move || {
+                rotate: None,
+                close: Some(Box::new(move |_| {
                     control
                         .stop()
                         .map_err(|error| cap_err("finalize WGC checkpoint", error))

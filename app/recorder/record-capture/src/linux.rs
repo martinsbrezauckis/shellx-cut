@@ -238,9 +238,7 @@ impl Capture for LinuxCapture {
                 }
             };
 
-            // ----- capture window begins (input + mic aligned to source frame 0) -----
-            // Use the EXTERNAL stop flag (passed in) rather than a fresh internal
-            // one — that is what lets `screen_record.stop` end this capture early.
+            // Capture uses the external stop flag so `screen_record.stop` ends it.
             let stop = stop_async;
             // Mic in PARALLEL — never block the screen on it (an 8 s "ready" wait starved
             // the screen capture when no/slow input device was present; the Record surface
@@ -249,7 +247,7 @@ impl Capture for LinuxCapture {
                 .as_ref()
                 .map(crate::CaptureClock::start)
                 .unwrap_or_else(Instant::now);
-            let mut input = Some(crate::linux_input::start(
+            let started_input = crate::linux_input::start(
                 input_mode.use_evdev,
                 start,
                 stop.clone(),
@@ -257,7 +255,9 @@ impl Capture for LinuxCapture {
                 sw,
                 sh,
                 cfg.readiness.as_ref(),
-            )?);
+            )?;
+            let input_unavailable = started_input.input_unavailable();
+            let mut input = Some(started_input);
             let mic_handle = if audio_wanted {
                 let ready = Arc::new(AtomicBool::new(false));
                 let mic_path = format!("{out_dir_async}/mic.wav");
@@ -483,6 +483,7 @@ impl Capture for LinuxCapture {
                 microphone_outcome,
                 input,
                 keys,
+                input_unavailable,
             })
         });
         if let Some(preview) = cfg.active_preview.as_ref() {
@@ -515,7 +516,7 @@ impl Capture for LinuxCapture {
         // logical size equals encoded video.
         let finalized_dimensions = verified_media.width.zip(verified_media.height);
         let (w, h) = finalized_dimensions.unwrap_or((phase.w, phase.h));
-        let (cursor, clicks, scrolls, cursor_correlation) = match phase.input {
+        let (cursor, clicks, scrolls, mut cursor_correlation) = match phase.input {
             CapturedInput::Correlated(input) => (
                 input.cursor,
                 input.clicks,
@@ -547,6 +548,9 @@ impl Capture for LinuxCapture {
                 )
             }
         };
+        if phase.input_unavailable {
+            crate::linux_input::note_unavailable(&mut cursor_correlation);
+        }
         let events = EventTrack {
             duration_ms: phase.duration_ms,
             screen_w: w,

@@ -42,6 +42,24 @@ pub(super) fn capability() -> Value {
     }
 }
 
+/// Per-take truth comes from the native owner, never from a client's Start form.
+pub(super) fn status(_capture_id: &str, ending: bool) -> Value {
+    if ending {
+        return json!({ "enabled": false, "state": "unavailable",
+            "reason": "This recording is ending. Pause and resume are unavailable." });
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(status) = super::macos_pause_control::status(_capture_id) {
+        return status;
+    }
+    let reason = if cfg!(target_os = "macos") {
+        json!("Pause & resume was not enabled before this recording started.")
+    } else {
+        capability()["detail"].clone()
+    };
+    json!({ "enabled": false, "state": "unavailable", "reason": reason })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn admit_public_start(
     requested: Option<PauseStart>,

@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+fn capture_id_at(ms: u64, seq: u64) -> String {
+    format!("cap_pending_test_{}_{}_{}", std::process::id(), ms, seq)
+}
+
 fn capture_id() -> String {
-    format!(
-        "cap_{}_{}_{}",
-        std::process::id(),
+    capture_id_at(
         super::super::active_capture::unix_ms_now(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
+        NEXT.fetch_add(1, Ordering::Relaxed),
     )
 }
 
@@ -33,6 +35,53 @@ fn listed(id: &str) -> Option<Value> {
         .iter()
         .filter(|note| note.capture_id == id)
         .find_map(describe)
+}
+
+#[test]
+fn pending_fixture_does_not_share_a_recovery_fixture_note() {
+    let ms = 424_242;
+    let seq = 7;
+    let pending_id = capture_id_at(ms, seq);
+    let recovery_id = format!("cap_{}_{}_{}", std::process::id(), ms, seq);
+    let pending_project = tempfile::tempdir().unwrap();
+    let recovery_project = tempfile::tempdir().unwrap();
+
+    note_started(&pending_id, pending_project.path());
+    mark_added_to_timeline(&pending_id);
+    note_started(&recovery_id, recovery_project.path());
+
+    let note = read_note(&note_path(&pending_id).unwrap()).unwrap();
+    remove(&pending_id);
+    remove(&recovery_id);
+    assert!(note.added_to_timeline);
+    assert_eq!(
+        note.project_dir,
+        super::super::strip_verbatim_prefix(pending_project.path())
+    );
+}
+
+#[test]
+fn checking_pending_notes_does_not_lose_a_timeline_mark() {
+    let id = capture_id();
+    let project = tempfile::tempdir().unwrap();
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            for _ in 0..256 {
+                let _ = all_notes();
+                std::thread::yield_now();
+            }
+        });
+        start.wait();
+        for _ in 0..32 {
+            note_started(&id, project.path());
+            mark_added_to_timeline(&id);
+            let note = read_note(&note_path(&id).unwrap()).unwrap();
+            assert!(note.added_to_timeline);
+        }
+    });
+    remove(&id);
 }
 
 #[test]

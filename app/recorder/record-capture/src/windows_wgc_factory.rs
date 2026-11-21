@@ -4,11 +4,15 @@ use std::path::Path;
 
 use record_core::Result;
 
-use crate::windows_wgc_run::{state_error, WgcControlFactory, WgcNativeControl, WgcStartedControl};
+#[cfg(test)]
+use crate::windows_wgc_run::state_error;
+use crate::windows_wgc_run::{WgcControlFactory, WgcNativeControl, WgcStartedControl};
 
 /// Only ordinary Windows capture uses this explicit reservation-aware adapter.
+#[cfg(test)]
 pub(crate) struct TimedWgcFactory<F>(pub(crate) F);
 
+#[cfg(test)]
 impl<T, F, C> WgcControlFactory<T> for TimedWgcFactory<F>
 where
     F: FnMut(&T, &Path, u64) -> Result<WgcStartedControl<C>>,

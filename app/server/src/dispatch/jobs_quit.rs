@@ -46,6 +46,34 @@ pub(super) async fn jobs_before_quit(
     }
     let a: Args = parse_args(args)?;
     let active = state.jobs.active_jobs();
+    // A recording save owns the only finalizer for its take. It cannot be
+    // cancelled before the source and requested raw file are durable, even if
+    // the person confirmed cancellation of other jobs while closing the app.
+    let saving: Vec<&crate::jobs::ActiveJobInfo> = active
+        .iter()
+        .filter(|job| job.kind == "screen_record_stop")
+        .collect();
+    if !saving.is_empty() {
+        return Ok(VerbResult {
+            ok: false,
+            result: Some(json!({
+                "running": saving.iter().map(|job| running_record(job)).collect::<Vec<_>>()
+            })),
+            op_ids: None,
+            warnings: None,
+            project_revision: None,
+            error: Some(
+                CutError::new(
+                    "jobs_running",
+                    "the recording is still saving",
+                    "the recording save must finish before the app closes",
+                )
+                .with_suggested_action(
+                    "wait for the recording save job to finish, then close the app",
+                ),
+            ),
+        });
+    }
     let asked_for: Vec<&crate::jobs::ActiveJobInfo> =
         active.iter().filter(|job| job.is_delivery()).collect();
     if !a.cancel_running_jobs {

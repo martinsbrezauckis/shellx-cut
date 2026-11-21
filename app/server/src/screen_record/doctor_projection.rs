@@ -59,6 +59,7 @@ pub struct WindowInfo {
 pub struct RecordDoctor {
     pub cards: Vec<RecordCard>,
     pub ready: bool,
+    /// Plain screen/sound admission; opt-in keystrokes are checked separately at Start.
     pub start_allowed: bool,
     pub monitors: Vec<MonitorInfo>,
     pub windows: Vec<WindowInfo>,
@@ -68,7 +69,7 @@ pub struct RecordDoctor {
 
 pub(super) fn required_capture_card(cards: &[RecordCard], name: &str) -> bool {
     matches!(name, "ffmpeg" | "screen_capture" | "input_hook")
-        || (matches!(name, "gstreamer" | "wayland_input")
+        || (matches!(name, "gstreamer" | "wayland_input" | "video_encoder")
             && cards.iter().any(|card| card.name == name))
 }
 
@@ -80,6 +81,7 @@ pub(super) fn ready_rollup(cards: &[RecordCard]) -> bool {
         "input_hook",
         "gstreamer",
         "wayland_input",
+        "video_encoder",
     ]
     .into_iter()
     .filter(|name| required_capture_card(cards, name))
@@ -190,19 +192,8 @@ pub(super) fn record_card(card: record_capture::Card) -> RecordCard {
 }
 
 pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutError> {
-    #[derive(serde::Deserialize, Default)]
-    struct Args {
-        // Warm is an explicit Test, audio off→on, or Start action only. Doctor
-        // enumeration itself must never open a microphone stream.
-        #[serde(default)]
-        warm_mic: bool,
-        // `check` (default) runs the short screen-delivery check; `status`
-        // never starts a capture or a prompt; `microphone` reads only the
-        // microphone choice and permission.
-        #[serde(default)]
-        mode: Option<String>,
-    }
-    let args: Args = parse_args(args)?;
+    let args: super::video_encoder_readiness::DoctorArgs = parse_args(args)?;
+    let request = args.encoder.request()?;
     let mode = args.mode.as_deref().unwrap_or("check");
     if !matches!(mode, "check" | "status" | "microphone") {
         return Err(CutError::new(
@@ -244,36 +235,40 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
             readiness, mic_warm,
         )));
     }
-    let (doctor, screen_check) = if mode == "status" {
+    let (mut doctor, screen_check) = if mode == "status" {
         doctor_status()
     } else {
         (doctor(), checked_screen())
     };
+    let encoder = super::video_encoder_readiness::apply(&mut doctor, request, mode != "status");
     let microphone = microphone::doctor_projection();
     let readiness = microphone::readiness::MicrophoneReadiness::current();
-    Ok(VerbResult::ok(json!({
-        "mode": mode,
-        "microphone_access": readiness.access,
-        "microphone_blocked": microphone::readiness::blocked_projection(readiness),
-        "screen_check": screen_check,
-        "cards": doctor.cards,
-        "ready": doctor.ready,
-        "start_allowed": doctor.start_allowed,
-        "monitors": doctor.monitors,
-        "windows": doctor.windows,
-        "window_capture_supported": doctor.window_capture_supported,
-        "quality": doctor.quality,
-        "mic_warm": mic_warm,
-        "microphones": microphone.microphones,
-        "microphone_selection": microphone.microphone_selection,
-        "camera": camera_public::capability(),
-        "scenes": recording_scenes::capability(),
-        "pause": recording_controls::capability(),
-        "region_selection": {
-            "supported": false,
-            "detail": "Area capture remains unavailable pending compiled/native qualification of the foreground picker path. The private macOS source bridge is not exposed; Windows and Linux have no crop backend.",
-        },
-    })))
+    Ok(VerbResult::ok(super::video_encoder_readiness::projection(
+        json!({
+            "mode": mode,
+            "microphone_access": readiness.access,
+            "microphone_blocked": microphone::readiness::blocked_projection(readiness),
+            "screen_check": screen_check,
+            "cards": doctor.cards,
+            "ready": doctor.ready,
+            "start_allowed": doctor.start_allowed,
+            "monitors": doctor.monitors,
+            "windows": doctor.windows,
+            "window_capture_supported": doctor.window_capture_supported,
+            "quality": doctor.quality,
+            "mic_warm": mic_warm,
+            "microphones": microphone.microphones,
+            "microphone_selection": microphone.microphone_selection,
+            "camera": camera_public::capability(),
+            "scenes": recording_scenes::capability(),
+            "pause": recording_controls::capability(),
+            "region_selection": {
+                "supported": false,
+                "detail": "Area capture remains unavailable pending compiled/native qualification of the foreground picker path. The private macOS source bridge is not exposed; Windows and Linux have no crop backend.",
+            },
+        }),
+        encoder,
+    )))
 }
 
 /// What a full check reports about screen delivery: Linux Doctor never runs

@@ -4485,7 +4485,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "project_state": "required",
     "idempotency": "none",
     "replayability": "not_applicable",
-    "async_job": "none",
+    "async_job": "capture",
     "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",

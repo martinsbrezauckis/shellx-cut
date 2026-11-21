@@ -41,6 +41,8 @@ struct WgcTimingSummary {
     encoder_finish_ok: Option<bool>,
     control_stop_return_elapsed_ns: Option<u64>,
     control_stop_ok: Option<bool>,
+    writer_seal_elapsed_ns: Option<u64>,
+    writer_seal_ok: Option<bool>,
 }
 
 impl WgcTimingRecorder {
@@ -70,6 +72,8 @@ impl WgcTimingRecorder {
                 encoder_finish_ok: None,
                 control_stop_return_elapsed_ns: None,
                 control_stop_ok: None,
+                writer_seal_elapsed_ns: None,
+                writer_seal_ok: None,
             })),
         }
     }
@@ -137,6 +141,28 @@ impl WgcTimingRecorder {
         }
     }
 
+    /// A retired writer has left the callback, while its capture session lives.
+    /// Keep this distinct from stopping the native capture control.
+    pub(crate) fn writer_sealed(&self, at: Instant, ok: bool) {
+        let mut summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        summary.writer_seal_elapsed_ns = Some(self.elapsed_ns(at));
+        summary.writer_seal_ok = Some(ok);
+        if !ok {
+            summary.held_pixel_duration_ms = None;
+        }
+    }
+
+    pub(crate) fn successful_segment_seal(&self) -> bool {
+        let summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        summary.writer_seal_ok.or(summary.control_stop_ok) == Some(true)
+    }
+
     /// WGC's encoder makes a constant-rate file from sparse native frames. At
     /// Stop it can extend the last held frame by the preceding native gap, so
     /// the file can outlive the capture clock even though every real frame was
@@ -178,7 +204,11 @@ impl WgcTimingRecorder {
             .saturating_sub(first.capture_clock_elapsed_ns)
             / 1_000_000;
         let last_callback_ms = last.capture_clock_elapsed_ns / 1_000_000;
-        let stop_return_ms = summary.control_stop_return_elapsed_ns.unwrap_or(0) / 1_000_000;
+        let stop_return_ms = summary
+            .writer_seal_elapsed_ns
+            .or(summary.control_stop_return_elapsed_ns)
+            .unwrap_or(0)
+            / 1_000_000;
         let max_gap_ms = u64::try_from(summary.max_native_gap_100ns).unwrap_or(0) / 10_000;
         let explains_tail = max_gap_ms > 0
             && media_duration_ms >= native_ms.saturating_sub(ENCODER_SLOP_MS)
@@ -186,7 +216,7 @@ impl WgcTimingRecorder {
                 <= native_ms
                     .saturating_add(max_gap_ms)
                     .saturating_add(ENCODER_SLOP_MS);
-        summary.control_stop_ok == Some(true)
+        summary.writer_seal_ok.or(summary.control_stop_ok) == Some(true)
             && stop_return_ms.abs_diff(end_ms) <= CLOCK_SLOP_MS
             && summary.native_timestamp_regressions == 0
             && summary.accepted_frames >= 2

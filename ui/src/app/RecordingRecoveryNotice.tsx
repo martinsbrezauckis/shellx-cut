@@ -148,6 +148,14 @@ export default function RecordingRecoveryNotice({ projectKey, onVisibleChange }:
     } catch { /* the engine is unreachable; the next refresh tries again */ }
   }, [projectKey])
 
+  // Another client can recover a take without changing the open project.
+  const recoveryOffered = rows.some((row) => row.canRecover && !row.result)
+  useEffect(() => {
+    if (!recoveryOffered) return
+    const timer = window.setInterval(() => { void refresh() }, 1500)
+    return () => window.clearInterval(timer)
+  }, [recoveryOffered, refresh])
+
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => subscribeRecoveryPreparation(() => { void refresh() }), [refresh])
   useEffect(() => {

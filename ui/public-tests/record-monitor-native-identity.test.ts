@@ -28,8 +28,42 @@ assert.match(macos, /resolve_exact\(/, 'macOS re-enumerates and matches the exac
 assert.match(projection, /id: monitor\.id/, 'Doctor projects the native id unchanged')
 const windowsCapture = read('../../app/recorder/record-capture/src/windows.rs')
 const macosCapture = read('../../app/recorder/record-capture/src/macos.rs')
-assert.match(windowsCapture, /if let Some\(id\) = cfg\.monitor_id\.as_deref\(\)/, 'WGC prefers an explicit exact monitor identity')
-assert.match(windowsCapture, /windows_monitor_target::resolve_monitor\(id\)/, 'WGC re-enumerates the exact monitor identity')
+const windowsSource = read('../../app/recorder/record-capture/src/windows_capture_source.rs')
+
+function assertWindowsMonitorIdentity(capture: string, source: string, resolver: string) {
+  assert.match(capture, /let monitor =\s*crate::windows_capture_source::monitor\(cfg\.monitor, cfg\.monitor_id\.as_deref\(\)\)\?;/,
+    'capture passes its exact configured monitor identity through the extracted owner')
+  assert.equal([...capture.matchAll(/\bmonitor\s*=(?!=)/g)].length, 1,
+    'the resolved monitor is never reassigned or shadowed before WGC receives it')
+  assert.match(capture, /\(Src::Monitor\(monitor\), width, height, surface\)/,
+    'capture keeps the monitor returned by the exact resolver')
+  assert.match(source, /pub\(crate\) fn monitor\(index: Option<u32>, id: Option<&str>\) -> Result<Monitor> \{\s*if let Some\(id\) = id \{\s*return crate::windows_monitor_target::resolve_monitor\(id\)\s*\.map_err\(\|error\| cap_err\("[^"]*", error\)\);\s*\}\s*match index/,
+    'an explicit opaque identity is resolved unchanged and returned before any legacy ordinal or primary path')
+  assert.match(resolver, /resolve_exact\(\s*id,\s*NativeMonitorPlatform::Windows,\s*monitors,\s*native_target_path,/,
+    'native re-enumeration matches the supplied identity against physical target paths')
+  assert.match(capture, /Src::Monitor\(m\) => Handler::start_free_threaded\(WcSettings::new\(\s*m,/,
+    'WGC starts with that exact monitor, not a fresh primary or ordinal selection')
+  assert.doesNotMatch(resolver, /or_else\(.*primary|or_else\(.*width/i, 'an unavailable identity has no primary or geometry fallback')
+}
+
+assertWindowsMonitorIdentity(windowsCapture, windowsSource, windows)
+for (const [label, original, before, after] of [
+  ['capture discards the supplied identity', windowsCapture, 'cfg.monitor, cfg.monitor_id.as_deref()', 'cfg.monitor, None'],
+  ['resolver re-derives an identity', windowsSource, 'resolve_monitor(id)', 'resolve_monitor(&index.to_string())'],
+  ['capture rebinds the resolved monitor', windowsCapture, '            (Src::Monitor(monitor), width, height, surface)', '            let monitor = WcMonitor::primary().unwrap();\n            (Src::Monitor(monitor), width, height, surface)'],
+  ['resolver continues into legacy selection', windowsSource, 'return crate::windows_monitor_target::resolve_monitor(id)', 'let _ = crate::windows_monitor_target::resolve_monitor(id)'],
+  ['resolver substitutes primary on failure', windowsSource, '.map_err(|error| cap_err("resolve the selected monitor identity", error))', '.or_else(|_| Monitor::primary())'],
+  ['native matching uses a display name', windows, '        native_target_path,', '        display_name,'],
+  ['WGC substitutes a primary monitor', windowsCapture, '                    m,\n                    CursorCaptureSettings::WithoutCursor', '                    WcMonitor::primary().unwrap(),\n                    CursorCaptureSettings::WithoutCursor'],
+] as const) {
+  assert.ok(original.includes(before), `mutation fixture exists: ${label}`)
+  const changed = original.replace(before, after)
+  assert.throws(() => assertWindowsMonitorIdentity(
+    original === windowsCapture ? changed : windowsCapture,
+    original === windowsSource ? changed : windowsSource,
+    original === windows ? changed : windows,
+  ), { code: 'ERR_ASSERTION' }, label)
+}
 assert.match(macosCapture, /macos_capture_target::prepare_capture_target\(cfg, fps\)/,
   'ScreenCaptureKit hands the unchanged capture config to its exact-target owner')
 assert.match(macosTarget, /fn select_display[\s\S]*if let Some\(id\) = cfg\.monitor_id\.as_deref\(\)/,

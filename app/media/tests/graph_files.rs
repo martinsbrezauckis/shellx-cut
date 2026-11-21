@@ -5,6 +5,16 @@
 
 cut_core::isolate_test_process!();
 
+/// The tests of this file share one session folder, and the cleanup test counts
+/// every graph file in it, so they must not run at the same time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn graph_files() -> usize {
     let dir = cut_media::private_work::session_dir().expect("session folder");
     std::fs::read_dir(dir)
@@ -49,6 +59,7 @@ fn args(graph: String, out: &std::path::Path) -> Vec<String> {
 
 #[test]
 fn no_graph_file_is_left_after_a_render_that_succeeds_or_fails() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let before = graph_files();
     for i in 0..3 {
@@ -75,6 +86,7 @@ fn no_graph_file_is_left_after_a_render_that_succeeds_or_fails() {
 /// inline reference even when the engine chooses a graph file.
 #[test]
 fn graph_file_and_inline_outputs_match_around_the_inline_limit() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     for bytes in [16 * 1024 - 1, 16 * 1024 + 1] {
         let tail = "[0:v]setpts='if(gte(N\\,0)\\,PTS\\,PTS)'[v]";
@@ -128,6 +140,7 @@ fn graph_file_and_inline_outputs_match_around_the_inline_limit() {
 
 #[test]
 fn the_graph_file_byte_cap_is_accepted_and_exceeding_it_is_refused() {
+    let _serial = serial();
     const CAP: usize = 32 * 1024 * 1024;
     let dir = tempfile::tempdir().unwrap();
     let tail = "[0:v]null[v]";

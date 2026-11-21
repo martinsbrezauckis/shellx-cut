@@ -9,13 +9,15 @@ for (const value of [null, [], {}, { ...registered, backend: 'unknown' }, { ...r
   assert.equal(recordingInputHook(value).state, 'unobserved')
   assert.equal(recordingInputHookWarning(recordingInputHook(value), false), null)
 }
-for (const backend of ['rdevin_windows', 'rdevin_macos', 'rdevin_x11']) {
+for (const backend of ['rdevin_windows', 'rdevin_macos', 'rdevin_x11', 'wayland_evdev']) {
   const observation = recordingInputHook({ state: 'unavailable', backend, reason: 'startup_failed', capture_keys: false })
   assert.equal(observation.state, 'unavailable')
   assert.match(recordingInputHookWarning(observation, true) ?? '', /Video saved/)
 }
 for (const backend of ['unknown', 'wayland_evdev']) {
   assert.equal(recordingInputHook({ state: 'unobserved', backend, reason: null, capture_keys: true }).backend, backend)
-  assert.equal(recordingInputHook({ state: 'unavailable', backend, reason: 'startup_failed', capture_keys: true }).backend, 'unknown')
+  if (backend === 'unknown') assert.equal(recordingInputHook({ state: 'unavailable', backend, reason: 'startup_failed', capture_keys: true }).backend, 'unknown')
 }
 console.log('PASS observed input startup parser and warning contract')
+
+assert.match(recordingInputHookWarning(recordingInputHook({ state: 'unavailable', backend: 'wayland_evdev', reason: 'startup_failed', capture_keys: false }), true) ?? '', /click.*scroll.*key/i)

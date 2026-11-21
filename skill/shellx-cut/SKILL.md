@@ -19,8 +19,8 @@ Example: "FFmpeg is missing. It is free software under the GNU GPL version 3
 (https://www.gnu.org/licenses/gpl-3.0.html). May I download it and accept that
 licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
-> **Engine v0.6.116 candidate.** v0.6.115 is the latest published release.
+<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
+> **Engine v0.6.117 candidate.** v0.6.116 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **317 verbs across 34 domains** under the public verb contract.
@@ -264,9 +264,11 @@ licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 >   native preview; it requires restarting that process, not merely reopening
 >   Record.
 >   Doctor health stays strict: on Linux `start_allowed:true` means only the
->   deliberate prompt-deferred XDG ScreenCast portal card may enter the
->   user-initiated source picker; it does not make `ready` true, and missing,
->   degraded, or other unknown required cards still refuse `start`.
+>   prompt-deferred XDG ScreenCast portal card may enter the user-initiated
+>   source picker; optional unavailable `wayland_input` permits a plain take.
+>   `keys:true` still requires readable input devices; turn keys off or follow
+>   the reported command and log out and back in. Other required failures
+>   still refuse, and `ready` retains the missing-input fact.
 >   Doctor reports `system_audio` separately as an optional passive card. A
 >   compiled backend remains `unknown` until a real user-started recording
 >   proves packets; Doctor opens no loopback/tap stream and cannot trigger the
@@ -275,7 +277,9 @@ licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 >   `input_hook` on Status/Stop reports per-take startup registration only.
 >   An observed optional startup failure warns that input-driven effects may
 >   be absent, while saved video remains usable (including its baked native
->   Window cursor). Unknown/legacy/Wayland observations are not failures.
+>   Window cursor). A Wayland `unavailable` observation means no evdev devices
+>   opened: click, scroll and key data are absent, while PipeWire cursor
+>   metadata can remain available. Unknown/legacy observations are not failures.
 >   Windows/macOS Doctor monitor rows include an opaque, versioned native `id`
 >   only when an exact identity is available. Pass it unchanged as
 >   `screen_record.start{monitor_id}`; Cut re-enumerates and matches it exactly
@@ -352,8 +356,17 @@ licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 >   suggested_action, to the person; retry
 >   only after the stated problem is fixed. A start without microphone sound
 >   does not need microphone readiness.
->   After `screen_record.start` returns a `capture_id`, retain it. A
->   non-successful `screen_record.stop` leaves that capture unresolved: do not
+>   After `screen_record.start` returns a `capture_id`, retain it.
+>   For an ordinary Windows take after its first frame, Stop answers at once
+>   with `status:"finalizing"` and a `job_id` while saving continues, or returns
+>   the completed Stop result if saving has already finished. Poll
+>   `jobs.status{job_id}` with a deadline of at most 15 minutes. Use saved paths
+>   only after `state:"done"` and a full Stop `VerbResult` envelope in the job's
+>   `result` with `ok:true` and the same `capture_id`; when `mux_raw:true`, require
+>   a nonempty `raw_path`. Failed, cancelled, missing or timed-out jobs do not
+>   confirm a saved file. Saving cannot be cancelled or abandoned by Quit.
+>   Linux, macOS and `reason:"app_exit"` wait for the completed Stop result.
+>   A non-successful `screen_record.stop` leaves that capture unresolved: do not
 >   start a replacement. Check `screen_record.status{capture_id}`. Offer Retry
 >   Stop only when the same capture is still live (`terminal:false`); classify
 >   terminal or `not_found` as ended and uncertain ownership as unknown.
@@ -427,10 +440,10 @@ licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 >   stops the recording itself; an engine that shuts down finishes a running
 >   recording first. Save points come every 15 seconds, so a crash loses the
 >   video after the last one; the sound is kept.
->   Known limits (tell the person when they ask about a hitch): at each 15 s
->   save point the picture of a moving screen holds for about 0.5 s on macOS and
->   about 2 s on Windows while the sound keeps recording; on Windows Stop of a
->   long moving recording takes several seconds (about 11 s for one minute).
+>   On Windows and macOS, the screen keeps recording across the 15 s save points.
+>   Known Windows limits (tell the person when they ask about a hitch): about
+>   half a second at the start of a take can repeat the first picture.
+>   Short, separate system sounds can drift out of sync with the picture.
 >   Opening a project with an interrupted recording starts a visible
 >   `recording_recovery` job ("Preparing interrupted recording"); `recover`
 >   refuses with "this recording is still being prepared" until it ends.
@@ -503,13 +516,23 @@ licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 >   `windows_microphone_access_off`, `windows_apps_microphone_off` or
 >   `windows_desktop_apps_microphone_off` (a Windows privacy switch is off; the
 >   action names the switch under Settings > Privacy & security > Microphone),
->   `no_microphone_device`; on macOS `macos_denied` or `macos_restricted`. A take
+>   on macOS `macos_denied` or `macos_restricted`; on Windows and macOS
+>   `no_microphone_device` when no input device exists (on a Linux desktop
+>   with a sound server this is not detected: the take starts). A take
 >   that fails after it started returns `failure:{reason,message,suggested_action,detail?}`
 >   in its status (on Windows `microphone_in_use`, `microphone_unavailable`,
 >   `microphone_open_failed` or `windows_microphone_access_denied`); relay the
 >   message and action. The same applies to `screen_record.doctor` cards: use
 >   `{mode:"status"}` to show readiness without a capture or prompt, and run the
->   full check only when the person asks to check or record.
+>   full check only when the person asks to check or record. Pass the chosen
+>   `fps` and `monitor_id` or `window` to check video recording on Windows.
+>   The `video_encoder` answer includes `checked`, `ready`, `reason`, `message`,
+>   dimensions and frame rate. Its `video_encoder_unavailable` reason means
+>   the selected source cannot initialize video recording; show the plain
+>   message and keep native details in diagnostics. `window_minimized` returns
+>   `checked:false` and `ready:false`: Doctor leaves the selected window
+>   minimized without checking its encoder. Ask the person to restore it and
+>   check again. Only explicit recording Start may restore that window.
 > - **Director / reframe / delivery** — `render.reframe` (subject-tracked moving
 >   crop to a platform aspect — the HONEST alternative to a static centre-crop),
 >   `render.direct` (director-model pass: a per-scene contact sheet the foundation

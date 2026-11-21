@@ -63,6 +63,35 @@ fn autoedit_config_overrides_engine_plan() {
 }
 
 #[test]
+fn autoedit_names_missing_wayland_input_instead_of_treating_a_plain_take_as_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let track = dir.path().join("events.json");
+    let plan = screen_record_cache_dir(dir.path())
+        .unwrap()
+        .join("plan.json");
+    std::fs::write(
+        &track,
+        serde_json::to_vec(&json!({
+            "duration_ms": 4000,
+            "screen_w": 1920,
+            "screen_h": 1080,
+            "cursor_correlation": {
+                "source": "wayland_pipewire_metadata",
+                "state": "unavailable",
+                "detail": "Input events unavailable: /dev/input was not readable"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let summary = autoedit(&track, &plan, &record_engine::EngineConfig::default()).unwrap();
+    assert!(summary.contains("Input events unavailable"), "{summary}");
+    let written: Value = serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+    assert!(written["zoom"]["keys"].as_array().unwrap().is_empty());
+    assert!(written["clicks"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn autoedit_config_rejects_unknown_keys() {
     let err = parse_autoedit_config(Some(json!({"max_zom": 3.0}))).unwrap_err();
     assert_eq!(err.code, error_codes::INVALID_ARGS);

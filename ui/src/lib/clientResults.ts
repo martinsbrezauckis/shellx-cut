@@ -1366,6 +1366,12 @@ export interface ScreenRecordAudioMeter {
 /** Read-only active-capture status. It never reopens native audio inputs. */
 export interface ScreenRecordStatusResult {
   capture_id: string
+  /** Active-take capability and state; absent on older engines. */
+  pause?: {
+    enabled: boolean
+    state: 'recording' | 'paused' | 'pausing' | 'resuming' | 'unavailable'
+    reason: string | null
+  }
   ready: boolean
   terminal: boolean
   state: 'awaiting_first_screen_frame' | 'ready' | 'terminal_before_first_screen_frame' | 'terminal_after_first_screen_frame'

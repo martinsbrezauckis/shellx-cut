@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.116; published=0.6.115 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,24 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.116 candidate
+## v0.6.117 candidate
 
-v0.6.115 remains the latest published release.
+v0.6.116 remains the latest published release.
+
+- Fixed: screen recordings on macOS keep moving as they are saved in parts.
+- Fixed: Windows screen recordings keep moving between saved parts.
+- On Windows, Stop responds at once while the recording finishes saving in the background.
+- On Windows, recording checks video support before starting and leaves minimized windows alone during readiness checks.
+- The Record screen shows whether the current recording is paused.
+- On Linux Wayland, screen recording no longer requires keyboard input access.
+- Fixed: Add to timeline messages follow the right recording and project.
+- Fixed: recordings already added to the timeline stay marked as added during checks and no longer keep offering recovery.
+- On Windows and macOS, recording says when no microphone is available before trying to use it.
+- Fixed: the chosen export folder is kept when updating from 0.6.115.
+
+## v0.6.116 published
+
+This section records the published v0.6.116 release.
 
 - The preview shows the finished picture when you pause, with titles, effects
   and fades.
@@ -915,12 +930,16 @@ establish a tested editing workflow for the current release.
   has finished.
   `screen_record.pending`, `screen_record.recover` and
   `screen_record.pending_dismiss` are the same route for agents.
-- **Known limits of recording in this version.** A recording is saved in parts
-  of 15 seconds. On macOS, the picture of a moving screen holds for about half
-  a second where one part ends and the next begins; on Windows it holds for
-  about 2 seconds at the same points. The sound keeps recording through them.
-  On Windows, stopping a long recording of a moving screen can take several
-  seconds (about 11 seconds for a one-minute take) while Cut finishes the file.
+- **Saving a recording.** A recording is saved in parts of 15 seconds. On
+  Windows and macOS, the screen keeps recording as one part ends and the next
+  begins. Tests at 30 and 60 fps found no picture hold at any of 48 Windows
+  part boundaries. Windows Stop answered in 0.14–0.19 seconds, and the file
+  finished saving within about 5 seconds in those tests. Cut shows saving
+  progress before reporting the file saved; these timings are test results,
+  not a limit on how long every recording can take to save.
+- **Known Windows recording limits.** About half a second at the start of a
+  take can repeat the first picture. Short, separate system sounds can drift
+  out of sync with the picture.
 - **Closing or quitting during an export** asks first, as large editors do:
   "An export is still running", naming the work, with **Keep working** (the
   default; Esc and clicking outside keep working too) or **Quit and stop it**,

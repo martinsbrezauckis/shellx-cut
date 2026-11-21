@@ -17,6 +17,144 @@ const doctor = {
   pause: { supported: true, detail: 'Pause available', incompatible: [] },
 }
 
+test('raw timeline feedback belongs to one capture and project', { timeout: 120_000 }, async t => {
+  const cacheDir = mkdtempSync(join(tmpdir(), 'cut-record-add-'))
+  t.after(() => rmSync(cacheDir, { recursive: true, force: true }))
+  const server = await createServer({
+    root: fileURLToPath(new URL('..', import.meta.url)), cacheDir, configFile: false,
+    plugins: [react(), { name: 'record-add-fixture', configureServer(vite) {
+      vite.middlewares.use('/__record_add__', (_request, response) => {
+        response.setHeader('content-type', 'text/html')
+        response.end(`<div id="root"></div><script type="module">
+          import RefreshRuntime from '/@react-refresh'
+          RefreshRuntime.injectIntoGlobalHook(window)
+          window.$RefreshReg$ = () => {}
+          window.$RefreshSig$ = () => type => type
+          window.__vite_plugin_react_preamble_installed__ = true
+        </script><script type="module" src="/public-tests/fixtures/record-handoff.tsx"></script>`)
+      })
+    } }], server: { host: '127.0.0.1', port: 0 },
+  })
+  t.after(() => server.close())
+  await server.listen()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  for (const scenario of ['same project', 'other project', 'new recording', 'recording start', 'failed add', 'pending success', 'pending failure', 'pending project return', 'recovery banner']) {
+    await t.test(scenario, async () => {
+      const page = await browser.newPage()
+      const errors = []
+      page.on('pageerror', error => errors.push(String(error)))
+      let take = 0
+      let heldImport = null
+      let rejectImport = scenario === 'failed add'
+      let holdImport = scenario.startsWith('pending')
+      let recovered = false
+      let imported = false
+      let stateReads = 0
+      const reply = (route, value) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) })
+      await page.route('**/api/verb/**', route => {
+        const name = new URL(route.request().url()).pathname.split('/').at(-1)
+        if (name === 'media.import' && holdImport) { heldImport = route; return }
+        if (name === 'media.import' && rejectImport) return reply(route, { ok: false, error: { code: 'io', message: 'test import refused' } })
+        if (name === 'screen_record.start') take += 1
+        if (name === 'media.import') imported = true
+        if (name === 'screen_record.recover') recovered = true
+        if (name === 'project.state') stateReads += 1
+        const result = name === 'screen_record.doctor' ? doctor
+          : name === 'screen_record.start' ? { capture_id: `take-${take}`, pause: { enabled: false } }
+            : name === 'screen_record.stop' ? { capture_id: `take-${take}`, raw_path: '/fixture/reused-raw.mp4' }
+              : name === 'media.import' ? { asset_id: 'raw-asset', job_id: 'raw-job' }
+                : name === 'project.state' ? { assets: imported ? { 'raw-asset': { probe: { kind: 'video', duration_ms: 1000 } } } : {}, tracks: [{ id: 'v1', kind: 'video', clips: imported ? [{ id: 'raw-clip', asset: 'raw-asset' }] : [] }] }
+                  : name === 'screen_record.pending' ? { recordings: scenario === 'recovery banner' ? [{ capture_id: 'recovered-take', situation: 'interrupted', can_recover: true, message: 'Saved recording can be recovered.' }] : [] }
+                    : name === 'screen_record.recover' ? { clip_id: 'recovered-clip' }
+                      : name === 'screen_record.status' ? { capture_id: `take-${take}`, ready: true, terminal: false, since_first_screen_frame_ms: 0 } : {}
+        return reply(route, { ok: true, result })
+      })
+      await page.addInitScript(() => localStorage.setItem('shellx-cut.recording-preset.v1', JSON.stringify({
+        schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+        fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+        keys: false, raw: true, studio: { background: 'gradient' },
+      })))
+      const phase = value => page.waitForFunction(expected => document.querySelector('[data-test-phase]')?.textContent === expected, value)
+      const note = () => page.locator('[data-test-export-note]').textContent()
+      const record = async () => {
+        await page.locator('[data-cut-action="record-start"]').click()
+        await phase('recording')
+        await page.locator('[data-test-stop]').click()
+        await phase('done')
+        await page.locator('[data-cut-rec-result="saved"]').waitFor()
+      }
+      try {
+        await page.goto(new URL(`/__record_add__${scenario === 'recovery banner' ? '?recovery' : ''}`, server.resolvedUrls.local[0]).href)
+        await record()
+        assert.equal(await note(), '')
+        if (scenario === 'recovery banner') {
+          await page.locator('[data-cut-action="recording-recover"]').click()
+          await page.waitForFunction(() => document.querySelector('[data-cut-recording-recovery-notice]')?.textContent.includes('added to the end of the timeline'))
+          assert.equal(recovered, true)
+          assert.equal(await note(), '', 'recovered capture must not mark the current raw take as added')
+        } else {
+          await page.locator('[data-cut-action="record-add-raw"]').click()
+          await page.waitForFunction(() => document.querySelector('[data-test-export-note]')?.textContent !== '')
+          if (holdImport) {
+            for (let i = 0; !heldImport && i < 100; i += 1) await page.waitForTimeout(20)
+            assert.ok(heldImport, 'held import must have started')
+            assert.equal(await note(), 'Adding to the timeline…')
+          } else {
+            const expected = rejectImport ? 'add failed: test import refused' : 'Added to the timeline'
+            await page.waitForFunction(value => document.querySelector('[data-test-export-note]')?.textContent === value, expected)
+            assert.equal(await page.locator('[data-cut-rec-export-note]').textContent(), expected)
+          }
+          if (scenario === 'pending project return') {
+            await page.locator('[data-test-project-b]').click()
+            assert.equal(await note(), '')
+            await page.locator('[data-test-project-a]').click()
+            assert.equal(await note(), '')
+            holdImport = false
+            imported = true
+            await reply(heldImport, { ok: true, result: { asset_id: 'raw-asset', job_id: 'raw-job' } })
+            await page.waitForTimeout(100)
+            assert.equal(await note(), '', 'returning to the same take cannot revive an invalidated add')
+            heldImport = null
+          }
+          if (scenario === 'recording start') {
+            await page.keyboard.press('F9')
+            await phase('recording')
+            assert.equal(await note(), '', 'a new recording clears the previous confirmation before Stop')
+            await page.locator('[data-test-stop]').click()
+            await phase('done')
+          } else if (scenario === 'other project') {
+            await page.locator('[data-test-project-b]').click()
+            assert.equal(await note(), '', 'project switch clears another project confirmation immediately')
+            await page.locator('[data-test-reset]').click()
+          } else await page.locator('[data-cut-action="record-new-take"]').click()
+          if (scenario !== 'recording start') {
+            await phase('idle')
+            if (scenario === 'new recording') assert.equal(await note(), '', 'New recording clears the previous confirmation immediately')
+            await record()
+          }
+          assert.equal(await note(), '', 'next capture starts without the previous add status, even when raw path is reused')
+          if (heldImport) {
+            const readsBefore = stateReads
+            holdImport = false
+            imported = scenario === 'pending success'
+            await reply(heldImport, imported ? { ok: true, result: { asset_id: 'raw-asset', job_id: 'raw-job' } }
+              : { ok: false, error: { code: 'io', message: 'late failure' } })
+            if (imported) for (let i = 0; stateReads === readsBefore && i < 100; i += 1) await page.waitForTimeout(20)
+            await page.waitForTimeout(100)
+            assert.equal(await note(), '', 'late completion cannot label the next capture')
+            assert.equal(await page.locator('[data-cut-rec-export-note]').count(), 0)
+          }
+          rejectImport = false
+          await page.locator('[data-cut-action="record-add-raw"]').click()
+          await page.waitForFunction(() => document.querySelector('[data-test-export-note]')?.textContent === 'Added to the timeline')
+        }
+        assert.deepEqual(errors, [])
+      } finally { await page.close() }
+    })
+  }
+})
+
 test('recording delivery survives conditional Record and keyed project workspace changes', async t => {
   const cacheDir = mkdtempSync(join(tmpdir(), 'cut-record-delivery-'))
   t.after(() => rmSync(cacheDir, { recursive: true, force: true }))

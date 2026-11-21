@@ -14,6 +14,29 @@ export const NO_RECORDING_PAUSE_CAPABILITY: RecordingPauseCapability = {
 
 export type RecordingPauseState = 'idle' | 'recording' | 'pausing' | 'paused' | 'resuming' | 'error'
 
+export interface RecordingTakePause {
+  enabled: boolean
+  state: RecordingPauseState
+  message: string
+}
+
+/** Live facts belong to the exact capture, independently of the next Start form. */
+export function recordingTakePause(value: unknown, captureId: string): RecordingTakePause | null {
+  if (!value || typeof value !== 'object') return null
+  const status = value as Record<string, unknown>
+  if (status.capture_id !== captureId || !status.pause || typeof status.pause !== 'object') return null
+  const pause = status.pause as Record<string, unknown>
+  if (pause.enabled === false && typeof pause.reason === 'string' && pause.reason.trim()) {
+    return { enabled: false, state: 'idle', message: pause.reason }
+  }
+  if (pause.enabled !== true || status.terminal === true) return null
+  const state = pause.state
+  if (state !== 'recording' && state !== 'paused' && state !== 'pausing' && state !== 'resuming') return null
+  return { enabled: true, state, message: state === 'paused' ? 'Paused.'
+    : state === 'pausing' ? 'Waiting for the recorder to seal the pause…'
+      : state === 'resuming' ? 'Waiting for the recorder to seal the resume…' : 'Recording.' }
+}
+
 export interface RecordingPauseAcknowledgement {
   action: 'pause' | 'resume'
   saved: true

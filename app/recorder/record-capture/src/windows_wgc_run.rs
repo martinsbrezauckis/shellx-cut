@@ -208,11 +208,6 @@ where
         self.stopped
     }
 
-    #[cfg_attr(not(all(windows, feature = "capture-windows")), allow(dead_code))]
-    pub(crate) fn into_publisher(self) -> P {
-        self.publisher
-    }
-
     fn ensure_can_start(&self) -> Result<()> {
         if self.stopped {
             return Err(state_error("screen run is terminal after stop"));

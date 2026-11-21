@@ -14,6 +14,7 @@ export interface RecordDoctorRead {
   windows?: WindowInfo[]
   window_capture_supported?: boolean
   camera?: CameraCapability
+  video_encoder?: unknown
   quality?: unknown
   scenes?: unknown
   pause?: unknown

@@ -14,22 +14,34 @@ pub(super) fn start_allowed(cards: &[RecordCard]) -> bool {
     start_allowed_for_platform(cards, cfg!(target_os = "linux"))
 }
 
-pub(super) fn ensure_start_ready(cards: &[RecordCard]) -> Result<(), CutError> {
-    ensure_start_ready_for_platform(cards, cfg!(target_os = "linux"))
+pub(super) fn ensure_start_ready(cards: &[RecordCard], keys: bool) -> Result<(), CutError> {
+    ensure_start_ready_for_platform(cards, cfg!(target_os = "linux"), keys)
 }
 
-fn ensure_start_ready_for_platform(cards: &[RecordCard], is_linux: bool) -> Result<(), CutError> {
+fn ensure_start_ready_for_platform(
+    cards: &[RecordCard],
+    is_linux: bool,
+    keys: bool,
+) -> Result<(), CutError> {
     // Admission always uses a full check, so a "checked at start" card never
     // admits here.
-    let blocked = blocked_cards(cards, is_linux, false);
+    let blocked = blocked_cards(cards, is_linux, false, keys);
     if blocked.is_empty() {
         return Ok(());
     }
     // Name the first missing requirement for the registry (the cause lists all).
+    let input_blocked = blocked
+        .iter()
+        .any(|item| item.starts_with("wayland_input="));
     let requirement = if blocked.iter().any(|item| item.starts_with("ffmpeg=")) {
         "ffmpeg"
     } else {
         "screen_permission"
+    };
+    let action = if input_blocked {
+        "Turn off Show keystrokes for a plain recording, or run sudo usermod -aG input $USER and log out and back in before recording keystrokes"
+    } else {
+        "Tell the person what the cause names and where to provide it (for screen recording permission: System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen ShellX Cut), then start the recording again"
     };
     Err(CutError::new(
         error_codes::NOT_FOUND,
@@ -37,25 +49,26 @@ fn ensure_start_ready_for_platform(cards: &[RecordCard], is_linux: bool) -> Resu
         blocked.join("; "),
     )
     .with_requirement(requirement)
-    .with_suggested_action(
-        "Tell the person what the cause names and where to provide it (for screen recording permission: System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen ShellX Cut), then start the recording again",
-    ))
+    .with_suggested_action(action))
 }
 
 fn start_allowed_for_platform(cards: &[RecordCard], is_linux: bool) -> bool {
-    blocked_cards(cards, is_linux, true).is_empty()
+    blocked_cards(cards, is_linux, true, false).is_empty()
 }
 
-fn blocked_cards(cards: &[RecordCard], is_linux: bool, attempt: bool) -> Vec<String> {
+fn blocked_cards(cards: &[RecordCard], is_linux: bool, attempt: bool, keys: bool) -> Vec<String> {
     [
         "ffmpeg",
         "screen_capture",
         "input_hook",
         "gstreamer",
         "wayland_input",
+        "video_encoder",
     ]
     .into_iter()
     .filter(|name| required_capture_card(cards, name))
+    // evdev feeds optional click/scroll polish and opt-in keystrokes, never video/audio.
+    .filter(|name| !(*name == "wayland_input" && is_linux && !keys))
     .filter_map(|name| {
         let card = cards.iter().find(|card| card.name == name);
         match card {
@@ -74,7 +87,7 @@ fn blocked_cards(cards: &[RecordCard], is_linux: bool, attempt: bool) -> Vec<Str
 }
 
 fn checked_at_start(card: &RecordCard) -> bool {
-    card.name == "screen_capture"
+    matches!(card.name.as_str(), "screen_capture" | "video_encoder")
         && card.status == "unknown"
         && card.start_admission == RecordStartAdmission::CheckedAtStart
 }
@@ -110,10 +123,51 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_video_encoder_blocks_readiness_even_after_a_screen_frame() {
+        let mut cards = vec![
+            card("ffmpeg", "ok", RecordStartAdmission::Strict),
+            card("screen_capture", "ok", RecordStartAdmission::Strict),
+            card("input_hook", "ok", RecordStartAdmission::Strict),
+        ];
+        cards.push(card(
+            "video_encoder",
+            "degraded",
+            RecordStartAdmission::Strict,
+        ));
+        assert!(!super::super::ready_rollup(&cards));
+        assert!(!start_allowed_for_platform(&cards, false));
+        assert!(ensure_start_ready_for_platform(&cards, false, false).is_err());
+        cards.last_mut().unwrap().status = "ok".into();
+        assert!(super::super::ready_rollup(&cards));
+        assert!(start_allowed_for_platform(&cards, false));
+        assert!(ensure_start_ready_for_platform(&cards, false, false).is_ok());
+    }
+
+    #[test]
+    fn an_unchecked_encoder_allows_the_action_but_never_claims_ready() {
+        let mut cards = vec![
+            card("ffmpeg", "ok", RecordStartAdmission::Strict),
+            card("screen_capture", "ok", RecordStartAdmission::Strict),
+            card("input_hook", "ok", RecordStartAdmission::Strict),
+            card(
+                "video_encoder",
+                "unknown",
+                RecordStartAdmission::CheckedAtStart,
+            ),
+        ];
+        assert!(!super::super::ready_rollup(&cards));
+        assert!(start_allowed_for_platform(&cards, false));
+        assert!(ensure_start_ready_for_platform(&cards, false, false).is_err());
+        cards.pop();
+        assert!(super::super::ready_rollup(&cards));
+        assert!(start_allowed_for_platform(&cards, false));
+    }
+
+    #[test]
     fn linux_prompt_deferred_portal_unknown_allows_only_start() {
         let cards = linux_cards("unknown", RecordStartAdmission::LinuxPortalPromptDeferred);
         assert!(start_allowed_for_platform(&cards, true));
-        assert!(ensure_start_ready_for_platform(&cards, true).is_ok());
+        assert!(ensure_start_ready_for_platform(&cards, true, false).is_ok());
         assert!(!start_allowed_for_platform(&cards, false));
         assert!(!super::super::ready_rollup(&cards));
     }
@@ -130,7 +184,7 @@ mod tests {
                 !start_allowed_for_platform(&cards, true),
                 "screen_capture={status} must not reach native start"
             );
-            assert!(ensure_start_ready_for_platform(&cards, true).is_err());
+            assert!(ensure_start_ready_for_platform(&cards, true, false).is_err());
         }
     }
 
@@ -139,7 +193,7 @@ mod tests {
         let mut cards = linux_cards("unknown", RecordStartAdmission::LinuxPortalPromptDeferred);
         cards[0].status = "unknown".into();
         assert!(!start_allowed_for_platform(&cards, true));
-        assert!(ensure_start_ready_for_platform(&cards, true).is_err());
+        assert!(ensure_start_ready_for_platform(&cards, true, false).is_err());
     }
 
     #[test]
@@ -154,8 +208,47 @@ mod tests {
             card("input_hook", "ok", RecordStartAdmission::Strict),
         ];
         assert!(start_allowed_for_platform(&cards, false));
-        let error = ensure_start_ready_for_platform(&cards, false).unwrap_err();
+        let error = ensure_start_ready_for_platform(&cards, false, false).unwrap_err();
         assert!(error.suggested_action.unwrap().contains("System Settings"));
+    }
+
+    #[test]
+    fn wayland_without_input_admits_plain_portal_take() {
+        let mut cards = linux_cards("unknown", RecordStartAdmission::LinuxPortalPromptDeferred);
+        cards[4].status = "degraded".into();
+        cards[4].detail = "sudo usermod -aG input $USER, then re-login".into();
+        assert!(
+            start_allowed_for_platform(&cards, true),
+            "plain video must reach consent"
+        );
+        assert!(ensure_start_ready_for_platform(&cards, true, false).is_ok());
+        assert!(
+            !super::super::ready_rollup(&cards),
+            "Doctor must retain the missing input fact"
+        );
+    }
+
+    #[test]
+    fn wayland_keys_still_refuse_with_action_and_other_requirements_stay_strict() {
+        let mut cards = linux_cards("unknown", RecordStartAdmission::LinuxPortalPromptDeferred);
+        cards[4].status = "degraded".into();
+        cards[4].detail = "sudo usermod -aG input $USER, then re-login".into();
+        let error = ensure_start_ready_for_platform(&cards, true, true).unwrap_err();
+        assert!(error.cause.contains("wayland_input=degraded"));
+        assert!(error
+            .suggested_action
+            .unwrap()
+            .contains("sudo usermod -aG input $USER"));
+        for index in 0..4 {
+            let mut blocked = cards.clone();
+            blocked[index].status = "missing".into();
+            assert!(
+                !start_allowed_for_platform(&blocked, true),
+                "{}",
+                blocked[index].name
+            );
+            assert!(ensure_start_ready_for_platform(&blocked, true, false).is_err());
+        }
     }
 
     #[test]

@@ -96,6 +96,11 @@ mod capture_notes;
 mod capture_output;
 mod checkpoint;
 mod controller_placement;
+mod video_encoder;
+pub use video_encoder::{
+    encoder_error, video_encoder_readiness, VideoEncoderPurpose, VideoEncoderReadiness,
+    VideoEncoderRequest, VIDEO_ENCODER_ACTION, VIDEO_ENCODER_MESSAGE, VIDEO_ENCODER_UNAVAILABLE,
+};
 pub mod doctor;
 mod doctor_portal;
 mod doctor_probe;
@@ -290,8 +295,20 @@ mod windows_wgc_run_types;
 #[cfg_attr(not(all(windows, feature = "capture-windows")), allow(dead_code))]
 mod windows_wgc_timing;
 
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+#[cfg_attr(not(all(windows, feature = "capture-windows")), allow(dead_code))]
+mod windows_checkpoint_worker;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_continuous;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_writer_rotation;
+
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_capture_source;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_encoder_probe;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_gpu_crop;
 #[cfg(all(windows, feature = "capture-windows"))]
@@ -310,6 +327,8 @@ mod windows_wgc_empty_segment;
 mod windows_wgc_encoder;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_wgc_encoder_profile;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_encoder_setup;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_wgc_handler;
 #[cfg(all(windows, feature = "capture-windows"))]
@@ -363,8 +382,6 @@ mod macos_camera_movie_timing;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_camera_native;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
-mod macos_checkpoint;
-#[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_finalization;
 #[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
 mod macos_frame_status;
@@ -376,8 +393,12 @@ mod macos_monitor_target;
 mod macos_readiness;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_region_capture;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_screen_writer;
 #[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
 mod macos_segment_frames;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_segment_prepare;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_segments;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]

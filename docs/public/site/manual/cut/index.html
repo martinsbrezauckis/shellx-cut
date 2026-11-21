@@ -46,7 +46,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.116" data-release-status="candidate" data-published-version="0.6.115">0.6.116</span>
+          <span class="manual-version" data-app-version="0.6.117" data-release-status="candidate" data-published-version="0.6.116">0.6.117</span>
         </div>
         <input
           class="manual-search"
@@ -410,7 +410,8 @@
             <article class="manual-card">
               <h3>Long recording safety</h3>
               <p>Microphone and Windows system audio are written continuously with bounded memory. Cut exposes the raw WAV only after it finishes cleanly and stops before the WAV format limit could corrupt a long capture.</p>
-              <p>A recording is saved in parts of 15 seconds. Where one part ends and the next begins, the picture of a moving screen holds for about half a second on macOS and about 2 seconds on Windows; the sound keeps recording. On Windows, stopping a long recording of a moving screen can take several seconds while Cut finishes the file.</p>
+              <p>A recording is saved in parts of 15 seconds. On Windows and macOS, the screen keeps recording as one part ends and the next begins. On Windows, Stop responds at once while Cut finishes saving in the background; wait for the saved-file confirmation before using the file.</p>
+              <p>Known Windows recording limits: about half a second at the start of a take can repeat the first picture. Short, separate system sounds can drift out of sync with the picture.</p>
             </article>
             <article class="manual-card">
               <h3>Windows system audio</h3>

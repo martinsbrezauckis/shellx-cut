@@ -56,7 +56,7 @@ pub(crate) async fn screen_record_start(
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     let microphone_source = microphone::source_for_recording_start(a.audio)?;
     let recorder_doctor = doctor();
-    start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
+    start_readiness::ensure_start_ready(&recorder_doctor.cards, a.keys)?;
     let monitor_target = monitor_start_admission::admit(
         a.monitor,
         a.monitor_id.as_deref(),
@@ -88,6 +88,13 @@ pub(crate) async fn screen_record_start(
     let recording_scene_start = recording_scene_snapshot
         .as_ref()
         .map(recording_scenes::start_projection);
+
+    video_encoder_readiness::admit(record_capture::VideoEncoderRequest {
+        fps,
+        monitor: monitor_target.legacy_index,
+        monitor_id: monitor_target.exact_id.clone(),
+        window: a.window.clone(),
+    })?;
 
     let capture_id = new_capture_id();
     windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
@@ -272,6 +279,7 @@ pub(crate) async fn readiness_status_handler(args: Value) -> Result<VerbResult, 
         "capture_id": args.capture_id,
         "ready": ready,
         "terminal": terminal,
+        "pause": recording_controls::status(&args.capture_id, terminal || control.stop_requested()),
         "state": state,
         "first_screen_frame_unix_ms": status.first_screen_frame_unix_ms,
         "since_first_screen_frame_ms": status
@@ -311,6 +319,28 @@ fn saving_progress(capture_id: &str, stop_requested: bool) -> Value {
 #[cfg(test)]
 mod readiness_status_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ordinary_take_status_explains_why_pause_is_unavailable() {
+        let _lock = super::capture_test_lock().lock().await;
+        let project = tempfile::tempdir().unwrap();
+        let capture_id = "cap_pause_status_ordinary";
+        let _reservation =
+            capture_registry::reserve_project_transition_test_capture(project.path(), capture_id);
+        let result = readiness_status_handler(json!({ "capture_id": capture_id }))
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result["pause"]["enabled"], false);
+        assert_eq!(result["pause"]["state"], "unavailable");
+        let expected = if cfg!(target_os = "macos") {
+            "Pause & resume was not enabled before this recording started."
+        } else {
+            "Pause and resume are unavailable on this platform. Stop remains available to finalize an ordinary recording."
+        };
+        assert_eq!(result["pause"]["reason"], expected);
+    }
 
     #[tokio::test]
     async fn status_requires_a_delivered_frame_and_never_admits_a_terminal_capture() {

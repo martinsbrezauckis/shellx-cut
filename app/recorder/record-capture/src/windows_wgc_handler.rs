@@ -22,12 +22,12 @@ use crate::{
 
 pub(crate) fn stop_with_held_sample(
     control: CaptureControl<Handler, <Handler as GraphicsCaptureApiHandler>::Error>,
+    stop_at: Instant,
 ) -> Result<()> {
     // Native stop posts WM_QUIT and joins without calling on_closed. Retain
     // the callback owner through that join and use this pre-join observation
     // as the final pixel boundary. A failed native Stop cannot append a hold.
     let callback = control.callback();
-    let stop_at = Instant::now();
     control
         .stop()
         .map_err(|error| cap_err("finalize WGC checkpoint", error))?;
@@ -39,19 +39,51 @@ pub(crate) fn stop_with_held_sample(
 }
 
 pub(crate) struct LiveWgcControl {
-    pub(crate) close: Option<Box<dyn FnOnce() -> Result<()> + Send>>,
+    pub(crate) close: Option<crate::windows_writer_rotation::CloseCapture>,
     pub(crate) source_lifecycle: Option<CaptureSourceLifecycle>,
+    pub(crate) rotate: Option<crate::windows_writer_rotation::RotateWriter>,
 }
 
-impl WgcNativeControl for LiveWgcControl {
-    fn close(&mut self) -> Result<()> {
+impl LiveWgcControl {
+    pub(crate) fn close_at(&mut self, boundary: Instant) -> Result<()> {
+        self.close_inner(Some(boundary))
+    }
+
+    fn close_inner(&mut self, boundary: Option<Instant>) -> Result<()> {
         if let Some(lifecycle) = self.source_lifecycle.as_ref() {
             lifecycle.expect_segment_close();
         }
         self.close
             .take()
             .ok_or_else(|| cap_err("finalize WGC checkpoint", "WGC control already closed"))?(
+            boundary,
         )
+    }
+
+    pub(crate) fn rotate_writer(
+        &mut self,
+        next: crate::windows_writer_rotation::WriterSwap,
+    ) -> Result<crate::windows_writer_rotation::RetiredWriter> {
+        self.rotate.as_mut().ok_or_else(|| {
+            cap_err(
+                "rotate recording writer",
+                "capture does not support writer rotation",
+            )
+        })?(next)
+    }
+}
+
+impl Drop for LiveWgcControl {
+    fn drop(&mut self) {
+        if self.close.is_some() {
+            let _ = self.close();
+        }
+    }
+}
+
+impl WgcNativeControl for LiveWgcControl {
+    fn close(&mut self) -> Result<()> {
+        self.close_inner(None)
     }
 }
 
@@ -92,6 +124,38 @@ pub(crate) struct Handler {
 }
 
 impl Handler {
+    /// The callback mutex serializes this exchange with every arriving frame.
+    /// The retired encoder is returned without closing or verifying it here.
+    pub(crate) fn rotate_writer(
+        &mut self,
+        next: crate::windows_writer_rotation::WriterSwap,
+    ) -> Result<crate::windows_writer_rotation::RetiredWriter> {
+        if self.encoder.is_none() || self.timing.is_none() {
+            return Err(cap_err(
+                "rotate recording writer",
+                "capture writer already closed",
+            ));
+        }
+        let boundary_at = Instant::now();
+        let encoder = self
+            .encoder
+            .replace(next.encoder)
+            .expect("writer was checked");
+        let timing = self
+            .timing
+            .replace(next.timing)
+            .expect("timing was checked");
+        Ok(crate::windows_writer_rotation::RetiredWriter {
+            encoder,
+            timing,
+            boundary_at,
+        })
+    }
+
+    pub(crate) fn current_timing(&self) -> Option<WgcTimingRecorder> {
+        self.timing.clone()
+    }
+
     pub(crate) fn finish_after_control_stop(
         &mut self,
         stop_at: Instant,

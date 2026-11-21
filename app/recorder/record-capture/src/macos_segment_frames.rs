@@ -10,7 +10,9 @@
 //! first frame belongs on the take's timeline, so the picture and the sound
 //! stay in sync after a long still stretch).
 
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
+#[cfg(test)]
 use std::time::Instant;
 
 /// Facts about the frames delivered since the current output was attached.
@@ -21,12 +23,14 @@ pub(crate) struct FrameWindow {
     pub(crate) first_ms: Option<u64>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct SegmentFrames {
     origin: OnceLock<Instant>,
     window: Mutex<FrameWindow>,
 }
 
+#[cfg(test)]
 impl SegmentFrames {
     /// The capture clock's zero. Frames delivered before it is known (during
     /// `start_capture`) count at time zero.
