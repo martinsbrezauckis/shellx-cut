@@ -5,7 +5,7 @@
     {
       "name": "transcript.remove_silences",
       "domain": "transcript",
-      "description": "Remove detected silences. Timeline-wide by default; optional asset/track narrows scope. aggressiveness is REQUIRED — named presets: calm = long pauses only, natural = default feel, jumpy = tight cut. ONE op per removed span (skim-reviewable).",
+      "description": "Remove pauses (verb `transcript.remove_silences`) from detected silence in the edit. Timeline-wide by default; optional asset/track narrows scope. Choose the required pause removal amount with `aggressiveness`: Light (`calm`) removes pauses of at least 1200 ms and keeps 200 ms at each end; Standard (`natural`) uses 700/120 ms; Strong (`jumpy`) uses 350/60 ms. ONE op per removed span (skim-reviewable).",
       "args": {
         "type": "object",
         "required": [
@@ -15,6 +15,7 @@
         "properties": {
           "aggressiveness": {
             "type": "string",
+            "description": "Pause removal amount: Light (`calm`, at least 1200 ms, keep 200 ms each end), Standard (`natural`, 700/120 ms), or Strong (`jumpy`, 350/60 ms). Required; enum values remain the API values.",
             "enum": [
               "calm",
               "natural",
@@ -80,7 +81,7 @@
     {
       "name": "transcript.remove_fillers",
       "domain": "transcript",
-      "description": "Cut filler words (default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
+      "description": "Remove filler words (verb `transcript.remove_fillers`; default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "additionalProperties": false,

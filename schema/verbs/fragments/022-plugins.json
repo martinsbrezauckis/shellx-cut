@@ -78,7 +78,7 @@
     {
       "name": "plugins.call",
       "domain": "plugins",
-      "description": "The SCOPED-DISPATCH GATEWAY: run `verb` with `args` UNDER plugin `plugin`'s identity — but ONLY if the plugin is ENABLED and the verb is within its declared scope (provides ∪ consumes). Out-of-scope, disabled, corrupt, or unavailable permission state → rejected (guardrail), so a plugin is 'callable only within its scope'. The host re-dispatches through the SAME verb registry (no parallel API), so the inner verb is fully arg-checked + behaves identically, just permission-fenced. `plugins.*` can never be invoked through the gateway (no privilege escalation). Returns the inner verb's envelope under {plugin, verb, result}.",
+      "description": "The SCOPED-DISPATCH GATEWAY: run `verb` with `args` UNDER plugin `plugin`'s identity — but ONLY if the plugin is ENABLED and the verb is within its declared scope (provides ∪ consumes). Out-of-scope, disabled, corrupt, or unavailable permission state → rejected (guardrail), so a plugin is 'callable only within its scope'. The host re-dispatches through the SAME verb registry (no parallel API), so the inner verb is fully arg-checked + behaves identically, just permission-fenced. `plugins.*` can never be invoked through the gateway (no privilege escalation). On success, returns the inner verb's envelope under {plugin, verb, result}. Inner failures return the inner envelope directly.",
       "args": {
         "type": "object",
         "required": [

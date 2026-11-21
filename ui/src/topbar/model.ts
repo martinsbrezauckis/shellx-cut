@@ -21,10 +21,10 @@ export const EXPORT_OPTIONS = [
   { id: 'audio', group: 'deliver', label: 'Audio (.mp3) — timeline audio only', defaultPath: 'audio.mp3', filters: [{ name: 'MP3 audio', extensions: ['mp3'] }], run: (path?: string) => callVerb('export.audio', { format: 'mp3', ...(path ? { path } : {}) }) },
   { id: 'gif', group: 'deliver', label: 'GIF (looping — first 15s)', defaultPath: 'clip.gif', filters: [{ name: 'GIF image', extensions: ['gif'] }], run: (path?: string) => callVerb('export.gif', { ...(path ? { path } : {}) }) },
   { id: 'frame', group: 'deliver', label: 'Still frame at playhead (→ Assets)', defaultPath: 'frame.jpg', filters: [{ name: 'JPEG image', extensions: ['jpg', 'jpeg'] }], run: (path?: string) => callVerb('export.frame', { at_ms: 0, ...(path ? { path } : {}) }) },
-  { id: 'pub_youtube', group: 'publish', label: 'YouTube (1080p 16:9)', defaultPath: 'youtube.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'youtube', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
-  { id: 'pub_tiktok', group: 'publish', label: 'TikTok / Shorts (9:16)', defaultPath: 'tiktok.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'tiktok', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
-  { id: 'pub_reels', group: 'publish', label: 'Instagram Reels (9:16)', defaultPath: 'reels.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'reels', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
-  { id: 'pub_x', group: 'publish', label: 'X / Twitter (16:9)', defaultPath: 'x-twitter.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'x', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_youtube', group: 'publish', label: 'Export for YouTube (1080p 16:9)', defaultPath: 'youtube.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'youtube', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_tiktok', group: 'publish', label: 'Export for TikTok / Shorts (9:16)', defaultPath: 'tiktok.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'tiktok', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_reels', group: 'publish', label: 'Export for Instagram Reels (9:16)', defaultPath: 'reels.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'reels', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_x', group: 'publish', label: 'Export for X / Twitter (16:9)', defaultPath: 'x-twitter.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'x', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
   { id: 'fcpxml', group: 'interchange', label: 'Final Cut Pro XML', defaultPath: 'timeline.fcpxml', filters: [{ name: 'Final Cut Pro XML', extensions: ['fcpxml'] }], run: (path?: string) => callVerb('export.xml', { format: 'fcpxml', ...(path ? { path } : {}) }) },
   { id: 'premiere', group: 'interchange', label: 'Premiere XML', defaultPath: 'premiere.xml', filters: [{ name: 'Premiere XML', extensions: ['xml'] }], run: (path?: string) => callVerb('export.xml', { format: 'premiere', ...(path ? { path } : {}) }) },
   { id: 'resolve', group: 'interchange', label: 'Resolve XML', defaultPath: 'resolve.fcpxml', filters: [{ name: 'Resolve XML', extensions: ['fcpxml', 'xml'] }], run: (path?: string) => callVerb('export.xml', { format: 'resolve', ...(path ? { path } : {}) }) },
@@ -39,7 +39,7 @@ export const EXPORT_OPTIONS = [
 
 export const EXPORT_GROUPS = [
   { id: 'deliver', label: 'Deliver' },
-  { id: 'publish', label: 'Publish' },
+  { id: 'publish', label: 'Platform exports' },
   { id: 'interchange', label: 'Interchange' },
   { id: 'text', label: 'Text and captions' },
 ] as const
@@ -68,8 +68,8 @@ export const FORMAT_LABELS: Record<FileFormat, string> = {
   h264: 'Video (.mp4) — H.264',
   hevc: 'HEVC (.mp4) — smaller',
   vp9: 'WebM (.webm) — VP9',
-  prores: 'ProRes (.mov) — pro',
-  av1: 'AV1 (.mp4) — best, slow on CPU',
+  prores: 'ProRes (.mov)',
+  av1: 'AV1 (.mp4)',
 }
 
 export const LOUDNESS = ['off', '-14', '-16', '-23'] as const

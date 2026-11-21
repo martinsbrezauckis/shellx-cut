@@ -349,6 +349,7 @@ pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
 /// alone. No screen read, list, or capture check happens on this path, and the
 /// microphone itself opens only after the take is accepted. When macOS has not
 /// asked yet, this start makes it ask and returns what to do next.
+#[cfg(any(not(target_os = "linux"), test))]
 pub(crate) fn ensure_voiceover_ready() -> Result<(), CutError> {
     microphone::readiness::admit_voiceover(
         microphone::readiness::MicrophoneReadiness::current(),

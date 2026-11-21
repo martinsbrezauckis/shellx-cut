@@ -5,7 +5,7 @@
     {
       "name": "render.bundle",
       "domain": "render",
-      "description": "Render ONE timeline window into a publish package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, QC, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
+      "description": "Export ONE timeline window into a local export package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, quality checks, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -166,7 +166,7 @@
             "description": "The deliveries to render, in order. Each entry is a render.final arg SUBSET; the render.final dispatch is the authoritative validator (unknown keys / bad enums are rejected per entry, up front, via a dry_run).",
             "items": {
               "type": "object",
-              "description": "A render.final arg-set for one delivery. `output` aliases render.final's `path` (the file to write, FENCED per ). Other keys mirror render.final: preset, format, hardware, bitrate, target_size_mb, rate_control, audio_bitrate, profile, fit, resolution, aspect, width, height, normalize_loudness.",
+              "description": "A render.final arg-set for one delivery. `output` aliases render.final's `path` (the file to write, FENCED). Other keys mirror render.final: preset, format, hardware, bitrate, target_size_mb, rate_control, audio_bitrate, profile, fit, resolution, aspect, width, height, normalize_loudness.",
               "properties": {
                 "output": {
                   "type": "string",

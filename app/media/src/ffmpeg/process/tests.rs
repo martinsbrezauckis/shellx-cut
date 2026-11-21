@@ -1,6 +1,10 @@
 use super::*;
 use std::time::Duration;
 
+#[cfg(unix)]
+#[path = "tool_missing_tests.rs"]
+mod tool_missing;
+
 #[cfg(any(unix, windows))]
 use std::fs;
 

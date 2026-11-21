@@ -76,7 +76,7 @@
               "pop",
               "none"
             ],
-            "description": "Override the entry/exit animation"
+            "description": "Override the entry/exit animation: Slide up (`slide_up`), Slide down (`slide_down`), Slide left (`slide_left`), Slide right (`slide_right`), Fade (`fade`), Pop (`pop`), or None (`none`)."
           },
           "x": {
             "type": "number",

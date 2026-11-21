@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OpRecord, Project } from '../../lib/client'
 import { dispatchVerb, effectsSummary, fmtDur, opSeekMs } from './shared'
+import { editActionLabel } from './opGroupModel'
 
 export interface DiffViewProps {
   project: Project | null
@@ -128,13 +129,13 @@ export default function DiffView({ project, ops, onSeek, request }: DiffViewProp
           {cp.name} ({cp.at_op})
         </option>
       ))}
-      {headOp && <option value={headOp}>HEAD ({headOp})</option>}
+      {headOp && <option value={headOp}>Current edit ({headOp})</option>}
       {[from, to].filter((ref, index, refs) =>
         ref
         && refs.indexOf(ref) === index
         && ref !== headOp
         && !checkpoints.some((checkpoint) => checkpoint.id === ref),
-      ).map((ref) => <option key={ref} value={ref}>TURN ({ref})</option>)}
+      ).map((ref) => <option key={ref} value={ref}>Earlier edit ({ref})</option>)}
     </>
   )
 
@@ -174,7 +175,7 @@ export default function DiffView({ project, ops, onSeek, request }: DiffViewProp
                 }}
                 title={op.rationale ?? op.op_id}
               >
-                <span className="rr-diff__op-verb">{op.verb}</span>
+                <span className="rr-diff__op-verb">{editActionLabel(op.verb)}</span>
                 <span className="rr-diff__op-fx">{effectsSummary(op) || op.op_id}</span>
               </button>
             ))}

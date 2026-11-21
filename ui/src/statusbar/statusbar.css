@@ -108,6 +108,7 @@
 .sb-receipt--fail { color: var(--receipt-fail); background: var(--receipt-fail-bg); }
 .sb-receipt--unmeasured,
 .sb-receipt--waived { color: var(--receipt-pending); background: var(--receipt-pending-bg); }
+[data-theme="light"] .sb-receipt--waived { color: color-mix(in srgb, var(--receipt-pending) 98%, var(--ink)); }
 .sb-receipt--none { color: var(--ink-4); cursor: default; font-weight: 400; }
 .sb-receipt:hover { border-color: var(--hairline-2); }
 

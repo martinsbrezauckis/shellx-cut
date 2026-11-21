@@ -69,7 +69,7 @@ export const AGENT_PROMPT_LIBRARY: AgentPromptPreset[] = [
     id: 'preflight-review',
     category: 'Review',
     label: 'Check before export',
-    prompt: 'Inspect the current project and summarize the visible edit risks to review before export. Do not claim a verification pass or run output checks; open Review > QC for paced, caption, delivery, and brand verification.',
+    prompt: 'Inspect the current project and summarize the visible edit risks to review before export. Do not claim a verification pass or run output checks; open Review > Quality checks for paced, caption, delivery, and brand verification.',
     verbs: ['project.health', 'project.state', 'inspect.range'],
   },
 ]

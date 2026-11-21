@@ -5,7 +5,7 @@
     {
       "name": "verify.checks",
       "domain": "verify",
-      "description": "Run (or fetch) the deterministic check battery for a render: cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any footage profile), silence_at_edges, duration_matches_edl (measured on the container AND on each stream: video duration and frame count, each audio stream; reported unmeasured without stream data), plus sources_decodable when a source on the timeline was decode-checked (fails naming a cut-off or damaged source). Each → {name, pass, details, evidence}. A check with nothing to check on this export is NOT APPLICABLE (details.status:\"not_applicable\", details.applies_when, details.reason; pass stays true, never a failure or warning): caption_presence without visible caption clips, cut_on_word without a transcript, lufs without sound or without a loudness target (normalize_loudness) or explicit profile, silence_at_edges without sound or explicit profile, black_or_frozen_frames and uniform_border without picture; frozen frames do not apply to an all-still timeline. Different from details.status:\"unmeasured\" (applies, but could not be measured here, with its reason).",
+      "description": "Run (or fetch) the deterministic check battery for a render: cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any content type for quality checks), silence_at_edges, duration_matches_edl (measured on the container AND on each stream: video duration and frame count, each audio stream; reported unmeasured without stream data), plus sources_decodable when a source on the timeline was decode-checked (fails naming a cut-off or damaged source). Each → {name, pass, details, evidence}. A check with nothing to check on this export is NOT APPLICABLE (details.status:\"not_applicable\", details.applies_when, details.reason; pass stays true, never a failure or warning): caption_presence without visible caption clips, cut_on_word without a transcript, lufs without sound or without a loudness target (normalize_loudness) or explicit profile, silence_at_edges without sound or explicit profile, black_or_frozen_frames and uniform_border without picture; frozen frames do not apply to an all-still timeline. Different from details.status:\"unmeasured\" (applies, but could not be measured here, with its reason).",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -114,7 +114,7 @@
     {
       "name": "verify.captions",
       "domain": "verify",
-      "description": "Caption-QC receipt : measures each caption cue against the published timed-text standards — reading speed (chars/sec), on-screen duration, inter-cue gap, line length. Thresholds default to BBC/Netflix values (17 CPS, 833ms min / 7s max display, 80ms min gap, 84-char line cap) and are overridable per call. Read-only measurement; pass=true only when every cue is within spec.",
+      "description": "Caption quality checks (verb `verify.captions`): measures each caption cue against the published timed-text standards — reading speed (chars/sec), on-screen duration, inter-cue gap, line length. Thresholds default to BBC/Netflix values (17 CPS, 833ms min / 7s max display, 80ms min gap, 84-char line cap) and are overridable per call. Read-only measurement; pass=true only when every cue is within spec.",
       "args": {
         "type": "object",
         "required": [],
@@ -223,7 +223,7 @@
     {
       "name": "verify.loudness",
       "domain": "verify",
-      "description": "Integrated-loudness RECEIPT for one audio-bearing asset: integrated loudness (LUFS), true peak (dBTP), loudness range (LRA), gating threshold, the gap to a target, and a one-line recommendation. The MEASURE half of the loudness loop — the NORMALIZE half is render.final's `normalize_loudness` (a rendered output's loudness is already checked by verify.checks/render.qc). Single fast ffmpeg `loudnorm` analysis pass (no re-encode); ffmpeg-only, needs NO perception venv. Read-only. Standard targets: -14 social, -16 long-form/podcast, -23 EBU R128. Use it to decide whether (and how far) to normalize before publishing, then re-check the render with verify.checks.",
+      "description": "Integrated-loudness RECEIPT for one audio-bearing asset: integrated loudness (LUFS), true peak (dBTP), loudness range (LRA), gating threshold, the gap to a target, and a one-line recommendation. The MEASURE half of the loudness loop — the NORMALIZE half is render.final's `normalize_loudness` (a rendered output's loudness is already checked by verify.checks). Single fast ffmpeg `loudnorm` analysis pass (no re-encode); ffmpeg-only, needs NO perception venv. Read-only. Standard targets: -14 social, -16 long-form/podcast, -23 EBU R128. Use it to decide whether (and how far) to normalize before publishing, then re-check the render with verify.checks.",
       "args": {
         "type": "object",
         "required": [

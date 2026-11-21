@@ -10,8 +10,8 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
-> **STATUS — v0.6.117 published; v0.6.117 is the latest published release.**
+<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
+> **STATUS — v0.6.118 published; v0.6.118 is the latest published release.**
 > The public contract is 317 verbs across 34
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
@@ -27,11 +27,11 @@ AI output as an opaque final file.
 
 ## See ShellX Cut in action
 
-![ShellX Cut editing a Nordic road-film project with populated assets, preview, markers, and timeline](docs/public/assets/github/shellx-cut-editor.png)
+![ShellX Cut 0.6.118 editing Autumn weekend with travel footage, a title, composed preview, timeline cuts and Edit history](docs/public/assets/github/shellx-cut-editor.png)
 
-| Edit the live timeline with Codex in plain language | Connect any MCP-capable coding agent |
+| Choose your local CLI agent in Chat | Connect any MCP-capable coding agent |
 | --- | --- |
-| ![ShellX Cut Agent Chat with Codex ready beside the Nordic road-film edit](docs/public/assets/github/shellx-cut-agent-chat.png) | ![ShellX Cut Agent Control settings for its local Debug API and MCP proxy](docs/public/assets/github/shellx-cut-agent-control.png) |
+| ![ShellX Cut 0.6.118 Chat beside the selected kayak clip in Autumn weekend, with analysis ready and the local CLI agent awaiting login](docs/public/assets/github/shellx-cut-agent-chat.png) | ![ShellX Cut 0.6.118 Agent control settings over the Autumn weekend cabin scene, with Debug API connected and MCP proxy ready to test](docs/public/assets/github/shellx-cut-agent-control.png) |
 
 Agent Chat supports the user's installed Claude Code, Codex, Grok, or
 Antigravity CLI. Provider version text is informational only; each resolved
@@ -61,7 +61,7 @@ PNG, JPEG, WebP, and TIFF, subject to your installed FFmpeg's codec support.
 Imported HLS and concat playlists are rejected because they can reference
 other files. Cut's internally generated render segment lists remain supported.
 
-> **Installing:** v0.6.117 is the current published installer/package from the
+> **Installing:** v0.6.118 is the current published installer/package from the
 > GitHub release. Users already on 0.6.107 can use the
 > in-app update when it is offered. Versions older than 0.6.107 must install
 > 0.6.107 manually before using the in-app update.
@@ -105,6 +105,7 @@ other files. Cut's internally generated render segment lists remain supported.
 > with the graphics hardware, whether the app or an agent started the engine;
 > `system.doctor` says which build is in use and why. Until FFmpeg is installed, every verb that needs it refuses up front
 > with `tool_missing` and the way to get it.
+> FFmpeg 8.0.1 and 9.0.2 are tested; versions older than 7 keep working, with optional upgrade advice in setup that preserves your chosen FFmpeg.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
@@ -126,7 +127,7 @@ workspace, and dropping a video, audio file, or image when no project is open
 creates a sensibly named project and places the media on its timeline. A new
 project does not ask a beginner to choose resolution or frame rate. Its first
 video adopts the source geometry and frame rate; those are timeline composition
-properties available later under Render > Timeline. Delivery aspect, output
+properties available later under Render > Advanced · timeline format. Delivery aspect, output
 size, codec, and bitrate remain per-render/export choices, so one edit can
 produce multiple deliverables without recreating the project.
 
@@ -254,8 +255,8 @@ available.
 | **recipe** | **list · describe · run** | declarative pipeline MANIFESTS — named, gated WORKFLOWS over the existing verbs (built-ins in `schema/recipes.json`: a guided first edit; preview-first **Edit for clarity** with intensity; podcast/talking-head/screen-demo/phone cleanup; social bundle; privacy mask; captions; YouTube and TikTok export). list/describe are pure reads; **run is a PURE ORCHESTRATOR** (like autopilot.run/audio.cleanup_voice): no op of its own, ONE auto-checkpoint (one-step revert), dispatches each stage through the normal verb path, polls sub-jobs, evaluates a per-stage gate (receipt checks and/or render-free state facts), and STOPS + reports on the first failed verb or gate. policy:dry_run returns the resolved PLAN without dispatching (pre-render-gate seam) |
 | **screen_record** | doctor · **microphone_selection · system_audio_probe** · **preview_capability · preview_start · preview_status · preview_frame · preview_pause · preview_resume · preview_hide · preview_stop** · **rehearsal_start · rehearsal_discard** · start · **live_frame · status · pause · resume** · stop · **recovery_status · active · pending · pending_dismiss · recover · copy_raw · studio_event · scene_activate · scene_timer** · autoedit · polish · export | Recording Studio uses System Default by default; on Windows/macOS a human can select a current opaque microphone, while a compiled Windows, macOS, or Linux camera backend can list current opaque camera choices in Doctor. On Linux, Camera availability depends on a current Doctor choice, required GStreamer plugins, and a real frame at explicit Start. The source preview and active-take live frame use real native pixels, with explicit unavailable/stale/recursion states. A bounded rehearsal can be played and discarded without creating project media. Camera is explicit and Auto-edit-only. Cut retains its separate take with shared-clock metadata on a hidden track, while the camera layout chosen for recording is baked into the polished clip; editing the retained take does not update that bubble. Named Screen and Presenter PiP scenes can switch during capture, with one elapsed/countdown timer whose saved transitions use that same recording clock. Compatible macOS display recordings can pause and resume through the durable native owner. `screen_record.status` is a short-lived, process-local read: readiness follows a real native screen frame; selected-source loss is reported only when an armed exact-source close beats a Cut-owned close; controller placement returns only a confirmed exclusion/hide, refusal, or unavailable conclusion; and mic/system meters observe only already-admitted streams. Missing permission, no first frame, stale or lost audio, and device loss remain explicit rather than falling back or guessing. Both Raw and Polished modes save the unchanged MP4 in the default export folder; optional destination selection occurs only after Stop through Export or Save a copy. If mouse input cannot start, Record warns that pointer animation, click highlights and automatic zoom may be missing while video recording continues. Saved video remains usable; a Window recording can still contain its baked native cursor. Startup registration is not a guarantee of delivered input. A failed Stop retains its capture and offers recovery for that same capture. A completed successful Stop releases capture ownership; a Windows save-job acknowledgement still requires waiting for saving to finish. A later auto-edit or polish error is not a live capture. Closing or quitting the app during a recording saves it as Stop would before the app closes; a recording interrupted by a crash or power loss (save points every 15 s) is listed by `pending` and offered at the next start with Add to timeline (`recover`, with its sound). `active` shows a recording started elsewhere, which the window displays with Stop. A Stop before the first frame says `nothing was recorded`; a start during a microphone or system-audio test is refused with `conflict`. `doctor{mode:"status"}` reads readiness without a capture or system prompt; on macOS the screen-recording prompt comes only with `mode:"check"` or a recording start. |
 | **voiceover** | start · tick · stop · cancel · observe_playhead | Timeline-track voiceover needs only the microphone: it reads `screen_record.doctor{mode:"microphone"}` and stays disabled, naming the missing permission, Windows privacy switch or device, until the microphone is ready. The server binds one current unlocked audio track and playhead/In–Out range to a retry identity, then issues a memory-only per-tab owner claim for every tick, Stop, Cancel, and correlated Preview Out. An exact active A retry wins over later ordinary revision changes; a different B remains refused while A is active, and only `voiceover_start_retry_rejected` lets the UI discard its non-secret retry identity. It counts in, correlates exact request/fingerprint/epoch playback, and only places a sealed WAV as one asset-plus-clip operation (one Undo). Direct monitoring is off; Cancel and unplaceable outcomes add no edit. |
-| **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = optional visual reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
-| **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** |
+| **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = optional visual reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only quality check results |
+| **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** | Platform exports (`export.publish`) save local video files; Cut does not upload to a platform.
 | **import** | otio | hash-bound OTIO preflight and one-operation timeline replacement; the desktop UI owns the native picker/confirmation while agents pass an explicit path |
 | **inspect** | media · range | path-light, cited inspection over the current project and its exact MediaEvidenceIndex; resolves opaque evidence hits to current source ranges and timeline occurrences, and refuses stale, foreign-project, or changed evidence instead of summarizing old prompt context |
 | **comment** | add · list · draft · apply · resolve | editor **Make changes** routes a timecoded note and immutable target through Agent Chat; `draft`/`apply` remain compatibility/debug APIs, never an editor approval flow |
@@ -350,9 +351,10 @@ change the bytes; the receipt's `encode` record names the encoder that ran.
 
 ## The receipts model (the whole point, in 10 lines)
 
-1. Every mutation goes through a verb; every verb appends an immutable op
-   record to `ops.jsonl` — actor, args, **rationale**, effects, and (only for
-   historic snapshot-era records) an optional inverse payload.
+1. Timeline mutations go through verbs that append immutable op records
+   to `ops.jsonl` — actor, args, **rationale**, effects, and (only for historic
+   snapshot-era records) an optional inverse payload. Read-only verbs do not
+   append operations.
 2. `project.json` is only a cache, rebuilt from the log on demand.
    Project opening limits `ops.jsonl` to 128 MiB total and 8 MiB per record;
    an oversized `project.json` cache is skipped and rebuilt. If an older,
@@ -375,7 +377,7 @@ change the bytes; the receipt's `encode` record names the encoder that ran.
    frames, uniform_border, silence_at_edges, duration_matches_edl per stream,
    and sources_decodable when a source was decode-checked) → **RenderReceipt**.
    Loudness is checked only against a target you set (`normalize_loudness`) or
-   an explicit footage profile, and edge silence only with a profile.
+   an explicit content type for quality checks, and edge silence only with a profile.
 7. `verify.rerun {render_id}` rechecks only facts available from that exact
    persisted output: it re-fences and hashes the bytes, runs loudness,
    black/frozen, border, edge-silence, and receipt-duration checks under one

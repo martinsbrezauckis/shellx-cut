@@ -230,6 +230,9 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
         None
     };
     if mode == "microphone" {
+        #[cfg(target_os = "linux")]
+        let readiness = microphone::readiness::MicrophoneReadiness::current_linux().await;
+        #[cfg(not(target_os = "linux"))]
         let readiness = microphone::readiness::MicrophoneReadiness::current();
         return Ok(VerbResult::ok(microphone::readiness::projection(
             readiness, mic_warm,
@@ -242,6 +245,9 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
     };
     let encoder = super::video_encoder_readiness::apply(&mut doctor, request, mode != "status");
     let microphone = microphone::doctor_projection();
+    #[cfg(target_os = "linux")]
+    let readiness = microphone::readiness::MicrophoneReadiness::current_linux().await;
+    #[cfg(not(target_os = "linux"))]
     let readiness = microphone::readiness::MicrophoneReadiness::current();
     Ok(VerbResult::ok(super::video_encoder_readiness::projection(
         json!({

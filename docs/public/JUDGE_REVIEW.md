@@ -169,10 +169,10 @@ actual review. `not_run` remains unreviewed rather than a passing review.
 
 The adapter is installed under the perception resource payload and discovered
 beside `instruments.py`. It is stdlib-only but needs a usable Python
-interpreter plus ffmpeg/ffprobe for frame sampling. Settings > AI & Services
-reports CLI discovery separately from bounded render-review admission; an
+interpreter plus ffmpeg/ffprobe for frame sampling. Settings > Services & integrations
+reports app discovery separately from a bounded export review availability check; an
 unready card names its reason. Agent Chat uses its own capability and session
-readiness, so it is not implied by the render-judge card.
+readiness, so it is not implied by the export review card.
 
 `CUTD_JUDGE_ADAPTER` may override the bundled ladder for testing or advanced
 operation. The override is authoritative: a missing override path does not
@@ -183,5 +183,5 @@ platforms where that does not trigger an OS installer prompt.
 The deterministic no-quota contract is exercised by:
 
 ```bash
-cargo test -p server verify_judge_
+cargo test --manifest-path app/Cargo.toml -p server verify_judge_
 ```

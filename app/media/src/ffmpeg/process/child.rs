@@ -26,7 +26,8 @@ impl ManagedChild {
         // A just-written program can be briefly busy (see process_start).
         let mut child =
             crate::process_start::retry_busy_start(|| command.spawn()).map_err(|error| {
-                missing_media_tool(command, &error).unwrap_or_else(|| spawn_error(context, error))
+                super::tool_missing::spawn_error(command, &error)
+                    .unwrap_or_else(|| spawn_error(context, error))
             })?;
         let tree = match tree::ProcessTree::establish(&child) {
             Ok(tree) => tree,
@@ -158,24 +159,6 @@ impl Drop for ManagedChild {
             let _ = self.stop_and_reap("drop ffmpeg process owner");
         }
     }
-}
-
-/// A spawn that failed because ffmpeg or ffprobe itself is not installed is
-/// reported as the tool being missing, with the platform's way to get it,
-/// instead of a bare "No such file or directory". This is the catch-all for
-/// every media step; verbs also refuse earlier through the server's gate.
-pub(super) fn missing_media_tool(command: &Command, error: &io::Error) -> Option<CutError> {
-    if error.kind() != io::ErrorKind::NotFound {
-        return None;
-    }
-    let program = std::path::Path::new(command.get_program());
-    let stem = program.file_stem()?.to_str()?;
-    matches!(stem, "ffmpeg" | "ffprobe").then(|| {
-        // Keep the system's own words too, for anyone matching on them.
-        let mut missing = crate::tool_setup::missing_tool_error(stem);
-        missing.cause = format!("{} ({error})", missing.cause);
-        missing
-    })
 }
 
 pub(super) fn spawn_error(context: &str, error: impl std::fmt::Display) -> CutError {

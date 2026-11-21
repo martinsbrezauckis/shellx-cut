@@ -1,4 +1,4 @@
-// panels/Review/encodeLine.ts — what the Receipts tab says about the encoder.
+// panels/Review/encodeLine.ts — what the Render history & checks tab says about the encoder.
 // Pure: turns a receipt's `encode` record into the person-facing line and, when
 // hardware was asked for and software ran, the plain reason.
 // Callers: Receipts.tsx. Deps: lib/client types only.

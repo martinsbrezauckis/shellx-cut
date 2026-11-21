@@ -37,7 +37,7 @@
           }
         }
       },
-      "result": "{asset_id, job_id, capture_manifest?: {path, events}} — watch job_progress events or poll jobs.status; the chain job result carries capture_manifest.{markers_created, events_skipped, skipped[], note}, and placed plus placement {placed:true, tracks} or {placed:false, reason}: the first import REQUESTED into an empty timeline is the one placed. A folder or an empty file is refused at once with invalid_args; a file ffprobe cannot read fails the chain job with unreadable_media and the import is undone (no dead asset)",
+      "result": "{asset_id, job_id, capture_manifest?: {path, events}} — watch job_progress events or poll jobs.status; the chain job result carries capture_manifest.{markers_created, events_skipped, skipped[], note}, and placed plus placement {placed:true, tracks} or {placed:false, reason}: the first import REQUESTED into an empty timeline is the one placed. A folder or an empty file is refused at once with invalid_args; a file ffprobe cannot read fails the chain job with unreadable_media and the import is undone (no dead asset). If the analysis job cannot be saved, the asset stays registered and the returned job is failed with io and \"Media analysis did not start\"; free space or restore write access to the project folder, then reopen the project to retry analysis for the same asset",
       "behavior": {
         "mutation_class": "asset_metadata",
         "side_effects": {
@@ -414,7 +414,7 @@
     {
       "name": "media.filmstrip",
       "domain": "media",
-      "description": "Build a timeline THUMBNAIL TILE for a video asset from its proxy — a horizontal row of evenly-spaced frames. TWO modes: (1) WHOLE-ASSET (no range_ms) = the base strip over [0,duration], stored on the asset (field `filmstrip`), idempotent, built automatically in the import chain after the proxy step; the UI slices it per clip by the linear fraction t/duration. (2) WINDOWED / ZOOM (range_ms given) = sample just that SOURCE sub-range at `count` frames — the per-zoom density path: the UI requests exactly the frames visible for a clip at the current zoom (≈1 thumb per fixed pixel width), so as you zoom in the window shrinks and density rises, approaching per-frame at sub-second zoom; ephemeral (NOT stored on the asset), returns {thumbs, range_ms, count, h}. Cost is bounded because only the visible window is ever sampled. Video assets WITH a proxy only.",
+      "description": "Build a timeline THUMBNAIL TILE for a video asset from its proxy — a horizontal row of evenly-spaced frames. TWO modes: (1) WHOLE-ASSET (no range_ms) = the base strip over [0,duration], stored on the asset (field `filmstrip`), idempotent, built automatically in the import chain after the proxy step; the UI slices it per clip by the linear fraction t/duration. (2) WINDOWED / ZOOM (range_ms given) = sample just that SOURCE sub-range at `count` frames — the per-zoom density path: the UI requests exactly the frames visible for a clip at the current zoom (≈1 thumb per fixed pixel width), so as you zoom in the window shrinks and density rises, approaching per-frame at sub-second zoom; ephemeral (NOT stored on the asset), returns {thumbs, range_ms, count, h}. Cost is bounded because only the visible window is ever sampled. Windowed mode requires a video asset with a proxy. Whole-asset mode also supports a still-image thumbnail from the source without a proxy.",
       "args": {
         "type": "object",
         "required": [
@@ -424,7 +424,7 @@
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset id (must be a video asset with a built proxy)"
+            "description": "Asset id. Video requires a built proxy; whole-asset mode also accepts a still image without a proxy."
           },
           "range_ms": {
             "type": "array",
@@ -473,7 +473,7 @@
     {
       "name": "media.transcribe",
       "domain": "media",
-      "description": "Run word-level transcription on an asset (job, returns {job_id}). Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
+      "description": "Run word-level transcription on an asset (job, returns {job_id}). It can be run again at any time; a successful run replaces that asset's previous word transcript. Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
       "args": {
         "type": "object",
         "required": [
@@ -486,7 +486,7 @@
           },
           "model": {
             "type": "string",
-            "description": "Legacy per-call model override. Prefer system.set_stt_model so the Environment panel, doctor card, and agents agree on the active model."
+            "description": "Legacy per-call model override. Prefer system.set_stt_model so Settings > AI & transcription, doctor card, and agents agree on the active model."
           }
         }
       },

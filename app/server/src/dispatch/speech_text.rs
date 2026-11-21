@@ -2810,8 +2810,8 @@ fn silence_preset(name: &str) -> Result<(u64, u64), CutError> {
         "jumpy" => Ok((350, 60)),
         other => Err(CutError::new(
             error_codes::INVALID_ARGS,
-            format!("unknown aggressiveness '{other}'"),
-            "must be one of calm|natural|jumpy",
+            format!("Unknown pause removal amount '{other}'"),
+            "Choose Light (calm), Standard (natural), or Strong (jumpy).",
         )),
     }
 }

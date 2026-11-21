@@ -457,7 +457,7 @@ export default function LibraryPanel({ project, onAddedToProject, active, playhe
       ? 'No missing media matches this view.'
       : anyFilter
         ? 'Nothing matches these filters.'
-        : 'Your library is empty. Browse to add reusable media; direct agent imports stay in this project’s Assets.'
+        : 'Your Library is empty. Add reusable media here. Project imports stay in Assets.'
 
   return (
     <section className="panel library-panel library-panel--workspace" data-cut-panel="library" data-cut-library>

@@ -99,7 +99,7 @@
     {
       "name": "generate.preview",
       "domain": "generate",
-      "description": "Render a non-mutating PNG evidence frame for one Generate template after resolving params and lowering args. Pure preview: no project required, no op, no checkpoint. With an open project it writes into <project>/frames and returns a /frames/{file} URL; without a project it writes a temp PNG path. Preview supports templates that lower to title.add or edit.add_shape; project-dependent templates report INVALID_ARGS honestly.",
+      "description": "Render a non-mutating PNG evidence frame for one Generate template after resolving params and lowering args. Pure preview: no project required, no op, no checkpoint. With an open project it writes into <project>/frames and returns a /frames/{file} URL; without a project it writes a temp PNG path. Preview supports templates that lower to title.add, edit.add_shape, motion.template_to_cut, or motion.script_to_cut; unsupported lowerings report INVALID_ARGS.",
       "args": {
         "type": "object",
         "required": [
@@ -157,7 +157,7 @@
     {
       "name": "generate.insert",
       "domain": "generate",
-      "description": "Materialize one Generate template into the open project by resolving params, lowering to an existing native verb, and dispatching that verb through the normal replay-safe path. Inserts are grouped by an auto-checkpoint and return instance evidence: op ids, generated clip/asset ids, resolved params, lowering args, and the native verb result. Supported template verbs are title.add, edit.add_shape, and captions.kinetic. Requires an open project.",
+      "description": "Materialize one Generate template into the open project by resolving params, lowering to an existing native verb, and dispatching that verb through the normal replay-safe path. Inserts are grouped by an auto-checkpoint and return instance evidence: op ids, generated clip/asset ids, resolved params, lowering args, and the native verb result. Supported template verbs are title.add, edit.add_shape, captions.kinetic, motion.template_to_cut, and motion.script_to_cut. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -323,7 +323,7 @@
               "script",
               "existing_media"
             ],
-            "description": "Planning path. auto lets the adapter infer the path from input/context."
+            "description": "Planning path. Quick prompt (`quick_prompt`), Director brief (`director_brief`), Script (`script`), or Existing media (`existing_media`). Auto (`auto`) lets the adapter infer the path from input/context."
           },
           "policy": {
             "type": "string",

@@ -120,10 +120,22 @@ pub(crate) fn peak_held_bytes(uses: &[SourceUse], f: &Frames) -> u64 {
             }
             if u.shared {
                 shared.push((a, b));
-                shared_rate = shared_rate.max(u.frames_per_source_sec(f));
+                shared_rate = shared_rate.max(if u.reverse {
+                    f.source_fps
+                } else {
+                    u.frames_per_source_sec(f)
+                });
             } else {
                 let frames = (b - a) as f64 / 1000.0 * u.frames_per_source_sec(f);
-                copies += frames * f.output_bytes as f64;
+                let converted = frames * f.output_bytes as f64;
+                // Reverse buffers source frames before scaling or dropping frames.
+                // Size the larger stage: the source buffer or the converted queue.
+                let reversed = if u.reverse {
+                    (b - a) as f64 / 1000.0 * f.source_fps * f.source_bytes as f64
+                } else {
+                    0.0
+                };
+                copies += converted.max(reversed);
             }
         }
         let shared_bytes = union_ms(shared) as f64 / 1000.0 * shared_rate * f.source_bytes as f64;

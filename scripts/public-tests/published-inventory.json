@@ -1,10 +1,23 @@
 {
   "schema": "shellx-cut/published-test-inventory@1",
-  "version": "0.6.117",
+  "version": "0.6.118",
   "contract": {
     "node_test_count": 17,
-    "ui_library_test_count": 171
+    "python_test_count": 10,
+    "ui_library_test_count": 172
   },
+  "python_tests": [
+    "app/perception/py/diarize_runner_test.py",
+    "app/perception/py/instruments_audio_envelope_test.py",
+    "app/perception/py/judge/adapters/codex_judge_integration_test.py",
+    "app/perception/py/judge/adapters/codex_judge_policy_test.py",
+    "app/perception/py/judge/adapters/codex_judge_runtime_test.py",
+    "app/perception/py/native_runtime_models_test.py",
+    "app/perception/py/ordinary_speech_models_test.py",
+    "app/perception/py/provider_child_launch_test.py",
+    "app/perception/py/translate_runner_test.py",
+    "app/perception/py/translation_models_test.py"
+  ],
   "prerequisites": [
     {
       "id": "python",
@@ -278,6 +291,7 @@
       "ui-command-background-ack.test.ts",
       "ui-command-playhead-routing.test.mjs",
       "ui-notices-state.test.ts",
+      "ui-open-workspace-browser.test.mjs",
       "ui-state-export-folder.test.ts",
       "update-state-model.test.ts",
       "voiceover-doctor-lifecycle-browser.test.mjs",

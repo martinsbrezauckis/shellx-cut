@@ -304,7 +304,7 @@ export function SpeedSection({ current, canFreeze, onSpeed, onReverse, onFreeze,
       <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="speed-double" role="menuitem" title="Speed up to twice normal speed" onClick={() => { onSpeed(2); onClose() }}><Icon name="speed" size={14} /> 2× speed</button>
       <CustomSpeedMenuEditor current={current} onApply={onSpeed} onClose={onClose} />
       <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="reverse" role="menuitem" title="Play the clip backward" onClick={() => { onReverse(); onClose() }}><Icon name="flip" size={14} /> Reverse</button>
-      {canFreeze && <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="freeze" role="menuitem" title="Hold the first frame for the whole slot" onClick={() => { onFreeze(); onClose() }}><Icon name="keyframe" size={14} /> Freeze frame</button>}
+      {canFreeze && <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="freeze" role="menuitem" title="Hold the first frame for the clip’s duration; audio continues" onClick={() => { onFreeze(); onClose() }}><Icon name="keyframe" size={14} /> Freeze at first frame</button>}
     </div>}
   </>
 }

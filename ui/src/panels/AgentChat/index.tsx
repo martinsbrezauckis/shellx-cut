@@ -642,7 +642,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
                 </div>
                 {!t.review.revert_safe && t.review.concurrent_actions.length > 0 && (
                   <div className="chat__review-warning" data-cut-chat-review-concurrent>
-                    {t.review.concurrent_actions.length} concurrent change{t.review.concurrent_actions.length === 1 ? '' : 's'} detected. Inspect Diff; Step back is unavailable.
+                    {t.review.concurrent_actions.length} concurrent change{t.review.concurrent_actions.length === 1 ? '' : 's'} detected. Open Compare edits; Step back is unavailable.
                   </div>
                 )}
                 {t.review.diff_error && <div className="chat__review-warning">{t.review.diff_error}</div>}
@@ -651,8 +651,8 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
                   <button type="button" data-cut-chat-preview onClick={previewTurn} title="Show the current composed frame">
                     <Icon name="eye" size={14} /> Preview
                   </button>
-                  <button type="button" data-cut-chat-diff onClick={() => inspectDiff(t)} disabled={!t.review.tip} title="Inspect this turn in Diff">
-                    <Icon name="diff" size={14} /> Diff
+                  <button type="button" data-cut-chat-diff onClick={() => inspectDiff(t)} disabled={!t.review.tip} title="Inspect this turn in Compare edits">
+                    <Icon name="diff" size={14} /> Compare edits
                   </button>
                   <button type="button" data-cut-chat-step-back onClick={() => void revertTurn(t.id, t)} disabled={t.reviewBusy || !t.review.revert_safe || t.reviewState === 'reverted'} title="Undo this complete Agent Chat turn to its history baseline">
                     <Icon name="undo" size={14} /> Step back

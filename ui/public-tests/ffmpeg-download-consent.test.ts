@@ -56,6 +56,57 @@ const card = (status: DoctorCard['status'], setup: FfmpegSetupGuide): DoctorCard
 const render = (c: DoctorCard, os: string, arch: string) =>
   renderToStaticMarkup(createElement(EnvCardRow, { card: c, os, arch, onChanged: () => {} }))
 
+// A working older build is advice, with the existing optional download.
+{
+  const advice = {
+    in_use: '6.1.1-3ubuntu5',
+    tested_versions: ['8.0.1', '9.0.2'],
+    message: 'FFmpeg 6.1.1-3ubuntu5 is in use; ShellX Cut is tested with FFmpeg 8.0.1 and 9.0.2.',
+    upgrade: 'Download a newer FFmpeg if you want to update.',
+  }
+  for (const os of ['windows', 'linux']) {
+    const old: DoctorCard = {
+      ...card('ok', { ...siliconGuide, commands: [], download: { ...riedl, limitation: null } }),
+      version: advice.in_use,
+      details: { setup: { ...siliconGuide, commands: [], download: { ...riedl, limitation: null } }, version_advice: advice },
+    }
+    assert.equal(hasFetchAction(old, os, 'x86_64'), true, `${os}: older works, optional download`)
+    const html = render(old, os, 'x86_64')
+    assert.match(html, /Works, older than tested/)
+    assert.ok(html.includes(advice.message))
+    assert.match(html, /data-cut-env-status="ok"/)
+    assert.match(html, /data-cut-env-download="ffmpeg"/)
+    assert.doesNotMatch(html, /data-cut-env-error|Needs setup/)
+    const chosen = render({ ...old, details: { ...old.details, version_advice: { ...advice, upgrade: `${advice.upgrade} Your chosen FFmpeg stays selected until you change it.` } } }, os, 'x86_64')
+    assert.match(chosen, /Your chosen FFmpeg stays selected until you change it\./)
+    const incomplete = render({ ...old, status: 'degraded', details: { ...old.details, can_stabilize: false } }, os, 'x86_64')
+    assert.match(incomplete, /Works, older than tested/)
+    assert.match(incomplete, /Not available with this build: Stabilize/)
+    for (const status of ['missing', 'unknown'] as const) {
+      assert.doesNotMatch(render({ ...old, status }, os, 'x86_64'), /Works, older than tested/)
+    }
+    assert.doesNotMatch(render({ ...old, details: { setup: siliconGuide } }, os, 'x86_64'), /Works, older than tested/)
+    for (const version of ['n9.0.2-39-g7adfbe40dc', '8.0.1', 'unreadable']) {
+      const current = { ...old, version, details: { setup: siliconGuide, version_advice: null } }
+      assert.equal(hasFetchAction(current, os, 'x86_64'), false)
+      const html = render(current, os, 'x86_64')
+      assert.match(html, /data-cut-env-statuschip="ok"[^>]*>Ready</)
+      assert.doesNotMatch(html, /Works, older than tested|data-cut-env-error|Needs setup/)
+    }
+  }
+  for (const [os, arch] of [['macos', 'aarch64'], ['macos', 'x86_64'], ['linux', 'aarch64']]) {
+    const upgrade = os === 'macos'
+      ? 'Use Homebrew to install or upgrade ffmpeg-full, then choose that FFmpeg.'
+      : 'Use your distribution’s package manager for FFmpeg 7 or newer, or choose a newer build.'
+    const old: DoctorCard = { ...card('ok', siliconGuide), details: { setup: siliconGuide, version_advice: { ...advice, upgrade } } }
+    assert.equal(hasFetchAction(old, os, arch), false)
+    const html = render(old, os, arch)
+    assert.match(html, /Works, older than tested/)
+    assert.ok(html.includes(upgrade))
+    assert.doesNotMatch(html, /data-cut-env-download/)
+  }
+}
+
 // A Mac without ffmpeg: Download first, with the full consent beside it, the
 // one-sentence limitation, then the other ways (Homebrew, Choose ffmpeg).
 const missing = card('missing', siliconGuide)

@@ -26,7 +26,7 @@
           "max_zooms": {
             "type": "integer",
             "minimum": 0,
-            "description": "Cap on the number of punches (default ≈ one per 8 s of clip, capped at 24). The strongest emphasis beats win. 0 = no zooms."
+            "description": "Cap on the number of punches (default ≈ one per 8 s of clip, capped at 24). Energy mode selects the strongest peaks; transcript mode selects utterance starts in time order. 0 = no zooms."
           },
           "hold_ms": {
             "type": "integer",
@@ -69,7 +69,7 @@
     {
       "name": "edit.add_mask",
       "domain": "edit",
-      "description": "Add (or clear) a vector/freeform MASK on a BASE-track video clip — a region effect (blur/pixelate/black) scoped to a SHAPE, the region-blur / privacy-redaction primitive (region-scoped cleanup; blur a face/label; censor a password). shape: 'rect' (points = 2 opposite corners [[x0,y0],[x1,y1]]), 'ellipse' (points = [[cx,cy],[rx,ry]] centre + radii), or 'polygon'/freeform (points = the vertices, ≥3, drawn closed). All points are FRACTIONS of frame width/height (0..1). effect: 'blur' (default, gaussian; strength = sigma px, default 15), 'pixelate' (mosaic; strength = block px, default 16), or 'black' (solid censor). feather = soft-edge fraction of frame HEIGHT (0 = hard). invert = scope the effect OUTSIDE the shape. enabled:false (or omitting shape) CLEARS the mask. The renderer bakes a feathered shape alpha (resvg) and alphamerge+overlays the effect inside the region (CPU/software path); animatable later via keyframes/tracking. v1 renders on the BASE (first) video track only — an overlay-track clip is refused (clear error). A core op (replay-safe).",
+      "description": "Add (or clear) a vector/freeform MASK on a BASE-track video clip — a region effect (blur/pixelate/black) scoped to a SHAPE, the region-blur / privacy-redaction primitive (region-scoped cleanup; blur a face/label; censor a password). shape: 'rect' (points = 2 opposite corners [[x0,y0],[x1,y1]]), 'ellipse' (points = [[cx,cy],[rx,ry]] centre + radii), or 'polygon'/freeform (points = the vertices, ≥3, drawn closed). All points are FRACTIONS of frame width/height (0..1). effect: 'blur' (default, gaussian; strength = sigma px, default 15), 'pixelate' (mosaic; strength = block px, default 16), or 'black' (solid censor). feather = soft-edge fraction of frame HEIGHT (0 = hard). invert = scope the effect OUTSIDE the shape. enabled:false CLEARS the mask. Otherwise shape is required. The renderer bakes a feathered shape alpha (resvg) and alphamerge+overlays the effect inside the region (CPU/software path); animatable later via keyframes/tracking. v1 renders on the BASE (first) video track only — an overlay-track clip is refused (clear error). A core op (replay-safe).",
       "args": {
         "type": "object",
         "required": [
@@ -162,7 +162,7 @@
     {
       "name": "edit.redact",
       "domain": "edit",
-      "description": "REDACTION — a TIME-BOUNDED privacy effect: blur / pixelate / black-box a SHAPE region on a BASE-track video clip, active ONLY during `range_ms` (clip-local [start,end] ms; omit = the whole clip). The editor-side complement to capture-time anonymization: redact a password / API key / face / PII that appears mid-edit in ANY footage (screen recordings, imported clips). Shares the mask field + render path with edit.add_mask but is SECURITY-FRAMED: `mode` is blur (default) / pixelate / box (solid black censor), and an unset blur/pixelate strength uses a heavier OVER-BLUR fail-safe (never under-redact). shape: 'rect' (points = [[x0,y0],[x1,y1]]), 'ellipse' ([[cx,cy],[rx,ry]]) or 'polygon' (vertices ≥3); all points are FRACTIONS of frame W/H (0..1). feather = soft-edge fraction of frame height; invert = redact OUTSIDE the shape. enabled:false (or omitting shape) CLEARS. Render: the baked shape alpha gates the effect (alphamerge+overlay) with `enable='between(t,…)'` for the range (CPU/software path). v1: BASE (first) video track only; one region per clip (multi-region + motion-tracked + OCR auto-detect are next). A core op (replay-safe). To make it FOLLOW a moving subject, track with edit.track then keyframe the region (until tracked-redact lands).",
+      "description": "REDACTION — a TIME-BOUNDED privacy effect: blur / pixelate / black-box a SHAPE region on a BASE-track video clip, active ONLY during `range_ms` (clip-local [start,end] ms; omit = the whole clip). The editor-side complement to capture-time anonymization: redact a password / API key / face / PII that appears mid-edit in ANY footage (screen recordings, imported clips). Shares the mask field + render path with edit.add_mask but is SECURITY-FRAMED: `mode` is blur (default) / pixelate / box (solid black censor), and an unset blur/pixelate strength uses a heavier OVER-BLUR fail-safe (never under-redact). shape: 'rect' (points = [[x0,y0],[x1,y1]]), 'ellipse' ([[cx,cy],[rx,ry]]) or 'polygon' (vertices ≥3); all points are FRACTIONS of frame W/H (0..1). feather = soft-edge fraction of frame height; invert = redact OUTSIDE the shape. enabled:false CLEARS. Otherwise shape is required unless faces or ocr_auto computes it. Render: the baked shape alpha gates the effect (alphamerge+overlay) with `enable='between(t,…)'` for the range (CPU/software path). BASE (first) video track only. Use boxes for additional regions, track for motion-centre points from edit.track, ocr_auto for PII detection, or faces for face detection with optional tracking. A core op (replay-safe).",
       "args": {
         "type": "object",
         "required": [
@@ -530,7 +530,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The camera-angle VIDEO track ids to switch between (≥2). Omit to auto-detect every video track holding a media clip."
+            "description": "The camera-angle VIDEO track ids to switch between (≥2). Omit to auto-detect video tracks holding media clips, excluding __mc_program and program."
           },
           "min_shot_ms": {
             "type": "integer",

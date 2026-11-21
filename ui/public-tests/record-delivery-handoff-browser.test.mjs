@@ -328,7 +328,7 @@ test('recording delivery survives conditional Record and keyed project workspace
   assert.equal(exports.length, 3, 'held authorization cannot revive an old intent after A to B to A')
   await page.locator('[data-cut-action="record-export"]').click()
   await reply(await waitFor(exports, 4), { ok: true, result: { job_id: 17 } })
-  await page.waitForFunction(() => document.querySelector('[data-test-export-note]')?.textContent?.includes('admission could not be confirmed'))
+  await page.waitForFunction(() => document.querySelector('[data-test-export-note]')?.textContent?.includes('Could not confirm that exporting started'))
   await page.waitForFunction(() => !document.querySelector('[data-cut-action="record-export"]')?.disabled)
   assert.equal(await page.locator('[data-test-export-job]').textContent(), '', 'numeric ID is not admitted')
   await page.locator('[data-cut-action="record-export"]').click()

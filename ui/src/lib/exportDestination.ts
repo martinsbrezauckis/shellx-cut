@@ -105,7 +105,7 @@ async function readOutputFolder(): Promise<OutputFolderStatus | null> {
     if (revision !== statusRevision) return engineStatus
     const legacy = getStoredOutputDir()
     if (claimOutputDirMigration() && !status.dir && legacy) {
-      const carried = await runUserVerb('project.set_output_dir', { dir: legacy }, 'Could not keep the previous export folder')
+      const carried = await runUserVerb('project.set_output_dir', { dir: legacy, only_if_empty: true }, 'Could not keep the previous export folder')
       if (revision !== statusRevision) return engineStatus
       if (carried?.ok) status = outputFolderStatusFrom(carried.result) ?? status
     }

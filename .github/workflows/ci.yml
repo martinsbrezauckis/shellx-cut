@@ -105,7 +105,7 @@ jobs:
         continue-on-error: true
         run: cargo build --manifest-path app/Cargo.toml -p server --bin cutd
 
-      - name: Published test inventory and tests
+      - name: Published test inventory, Node and Python tests
         id: published_test_inventory
         continue-on-error: true
         env:

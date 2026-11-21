@@ -4405,7 +4405,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "mutation_class": "read",
     "side_effects": {
       "filesystem": true,
-      "process": false,
+      "process": true,
       "network": false,
       "ui": true
     },

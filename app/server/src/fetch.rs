@@ -510,11 +510,19 @@ fn download_hashing_with_limit(
     let mut written: u64 = 0;
     let mut last_report = 0.0f32;
     loop {
-        let n = reader.read(&mut buf).map_err(|e| FetchAttemptError {
-            error: net_err("read download stream", url, e),
-            transient: true,
-            status: None,
-        })?;
+        // Read at most one byte beyond the allowance before refusing a stream
+        // with no trustworthy Content-Length.
+        let next = limit
+            .saturating_sub(written)
+            .saturating_add(1)
+            .min(buf.len() as u64) as usize;
+        let n = reader
+            .read(&mut buf[..next])
+            .map_err(|e| FetchAttemptError {
+                error: net_err("read download stream", url, e),
+                transient: true,
+                status: None,
+            })?;
         if n == 0 {
             break;
         }

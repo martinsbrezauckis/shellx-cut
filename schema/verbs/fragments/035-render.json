@@ -5,7 +5,7 @@
     {
       "name": "render.preview",
       "domain": "render",
-      "description": "Fast low-res render of a window starting at at_ms (default 5000ms) for quick agent/human review, OR (draft:true) the incremental whole-timeline draft preview: the export's frames at draft size (the project's aspect inside 960x540) — every output frame shows the same source frame as render.final at the same index, with the same length, speed, reversed clips, captions and overlays. It is made of pieces cut at the base track's clip boundaries; after an edit only the pieces whose content changed are remade and the rest are reused (a piece moved by a whole number of frames is reused). DERIVED state (cache under proxies/preview-cache/), never an op, never a receipt input — receipts stay render.final.",
+      "description": "Fast low-res render of a window starting at the required at_ms, with duration_ms defaulting to 5000 ms for quick agent/human review, OR (draft:true) the incremental whole-timeline draft preview: the export's frames at draft size (the project's aspect inside 960x540) — every output frame shows the same source frame as render.final at the same index, with the same length, speed, reversed clips, captions and overlays. It is made of pieces cut at the base track's clip boundaries; after an edit only the pieces whose content changed are remade and the rest are reused (a piece moved by a whole number of frames is reused). DERIVED state (cache under proxies/preview-cache/), never an op, never a receipt input — receipts stay render.final.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -156,7 +156,7 @@
     {
       "name": "render.storyboard",
       "domain": "render",
-      "description": "Contact sheet: `count` evenly-spaced frames of the composed timeline tiled into a grid image — the agent/judge's see-the-whole-edit-at-a-glance view (one image instead of N frame fetches). Fast proxy-scrub frames by default; compose:true forces exact composed frames (captions/overlays). Single-frame extraction failures are replaced with black placeholder tiles and reported in frame_warnings. Written to the engine-owned frames/ dir.",
+      "description": "Timeline contact sheet (verb `render.storyboard`): `count` evenly-spaced frames of the composed timeline tiled into a grid image — the agent/judge's see-the-whole-edit-at-a-glance view (one image instead of N frame fetches). Fast proxy-scrub frames by default; compose:true forces exact composed frames (captions/overlays). Single-frame extraction failures are replaced with black placeholder tiles and reported in frame_warnings. Written to the engine-owned frames/ dir.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -315,7 +315,7 @@
     {
       "name": "render.qc",
       "domain": "render",
-      "description": "DIRECTOR QC pass (job): REVIEW a reframed OUTPUT and decide what to fix. Resolves the actual render.reframe output from receipts/<reframe_id>.json output_path, with legacy fallback to exports/<reframe_id>.mp4. Samples one keyframe per scene of the finished reframe and tiles them into a review sheet WITH cheap CV composition hints per scene — subject_present, face_present, face centering (off_center = |cx-0.5|), headroom (face-top y; a head clipped at the top), and a `needs_review` flag. A foundation model reads the qc_sheet image and for any bad scene re-issue render.reframe{aspect, direction:{<scene>:{cx}|{mode:'widen'}}} with a correction. Closes the director loop: direct -> reframe -> qc -> reframe.",
+      "description": "Review reframed output quality (verb `render.qc`, job): inspect the result and decide what to fix. Resolves the actual render.reframe output from receipts/<reframe_id>.json output_path, with legacy fallback to exports/<reframe_id>.mp4. Samples one keyframe per scene of the finished reframe and tiles them into a review sheet WITH cheap CV composition hints per scene — subject_present, face_present, face centering (off_center = |cx-0.5|), headroom (face-top y; a head clipped at the top), and a `needs_review` flag. A foundation model reads the qc_sheet image and for any bad scene re-issue render.reframe{aspect, direction:{<scene>:{cx}|{mode:'widen'}}} with a correction. Closes the director loop: direct -> reframe -> qc -> reframe.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -337,7 +337,7 @@
               "general"
             ],
             "default": "talking_head",
-            "description": "Candidate class set for the QC detector (same set as render.reframe's preset)."
+            "description": "Subject class for quality checks on the reframed output (same set as render.reframe's preset)."
           },
           "rationale": {
             "type": "string",
@@ -435,7 +435,7 @@
               "silent_screen_demo"
             ],
             "default": "talking_head",
-            "description": "Footage profile for the auto-run check battery (profile regression coverage): talking_head = the full strict battery (without an explicit profile, lufs applies only when normalize_loudness is set and silence_at_edges does not apply; an explicit profile turns both on, talking_head at -16 LUFS); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. NOTE: the uniform_border check `uniform_border` is NOT waived by any profile — a baked-in margin is a defect on screen demos too. The receipt's footage_profile entry records the active profile + auto-detect proposal."
+            "description": "Content type for quality checks (argument `profile`) for the auto-run check battery (profile regression coverage): talking_head = the full strict battery (without an explicit profile, lufs applies only when normalize_loudness is set and silence_at_edges does not apply; an explicit profile turns both on, talking_head at -16 LUFS); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. NOTE: the uniform_border check `uniform_border` is NOT waived by any profile — a baked-in margin is a defect on screen demos too. The receipt's footage_profile entry records the active profile + auto-detect proposal."
           },
           "fit": {
             "type": "string",

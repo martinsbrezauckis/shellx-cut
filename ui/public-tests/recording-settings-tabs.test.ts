@@ -9,7 +9,7 @@ const html = renderToStaticMarkup(createElement(RecordingSettingsTabs, {
     camera: 'Camera fields',
     background: 'Background fields',
     timer: 'Timer fields',
-    timing: 'Capture timing fields',
+    timing: 'Start, length & pause fields',
     quality: 'Quality fields',
   },
 }))
@@ -52,6 +52,6 @@ const liveTimerHtml = renderToStaticMarkup(createElement(RecordingVideoTimerCont
   ...timerBase, timer: { kind: 'elapsed' }, recording: true, liveSupported: false,
 }))
 assert.match(liveTimerHtml, /data-cut-rec-video-timer-action="pause"[^>]*disabled/)
-assert.match(liveTimerHtml, /Live video timer controls are unavailable/)
+assert.match(liveTimerHtml, /Live timer controls are unavailable for this recording\./)
 
 console.log('PASS Recording settings tabs and dedicated video timer contract')

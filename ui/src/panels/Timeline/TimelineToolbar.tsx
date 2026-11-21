@@ -214,7 +214,7 @@ export default function TimelineToolbar({
           title="Adjust contrast, brightness, saturation, white balance, and looks"
           onClick={() => document.dispatchEvent(new CustomEvent('cut:open-grade'))}
         >
-          Grade
+          Color
         </button>
         <button
           type="button"
@@ -224,7 +224,7 @@ export default function TimelineToolbar({
           title="Position, scale, crop, and reorder the selected overlay"
           onClick={() => document.dispatchEvent(new CustomEvent('cut:open-layer'))}
         >
-          Layer
+          Transform
         </button>
         <button
           type="button"
@@ -234,7 +234,7 @@ export default function TimelineToolbar({
           title="Cut the subject out of the selected clip without a green screen"
           onClick={() => document.dispatchEvent(new CustomEvent('cut:open-matte'))}
         >
-          Matte
+          Remove background
         </button>
         <button
           type="button"

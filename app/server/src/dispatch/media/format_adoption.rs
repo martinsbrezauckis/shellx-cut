@@ -27,6 +27,18 @@ pub(super) async fn adopt_first_clip_format(
     let Some(store) = guard.as_mut() else {
         return (Value::Null, None);
     };
+    let format_chosen = match store.log.read_all() {
+        Ok(ops) => ops.iter().any(|op| {
+            op.verb == "project.format"
+                || (op.verb == "project.create" && op.args["format_explicit"] == true)
+        }),
+        Err(error) => {
+            return (
+                json!({"adopted": false, "reason": "The project format history could not be checked, so its size was kept."}),
+                Some(error.message),
+            )
+        }
+    };
     let st = &store.project.settings;
     let is_default = st.width == 1920
         && st.height == 1080
@@ -37,7 +49,7 @@ pub(super) async fn adopt_first_clip_format(
     let target_fps = rate.as_ref().map(|(f, _)| *f).unwrap_or(st.fps);
     let differs = ew != st.width || eh != st.height || (target_fps - st.fps).abs() >= 0.01;
     let rate_note = rate.as_ref().and_then(|(_, note)| note.clone());
-    if !is_default {
+    if format_chosen || !is_default {
         return (
             json!({
                 "adopted": false,

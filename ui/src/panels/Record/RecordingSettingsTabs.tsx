@@ -6,7 +6,7 @@ const SECTIONS: readonly { id: RecordingSettingsSection; label: string }[] = [
   { id: 'camera', label: 'Camera' },
   { id: 'background', label: 'Background' },
   { id: 'timer', label: 'Video timer' },
-  { id: 'timing', label: 'Capture timing' },
+  { id: 'timing', label: 'Start, length & pause' },
   { id: 'quality', label: 'Video quality' },
 ]
 

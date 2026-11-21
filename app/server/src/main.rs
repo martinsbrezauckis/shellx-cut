@@ -23,6 +23,8 @@ cut_core::isolate_test_process!();
 
 mod jobs;
 mod library;
+#[cfg(target_os = "linux")]
+mod linux_microphone_probe;
 mod matte;
 mod mcp;
 mod media_tool_gate;

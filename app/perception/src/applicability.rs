@@ -34,7 +34,7 @@
 //! default; no warning without a target), a plain export is not measured
 //! against a loudness target nobody set, nor against an edge-silence budget.
 //! - `lufs`: a loudness target is set (`normalize_loudness`, then measured
-//!   against THAT target) or a footage profile is chosen explicitly (its
+//!   against THAT target) or a content type for quality checks is chosen explicitly (its
 //!   -16 LUFS spoken-content target), e.g. by `autopilot.run`.
 //! - `silence_at_edges`: a footage profile is chosen explicitly.
 
@@ -209,9 +209,9 @@ pub struct Requested {
 }
 
 const LOUDNESS_APPLIES: &str =
-    "a loudness target is set for this export (normalize_loudness) or a footage profile is chosen";
+    "a loudness target is set for this export (normalize_loudness) or a content type for quality checks is chosen";
 const EDGES_APPLY: &str =
-    "a footage profile is chosen for this export (profile), e.g. by autopilot.run";
+    "a content type for quality checks is chosen for this export (profile), e.g. by autopilot.run";
 
 /// Scope the delivery standards to what was asked (see the module note).
 /// A check asked for by name (a loudness target, an explicit profile) is
@@ -255,7 +255,7 @@ pub fn apply_request(
                 *check = not_applicable_check(
                     cn::SILENCE_AT_EDGES,
                     EDGES_APPLY,
-                    "No footage profile was chosen, so silence at the start or end is not judged.",
+                    "No content type for quality checks was chosen, so silence at the start or end is not judged.",
                 )
             }
             _ => {}

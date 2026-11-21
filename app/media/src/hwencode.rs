@@ -814,7 +814,7 @@ impl FfmpegCaps {
 /// The version token from `ffmpeg -version` (3rd whitespace field of line 1), or
 /// None when the binary cannot be spawned / exits non-zero. Quiet. Cached per
 /// selected program and tools generation, just like the per-build filter probe.
-pub(crate) fn ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
+pub fn ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
     use std::collections::HashMap;
     use std::sync::Mutex;
     type Versions = HashMap<std::ffi::OsString, Option<String>>;

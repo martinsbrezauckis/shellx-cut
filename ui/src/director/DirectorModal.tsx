@@ -120,7 +120,7 @@ export default function DirectorModal({ aspect, preset, onClose }: DirectorModal
     try {
       const r = await callVerb('render.qc', { reframe_id: reframeId, preset })
       const jobId = (r.result as { job_id?: string } | undefined)?.job_id
-      if (!jobId) throw new Error(r.error?.message ?? r.error?.code ?? 'qc rejected')
+      if (!jobId) throw new Error(r.error?.message ?? r.error?.code ?? 'Quality review was rejected')
       const out = (await pollJob(jobId, (p) => setProgress(p))) as QcResult
       setQc(out)
       setPhase('done')
@@ -214,9 +214,9 @@ export default function DirectorModal({ aspect, preset, onClose }: DirectorModal
             {qc && (
               <div className="dir-qc" data-cut-director-qc>
                 <div className={`dir-qc-verdict ${qc.review_count > 0 ? 'dir-qc-verdict--flag' : 'dir-qc-verdict--ok'}`}>
-                  QC: {qc.review_count > 0 ? `${qc.review_count}/${qc.scene_count} scene(s) flagged` : `all ${qc.scene_count} scene(s) look good`}
+                  Quality checks: {qc.review_count > 0 ? `${qc.review_count}/${qc.scene_count} scene(s) flagged` : `all ${qc.scene_count} scene(s) look good`}
                 </div>
-                {qc.qc_sheet_url && <img className="dir-sheet" data-cut-director-qc-sheet src={engineMediaUrl(qc.qc_sheet_url)} alt="QC review sheet" />}
+                {qc.qc_sheet_url && <img className="dir-sheet" data-cut-director-qc-sheet src={engineMediaUrl(qc.qc_sheet_url)} alt="Quality check review sheet" />}
                 {qc.review_count > 0 && (
                   <ul className="dir-qc-list">
                     {qc.scenes.filter((s) => s.needs_review).map((s) => (
@@ -227,7 +227,7 @@ export default function DirectorModal({ aspect, preset, onClose }: DirectorModal
               </div>
             )}
             <div className="dir-actions">
-              {!qc && <button className="dir-btn" data-cut-director-review onClick={() => void review()}>Review (QC)</button>}
+              {!qc && <button className="dir-btn" data-cut-director-review onClick={() => void review()}>Review quality checks</button>}
               {qc && qc.review_count > 0 && (
                 <button className="dir-btn" data-cut-director-repick onClick={() => setPhase('pick')}>Re-pick & fix</button>
               )}

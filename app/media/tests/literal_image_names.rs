@@ -107,7 +107,11 @@ fn unreadable_literal_images_do_not_decode_numbered_neighbours() {
 fn failed_literal_format_probe_refuses_patterned_inputs() {
     let dir = private_dir();
     make_unreadable_patterned_fixtures(dir.path());
-    assert_probe_failure_refused(dir.path(), &dir.path().join("missing-ffprobe"));
+    assert_probe_failure_refused(
+        dir.path(),
+        &dir.path().join("missing-ffprobe"),
+        "tool_missing",
+    );
 }
 
 fn make_unreadable_patterned_fixtures(dir: &Path) {
@@ -128,7 +132,7 @@ fn make_unreadable_patterned_fixtures(dir: &Path) {
     }
 }
 
-fn assert_probe_failure_refused(dir: &Path, fake_probe: &Path) {
+fn assert_probe_failure_refused(dir: &Path, fake_probe: &Path, expected_code: &str) {
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -137,6 +141,7 @@ fn assert_probe_failure_refused(dir: &Path, fake_probe: &Path) {
         ])
         .env("CUT_LITERAL_PROBE_CHILD", dir)
         .env("SHELLX_CUT_FFPROBE", fake_probe)
+        .env("CUT_LITERAL_PROBE_ERROR", expected_code)
         .output()
         .unwrap();
     assert!(
@@ -157,7 +162,7 @@ fn empty_format_answer_refuses_patterned_inputs() {
     let fake_probe = dir.path().join("empty-ffprobe");
     std::fs::write(&fake_probe, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&fake_probe, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_probe_failure_refused(dir.path(), &fake_probe);
+    assert_probe_failure_refused(dir.path(), &fake_probe, "unreadable_media");
 }
 
 #[cfg(unix)]
@@ -170,7 +175,7 @@ fn failed_format_answer_with_image2_text_still_refuses() {
     let fake_probe = dir.path().join("failed-ffprobe");
     std::fs::write(&fake_probe, "#!/bin/sh\nprintf 'image2\\n'\nexit 1\n").unwrap();
     std::fs::set_permissions(&fake_probe, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_probe_failure_refused(dir.path(), &fake_probe);
+    assert_probe_failure_refused(dir.path(), &fake_probe, "unreadable_media");
 }
 
 #[cfg(unix)]
@@ -187,7 +192,7 @@ fn oversized_format_answer_refuses_patterned_inputs() {
     )
     .unwrap();
     std::fs::set_permissions(&fake_probe, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_probe_failure_refused(dir.path(), &fake_probe);
+    assert_probe_failure_refused(dir.path(), &fake_probe, "unreadable_media");
 }
 
 #[test]
@@ -216,7 +221,12 @@ fn failed_literal_format_probe_child() {
             "-".into(),
         ])
         .expect_err("an unknown demuxer must never read a numbered neighbour");
-        assert_eq!(error.code, "unreadable_media", "{name}: {error}");
+        let expected = std::env::var("CUT_LITERAL_PROBE_ERROR").unwrap();
+        assert_eq!(error.code, expected, "{name}: {error}");
+        if expected == "tool_missing" {
+            assert_eq!(error.message, "ffprobe is not installed");
+            assert_eq!(error.requirement.as_ref().unwrap().id, "ffprobe");
+        }
         assert!(error.cause.contains("ffprobe"), "{name}: {error}");
         assert!(error.suggested_action.is_some(), "{name}: {error}");
     }

@@ -288,6 +288,7 @@
   padding: 8px 14px;
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
+.cd-btn:focus-visible { outline: 2px solid var(--cut); outline-offset: 2px; }
 .cd-btn--primary { background: var(--accent); color: var(--accent-ink); }
 .cd-btn--primary:hover { background: var(--accent-hover); }
 .cd-btn--primary:disabled { opacity: 0.4; cursor: not-allowed; background: var(--surface-3); color: var(--ink-3); }
@@ -297,11 +298,13 @@
   border: 1px solid var(--hairline-2);
   padding: 5px 10px;
 }
+.cd-btn--ghost:disabled { opacity: 0.4; cursor: not-allowed; }
 .cd-btn--ghost:hover { background: var(--surface-3); color: var(--ink); }
 /* Armed paid-action confirmation in the Generate panel — red so the user sees the
    second click actually spends (runs their generation CLI). */
 .cd-btn--danger { background: var(--err); color: #0a0a0a; font-weight: 600; }
-.cd-btn--danger:hover { background: color-mix(in srgb, var(--err) 85%, #fff); }
+.cd-btn--danger:not(:disabled) { color: var(--accent-ink); }
+.cd-btn--danger:hover { background: color-mix(in srgb, var(--err) 90%, #fff); }
 .cd-btn--danger:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .cd-err {

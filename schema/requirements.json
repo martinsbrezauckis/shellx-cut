@@ -182,7 +182,7 @@
         "args": {
           "tool": "vc-runtime"
         },
-        "person": "Microsoft's own installer from Microsoft (aka.ms/vc14), checked for Microsoft's signature; Windows asks a person for administrator permission, which an agent cannot give; or install it from https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"
+        "person": "Microsoft's own installer from Microsoft (aka.ms/vc14), checked for Microsoft's signature; Windows asks for administrator permission; or install it from https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"
       }
     },
     {
@@ -218,7 +218,7 @@
           "model": "matanyone",
           "accept_noncommercial": true
         },
-        "person": "the premium model is licensed for non-commercial use only (NTU S-Lab License 1.0): tell the person and ask before installing; accept_noncommercial:true states their yes. It needs an NVIDIA GPU; about 3 GB"
+        "person": "the premium model is licensed for non-commercial use only (NTU S-Lab License 1.0): tell the person and ask before installing; accept_noncommercial:true states their yes. It needs an NVIDIA GPU"
       }
     },
     {
@@ -358,7 +358,7 @@
       "get": {
         "settings": "transcript",
         "verb": "media.transcribe",
-        "person": "a transcript is made after a clip is imported while Captions and transcription is installed. For a clip imported before that, a person can run a recipe that starts with a transcript (Recipes > Add captions, which also adds captions); there is no separate Transcribe button"
+        "person": "a transcript is made after a clip is imported while Captions and transcription is installed. A person can select a clip and use Transcript Tools > Transcribe clip or Transcribe again. Repeating transcription replaces the previous transcript after confirmation in the app."
       }
     },
     {
@@ -940,7 +940,7 @@
     },
     {
       "id": "preview",
-      "name": "Preview frames, comparisons, storyboards and scopes",
+      "name": "Preview frames, comparisons, timeline contact sheets and scopes",
       "verbs": [
         "render.frame",
         "render.preview",
@@ -1182,7 +1182,7 @@
       "optional": [
         {
           "id": "microphone_permission",
-          "effect": "the recording has no microphone sound"
+          "effect": "on Windows and macOS, a requested microphone take is refused when access is blocked or no microphone is present; turn off microphone capture to record without it"
         },
         {
           "id": "system_audio",

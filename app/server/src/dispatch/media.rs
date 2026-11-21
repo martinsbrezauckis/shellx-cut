@@ -1635,6 +1635,20 @@ pub(super) fn spawn_import_chain(
 ) -> String {
     let job = state.jobs.create("import_chain");
     let job_id = job.job_id.clone();
+    if let Some(error) = job.persistence_error {
+        state.jobs.fail(
+            &job_id,
+            CutError::new(
+                error_codes::IO,
+                "Media analysis did not start",
+                format!("The analysis job could not be saved: {error}"),
+            )
+            .with_suggested_action(
+                "Free space or restore write access to the project folder, then reopen the project to retry analysis.",
+            ),
+        );
+        return job_id;
+    }
     let jid = job_id.clone();
     let jobs = state.jobs.clone();
     // Take this import's place in line NOW, in the order imports were requested:
@@ -2083,6 +2097,10 @@ pub(crate) fn spawn_plain_import_chain(
 const PROXY_MAX_RUNNING: usize = 1;
 pub(crate) const ANALYSIS_MAX_RUNNING: usize = 1;
 
+#[cfg(all(test, unix))]
+#[path = "media/proxy_missing_tests.rs"]
+mod proxy_missing_tests;
+
 fn spawn_proxy_chain(
     state: AppState,
     asset_id: String,
@@ -2163,6 +2181,10 @@ fn spawn_proxy_chain(
                         false
                     }
                 }
+            }
+            Err(e) if e.code == cut_core::error_codes::TOOL_MISSING => {
+                state.jobs.fail(&jid, e);
+                return;
             }
             Err(e) => {
                 warnings.push(format!("proxy: {} ({})", e.message, e.cause));

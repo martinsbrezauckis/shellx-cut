@@ -25,7 +25,7 @@
 import { noTranscriptKind, noTranscriptSentence, transcriptActionFailure, transcriptEmptyState } from '../../lib/noTranscript'
 import { useTopbarJobs } from '../../topbar/useTopbarJobs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { callVerb, type OpRecord, type Project, type Transcript as TranscriptData } from '../../lib/client'
+import { callVerb, type JobRecord, type OpRecord, type Project, type Transcript as TranscriptData } from '../../lib/client'
 import { events } from '../../lib/events'
 import { fetchDoctor, missingVcRuntime, setupPerception, type DoctorCard } from '../../lib/doctor'
 import { openVcRuntimeSettings } from '../../lib/videoToolsSetup'
@@ -46,6 +46,8 @@ import { selectedSpeechAsset } from './speechServiceModel'
 import { useSpeechServiceActions } from './useSpeechServiceActions'
 import { useEnvironmentSetupJob } from '../Environment/useEnvironmentSetupJob'
 import { useTranscriptSources } from './useTranscriptSources'
+import { planTranscription } from './transcribeAgain'
+import { jobFailureText } from '../../lib/jobFailureText'
 import './transcript.css'
 
 /** Typed props — contract between App.tsx and the transcript panel. */
@@ -82,7 +84,7 @@ const aggrFromInput = (value: string): '' | Aggressiveness =>
 export default function Transcript({ project, ops, playheadMs, selectedClipId, transcripts, onCutWords, onRestore, onSeek, onProjectChanged }: TranscriptProps) {
   // --- transcripts: prop wins; panel self-loads the rest via transcript.get --
   const projectKey = project ? project.project_identity?.origin_path_sha256 || `name:${project.name}` : null
-  const { loaded, loadFailures, retrySources } = useTranscriptSources(project, projectKey, transcripts)
+  const { loaded, loadFailures, retrySources, refreshSource } = useTranscriptSources(project, projectKey, transcripts)
   const [readRevision, retryReads] = useState(0)
   // Hold a successful ignore response until the authoritative App snapshot
   // catches up. A concurrent op_applied refresh can briefly deliver the
@@ -98,6 +100,11 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   const [aggr, setAggr] = useState<'' | Aggressiveness>('')
   const [passBusy, setPassBusy] = useState<'' | 'silence' | 'fillers' | 'captions' | 'retakes' | 'chapters'>('')
   const [passNote, setPassNote] = useState('')
+  const [transcribeRun, setTranscribeRun] = useState<{ asset: string; jobId: string; key: string | null } | null>(null)
+  const onChangedRef = useRef(onProjectChanged)
+  onChangedRef.current = onProjectChanged
+  const projectKeyRef = useRef(projectKey)
+  projectKeyRef.current = projectKey
   /** transcript.chapters returns SOURCE starts. Current occurrence resolution
    * stays live in ChapterNavigation; this state retains no translated time. */
   const [chapterResult, setChapterResult] = useState<{ asset: string; chapters: TranscriptChapter[] } | null>(null)
@@ -169,7 +176,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
       const id = ++request
       try {
         const report = await fetchDoctor(false)
-        if (!report || !Array.isArray(report.cards)) throw new Error('Doctor report unavailable')
+        if (!report || !Array.isArray(report.cards)) throw new Error('Setup check unavailable')
         if (!alive || id !== request) return
         const card: DoctorCard | undefined = report.cards.find((c) => c.id === 'perception')
         setSpeechServices({
@@ -345,6 +352,68 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     activeAsset: active?.asset,
     assetIds,
   }), [active?.asset, assetIds, selectedClipSpeechAsset, sel?.asset])
+  const transcribeAsset = selectedClipSpeechAsset && project?.assets[selectedClipSpeechAsset]
+    ? selectedClipSpeechAsset
+    : speechAsset ?? (Object.keys(project?.assets ?? {}).length === 1 ? Object.keys(project!.assets)[0] : null)
+  const hasTranscript = !!(transcribeAsset && project?.assets[transcribeAsset]?.transcript)
+
+  const startTranscription = useCallback(async () => {
+    const asset = planTranscription(
+      transcribeAsset,
+      hasTranscript,
+      () => window.confirm('Transcribe this clip again? This replaces its current transcript.'),
+    )
+    if (!asset) return
+    setPassNote('Starting transcription…')
+    const response = await runUserVerb('media.transcribe', { asset }, 'Could not start transcription.')
+    if (projectKeyRef.current !== projectKey) return
+    const jobId = response?.result?.job_id
+    if (!response?.ok || typeof jobId !== 'string' || !jobId) {
+      setPassNote('Could not start transcription.')
+      return
+    }
+    setTranscribeRun({ asset, jobId, key: projectKey })
+    setPassNote('Transcribing…')
+  }, [transcribeAsset, hasTranscript, projectKey])
+
+  useEffect(() => { setTranscribeRun(null) }, [projectKey])
+
+  useEffect(() => {
+    if (!transcribeRun || transcribeRun.key !== projectKey) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let readFailures = 0
+    const poll = async () => {
+      try {
+        const response = await callVerb('jobs.status', { job_id: transcribeRun.jobId })
+        if (!active) return
+        if (response.ok) {
+          readFailures = 0
+          const job = response.result as JobRecord
+          if (job.state === 'done') {
+            refreshSource(transcribeRun.asset)
+            setSpeechRefreshRevision((revision) => revision + 1)
+            onChangedRef.current?.()
+            setPassNote('Transcript ready.')
+            setTranscribeRun(null)
+            return
+          }
+          if (job.state === 'failed') {
+            setPassNote(jobFailureText(job, 'Transcription failed.'))
+            setTranscribeRun(null)
+            return
+          }
+        } else readFailures++
+      } catch { readFailures++ }
+      if (!active) return
+      if (readFailures >= 5) {
+        setPassNote('Could not check transcription progress. Refresh the project to see its result.')
+        setTranscribeRun(null)
+      } else timer = setTimeout(() => void poll(), 1200)
+    }
+    void poll()
+    return () => { active = false; if (timer) clearTimeout(timer) }
+  }, [transcribeRun, projectKey, refreshSource])
   const onSpeechProjectChanged = useCallback(() => {
     setSpeechRefreshRevision((revision) => revision + 1)
     onProjectChanged?.()
@@ -682,7 +751,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setPassNote('')
     const r = await dispatchVerb('transcript.remove_silences', { aggressiveness: aggr })
     setPassBusy('')
-    setPassNote(r.ok ? `silence pass: ${r.op_ids?.length ?? 0} cuts` : `silence pass failed: ${r.error?.message ?? 'error'}`)
+    setPassNote(r.ok ? `Remove pauses: ${r.op_ids?.length ?? 0} cuts` : `Remove pauses failed: ${r.error?.message ?? 'error'}`)
   }, [aggr])
 
   const runFillerPass = useCallback(async () => {
@@ -690,7 +759,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setPassNote('')
     const r = await dispatchVerb('transcript.remove_fillers', {})
     setPassBusy('')
-    setPassNote(r.ok ? `filler pass: ${r.op_ids?.length ?? 0} cuts` : transcriptActionFailure('filler pass', r.error))
+    setPassNote(r.ok ? `Remove filler words: ${r.op_ids?.length ?? 0} cuts` : transcriptActionFailure('Remove filler words', r.error))
   }, [])
 
   // "Remove retakes" — auto-remove repeated line attempts (retakes / do-overs),
@@ -840,14 +909,14 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             className={`tx__viewbtn${txView === 'timeline' && txScope === 'program' ? ' tx__viewbtn--on' : ''}`}
             data-cut-action="view-program"
             onClick={() => { setTxView('timeline'); setTxScope('program') }}
-            title="The whole output line in timeline order"
+            title="Words in the edited video, in timeline order"
           >Program</button>
           <button
             type="button"
             className={`tx__viewbtn${txView === 'source' ? ' tx__viewbtn--on' : ''}`}
             data-cut-action="view-source"
             onClick={() => setTxView('source')}
-            title="Raw per-source transcript (legacy whole-asset view)"
+            title="Original transcript for each imported file"
           >Source</button>
         </span>
         <span className="tx__header-spacer" />
@@ -861,13 +930,22 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             aria-haspopup="menu"
             aria-expanded={toolsOpen}
             onClick={() => setToolsOpen((v) => !v)}
-            title="Transcript tools — speech services, cleanup passes, captions, reel mode"
+            title="Transcript tools — speakers and dubbing, cleanup, captions, highlight reel mode"
           >
-            {reelMode ? 'Tools · Reel on' : 'Tools'}
+            {reelMode ? 'Tools · Highlight reel on' : 'Tools'}
             <Icon name="chevronDown" size={14} className="tx__tools-caret" />
           </button>
           {toolsOpen && (
             <div className="tx__tools-menu" role="menu" data-cut-tools-menu>
+              <button
+                className="tx__tools-item"
+                role="menuitem"
+                data-cut-action="transcribe-again"
+                disabled={!transcribeAsset || !!transcribeRun}
+                onClick={() => void startTranscription()}
+                title={transcribeAsset ? 'Transcribe the selected clip' : 'Select a clip first'}
+              >{transcribeRun ? 'Transcribing…' : hasTranscript ? 'Transcribe again' : 'Transcribe clip'}</button>
+              <div className="tx__tools-sep" />
               {/* Reel mode toggle: turns the selection toolbar into "Add to reel". */}
               <button
                 className={`tx__tools-item${reelMode ? ' tx__tools-item--on' : ''}`}
@@ -876,13 +954,13 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
                 data-cut-action="reel-mode"
                 disabled={passBusy !== ''}
                 onClick={() => setReelMode((v) => !v)}
-                title="Select moments, add them to the reel, then assemble the highlight"
+                title="Collect moments, then assemble a highlight"
               >
                 <span className="tx__tools-check">{reelMode ? <Icon name="check" size={14} tone="success" /> : null}</span>
-                Reel mode
+                Highlight reel mode
               </button>
               <div className="tx__tools-sep" />
-              {/* Silence pass + its REQUIRED aggressiveness (the required-argument contract). */}
+              {/* Remove pauses + its REQUIRED amount (the required-argument contract). */}
               <div className="tx__tools-row">
                 <button
                   className="tx__tools-item tx__tools-item--inline"
@@ -890,21 +968,21 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
                   data-cut-action="silence-pass"
                   disabled={!aggr || passBusy !== ''}
                   onClick={() => void runSilencePass()}
-                  title="Remove long pauses using the selected intensity"
+                  title="Remove pauses using the selected amount"
                 >
-                  {passBusy === 'silence' ? 'cutting…' : 'Silence pass'}
+                  {passBusy === 'silence' ? 'cutting…' : 'Remove pauses'}
                 </button>
                 <select
                   className="tx__aggr"
                   data-cut-aggressiveness=""
                   value={aggr}
                   onChange={(e) => setAggr(aggrFromInput(e.target.value))}
-                  title="Silence-pass aggressiveness (required)"
+                  title="Pause removal amount: Light removes pauses of at least 1.2 s; Standard 0.7 s; Strong 0.35 s. Each keeps 0.2 s, 0.12 s, or 0.06 s at each end."
                 >
-                  <option value="">aggr…</option>
-                  <option value="calm">calm</option>
-                  <option value="natural">natural</option>
-                  <option value="jumpy">jumpy</option>
+                  <option value="">Choose amount…</option>
+                  <option value="calm">Light</option>
+                  <option value="natural">Standard</option>
+                  <option value="jumpy">Strong</option>
                 </select>
               </div>
               <button
@@ -915,7 +993,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
                 onClick={() => void runFillerPass()}
                 title="Remove filler words such as um and uh"
               >
-                {passBusy === 'fillers' ? 'cutting…' : 'Filler pass'}
+                {passBusy === 'fillers' ? 'cutting…' : 'Remove filler words'}
               </button>
               {/* Remove retakes — auto-cut repeated line attempts, keep the best
                   take (transcript.remove_retakes). */}
@@ -944,7 +1022,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
               </button>
               <div className="tx__tools-sep" />
               <div className="tx__speech-tools" data-cut-transcript-speech-actions>
-                <span className="tx__speech-tools-title">Speech services</span>
+                <span className="tx__speech-tools-title">Speakers and dubbing</span>
                 <button
                   className="tx__tools-item"
                   role="menuitem"

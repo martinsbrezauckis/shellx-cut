@@ -209,7 +209,7 @@ export const RECORDING_SCENE_PRESETS: RecordingScenePreset[] = [
 export const NO_RECORDING_SCENE_CAPABILITY: RecordingSceneCapability = {
   supported: false,
   catalog_revision: null,
-  detail: 'This recorder does not confirm recording-scene support yet.',
+  detail: 'Could not confirm live scene controls. Your selection is a local preview only.',
 }
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -221,6 +221,9 @@ function object(value: unknown): Record<string, unknown> | null {
 /** Parse only an explicit, versioned Doctor capability; unknown data stays unavailable. */
 export function recordingSceneCapability(value: unknown): RecordingSceneCapability {
   const candidate = object(value)
+  if (candidate?.supported === false) {
+    return { ...NO_RECORDING_SCENE_CAPABILITY, detail: 'Live scene controls are unavailable for this recording. Your selection is a local preview only.' }
+  }
   if (!candidate || candidate.supported !== true || !positiveRevision(candidate.catalog_revision)) {
     return NO_RECORDING_SCENE_CAPABILITY
   }

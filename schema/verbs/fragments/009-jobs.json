@@ -74,7 +74,7 @@
     {
       "name": "jobs.cancel",
       "domain": "jobs",
-      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. A stop that arrives after a render has published its finished file cannot undo the export: the job ends done, the receipt is written, and checks the stop cut short are reported as not measured. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
+      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. A stop that arrives after a render has published its finished file cannot undo the export: the job ends done, the receipt is written, and checks the stop cut short are reported as not measured. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. An active recording-save job (screen_record_stop) is refused with conflict because its finalizer must finish. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
       "args": {
         "type": "object",
         "required": [
@@ -151,7 +151,7 @@
     {
       "name": "jobs.before_quit",
       "domain": "jobs",
-      "description": "What closing the desktop app would cancel, and stopping it cleanly. The app asks this before its window closes or it quits. Running work someone asked for (the same rule as a project change: exports, renders, reviews, analysis, downloads; automatic import follow-ups do not count) refuses with jobs_running, naming each job, and nothing is stopped. With cancel_running_jobs:true every running job is cancelled the normal way (an export removes its staging and lock files) and the call returns once they have stopped. There is no verb that closes the app; an agent uses this to see what a quit would cancel.",
+      "description": "What closing the desktop app would cancel, and stopping it cleanly. The app asks this before its window closes or it quits. Running work someone asked for (the same rule as a project change: exports, renders, reviews, analysis, downloads; automatic import follow-ups do not count) refuses with jobs_running, naming each job, and nothing is stopped. An active recording-save job (screen_record_stop) always refuses with jobs_running, even with cancel_running_jobs:true. Otherwise cancel_running_jobs:true cancels running jobs the normal way (an export removes its staging and lock files). If jobs are still stopping after the bounded wait, the call returns job_cancel_pending; repeat it to wait again. There is no verb that closes the app; an agent uses this to see what a quit would cancel.",
       "args": {
         "type": "object",
         "required": [],
@@ -159,7 +159,7 @@
         "properties": {
           "cancel_running_jobs": {
             "type": "boolean",
-            "description": "Cancel every running job and wait until they have stopped (default false: refuse with jobs_running when work someone asked for runs)."
+            "description": "Cancel running jobs and wait for them to stop; job_cancel_pending means repeat the call to wait again. An active recording-save job always refuses with jobs_running. Default false: refuse with jobs_running when work someone asked for runs."
           }
         }
       },

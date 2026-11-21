@@ -1,0 +1,6 @@
+# The selected Windows UI may request the main window's ordinary guarded close.
+# It cannot destroy a window or bypass recording/export questions.
+[[permission]]
+identifier = "allow-request-window-close"
+description = "Allows the active main window to request its normal guarded close."
+commands.allow = ["request_window_close"]

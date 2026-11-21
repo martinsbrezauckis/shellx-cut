@@ -44,7 +44,7 @@
     {
       "name": "project.ops",
       "domain": "project",
-      "description": "Return one bounded cursor page of op-log records from the validated in-memory journal index (incremental sync for review rails).",
+      "description": "Read edit history (verb `project.ops`): return one bounded cursor page of operation records from the validated in-memory journal index (incremental sync for review rails).",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -230,7 +230,7 @@
     {
       "name": "project.diff",
       "domain": "project",
-      "description": "Diff between two log positions (checkpoint id/name, op id, or 'now' = the log head): the ops in between plus a computed summary (clips added/removed/moved, duration delta, per-track ranges touched). Canonical pre-render review: {from: last_checkpoint, to: 'now'}.",
+      "description": "Compare edits (verb `project.diff`): compare two log positions (checkpoint id/name, op id, or 'now' = the log head): the ops in between plus a computed summary (clips added/removed/moved, duration delta, per-track ranges touched). Canonical pre-render review: {from: last_checkpoint, to: 'now'}.",
       "args": {
         "type": "object",
         "required": [
@@ -344,7 +344,7 @@
     {
       "name": "project.format",
       "domain": "project",
-      "description": "Set the timeline composition FORMAT — canvas resolution (width×height) and frame timing. The first imported video adopts these automatically on a new untouched project. This is not an export-quality picker: delivery aspect, output size, codec, and bitrate can be chosen per render/export without mutating the project. At least one of width/height/fps is required; the rest are left unchanged. Changing fps deterministically regrids existing frame-aware speed ramps to the new output frame/sample grid and reapplies their safe per-frame segment cap. A temporary lower FPS reduces only the effective filtergraph detail; the retained bounded request is restored if a later format permits it. Historic ramps recorded before frame-aware timing retain their millisecond behavior. The format snapshot is logged for replay, so the same regrid order survives reopen. UI: Render > Timeline, with 2160p/1080p/720p/480p and 24/25/30/50/60 fps presets.",
+      "description": "Set the timeline composition FORMAT — canvas resolution (width×height) and frame timing. The first imported video adopts these automatically on a new untouched project. This is not an export-quality picker: delivery aspect, output size, codec, and bitrate can be chosen per render/export without mutating the project. At least one of width/height/fps is required; the rest are left unchanged. Changing fps deterministically regrids existing frame-aware speed ramps to the new output frame/sample grid and reapplies their safe per-frame segment cap. A temporary lower FPS reduces only the effective filtergraph detail; the retained bounded request is restored if a later format permits it. Historic ramps recorded before frame-aware timing retain their millisecond behavior. The format snapshot is logged for replay, so the same regrid order survives reopen. UI: Render > Advanced · timeline format, with 2160p/1080p/720p/480p and 24/25/30/50/60 fps presets.",
       "args": {
         "type": "object",
         "additionalProperties": false,

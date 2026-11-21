@@ -76,32 +76,32 @@ fn publish_package(
             fs::remove_dir(package_dir.join(dir))?;
         }
 
-        progress(0.88, "verifying portable package manifest".into());
+        progress(0.88, "Checking files for the project copy".into());
         let manifest = package_manifest(&prepared, &package_dir)?;
-        progress(0.89, "prepared portable package manifest".into());
+        progress(0.89, "Prepared project copy checks".into());
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         let manifest_sha256 = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
         write_new_synced(&package_dir.join("package.manifest.json"), &manifest_bytes)?;
-        progress(0.90, "wrote portable package manifest".into());
+        progress(0.90, "Saved project copy checks".into());
         verify_manifest_members(&package_dir, &manifest, cancel)?;
-        progress(0.92, "verified portable package manifest".into());
+        progress(0.92, "Checked project copy files".into());
         sync_dir(&package_dir)?;
         sync_dir(&stage.path)?;
         progress(0.94, "synced portable package stage".into());
         if cancel.is_cancelled() {
             return Err(cancelled());
         }
-        progress(0.96, "publishing portable package".into());
+        progress(0.96, "Saving the project copy".into());
         before_publish(&package_dir, &prepared.target)?;
         let mut warnings = Vec::new();
         if let Err(error) = sync_dir(&prepared.destination) {
             warnings.push(format!(
-                "published destination could not be directory-synced: {error}"
+                "Saved project copy folder could not be synced: {error}"
             ));
         }
         if let Err(error) = fs::remove_dir(&stage.path) {
             warnings.push(format!(
-                "published package left private stage directory behind: {error}"
+                "Saved project copy left a temporary folder behind: {error}"
             ));
         }
         Ok(PublishedPackage {
@@ -132,8 +132,8 @@ fn source_revision_then_publish(
     let store = guard.as_ref().ok_or_else(|| {
         CutError::new(
             error_codes::CONFLICT,
-            "portable package source project closed before publication",
-            "the private stage was not published",
+            "The source project closed before its copy was saved",
+            "The project copy was not saved",
         )
     })?;
     let actual = store.log.current_revision()?;
@@ -147,8 +147,8 @@ fn source_revision_then_publish(
     } else {
         Err(CutError::new(
             error_codes::CONFLICT,
-            "portable package source changed before publication",
-            "the final destination was not published; run project.package_plan again",
+            "The source project changed before its copy was saved",
+            "The project copy was not saved; preview it again with project.package_plan",
         ))
     }
 }

@@ -134,45 +134,31 @@ async fn screen_only_start_keeps_its_existing_result_with_a_blocked_microphone()
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn empty_native_microphone_inventory_refuses_before_capture_setup() {
+#[tokio::test]
+async fn absent_linux_inventory_refuses_before_capture_setup() {
+    let _lock = super::super::capture_test_lock().lock().await;
     let root = tempfile::tempdir().unwrap();
-    if std::env::var_os("CUT_EMPTY_MICROPHONE_CASE").is_none() {
-        let config = root.path().join("empty-alsa.conf");
-        std::fs::write(&config, "").unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "screen_record::start_handler::microphone_tests::empty_native_microphone_inventory_refuses_before_capture_setup", "--nocapture"])
-            .env("ALSA_CONFIG_PATH", config)
-            .env("CUT_EMPTY_MICROPHONE_CASE", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-            "{} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    }
     record_capture::forbid_native_capture_access();
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let project_dir = root.path().join("no-input.cutproj");
-        let state = AppState::new();
-        let created = crate::dispatch::dispatch(
-            &state,
-            "project.create",
-            json!({"name":"no-input", "dir":project_dir}),
-            cut_core::Actor::system(),
-        )
-        .await;
-        assert!(created.ok, "{:?}", created.error);
-        let error = screen_record_start(&state, json!({"audio":true,"fps":30}))
-            .await
-            .unwrap_err();
-        assert_eq!(error.cause, "no_microphone_device");
-        assert_eq!(error.message, "No microphone was found");
-        assert!(error.suggested_action.unwrap().contains("sound settings"));
-        assert_eq!(record_capture::native_screen_access_attempts(), 0);
-        assert!(!project_dir.join("cache/screen_record").exists());
+    let _readiness = TestReadiness::install(MicrophoneReadiness {
+        no_device: true,
+        ..ready()
     });
+    let project_dir = root.path().join("no-input.cutproj");
+    let state = AppState::new();
+    let created = crate::dispatch::dispatch(
+        &state,
+        "project.create",
+        json!({"name":"no-input", "dir":project_dir}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let error = screen_record_start(&state, json!({"audio":true,"fps":30}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.cause, "no_microphone_device");
+    assert_eq!(error.message, "No microphone was found");
+    assert!(error.suggested_action.unwrap().contains("sound settings"));
+    assert_eq!(record_capture::native_screen_access_attempts(), 0);
+    assert!(!project_dir.join("cache/screen_record").exists());
 }

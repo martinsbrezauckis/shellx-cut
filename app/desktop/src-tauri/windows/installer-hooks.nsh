@@ -97,6 +97,8 @@ shellx_cut_ui_prune_done:
     System::Call 'Kernel32::SetEnvironmentVariable(t "SHELLX_CUT_INSTALL_ROOT", p 0) i .r2'
     System::Call 'Kernel32::SetEnvironmentVariable(t "SHELLX_CUT_DELETE_APP_DATA", p 0) i .r2'
     ; Remove the now-empty folders; RMDir without /r never deletes content.
+    RMDir "$INSTDIR\perception\judge\adapters"
+    RMDir "$INSTDIR\perception\judge"
     RMDir "$INSTDIR\perception"
     RMDir "$INSTDIR\matte"
     RMDir "$INSTDIR"

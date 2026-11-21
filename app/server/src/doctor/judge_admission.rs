@@ -48,7 +48,10 @@ pub(super) fn resolve(
     if !installed {
         return ResolvedAdmission {
             judge_ready: false,
-            availability_reason: Some("CLI not found on the resolved judge path".into()),
+            availability_reason: Some(
+                "This agent cannot review exports right now: the command-line app was not found."
+                    .into(),
+            ),
             status: CardStatus::Missing,
         };
     }
@@ -56,7 +59,7 @@ pub(super) fn resolve(
         return ResolvedAdmission {
             judge_ready: false,
             availability_reason: Some(
-                "render-judge adapter and Python runtime are required before admission can be checked"
+                "This agent cannot review exports right now: install captions to add the review tools, then Re-scan."
                     .into(),
             ),
             status: CardStatus::Degraded,
@@ -66,7 +69,7 @@ pub(super) fn resolve(
         return ResolvedAdmission {
             judge_ready: false,
             availability_reason: Some(
-                "render-judge admission could not be verified; re-scan before running review"
+                "Could not check whether this agent can review exports. Re-scan to try again."
                     .into(),
             ),
             status: CardStatus::Unknown,
@@ -76,7 +79,8 @@ pub(super) fn resolve(
         return ResolvedAdmission {
             judge_ready: false,
             availability_reason: Some(
-                "render-judge adapter did not affirmatively report this provider ready".into(),
+                "Could not confirm that this agent can review exports. Re-scan to try again."
+                    .into(),
             ),
             status: CardStatus::Degraded,
         };
@@ -86,7 +90,7 @@ pub(super) fn resolve(
             judge_ready: false,
             availability_reason: admission.availability_reason.clone().or_else(|| {
                 Some(
-                    "render-judge adapter could not find this provider on the invocation path"
+                    "This agent cannot review exports right now: its configured app was not found. Check the app selection and Re-scan."
                         .into(),
                 )
             }),
@@ -97,7 +101,10 @@ pub(super) fn resolve(
         return ResolvedAdmission {
             judge_ready: false,
             availability_reason: admission.availability_reason.clone().or_else(|| {
-                Some("render-judge adapter did not affirmatively report this provider ready".into())
+                Some(
+                    "Could not confirm that this agent can review exports. Re-scan to try again."
+                        .into(),
+                )
             }),
             status: CardStatus::Degraded,
         };

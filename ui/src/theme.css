@@ -15,11 +15,13 @@
   --surface: #0e0e0d;       /* elevated panel bg */
   --surface-2: #131312;     /* inputs, rows, bars, clip bodies */
   --surface-3: #1a1a18;     /* hover, dropdowns, clip hover */
+  --hairline-1: var(--hairline);
   --hairline: #1f1f1d;      /* panel dividers */
   --hairline-2: #2a2a28;    /* inner dividers, chip borders */
   --border: #353532;        /* focus/hover border */
 
   /* ink — every tier used for text clears WCAG AA through surface-3. */
+  --monitor-ink: #f5f5f4;
   --ink: #f5f5f4;  --ink-2: #a8a8a4;  --ink-3: #92928e;  --ink-4: #858581;
 
   /* status (family semantics — fixed meanings, do not repurpose) */
@@ -65,6 +67,7 @@
   --sans: "Onest Variable","Onest",-apple-system,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
   --mono: "Geist Mono","GeistMono","JetBrains Mono","SF Mono",ui-monospace,monospace;
   --fs-body: 15px; --fs-ui: 14px; --fs-ui-sm: 13px; --fs-ui-xs: 11px;
+  --fs-title-lg: var(--fs-body); --fs-title-sm: var(--fs-body); --fs-ui-lg: var(--fs-body);
   --fs-title-md: 22px; --fs-mono: 12px; --fs-mono-xs: 10px;
   --fs-micro: 9px;         /* micro badges/labels (e.g. `via ui` suffix) */
   --fs-tc: 15px;            /* transport timecode readout */
@@ -72,6 +75,7 @@
   /* rhythm + radius */
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
   --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius-panel: 10px; --radius-control: 7px; --radius-sm: var(--radius-chip);
   --radius-chip: 6px; --radius-button: 8px; --radius-card: 12px;
   --radius-modal: 16px; --radius-pill: 999px; --radius-clip: 4px;
 

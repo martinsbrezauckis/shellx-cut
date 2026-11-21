@@ -290,7 +290,7 @@ for (const preset of AGENT_PROMPT_LIBRARY) {
 assert.match(AGENT_PROMPT_LIBRARY.find((preset) => preset.id === 'label-speakers')?.prompt ?? '', /Transcript Tools > Label speakers/)
 assert.match(AGENT_PROMPT_LIBRARY.find((preset) => preset.id === 'dub-latvian')?.prompt ?? '', /Transcript Tools > Dub audio/)
 assert.match(AGENT_PROMPT_LIBRARY.find((preset) => preset.id === 'vertical-highlights')?.prompt ?? '', /Clips drawer/)
-assert.match(AGENT_PROMPT_LIBRARY.find((preset) => preset.id === 'preflight-review')?.prompt ?? '', /Review > QC/)
+assert.match(AGENT_PROMPT_LIBRARY.find((preset) => preset.id === 'preflight-review')?.prompt ?? '', /Review > Quality checks/)
 
 for (const selector of [
   'data-cut-transcript-speech-actions',

@@ -62,7 +62,7 @@ function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, r
   }
   if (ready === false && startAllowed === true) {
     return {
-      label: 'Source check remains',
+      label: 'Choose a screen to record',
       detail: 'Choose what to share in the system picker when you start.',
       state: 'pending',
     }

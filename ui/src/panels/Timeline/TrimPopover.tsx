@@ -100,9 +100,9 @@ export default function TrimPopover({ x, y, clipId, trackId, clipEndMs, fps, onC
           Trim <code>{clipId}</code>
           <span className="tl-pa__sub">frame steps at {fps || 30} fps — every click is one undoable edit</span>
         </div>
-        {row('slip', 'Slip', 'Shift WHICH source content plays — position and length stay (edit.slip)')}
-        {row('slide', 'Slide', 'Move this clip between its neighbors — they absorb the change (edit.slide_edit)')}
-        {row('roll', 'Roll cut →', 'Move the cut between this clip and the NEXT one (edit.roll)')}
+        {row('slip', 'Slip', 'Shift WHICH source content plays — position and length stay')}
+        {row('slide', 'Slide', 'Move this clip between its neighbors — they absorb the change')}
+        {row('roll', 'Roll cut →', 'Move the cut between this clip and the NEXT one')}
         {note && <div className="tl-pa__note" data-cut-trim-note>{note}</div>}
         <div className="tl-pa__actions">
           <button className="tl-ctx__item" data-cut-trim-close onClick={onClose}>Done</button>

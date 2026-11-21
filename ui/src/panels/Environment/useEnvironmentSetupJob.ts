@@ -20,6 +20,7 @@ const STATUS_READ_ERROR = 'could not read setup progress — re-scan and try aga
 
 export function useEnvironmentSetupJob(onChanged: () => void) {
   const [job, setJob] = useState<JobUi>(IDLE_JOB)
+  const refusedRequirementRef = useRef<string | null>(null)
   const activeJobRef = useRef<string | null>(null)
   const mountedRef = useRef(true)
 
@@ -32,6 +33,11 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
   }, [])
 
   useEffect(() => events.onEvent((event) => {
+    if (event.type === 'doctor_updated' && refusedRequirementRef.current === 'vc_runtime'
+      && event.report.cards.some((card) => card.id === 'vc-runtime' && card.status === 'ok')) {
+      refusedRequirementRef.current = null
+      setJob((current) => current.busy ? current : { ...current, err: null })
+    }
     if (event.type !== 'job_progress') return
     if (!mountedRef.current || event.job_id !== activeJobRef.current) return
     setJob((current) => current.busy
@@ -51,6 +57,7 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
     startError: string,
     maxPolls = SETUP_JOB_MAX_POLLS,
   ) => {
+    refusedRequirementRef.current = null
     setJob({ busy: true, pct: 0, msg: null, err: null })
     let started: SetupStart
     try {
@@ -67,6 +74,7 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
       return
     }
     if ('refused' in started) {
+      refusedRequirementRef.current = started.requirement ?? null
       // The engine refused before starting (e.g. a missing prerequisite): its words.
       setJob({ busy: false, pct: null, msg: null, err: started.refused || startError })
       return

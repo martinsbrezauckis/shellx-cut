@@ -703,7 +703,7 @@ export default function GenerateDrawer({
       </p>
       {provider === 'antigravity' && (
         <p className="cd-note" data-cut-generate-provider-capability="antigravity">
-          Images only. Cut uses Antigravity&apos;s native sandboxed, non-interactive CLI contract; video is not advertised.
+          This provider supports images only.
         </p>
       )}
 

@@ -5,7 +5,7 @@
     {
       "name": "screen_record.pause",
       "domain": "screen_record",
-      "description": "Request an explicit pause of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after the native owner seals the exact screen plus optional microphone/system-audio run and appends the durable Pause transition. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows return unavailable.",
+      "description": "Request an explicit pause of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after the native owner seals the exact screen plus optional microphone/system-audio run and appends the durable Pause transition. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows refuse with code not_found.",
       "args": {
         "type": "object",
         "required": ["capture_id"],
@@ -37,7 +37,7 @@
     {
       "name": "screen_record.resume",
       "domain": "screen_record",
-      "description": "Request an explicit resume of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after native readiness is accepted and the durable Resume transition is appended. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows return unavailable.",
+      "description": "Request an explicit resume of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after native readiness is accepted and the durable Resume transition is appended. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows refuse with code not_found.",
       "args": {
         "type": "object",
         "required": ["capture_id"],

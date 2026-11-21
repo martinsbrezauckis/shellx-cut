@@ -5,7 +5,7 @@
     {
       "name": "debug.screenshot",
       "domain": "debug",
-      "description": "DEBUG (verification primitive): capture a SERVER-SIDE screenshot of the actual primary display (or a chosen `monitor`/`window`) to a PNG, returned inline as base64. Unlike `ui.screenshot` (which relays to the connected WebView and fails with no UI client), this grabs the REAL screen via the in-process OS recorder (ScreenCaptureKit/macOS, WGC/Windows, portal/Linux) — so it works HEADLESS / regardless of UI-client state, the tool for visually verifying the app, dialogs and right-click menus while driving cutd over the debug API. Implemented as a sub-second screen capture whose first frame is extracted to PNG. No project required; no audio, no input capture.",
+      "description": "DEBUG (verification primitive): capture a SERVER-SIDE screenshot of the actual primary display (or a chosen `monitor`/`window`) to a PNG, returned inline as base64. Unlike `ui.screenshot` (which relays to the connected WebView and fails with no UI client), this grabs the REAL screen via the in-process OS recorder (ScreenCaptureKit/macOS, WGC/Windows, portal/Linux) — so it works without a connected UI client but requires a desktop session with a capture backend. Use it to visually verify the app, dialogs and right-click menus while driving cutd over the debug API. Implemented as a sub-second screen capture whose first frame is extracted to PNG. No project required; no audio, no input capture.",
       "args": {
         "type": "object",
         "required": [],

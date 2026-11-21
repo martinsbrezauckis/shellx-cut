@@ -253,7 +253,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
                 <li>Only timeline-referenced media is included.</li>
                 <li>All referenced media is online now; an offline source refuses the copy before it begins.</li>
                 <li>Caches are excluded; original files are never changed.</li>
-                <li>{targetOccupied ? 'That copy name already exists in this folder.' : 'The name is free now; publishing checks again and never replaces a folder.'}</li>
+                <li>{targetOccupied ? 'That copy name already exists in this folder.' : 'The name is free now; Cut checks it again before saving and never replaces an existing folder.'}</li>
               </ul>
             </section>
           )}
@@ -261,7 +261,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
           {phase === 'confirming' && plan && !targetOccupied && (
             <section className="pj-portable-confirm" data-cut-portable-confirm>
               <strong>Ready to create this copy?</strong>
-              <p>Cut will copy {plan.unique_media_count} used media file{plan.unique_media_count === 1 ? '' : 's'}, verify the manifest, then publish {plan.name}.cutproj. Your open project will not change.</p>
+              <p>Cut will copy {plan.unique_media_count} used media file{plan.unique_media_count === 1 ? '' : 's'}, check the used media, then save the new project copy as {plan.name}.cutproj. Your open project will not change.</p>
               <label className="pj-portable-source-review"><input type="checkbox" data-cut-action="portable-copy" data-cut-portable-source-reviewed checked={reviewedSources} onChange={(event) => setReviewedSources(event.target.checked)} /> I reviewed the source files listed above.</label>
             </section>
           )}

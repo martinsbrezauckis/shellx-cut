@@ -499,27 +499,85 @@ const MATANYONE_DEPS: &[&str] = &[
 /// editable install from a local dir skips the wheel build entirely.
 const MATANYONE_SRC_URL: &str =
     "https://github.com/pq-yang/MatAnyone2/archive/e3370127319c63a6dc8a49c69de2d41d90137f91.tar.gz";
+const MATANYONE_SRC_SHA256: &str =
+    "2dc341b915d8cc887e3b889fa9d03f950f6de7c13cee800bee9748d5aa3c7e18";
+const MATANYONE_SRC_ROOT: &str = "MatAnyone2-e3370127319c63a6dc8a49c69de2d41d90137f91";
+const MATANYONE_SRC_MAX_BYTES: &str = "33554432";
 
-/// Fetch + extract the matanyone2 source with the venv's OWN python (stdlib
-/// urllib+tarfile — needs NO system git or tar, so it's portable). argv: url, dest.
-/// Extracts the single `MatAnyone2-<sha>/` top dir to `dest` (cleared first).
-/// (Raw string so Python's indentation survives verbatim.)
+/// Check the pinned source before extraction with the venv's Python stdlib.
 const FETCH_SRC_PY: &str = r#"
-import sys, os, shutil, tempfile, urllib.request, tarfile
-url, dest = sys.argv[1], sys.argv[2]
-with tempfile.TemporaryDirectory() as td:
-    tgz = os.path.join(td, 's.tar.gz')
-    urllib.request.urlretrieve(url, tgz)
-    with tarfile.open(tgz) as t:
-        t.extractall(td, filter='data')
-    tops = [d for d in os.listdir(td) if os.path.isdir(os.path.join(td, d))]
-    top = os.path.join(td, tops[0])
-    if os.path.exists(dest):
+import hashlib, os, shutil, sys, tarfile, tempfile, urllib.request
+url, dest, expected, archive_limit, source_limit, root = sys.argv[1:]
+archive_limit, source_limit = int(archive_limit), int(source_limit)
+
+def reject(reason):
+    raise SystemExit('MatAnyone2 source rejected: ' + reason)
+
+parent = os.path.dirname(os.path.abspath(dest))
+os.makedirs(parent, exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='.matanyone-source-', dir=parent) as td:
+    tgz = os.path.join(td, 'source.tar.gz')
+    size = 0
+    with urllib.request.urlopen(url, timeout=60) as response, open(tgz, 'xb') as output:
+        while chunk := response.read(65536):
+            size += len(chunk)
+            if size > archive_limit:
+                reject('compressed download exceeds the size limit')
+            output.write(chunk)
+
+    records, seen, members = [], set(), []
+    extracted = 0
+    with tarfile.open(tgz, 'r:gz') as archive:
+        for member in archive:
+            if len(members) >= 1000:
+                reject('archive has too many entries')
+            members.append(member)
+            name = member.name.rstrip('/') if member.isdir() else member.name
+            if name == root and member.isdir():
+                relative = ''
+            else:
+                parts = name.split('/')
+                if (len(parts) < 2 or parts[0] != root or
+                        any(part in ('', '.', '..') for part in parts[1:]) or
+                        '\\' in name or ':' in name):
+                    reject('unexpected archive layout: ' + name)
+                relative = '/'.join(parts[1:])
+            if relative.casefold() in seen:
+                reject('duplicate archive path: ' + (relative or root))
+            seen.add(relative.casefold())
+            if member.isdir():
+                continue
+            if not member.isfile():
+                reject('unexpected archive member type: ' + relative)
+            if member.size > source_limit - extracted:
+                reject('extracted source exceeds the size limit')
+            file_hash = hashlib.sha256()
+            actual = 0
+            with archive.extractfile(member) as source:
+                while chunk := source.read(65536):
+                    actual += len(chunk)
+                    if actual > member.size:
+                        reject('archive member exceeds its declared size')
+                    file_hash.update(chunk)
+            if actual != member.size:
+                reject('archive member is incomplete')
+            extracted += actual
+            records.append((relative, file_hash.digest()))
+        tree = hashlib.sha256()
+        for relative, digest in sorted(records):
+            tree.update(relative.encode('utf-8') + b'\0' + digest)
+        if tree.hexdigest() != expected:
+            reject('source SHA-256 mismatch: expected ' + expected + ', got ' + tree.hexdigest())
+        archive.extractall(td, members=members, filter='data')
+    if os.path.lexists(dest):
         shutil.rmtree(dest)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.move(top, dest)
+    shutil.move(os.path.join(td, root), dest)
 print('extracted', dest)
 "#;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "matte_source_archive_tests.rs"]
+mod matte_source_archive_tests;
 
 /// SAM2 (Apache-2.0) — the click-to-pick-subject seed for the premium matte.
 /// Pinned to a validated commit and installed with the perception environment.
@@ -612,6 +670,43 @@ pub fn setup_matanyone(
 
     let vpy = venv_python.to_str().unwrap_or_default();
 
+    let src_dir = crate::matte::matanyone_dir()
+        .map(|d| d.join("src"))
+        .ok_or_else(|| {
+            CutError::new(
+                error_codes::IO,
+                "no matanyone dir",
+                "HOME/LOCALAPPDATA unset",
+            )
+        })?;
+    let src_str = src_dir.to_str().unwrap_or_default();
+    progress(0.21, "verifying MatAnyone2 source");
+    run_streaming(
+        &venv_python,
+        &[
+            "-c",
+            FETCH_SRC_PY,
+            MATANYONE_SRC_URL,
+            src_str,
+            MATANYONE_SRC_SHA256,
+            MATANYONE_SRC_MAX_BYTES,
+            MATANYONE_SRC_MAX_BYTES,
+            MATANYONE_SRC_ROOT,
+        ],
+        "verify matanyone2 source",
+        progress,
+        0.21,
+        0.22,
+    )
+    .map_err(|e| {
+        CutError::new(
+            error_codes::JOB_FAILED,
+            "Premium background removal could not verify its source; nothing was installed",
+            format!("{}: {}", e.message, e.cause),
+        )
+        .with_suggested_action("Try installing premium background removal again")
+    })?;
+
     // ---- 4. platform-selected torch (the big one, ~3 GB on CUDA) ------------
     // macOS must use its platform build from uv's default index. The cu128
     // index is NVIDIA-only, so keeping it for macOS makes the ordinary installer
@@ -643,25 +738,6 @@ pub fn setup_matanyone(
     run_streaming(&uv, &deps_args, "uv pip install deps", progress, 0.56, 0.70)?;
 
     // ---- 6. the matanyone2 package (pinned source → EDITABLE, no wheel build) -
-    let src_dir = crate::matte::matanyone_dir()
-        .map(|d| d.join("src"))
-        .ok_or_else(|| {
-            CutError::new(
-                error_codes::IO,
-                "no matanyone dir",
-                "HOME/LOCALAPPDATA unset",
-            )
-        })?;
-    let src_str = src_dir.to_str().unwrap_or_default();
-    progress(0.71, "fetching MatAnyone2 source");
-    run_streaming(
-        &venv_python,
-        &["-c", FETCH_SRC_PY, MATANYONE_SRC_URL, src_str],
-        "fetch matanyone2 source",
-        progress,
-        0.71,
-        0.76,
-    )?;
     progress(0.77, "installing MatAnyone2");
     run_streaming(
         &uv,
@@ -1373,6 +1449,66 @@ fn io_err(op: &'static str) -> impl Fn(std::io::Error) -> CutError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn source_archive_pin_and_caps() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let mut outcomes = Vec::new();
+        for (body, valid_pin, compressed_cap, source_cap, archive_root) in [
+            ("changed", false, "1048576", "1048576", MATANYONE_SRC_ROOT),
+            ("pinned", true, "1", "1048576", MATANYONE_SRC_ROOT),
+            ("pinned", true, "1048576", "1", MATANYONE_SRC_ROOT),
+            ("pinned", true, "1048576", "1048576", "unexpected-root"),
+            ("pinned", true, "1048576", "1048576", MATANYONE_SRC_ROOT),
+        ] {
+            let archive = dir.path().join(format!("source-{}.tar.gz", outcomes.len()));
+            let dest = dir.path().join(format!("src-{}", outcomes.len()));
+            let built = Command::new("python3").arg("-c")
+                .arg("import io,sys,tarfile; p,root,body=sys.argv[1:]; data=body.encode(); t=tarfile.open(p,'w:gz'); m=tarfile.TarInfo(root+'/hello.txt'); m.size=len(data); t.addfile(m,io.BytesIO(data)); t.close()")
+                .arg(&archive).arg(archive_root).arg(body).output().unwrap();
+            assert!(built.status.success(), "{built:?}");
+            let mut tree = Sha256::new();
+            tree.update(b"hello.txt\0");
+            tree.update(Sha256::digest(body.as_bytes()));
+            let digest = if valid_pin {
+                format!("{:x}", tree.finalize())
+            } else {
+                "0".repeat(64)
+            };
+            let result = Command::new("python3")
+                .arg("-c")
+                .arg(FETCH_SRC_PY)
+                .arg(format!("file://{}", archive.display()))
+                .arg(&dest)
+                .arg(digest)
+                .arg(compressed_cap)
+                .arg(source_cap)
+                .arg(MATANYONE_SRC_ROOT)
+                .output()
+                .unwrap();
+            outcomes.push((result.status.success(), dest.exists()));
+            if result.status.success() {
+                assert_eq!(
+                    std::fs::read(dest.join("hello.txt")).unwrap(),
+                    body.as_bytes()
+                );
+            } else {
+                assert!(String::from_utf8_lossy(&result.stderr).contains("source rejected"));
+            }
+        }
+        assert_eq!(
+            outcomes,
+            [
+                (false, false),
+                (false, false),
+                (false, false),
+                (false, false),
+                (true, true)
+            ]
+        );
+    }
+
     #[test]
     fn model_warm_selection_preserves_ordinary_runtime_choice() {
         use super::onnx_warm_model_id;

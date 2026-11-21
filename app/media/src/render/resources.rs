@@ -180,7 +180,12 @@ pub(crate) fn estimate_memory_for(
     }
     let overlays = crate::render::overlay_track_count(project);
     let window_ms = crate::render::render_window_ms(w, h, overlays);
-    let windows = crate::render::plan_windows(edl, window_ms, project.settings.fps);
+    let windows = crate::render::reverse_memory::split_windows(
+        project,
+        edl,
+        crate::render::plan_windows(edl, window_ms, project.settings.fps),
+        project.settings.fps,
+    );
     let at_once = parallel_windows(window_ms, w, h, overlays, cores) as u64;
     // Each window's ffmpeg gets `-threads <cores / windows at once>` before its
     // first input (`render_command_governed`), so a source without its own

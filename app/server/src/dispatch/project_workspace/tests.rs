@@ -153,3 +153,66 @@ async fn project_open_and_state_reject_oversized_overlay_metadata() {
         "{state_error:?}"
     );
 }
+
+#[tokio::test]
+async fn refused_project_activation_preserves_recent_entries() {
+    for indexed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let previous = ProjectStore::create(root.path(), "previous", None).unwrap();
+        let previous_dir = previous.dir.clone();
+        activate_project_locked(&state, previous).await.unwrap();
+        let target = ProjectStore::create(root.path(), "refused", None).unwrap();
+        let path = target.dir.clone();
+        if indexed {
+            crate::projects_index::note_created("Earlier name", &path.to_string_lossy()).unwrap();
+        }
+        let entry = || {
+            crate::projects_index::load_for_test()
+                .entries
+                .into_iter()
+                // The index stores the plain form of a path; a created project's
+                // directory is canonical, which on Windows carries the `\\?\` prefix.
+                .find(|entry| {
+                    entry.path == crate::projects_index::normalize_path(&path.to_string_lossy())
+                })
+        };
+        let before = entry();
+        std::fs::create_dir_all(path.join("jobs")).unwrap();
+        std::fs::write(
+            path.join("jobs/job_001.json"),
+            serde_json::to_vec(&json!({
+                "job_id": "job_001", "kind": "render", "state": "failed",
+                "progress": 1.0, "created_ts": "old", "updated_ts": "old",
+                "retry": {"eligible": false, "root_job_id": "job_999", "attempt": 1}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        ProjectStore::open(&path).expect("project loads before job-store activation");
+        let error = project_open(&state, json!({"path": path}))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("inconsistent persisted retry lineage"),
+            "{error:?}"
+        );
+        assert_eq!(
+            state.project.read().await.as_ref().unwrap().dir,
+            previous_dir
+        );
+        assert_eq!(
+            entry(),
+            before,
+            "refused open must neither register nor refresh recents"
+        );
+        std::fs::remove_file(path.join("jobs/job_001.json")).unwrap();
+        project_open(&state, json!({"path": path})).await.unwrap();
+        let opened = entry().expect("an accepted open registers the project");
+        assert_eq!(opened.name, "refused");
+        assert_eq!(opened.clip_count, Some(0));
+        assert_eq!(opened.duration_ms, Some(0));
+    }
+}

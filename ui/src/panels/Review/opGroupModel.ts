@@ -40,6 +40,25 @@ export function groupOperations(ops: OpRecord[]): OperationGroup[] {
   return groups
 }
 
+const editActionNames: Record<string, string> = {
+  'edit.split': 'Split clip', 'edit.trim': 'Trim clip', 'edit.move': 'Move clip',
+  'edit.ripple_delete': 'Ripple delete', 'edit.restore': 'Undo edit',
+  'edit.crossfade': 'Add transition', 'edit.grade': 'Adjust color',
+  'edit.transform': 'Transform clip', 'edit.matte': 'Remove background',
+  'media.import': 'Import media', 'project.checkpoint': 'Save checkpoint',
+  'transcript.remove_silences': 'Remove pauses',
+  'transcript.remove_fillers': 'Remove filler words',
+  'edit.trim_edges': 'Trim silent start and end',
+  'project.package_create': 'Make a copy',
+  'export.publish': 'Platform exports', 'render.storyboard': 'Timeline contact sheet',
+}
+
+export function editActionLabel(verb: string): string {
+  if (editActionNames[verb]) return editActionNames[verb]
+  const action = verb.split('.').slice(1).join(' ').replaceAll('_', ' ')
+  return action ? action[0].toUpperCase() + action.slice(1) : verb
+}
+
 export function operationGroupHeading(group: OperationGroup): string {
   const first = group.entries[0]?.op
   if (!first) return 'Grouped action'
@@ -47,5 +66,5 @@ export function operationGroupHeading(group: OperationGroup): string {
   const rationale = first.rationale?.trim()
   if (rationale) return `${actor}: ${rationale}`
   const verbs = [...new Set(group.entries.map((entry) => entry.op.verb))]
-  return `${actor}: ${verbs.join(' + ')}`
+  return `${actor}: ${verbs.map(editActionLabel).join(' + ')}`
 }

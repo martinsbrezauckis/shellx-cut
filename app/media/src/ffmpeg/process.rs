@@ -13,6 +13,7 @@ mod pipes;
 mod stall;
 #[cfg(test)]
 mod tests;
+mod tool_missing;
 mod tree;
 
 use child::{exit_error, spawn_error, ManagedChild};
@@ -170,11 +171,9 @@ fn command_output_with_stdout_lines(
     let stdout = finish_reader(stdout, &mut child, context);
     let stderr = finish_reader(stderr, &mut child, context);
     match (status, stdout, stderr) {
-        (Ok(status), Ok(stdout), Ok(stderr)) => Ok(Output {
-            status,
-            stdout,
-            stderr,
-        }),
+        (Ok(status), Ok(stdout), Ok(stderr)) => {
+            tool_missing::output(command, status, stdout, stderr)
+        }
         (Err(error), _, _) => Err(error),
         (_, Err(error), _) | (_, _, Err(error)) => Err(spawn_error(context, error)),
     }
@@ -246,11 +245,9 @@ pub fn run_owned_command_with_input(
     let stdout = finish_reader(stdout, &mut child, context);
     let stderr = finish_reader(stderr, &mut child, context);
     match (status, writer, stdout, stderr) {
-        (Ok(status), Ok(()), Ok(stdout), Ok(stderr)) => Ok(Output {
-            status,
-            stdout,
-            stderr,
-        }),
+        (Ok(status), Ok(()), Ok(stdout), Ok(stderr)) => {
+            tool_missing::output(command, status, stdout, stderr)
+        }
         (Err(error), _, _, _) => Err(error),
         (_, Err(error), _, _) | (_, _, Err(error), _) | (_, _, _, Err(error)) => {
             Err(spawn_error(context, error))
@@ -341,7 +338,8 @@ fn drive_with_control(
         // A hardware encoder's own failure is read from the FULL stderr first
         // (item 133); out of memory or disk is named as such, with the way out;
         // any other failure keeps ffmpeg's own words.
-        (Ok(status), Ok(()), Ok(stderr)) => Err(hw_exit::hardware_failure_error(status, &stderr)
+        (Ok(status), Ok(()), Ok(stderr)) => Err(tool_missing::exit_error(command, status)
+            .or_else(|| hw_exit::hardware_failure_error(status, &stderr))
             .or_else(|| exhaustion.classify(status, &stderr))
             .unwrap_or_else(|| exit_error(status, &stderr))),
         (Err(error), _, _) => Err(error),

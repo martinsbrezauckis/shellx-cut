@@ -295,7 +295,7 @@ export default function TemplatePanel({
             />
           ) : preview ? (
             <div className="gt-note" data-cut-generate-template-preview-path>
-              Preview wrote {preview.path}, but no browser URL was returned.
+              Preview unavailable. The preview file is {preview.path}; try again.
             </div>
           ) : (
             <div className="gt-empty">Preview evidence appears here.</div>

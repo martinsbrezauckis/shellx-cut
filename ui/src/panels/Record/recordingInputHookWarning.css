@@ -3,3 +3,7 @@
   border-radius: 9px; color: #f5c451; background: rgba(245, 196, 81, .07);
   font: var(--fs-ui-sm, 12px)/1.45 var(--sans); overflow-wrap: anywhere;
 }
+/* Light theme: the fixed light ink takes the theme's text token. */
+[data-theme="light"] .rec-input-warning { color: var(--amber); }
+/* The recording status band above the editor is dark in both themes: there the warning keeps its light ink. */
+[data-theme="light"] .app__recording-session .rec-input-warning { color: #f5c451; }

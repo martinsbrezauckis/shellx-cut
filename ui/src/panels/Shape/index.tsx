@@ -27,6 +27,10 @@ export interface ShapeDrawerProps {
 type ShapeKind = 'rect' | 'ellipse' | 'line' | 'arrow'
 type Anim = 'fade' | 'slide_up' | 'slide_down' | 'slide_left' | 'slide_right' | 'pop' | 'none'
 const ANIMS: Anim[] = ['fade', 'slide_up', 'slide_down', 'slide_left', 'slide_right', 'pop', 'none']
+const animLabel = (anim: Anim): string => ({
+  fade: 'Fade', slide_up: 'Slide up', slide_down: 'Slide down',
+  slide_left: 'Slide left', slide_right: 'Slide right', pop: 'Pop', none: 'None',
+})[anim]
 
 function animFromInput(value: string, fallback: Anim): Anim {
   for (const option of ANIMS) {
@@ -197,7 +201,7 @@ export default function ShapeDrawer({ project, defaultInMs, onClose }: ShapeDraw
               <label className="cd-field">
                 <span className="cd-field-label">Animation</span>
                 <select className="cd-sel" data-cut-shape-anim value={anim} onChange={(e) => setAnim(animFromInput(e.target.value, anim))}>
-                  {ANIMS.map((a) => <option key={a} value={a}>{a}</option>)}
+                  {ANIMS.map((a) => <option key={a} value={a}>{animLabel(a)}</option>)}
                 </select>
               </label>
 

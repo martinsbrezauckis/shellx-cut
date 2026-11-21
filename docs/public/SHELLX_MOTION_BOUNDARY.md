@@ -235,7 +235,7 @@ receipt.
 
 - Any Motion bridge visible in Cut needs a `ui.open` path, `ui.state` evidence,
   stable `data-cut-*` selectors, and a CDP/Playwright coverage path.
-- Generate remains Library-adjacent: Templates, Native prompt, Storyboard, and AI
+- Generate remains Library-adjacent: Templates, Prompt, Storyboard, and AI
   media are Cut host surfaces. Motion-backed templates appear there only as
   package-backed items that cross the Motion CLI contract.
 - Agents should be able to open the relevant Cut surfaces directly:

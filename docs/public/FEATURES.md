@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
+<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,23 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
+## v0.6.118 published
+
+v0.6.118 remains the latest published release.
+
+- Clearer wording across the app and the manual, following the terms of the leading video editors.
+- Light theme: every label is readable, and keyboard focus is visible.
+- On Linux, recording says when no microphone is available before trying to use it.
+- Reversing a video clip also reverses its linked sound.
+- A 1080p recording at 60 fps is labelled High frame rate instead of 4K source.
+- The setup status always shows the newest check and says when FFmpeg is older than the tested versions.
+- Fixed: exports could lose a picture where clips that are not whole frames meet.
+- Fixed: a new project lost the size you chose after a 4K import.
+- Many smaller fixes.
+
 ## v0.6.117 published
 
-v0.6.117 remains the latest published release.
+This section records the published v0.6.117 release.
 
 - Fixed: screen recordings on macOS keep moving as they are saved in parts.
 - Fixed: Windows screen recordings keep moving between saved parts.
@@ -95,8 +109,9 @@ This section records the published v0.6.114 release.
 - A video-only 3–5 second rehearsal records into an owned temporary area for
   immediate playback, then discards without creating a project, recovery item,
   or timeline media. During a normal take, compact live controls expose the
-  real Stop, Pause/Resume, marker, scene, timer, and audio-meter state.
-- Health & Recovery can retry one eligible failed recorder export or
+  real Stop, marker, scene, timer, and audio-meter state. Pause/Resume is
+  available only on macOS.
+- Health & recovery can retry one eligible failed recorder export or
   verification rerun only while its durable lineage and immutable inputs still
   match. Recorder retry work renders from private staged copies, so a queued
   retry cannot silently reopen changed inputs.
@@ -107,7 +122,7 @@ This section records the published v0.6.114 release.
 - Bulk relink evidence now survives project reopen and is required by the
   portable-copy workflow when the current revision is the relink operation.
   Project/revision switches clear stale relink and package UI results.
-- Environment can run a bounded read-only ShellX Motion runtime, catalog, and
+- Settings > Video & performance can run a bounded read-only ShellX Motion runtime, catalog, and
   fixed connector-descriptor check. It verifies structural compatibility only:
   connector execution remains unqualified. One-click Install, Repair, Update,
   and Remove are deliberately unavailable until `MOTION-DIST-01` supplies a
@@ -143,7 +158,7 @@ This section preserves v0.6.113 feature history.
   batch as one Undoable change without moving caption timing.
 - Preview **Compare** pauses playback and shows exact composed **Before** and
   **Current** frames at the same playhead position without invoking Undo.
-- Health & Recovery can rebuild missing or stale Cut-owned editing proxies and
+- Health & recovery can rebuild missing or stale Cut-owned editing proxies and
   filmstrips with progress and cancellation. An unchanged failed output
   verification can also expose one exact retry while its revision, receipt, and
   rendered bytes still match.
@@ -200,7 +215,7 @@ These are v0.6.112 published-release capabilities.
   `project.package_plan` / `project.package_create` portable-package API
   preserves the open project. The later Projects UI is documented in the
   v0.6.112 release notes above.
-- Health & Recovery adds a read-only `project.cache_preview` and explicitly
+- Health & recovery adds a read-only `project.cache_preview` and explicitly
   confirmed, cancellable `project.cache_purge` for aged, unreferenced,
   Cut-owned proxy and filmstrip files; source media, exports, recordings, and
   foreign files are never candidates.
@@ -257,7 +272,7 @@ route to the same surface registry.
   status (issues, offline, gaps, effects, hidden, locked, muted), then open the
   correct sequence at the result time. Result rows expose basenames, stable ids,
   effect names and track state without disclosing source paths; the currently
-  shown bounded rows can be copied as escaped, spreadsheet-safe CSV for QC
+  shown bounded rows can be copied as escaped, spreadsheet-safe CSV for quality-check
   handoff.
 - Timeline editing: split, trim, ripple delete, move, insert, paste, add track,
   restore, markers (with labels and colors), speed, fades, crossfades,
@@ -289,9 +304,9 @@ route to the same surface registry.
   bindings: Q removes from the playhead to the selected clip's start, W removes
   from the playhead to its end, and the remaining linked picture and sound close
   the gap together instead of deleting the whole selected clip.
-- The timeline toolbar exposes Add Video Track and Add Audio Track. Empty
+- The timeline toolbar exposes Video track and Audio track. Empty
   user-created tracks remain available through unrelated edits and deletes.
-- Timeline placement follows NLE layer semantics: normal Insert and a normal
+- Timeline placement follows NLE layer semantics: Add at playhead and a normal
   drop from Assets insert media on the base story timeline and push later clips
   right; Alt-drag from Assets or dropping on an existing overlay lane places
   video on top without moving the base.
@@ -367,7 +382,7 @@ route to the same surface registry.
   and first-import auto-placement on an empty timeline (the first import
   requested is placed, whatever order the files finish analysis in; each import
   result says whether it was placed and why not). Later imports wait in
-  Assets until the user clicks Insert or drags them into the timeline. Library
+  Assets until the user clicks Add at playhead or drags them into the timeline. Library
   media uses explicit Add to project or Insert at playhead actions.
 - Assets is media attached to the current project; Library is reusable media
   shared across projects. The human Assets Import action mirrors its successful
@@ -529,13 +544,13 @@ route to the same surface registry.
   and checkpoint as a partial result; verify the identity, compare the current
   revision, and review intervening changes before restore. It
   never directs a revert at the now-current project. None produces an opaque generated movie.
-- Repurpose / Clip candidates: the `clips` drawer uses `clip.candidates` plus
+- Repurpose / Find highlights: the `clips` drawer uses `clip.candidates` plus
   model-free `score.clip` explanations to rank standalone moments, then hands
   selected windows to social delivery without changing the source edit.
 - Autopilot: the `autopilot` drawer previews or runs `autopilot.run`, a bounded
   render → verify → low-risk fix → re-verify loop under one checkpoint. It
   stops on no progress and never converts a failed or unmeasured receipt into a
-  pass.
+  pass. If checks still fail when it stops, the job reads as partly done.
 - Recipes: all 11 bundled workflows are First edit, Edit for clarity, Podcast
   repurpose, Talking-head cleanup, Screen-demo polish, Phone clip cleanup,
   Social short bundle, Blur or mask an area, Add captions, Export for YouTube,
@@ -560,7 +575,7 @@ route to the same surface registry.
   outcomes without sending or spending an agent turn until the user presses Send.
   Each preset advertises only the contained Chat inspect/edit verbs. Presets that
   need an external speech service, rendering, delivery, or verification tell the
-  user to open the relevant Transcript Tools, Clips, or Review > QC surface;
+  user to open the relevant Transcript Tools, Clips, or Review > Quality checks surface;
   pre-filling text does not grant or execute those capabilities.
   Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI.
   The optional Model field passes a model name only to the selected provider;
@@ -703,9 +718,9 @@ establish a tested editing workflow for the current release.
 ## Review, Verification, And Delivery
 
 - Render preview, frame extraction, final render, render queue, social bundles,
-  storyboard/contact sheets, and subject-aware reframe. Social bundles include
+  Timeline contact sheets, and subject-aware reframe. Social bundles include
   an atomic hashed manifest and an honest ready/needs-review/blocked package
-  verdict across platform QC, caption writes, thumbnails, and brand checks.
+  verdict across platform quality checks, caption writes, thumbnails, and brand checks.
   Active background work stays visible after a UI reload through the durable job
   list, with plain-language task names, the worker's latest durable phase,
   queued/running progress, and a direct cancellation control in the status bar.
@@ -724,16 +739,16 @@ establish a tested editing workflow for the current release.
   retried, whoever started it (the person or an agent), stays visible in the
   status bar with what failed, the plain reason and the suggested next step
   until it is dismissed; the newest three are shown and older ones are counted.
-  Details opens Settings > Health & Recovery, which lists the full message.
+  Details opens Settings > Health & recovery, which lists the full message.
   Cancelled, replaced and restart-interrupted jobs are not shown as failures.
   Rows reset when another project opens and can take up to 3 seconds to
   appear; failures from before the window opened are listed in Health &
-  Recovery. A render queue in which some exports failed says so ("done, but 1
+  recovery. A render queue in which some exports failed says so ("done, but 1
   of 3 failed") and shows a status-bar row; when all failed, the queue itself
   failed. A stopped recipe is a failed job with its report kept. For agents,
   `outcome:"partial"` marks a job that ran to its end but did not fully
   deliver.
-- Settings > Health & Recovery explains whether the disposable project cache
+- Settings > Health & recovery explains whether the disposable project cache
   matched or was rebuilt from durable history, whether a replay snapshot was
   accepted, and how many newer journal records still replay on reopen. It is a
   read-only projection of the existing revision-bound health check. The same
@@ -784,7 +799,7 @@ establish a tested editing workflow for the current release.
   an attempted ready-rung infrastructure error may continue to the next ready
   rung, while a named backend never falls back. Doctor admission reports
   readiness; a completed receipt records the actual review.
-- Project brand kits: Review → QC stores validated font, palette, caption
+- Project brand kits: Review → Quality checks stores validated font, palette, caption
   position/size, and delivery-aspect constraints in the project operation log.
   Brand verification reads the saved kit by default, and social bundles enforce
   it automatically while recording whether constraints were stored or explicit.
@@ -839,10 +854,10 @@ establish a tested editing workflow for the current release.
   page, and imported atomically with timecoded feedback. Legacy
   `comment.draft`/`comment.apply` remain agent-only compatibility and diagnostic
   APIs, never an editor approval flow. Adjacent edits from one durable compound
-  action appear in the OPS feed as one collapsible, human-labelled unit; expanding
+  action appear in the Edit history feed as one collapsible, human-labelled unit; expanding
   it keeps every individual edit and its existing review or undo action available.
 - Export: NLE XML, OTIO, EDL, SRT, VTT, chapters, transcript, frame, range,
-  audio, GIF, and platform publish presets. Desktop OTIO import is opened from
+  audio, GIF, and platform export presets (files saved locally). Desktop OTIO import is opened from
   Assets, runs a read-only track/media preflight, confirms a source hash, then
   replaces the active timeline in one replay-safe operation; offline clips
   remain timed gaps. Replace probes media EOF and refuses overlong source ranges,
@@ -860,7 +875,7 @@ establish a tested editing workflow for the current release.
 
 - Recording Studio keeps the shared **Edit | Record** switch and a persistent
   Start/Stop transport. Screen and sound, real selected-source preview, and the
-  Camera, Background, Video timer, Capture timing, and Video quality settings
+  Camera, Background, Video timer, Start, length & pause, and Video quality settings
   are visible in the Record workspace. The source preview shows actual native
   pixels before Start; during capture its live view uses frames owned by the
   exact active capture. If frames stop arriving, Record says so while keeping
@@ -874,7 +889,7 @@ establish a tested editing workflow for the current release.
   the Linux screen-sharing picker) and starts a screen-only polished take with
   microphone, system audio, camera, and keystrokes off. Later F9 presses use
   the current Record settings, or the saved setup when Record has not been opened.
-  An active Pause/Resume state also survives switching between Edit and Record.
+  Record cannot be left during an active take, including while paused.
   When no project is open, Start or F9 creates a new recording project first;
   an already open project is used as-is. The action does not restore a
   minimized Cut window.
@@ -904,8 +919,8 @@ establish a tested editing workflow for the current release.
   beneath the mode choice; there is no second polish toggle or pre-record
   destination picker. Export or Save a copy chooses an optional destination
   after Stop. The Recording details disclosure gives stream and pointer facts.
-- **Back to Edit and Stop recovery** keep the active capture in Recording Studio.
-  Back to Edit stays unavailable during a countdown, pending Start, a live take,
+- **Returning to Edit and Stop recovery** keep the active capture in Recording Studio.
+  The Edit switch stays unavailable during a countdown, pending Start, a live take,
   finalization, or an unresolved Stop; the visible reason tells you whether
   to cancel, wait, or check status. After a Stop error, Cut checks
   `screen_record.status{capture_id}` for that exact take. Retry Stop is offered
@@ -996,7 +1011,11 @@ establish a tested editing workflow for the current release.
   reported by the passive microphone readiness read refuses Start before
   capture, with the same reason, message, and action shown by Doctor. This
   readiness read does not open or test the microphone. Recording with
-  microphone audio off does not require a ready microphone.
+  microphone audio off does not require a ready microphone. On Linux, a
+  completed inventory of an identifiable PipeWire-Pulse audio route blocks
+  a mic-enabled take only when it finds no capture source. A silent real or virtual source is still present;
+  an unavailable sound server or ambiguous audio route leaves readiness
+  unknown and permits Start.
 - **Timeline voiceover** is a compact control on each unlocked audio track. It
   needs only the microphone and never checks screen capture. Opening it reads
   the microphone choice and permission; if macOS has not asked yet, the first
@@ -1005,7 +1024,8 @@ establish a tested editing workflow for the current release.
   the Windows microphone privacy switches (Settings > Privacy & security >
   Microphone: Microphone access, Let apps access your microphone, Let desktop
   apps access your microphone) and says which one is off, or that no microphone
-  was found; a take that fails after it started says why in its status.
+  was found. macOS and Linux also say when no input is present. A take that
+  fails after it started says why in its status.
   The Record panel's microphone control shows the same message before a test.
   Selecting a microphone, a playhead or In–Out range, and Record does
   not create a browser-capture fallback. After real readiness and a visible
@@ -1020,9 +1040,9 @@ establish a tested editing workflow for the current release.
   remained and lets the UI discard its non-secret retry identity. Cancel, zero
   samples, and an unusable terminal add no edit.
 - Recording Studio can explicitly add one current Windows, macOS, or compiled
-  Linux camera in Auto-edit mode when Doctor lists a device. No connected camera
-  or unavailable discovery leaves Camera disabled while normal screen recording
-  stays available.
+  Linux camera with **Polished clip in Edit** selected when Doctor lists a device.
+  No connected camera or unavailable discovery leaves Camera disabled while
+  normal screen recording stays available.
   Doctor exposes only opaque, expiring choices with safe labels; Start revalidates
   the chosen device, waits for a real first frame, and refuses missing permission,
   a busy device, or no-frame delivery without substituting another camera. The
@@ -1036,7 +1056,7 @@ establish a tested editing workflow for the current release.
   survives internal scene changes until Reset. The on-video timer offers Off,
   Count up, or Count down with an applied custom duration from 00:00:01 to
   23:59:59; its zero does not stop the capture. Capture length and the separate
-  start countdown live under Capture timing.
+  start countdown live under Start, length & pause.
 - Screen recorder doctor, system-audio probe, start, status, stop, studio-event, autoedit, polish, and
   export verbs. `screen_record.autoedit` is the plan step reached through the
   Stop/auto-edit workflow and agent API; it is not a separate visible button.
@@ -1099,13 +1119,13 @@ establish a tested editing workflow for the current release.
   materializes measured encoder-restart gaps to preserve the event/mic/system-audio
   wall clock. `screen_record.recovery_status` is a read-only, project-scoped,
   paginated receipt view: it returns safe capture ids and loss state but never paths
-  or recovery side effects. Settings → Health & Recovery reads this inventory rather
+  or recovery side effects. Settings → Health & recovery reads this inventory rather
   than inferring recovery from the recorder doctor; it treats a complete lexical read
   as evidence reported in that check, and exposes only the existing Open Record route.
   Its cursor must be an emitted capture id, and both its capture and nested receipt
   states use lowercase snake case.
 - When a sealed capture receipt contains a measured system-audio first-packet
-  offset, Health & Recovery reports that historical packet-timing evidence for
+  offset, Health & recovery reports that historical packet-timing evidence for
   the project. It does not reinterpret the evidence as a current machine-level
   permission grant, and it never opens an audio stream while checking.
 - Microphone and system-audio samples stream to same-directory partial
@@ -1162,6 +1182,7 @@ establish a tested editing workflow for the current release.
 
 ## Environment And Setup
 
+- If you run Cut inside a container, enable container nesting before installing captions. Without it, setup can fail with Permission denied.
 - `system.doctor` reports compact cards for ffmpeg, perception, dubbing,
   diarization, judge CLIs, and disk health. A detected judge CLI is not a
   render-review claim: its card shows the separate admission result and reason;
@@ -1187,6 +1208,8 @@ establish a tested editing workflow for the current release.
   (and the only way on Intel Macs): numbered steps with Copy buttons, Check
   again (no restart needed), and Choose ffmpeg for a build that has ffprobe
   beside it.
+- On Linux, removing the DEB or RPM package keeps your projects, settings and downloaded tools; after quitting Cut, you can optionally erase settings and downloaded tools at `~/.shellx-cut`, `~/.config/lv.shellx.cut`, `~/.local/share/lv.shellx.cut` and `~/.local/share/shellx-cut` (use your custom `XDG_CONFIG_HOME` and `XDG_DATA_HOME` locations if set). Delete project folders (normally `~/ShellX Cut Projects`) only if you also want to erase those projects.
+- On macOS, moving ShellX Cut.app to the Trash keeps your projects, settings and downloaded tools; after quitting Cut, you can optionally erase settings and downloaded tools at `~/.shellx-cut`, `~/Library/Application Support/lv.shellx.cut` and `~/Library/Application Support/ShellX Cut`. Delete project folders (normally `~/ShellX Cut Projects`) only if you also want to erase those projects.
 - On Windows, uninstalling always removes what ShellX Cut downloaded or made
   (FFmpeg, the captions Python with its environment and models, the
   background-removal files, its work folder, `engine.addr`, `tools-doctor.json`)
@@ -1234,7 +1257,7 @@ establish a tested editing workflow for the current release.
   space), processed in 8 bits. An HDR source (HLG or PQ,
   usually 10-bit phone or camera footage) is tone-mapped to SDR and the file is
   tagged BT.709, so it never claims to be HDR; the editing proxy is converted
-  the same way so the preview matches. The render plan, the receipt (Receipts
+  the same way so the preview matches. The render plan, the receipt (Render history & checks
   tab) and the job result say what happened to each source, including a
   10-bit source exported in 8 bits. The conversion happens before grades and
   effects, so a grade works on the SDR picture. An SD source tagged BT.601 is

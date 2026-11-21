@@ -110,7 +110,7 @@
     {
       "name": "export.transcript",
       "domain": "export",
-      "description": "Write the caption track as a readable transcript — the script of the FINAL cut (timeline-accurate; reflects what survived the cut, not the raw recording) — for show notes, blog repurposing, or an accessibility transcript page. Cues join into paragraphs, a new paragraph after a natural >2s pause. format txt (plain paragraphs) | md (heading + paragraphs, [m:ss]-prefixed when timestamps:true). Requires captions.generate first.",
+      "description": "Write the caption track as a readable transcript — the script of the FINAL cut (timeline-accurate; reflects what survived the cut, not the raw recording) — for show notes, blog repurposing, or an accessibility transcript page. Cues join into paragraphs, a new paragraph after a natural >2s pause. format txt (plain paragraphs) | md (heading + paragraphs, [m:ss]-prefixed when timestamps:true). Requires a caption track with usable cues.",
       "args": {
         "type": "object",
         "required": [],

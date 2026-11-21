@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { activeVideo } from '../src/panels/Preview/model'
 import { runFreeRunClock, type FreeRunState, type FreeRunVideo } from '../src/panels/Preview/freeRunClock'
-import { overlayResyncDriftS, PlaybackSeekTracker, playbackVideoKey } from '../src/panels/Preview/playbackClock'
+import { overlayResyncDriftS, PlaybackSeekTracker, playbackVideoKey, playbackBindingKey } from '../src/panels/Preview/playbackClock'
 
 // Forward playback of a clip whose <video> element was just mounted, driven
 // through the media event orders observed on the three desktop webviews. The
@@ -151,7 +151,7 @@ function play(b: Behaviour, startMs = 60030, durationMs = 4000, userSeek?: { atM
   const video = new FakeVideo(sim, b)
   let seekRevision = 0
   const state: { current: FreeRunState } = { current: {
-    playheadMs: startMs, durationMs: 90000, frameMs: 1000 / 24, seekRevision, video: activeVideo(project, startMs, new Set()), voiceoverPlayback: null,
+    rate: 1, playheadMs: startMs, durationMs: 90000, frameMs: 1000 / 24, seekRevision, video: activeVideo(project, startMs, new Set()), voiceoverPlayback: null,
   } }
   const tracker = new PlaybackSeekTracker(startMs, seekRevision)
   const expectedKey = playbackVideoKey(state.current.video)
@@ -287,6 +287,131 @@ for (const [name, b] of [['healthy', { frameCallbacks: true }], ['stalled', { se
   const after = o.samples.slice(Math.ceil(2016 / 16))
   if (!after.length || after.some((p) => p < 75000) || after[after.length - 1] < 76000) failures.push(`seek during ${name} playback did not land and continue: ${after.slice(0, 3)} .. ${after[after.length - 1]}`)
   else console.log(`PASS seek during ${name} playback lands and continues`)
+}
+
+// Many short pieces of one recording share the same decoder. Model the
+// render/effect handoff after a frame has already crossed each 200 ms cut.
+// Pausing that element makes the next clock seek backwards into every piece.
+{
+  const dense: any = { assets: { a: { proxy: '/a.mp4' } }, tracks: [
+    { id: 'v1', kind: 'video', clips: Array.from({ length: 60 }, (_, i) => clip(`cut${i}`, i * 200, (i + 1) * 200)) },
+  ] }
+  const sim = new Sim()
+  const video = new FakeVideo(sim, { playingAtS: 0, frameCallbacks: true })
+  const state: { current: FreeRunState } = { current: {
+    rate: 1, playheadMs: 0, durationMs: 12000, continuousEndMs: 12000, frameMs: 1000 / 30, seekRevision: 0,
+    video: activeVideo(dense, 0, new Set()), voiceoverPlayback: null,
+  } }
+  const arm = () => {
+    const tracker = new PlaybackSeekTracker(state.current.playheadMs, state.current.seekRevision)
+    return runFreeRunClock({
+      video, callbacks: sim.callbacks, expectedKey: playbackVideoKey(state.current.video), state,
+      tracker, scheduler: sim.scheduler, stop: () => { state.current.rate = 0 },
+      publish: (positionMs) => {
+        const playheadMs = tracker.published(positionMs)
+        state.current = { ...state.current, playheadMs, video: activeVideo(dense, playheadMs, new Set()) }
+      },
+    })
+  }
+  let key = playbackVideoKey(state.current.video)
+  let binding = playbackBindingKey(state.current.video, 0)
+  let cleanup = arm()
+  let cuts = 0
+  let pausedAtCuts = 0
+  const began = sim.now
+  while (sim.now - began < 5000) {
+    sim.runFrame(video, 16)
+    if (playbackVideoKey(state.current.video) !== key) {
+      cuts += 1
+      key = playbackVideoKey(state.current.video)
+    }
+    if (playbackBindingKey(state.current.video, 0) !== binding) {
+      cleanup()
+      if (video.paused) pausedAtCuts += 1
+      // A React commit can take another display frame; the decoder must keep
+      // playing during it, so the new clock can catch up to its real position.
+      sim.runFrame(video, 16)
+      binding = playbackBindingKey(state.current.video, 0)
+      cleanup = arm()
+    }
+  }
+  const lossMs = sim.now - began - state.current.playheadMs
+  if (pausedAtCuts) failures.push(`contiguous short cuts paused the decoder ${pausedAtCuts} times`)
+  if (video.seeks.length) failures.push(`contiguous short cuts seeked ${video.seeks.length} times`)
+  if (lossMs > 100) failures.push(`contiguous short cuts lost ${lossMs} ms in five seconds`)
+  if (cuts < 20) failures.push(`contiguous short cuts crossed only ${cuts} cuts`)
+  if (Math.abs(video.currentTime * 1000 - state.current.playheadMs) > 100) failures.push('picture and clock disagree after short cuts')
+  // Stopping still pauses the element, even at a boundary.
+  state.current.rate = 0
+  cleanup()
+  assert.equal(video.paused, true, 'stop releases the playing decoder')
+  console.log(`Short cuts: ${cuts} cuts, ${pausedAtCuts} pauses, ${video.seeks.length} seeks, ${lossMs} ms lost`)
+}
+
+// One playing element needs one clock subscription across ordinary cuts.
+// Rebinding at each piece discards callback progress in slower webviews.
+for (const seekDuringRun of [false, true]) {
+  const dense: any = { assets: { a: { proxy: '/a.mp4' } }, tracks: [
+    { id: 'v1', kind: 'video', clips: Array.from({ length: 60 }, (_, i) => clip(`piece${i}`, i * 200, (i + 1) * 200)) },
+  ] }
+  const sim = new Sim()
+  const video = new FakeVideo(sim, { playingAtS: 0, frameCallbacks: true })
+  const state: { current: FreeRunState } = { current: {
+    rate: 1, playheadMs: 0, durationMs: 12000, continuousEndMs: 12000, frameMs: 1000 / 30, seekRevision: 0,
+    video: activeVideo(dense, 0, new Set()), voiceoverPlayback: null,
+  } }
+  const render = (playheadMs: number) => {
+    state.current = { ...state.current, playheadMs, video: activeVideo(dense, playheadMs, new Set()) }
+  }
+  const tracker = new PlaybackSeekTracker(0)
+  const cleanup = runFreeRunClock({
+    video, callbacks: sim.callbacks, expectedKey: playbackVideoKey(state.current.video), state,
+    tracker, scheduler: sim.scheduler, isCurrentVideo: () => true,
+    publish: (position) => render(tracker.published(position)), stop: () => { state.current.rate = 0 },
+  })
+  if (!seekDuringRun) {
+    sim.runFrame(video, 480)
+    if (state.current.playheadMs !== 480) failures.push('a late presented frame was clamped into an earlier piece')
+    if (state.current.video?.srcInMs !== 400) failures.push('a late frame selected the wrong source piece')
+  }
+  for (let elapsed = 0; elapsed < 5000; elapsed += 16) {
+    if (seekDuringRun && elapsed === 1504) { state.current.seekRevision += 1; render(850) }
+    sim.runFrame(video, 16)
+    if (seekDuringRun && elapsed === 1728 && state.current.playheadMs > 1300) failures.push('seek inside a continuous run did not land')
+  }
+  const expectedEnd = seekDuringRun ? 4354 : 5488
+  const loss = expectedEnd - state.current.playheadMs
+  if (loss > 50) failures.push(`one subscription across short cuts${seekDuringRun ? ' after seek' : ''} lost ${loss} ms`)
+  if (video.seeks.length !== (seekDuringRun ? 1 : 0)) failures.push(`continuous run issued ${video.seeks.length} seeks`)
+  if (Math.abs(video.currentTime * 1000 - state.current.playheadMs) > 100) failures.push('continuous clock and picture disagree')
+  state.current.rate = 0
+  cleanup()
+  assert.equal(video.paused, true)
+  console.log(`Continuous subscription${seekDuringRun ? ' with seek' : ''}: reached ${state.current.playheadMs}, loss ${loss}, seeks ${video.seeks.length}`)
+}
+
+// Only the same playing decoder may cross a contiguous cut without pausing.
+// A user seek, a gap/jump, another deck element, and a transport stop retain
+// their cleanup, so a hidden or obsolete element cannot keep running.
+for (const reason of ['seek', 'jump', 'element', 'stop'] as const) {
+  const sim = new Sim()
+  const video = new FakeVideo(sim, { playingAtS: 0, frameCallbacks: true })
+  const first = activeVideo(project, 0, new Set())!
+  const state: { current: FreeRunState } = { current: {
+    rate: 1, playheadMs: 0, durationMs: 90000, frameMs: 1000 / 30, seekRevision: 0,
+    video: first, voiceoverPlayback: null,
+  } }
+  const cleanup = runFreeRunClock({
+    video, callbacks: sim.callbacks, expectedKey: playbackVideoKey(first), state,
+    tracker: new PlaybackSeekTracker(0), scheduler: sim.scheduler, publish: () => {}, stop: () => {},
+    isCurrentVideo: () => reason !== 'element',
+  })
+  state.current.video = { ...first, clipId: 'next', startMs: first.durMs, srcInMs: first.srcOutMs }
+  if (reason === 'seek') state.current.seekRevision += 1
+  if (reason === 'jump') state.current.video.srcInMs += 1000
+  if (reason === 'stop') state.current.rate = 0
+  cleanup()
+  assert.equal(video.paused, true, `${reason} still pauses the old element`)
 }
 
 assert.deepEqual(failures, [], `\n${failures.join('\n')}`)

@@ -1,5 +1,5 @@
-// The Receipts tab hides ffmpeg's own error line behind a "Technical detail"
-// disclosure. This renders the real Receipts tab and checks what that
+// The Render history & checks tab hides ffmpeg's own error line behind a "Technical detail"
+// disclosure. This renders the real Render history & checks tab and checks what that
 // disclosure holds, when it is offered, and that it starts closed.
 
 import { strict as assert } from 'node:assert'

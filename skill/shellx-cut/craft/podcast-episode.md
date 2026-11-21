@@ -42,7 +42,7 @@ Do NOT clean up natural conversation: stumbles, overlaps, laughing through a
 sentence — that texture is the product. Rationale on every cut.
 Checkpoint: `after-content`.
 
-### 4. Silence pass — calm preset
+### 4. Remove pauses — Light amount (`calm`)
 `transcript.remove_silences{aggressiveness:"calm"}` (raise `min_ms` toward
 2000 if the show has a thoughtful, pause-heavy style). Two cautions:
 - **Crosstalk edges**: if perception silence spans border overlapping speech,

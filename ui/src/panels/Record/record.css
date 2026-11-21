@@ -251,6 +251,7 @@
   color: #7ee0b0;
   font: 700 10px/1 var(--sans);
 }
+[data-theme="light"] .rec__settings-state[data-cut-rec-setup-state="ready"] { color: var(--green); }
 .rec__settings-state[data-cut-rec-setup-state="attention"] {
   border-color: rgba(245, 196, 81, .38);
   color: #f5c451;
@@ -333,6 +334,8 @@
 .rec__seg-btn:hover:not(:disabled) { color: var(--ink, #f2f3f5); }
 .rec__seg-btn--on { background: var(--cut, #2563eb); color: #fff; }
 .rec__seg-btn:disabled { opacity: 0.45; cursor: default; }
+/* The chosen value stays readable while its group is locked (during a take): only the other choices dim. */
+.rec__seg-btn--on:disabled { opacity: 1; }
 .rec__field--countdown { align-items: flex-start; }
 .rec__field--countdown .rec__seg-btn { min-width: 44px; }
 .rec__field--countdown .rec__source-note { flex-basis: calc(100% - 106px); }
@@ -388,13 +391,13 @@
   justify-content: center;
   min-width: 220px;
   border: none; border-radius: 10px;
-  background: #ef4444; color: #fff;
+  background: var(--err-brand); color: #fff;
   font: 700 var(--fs-ui)/1 var(--sans); padding: 14px 26px; cursor: pointer;
   transition: filter 120ms ease, transform 80ms ease;
 }
-.rec__start:hover:not(:disabled) { filter: brightness(1.08); }
+.rec__start:hover:not(:disabled) { filter: brightness(1.04); }
 .rec__start:active:not(:disabled) { transform: translateY(1px); }
-.rec__start:disabled { opacity: 0.45; cursor: default; }
+.rec__start:disabled { background: #ef4444; opacity: 0.45; cursor: default; }
 
 .rec__hud {
   display: inline-flex; align-items: center; gap: 10px;
@@ -855,7 +858,7 @@
   padding: 6px 8px;
   border-radius: 6px;
   background: rgba(12, 14, 18, .76);
-  color: var(--ink-2, #d6dae0);
+  color: var(--monitor-ink);
   font: 700 var(--fs-ui-xs, 11px)/1 var(--sans);
 }
 .rec-studio-preview__status [data-cut-rec-preview-phase="recording"] {
@@ -1161,3 +1164,27 @@
   z-index: 9;
   background: var(--surface, #0e0e0d);
 }
+
+/* Light theme: the status, warning and error texts above use fixed light inks chosen for the dark page.
+   On the light page they take the theme's own text tokens, which reach 4.5:1 on its surfaces. */
+[data-theme="light"] .rec__settings-state[data-cut-rec-setup-state="attention"],
+[data-theme="light"] .rec__settings-state[data-cut-rec-setup-state="pending"],
+[data-theme="light"] .rec__source-note--unavailable,
+[data-theme="light"] .rec__hud--countdown,
+[data-theme="light"] .rec-live-controls__unavailable,
+[data-theme="light"] .rec-region-picker__status,
+[data-theme="light"] .rec__mic-status[data-cut-rec-mic-status="quiet"],
+[data-theme="light"] .rec__stop-recovery [data-cut-rec-output-recovery-note] { color: var(--amber); }
+[data-theme="light"] .rec__err,
+[data-theme="light"] .rec__fps-status--error,
+[data-theme="light"] .rec__mic-status[data-cut-rec-mic-status="error"],
+[data-theme="light"] .rec__audio-probe[data-cut-rec-system-audio-probe="error"] .rec__audio-probe-status { color: var(--danger); }
+[data-theme="light"] .rec__done,
+[data-theme="light"] .rec__mic-status[data-cut-rec-mic-status="signal"],
+[data-theme="light"] .rec__audio-probe[data-cut-rec-system-audio-probe="ready"] .rec__audio-probe-status { color: var(--green); }
+[data-theme="light"] .rec-studio-controls__chips span[data-on="true"] { color: var(--green); }
+[data-theme="light"] .rec__hud,
+[data-theme="light"] .rec-live-controls__state { color: var(--danger); }
+[data-theme="light"] .rec__settings-state[data-cut-rec-setup-state="unknown"] { color: var(--cut-soft); }
+[data-theme="light"] .rec__settings-state,
+[data-theme="light"] .rec-studio-controls__head > span { color: var(--green); }

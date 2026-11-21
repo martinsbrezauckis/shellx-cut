@@ -52,7 +52,7 @@ export function RecordingVideoTimerControl({
     onTimerChange(result.timer)
   }
   const unavailable = unavailableReason ?? (recording && !liveSupported
-    ? 'Live video timer controls are unavailable because this recorder does not support scene events.'
+    ? 'Live timer controls are unavailable for this recording.'
     : null)
   const actionReason = (action: RecordingSceneTimerAction): string | null => {
     if (unavailable) return unavailable

@@ -914,6 +914,30 @@ pub(in crate::dispatch) async fn edit_reverse(
             }
         }
     }
+    let video = {
+        let guard = state.project.read().await;
+        let project = &guard.as_ref().ok_or_else(no_project)?.project;
+        project
+            .find_clip(&a.clip)
+            .and_then(|(track, _)| project.track(track))
+            .is_some_and(|track| track.kind == cut_core::TrackKind::Video)
+    };
+    if video {
+        if let Some(link) = resolve_linked_media(state, &a.clip, true, "edit.reverse").await.map_err(|e| {
+            if e.code == error_codes::GUARDRAIL {
+                e.with_suggested_action("unlock the linked audio track and remove any duplicate linked counterpart before reversing")
+            } else { e }
+        })? {
+            let steps = [&a.clip, &link.clip].into_iter().map(|clip| InverseOp {
+                verb: "edit.reverse".into(),
+                args: json!({"clip": clip, "enabled": a.enabled.unwrap_or(true)}),
+            }).collect();
+            return commit_lowered(
+                state, "edit.reverse", args, actor, steps,
+                vec![effect(None, json!({"linked_reverse": {"clip": link.clip, "track": link.track}}))],
+            ).await;
+        }
+    }
     commit_core(state, "edit.reverse", args, actor).await
 }
 

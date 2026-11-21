@@ -121,7 +121,7 @@ assert.equal(chatAgentBadge('codex', { ...codexChat!.state!, installed: false })
 assert.equal(
   environmentCardStatus({
     id: 'judge.claude', kind: 'judge', status: 'unknown',
-    details: { judge_ready: false, availability_reason: 'render-judge admission could not be verified; re-scan before running review' },
+    details: { judge_ready: false, availability_reason: 'Could not check whether this agent can review exports. Re-scan to try again.' },
   }),
   'unknown',
   'an unverified admission probe keeps the Doctor Check again state instead of being downgraded to a generic warning',

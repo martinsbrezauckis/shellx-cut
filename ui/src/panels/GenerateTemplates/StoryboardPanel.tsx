@@ -6,6 +6,7 @@ import {
   optionValue,
   PROMPT_AGENTS,
   STORYBOARD_MODES,
+  storyboardModeLabel,
   type PromptAgent,
   type PromptPolicy,
   type StoryboardMode,
@@ -73,7 +74,7 @@ export default function StoryboardPanel({
               value={storyboardMode}
               onChange={(e) => onStoryboardMode(optionValue(STORYBOARD_MODES, e.target.value, storyboardMode))}
             >
-              {STORYBOARD_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+              {STORYBOARD_MODES.map((m) => <option key={m} value={m}>{storyboardModeLabel(m)}</option>)}
             </select>
           </label>
           <label className="gt-field">
@@ -222,7 +223,7 @@ export default function StoryboardPanel({
                     alt={`${scene.scene_id} preview`}
                   />
                 ) : (
-                  <div className="gt-note">Preview wrote {scene.path}, but no browser URL was returned.</div>
+                  <div className="gt-note">Preview unavailable. The preview file is {scene.path}; try again.</div>
                 )}
                 <figcaption>
                   <span>{scene.scene_id}</span>

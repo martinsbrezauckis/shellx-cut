@@ -675,7 +675,7 @@ pub(super) fn publish_render_final_args(
         json!(a
             .rationale
             .clone()
-            .unwrap_or_else(|| format!("publish for {}", platform_spec.label))),
+            .unwrap_or_else(|| format!("export for {}", platform_spec.label))),
     );
     rf
 }
@@ -707,7 +707,9 @@ pub(super) async fn export_publish(
                 cut_media::render::PLATFORM_NAMES.join("|")
             ),
         )
-        .with_suggested_action("e.g. export.publish{platform:\"tiktok\"}")
+        .with_suggested_action(
+            "Export for TikTok to a local file with export.publish{platform:\"tiktok\"}",
+        )
     })?;
     let spec = cut_media::render::platform_spec(platform).ok_or_else(|| {
         CutError::new(
@@ -718,7 +720,7 @@ pub(super) async fn export_publish(
                 cut_media::render::PLATFORM_NAMES.join("|")
             ),
         )
-        .with_suggested_action("e.g. export.publish{platform:\"youtube\"} or {platform:\"reels\"}")
+        .with_suggested_action("Export to a local file with export.publish{platform:\"youtube\"} or {platform:\"reels\"}")
     })?;
     // Compose the render.final args from the platform spec + caller passthroughs
     // (pure helper above — unit-tested delegation contract) and delegate to the
@@ -1306,7 +1308,7 @@ pub(super) async fn render_storyboard(
     if edl.duration_ms == 0 {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
-            "timeline is empty — nothing to storyboard",
+            "timeline is empty — no frames for a timeline contact sheet",
             "EDL duration is 0 ms",
         )
         .with_suggested_action("insert at least one clip first"));
@@ -1896,8 +1898,8 @@ pub(super) async fn render_final(
         .map(str::parse::<cut_perception::FootageProfile>)
         .transpose()
         .map_err(|e| {
-            CutError::new(error_codes::INVALID_ARGS, "unknown footage profile", e)
-                .with_suggested_action("valid profiles: talking_head, silent_screen_demo")
+            CutError::new(error_codes::INVALID_ARGS, "Unknown content type for quality checks", e)
+                .with_suggested_action("Choose Talking head (profile: talking_head) or Screen demo (profile: silent_screen_demo).")
         })?;
     // Framing options — parsed NOW (typo fails fast, not after a long
     // encode). Omitted = RenderOptions::default() = contain + project geometry
@@ -3097,7 +3099,8 @@ pub(super) async fn render_direct(
 /// bad framing" and re-issue a corrected `render.reframe{direction}`. The model's
 /// vision is the real judge; the hints focus its attention.
 pub(super) fn resolve_reframe_output_for_qc(dir: &Path, rid: &str) -> Result<PathBuf, CutError> {
-    let suggested = "run render.reframe first, then pass the returned reframe_id";
+    let suggested =
+        "Render a reframed video first with render.reframe, then pass the returned reframe_id.";
     let mut candidates = Vec::new();
     let receipt_path = dir.join(format!("receipts/{rid}.json"));
     // Ordinary bounded files only: a planted link or pipe is skipped.
@@ -3126,7 +3129,7 @@ pub(super) fn resolve_reframe_output_for_qc(dir: &Path, rid: &str) -> Result<Pat
 
     Err(CutError::new(
         error_codes::INVALID_ARGS,
-        "no such reframe output to QC",
+        "No reframed video was found for quality checks",
         if causes.is_empty() {
             format!("no receipt output_path or exports/{rid}.mp4 was found")
         } else {
@@ -4558,14 +4561,16 @@ pub(super) async fn autopilot_run(
         } else {
             format!("Stopped after {} pass(es): {} fix(es) applied, some checks still fail (see receipt).", iters, applied_fix_count)
         };
-        // An autopilot that stops with checks still failing (or unverified) is
-        // not a plain success: it ends "done with warnings" and says why.
+        // Failed checks leave the requested work partially done. Unverified
+        // checks retain their separate warning because no failure was measured.
         let settled = final_pass && unverified.is_none();
         let warnings: Vec<String> = if settled { Vec::new() } else { vec![summary.clone()] };
         let finish = if settled {
             check_finish::Finish::Plain
-        } else {
+        } else if unverified.is_some() {
             check_finish::Finish::Warnings
+        } else {
+            check_finish::Finish::Problems
         };
         check_finish::finish(
             &st,

@@ -1,7 +1,7 @@
-// A receipt whose checks did not pass says so in words on the Receipts tab:
+// A receipt whose checks did not pass says so in words on the Render history & checks tab:
 // which checks, what that means, the way forward (fix-list item 166). The
 // engine writes the verdict into the receipt (`outcome`); this renders the
-// real Receipts tab from a receipt as the engine writes it.
+// real Render history & checks tab from a receipt as the engine writes it.
 
 import { strict as assert } from 'node:assert'
 import { createElement } from 'react'

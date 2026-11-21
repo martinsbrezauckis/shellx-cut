@@ -63,7 +63,7 @@ function fixture(t, { tests = ['scripts/public-tests/fixture.test.mjs'], resourc
 test('published test inventory names the exact public CI scope and every declared resource', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
   assert.equal(inventory.version, JSON.parse(readFileSync(resolve(ROOT, 'ui/package.json'), 'utf8')).version)
-  assert.deepEqual(inventory.contract, { node_test_count: 17, ui_library_test_count: inventory.uiLibraryTests.tests.length })
+  assert.deepEqual(inventory.contract, { node_test_count: 17, python_test_count: 10, ui_library_test_count: inventory.uiLibraryTests.tests.length })
   assert.deepEqual(inventory.tests.map((entry) => entry.path), [
     'scripts/public-tests/cross-host-media.test.mjs',
     'scripts/public-tests/dependency-audit.test.mjs',
@@ -84,6 +84,43 @@ test('published test inventory names the exact public CI scope and every declare
     'scripts/public-tests/v06112-source-doc-coverage.test.mjs',
   ])
   verifyPublishedTestResources(inventory)
+})
+
+test('published inventory lists ten Python tests with available resources', () => {
+  const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
+  assert.equal(inventory.pythonTests?.length, 10)
+  verifyPublishedTestResources(inventory)
+})
+
+test('published runner collects Python failures, runs later tests and passes after repair', (t) => {
+  const root = fixture(t)
+  const manifest = join(root, 'scripts/public-tests/published-inventory.json')
+  const data = JSON.parse(readFileSync(manifest, 'utf8'))
+  const first = 'app/perception/py/first_test.py'
+  const second = 'app/perception/py/second_test.py'
+  data.python_tests = [first, second]
+  data.contract.python_test_count = 2
+  // Use Node as a stand-in interpreter so this runner test needs no Python.
+  data.prerequisites = [{ id: 'python', candidates: [process.execPath], probe: ['--version'] }]
+  writeFileSync(manifest, JSON.stringify(data))
+  writeFileSync(join(root, data.tests[0].path), '')
+  mkdirSync(join(root, first, '..'), { recursive: true })
+  writeFileSync(join(root, first), 'process.exit(7)\n')
+  writeFileSync(join(root, second), 'console.log("later Python test ran")\n')
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  const run = () => spawnSync(process.execPath, [RUNNER, '--root', root, '--run', '--no-bail'], { encoding: 'utf8', env })
+  const red = run()
+  assert.equal(red.status, 1, red.stdout + red.stderr)
+  assert.match(red.stdout, /later Python test ran/)
+  assert.match(red.stderr, /1 of 3 published tests failed/)
+  writeFileSync(join(root, first), '')
+  const green = run()
+  assert.equal(green.status, 0, green.stdout + green.stderr)
+  assert.match(green.stdout, /ran 1 published node tests and 2 Python tests/)
+  data.contract.python_test_count = 3
+  writeFileSync(manifest, JSON.stringify(data))
+  assert.throws(() => loadPublishedTestInventory({ repoRoot: root }), /python_test_count/)
 })
 
 test('published test inventory requires the POSIX media sampler instead of accepting its skip', () => {

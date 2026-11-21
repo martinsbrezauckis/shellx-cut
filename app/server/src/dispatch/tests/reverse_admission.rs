@@ -3,7 +3,7 @@ use crate::state::AppState;
 use serde_json::json;
 
 #[tokio::test]
-async fn a_received_probe_cannot_refuse_reverse_of_a_small_source() {
+async fn reversing_video_follows_only_its_linked_audio_and_replays() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("small.mp4");
     let status = std::process::Command::new(cut_media::ffmpeg::ffmpeg_bin())
@@ -73,12 +73,127 @@ async fn a_received_probe_cannot_refuse_reverse_of_a_small_source() {
         .as_str()
         .unwrap()
         .to_string();
+    // Only the audio with the same asset, source range and timeline span is linked.
+    let audio = dispatch(
+        &state,
+        "edit.insert",
+        json!({"asset":"a1", "track":"a1t", "at_ms":0, "src_range_ms":[0,2_000], "ripple":false}),
+        test_actor(),
+    )
+    .await;
+    assert!(audio.ok, "{:?}", audio.error);
+    let audio = audio.result.unwrap()["clip_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other = dispatch(
+        &state,
+        "edit.insert",
+        json!({"asset":"a1", "track":"a1t", "at_ms":2_000, "src_range_ms":[0,1_000], "ripple":false}),
+        test_actor(),
+    )
+    .await;
+    assert!(other.ok, "{:?}", other.error);
+    let other = other.result.unwrap()["clip_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let before = state.project.read().await.as_ref().unwrap().project.clone();
+    let edl = cut_core::edl_from_project(&before);
+    let spans: Vec<_> = edl
+        .segments
+        .iter()
+        .filter(|s| s.clip_id.as_deref() == Some(&clip) || s.clip_id.as_deref() == Some(&audio))
+        .map(|s| (s.timeline_in_ms, s.timeline_out_ms))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![(0, 2_000), (0, 2_000)],
+        "the audio is linked before reversal"
+    );
     let reversed = dispatch(&state, "edit.reverse", json!({"clip": clip}), test_actor()).await;
     assert!(
         reversed.ok,
         "measured 320x180 source should fit: {:?}",
         reversed.error
     );
+    let after = state.project.read().await.as_ref().unwrap().project.clone();
+    let reversed = |p: &cut_core::Project, id: &str| {
+        let (track, idx) = p.find_clip(id).unwrap();
+        matches!(&p.track(track).unwrap().clips[idx], cut_core::Clip::Media(m) if m.reverse)
+    };
+    assert!(reversed(&after, &clip));
+    assert!(
+        reversed(&after, &audio),
+        "linked sound must reverse with video"
+    );
+    assert!(
+        !reversed(&after, &other),
+        "independent sound must stay forward"
+    );
+    let log = state
+        .project
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .log
+        .read_all()
+        .unwrap();
+    // The received probe was injected only into the display cache, not the log.
+    assert_eq!(
+        cut_core::rebuild_from_log(&log).unwrap().tracks,
+        after.tracks
+    );
+    assert!(
+        dispatch(&state, "project.undo", json!({}), test_actor())
+            .await
+            .ok
+    );
+    assert_eq!(state.project.read().await.as_ref().unwrap().project, before);
+    assert!(
+        dispatch(&state, "project.redo", json!({}), test_actor())
+            .await
+            .ok
+    );
+    assert_eq!(state.project.read().await.as_ref().unwrap().project, after);
+    assert!(
+        dispatch(
+            &state,
+            "edit.reverse",
+            json!({"clip":clip,"enabled":false}),
+            test_actor()
+        )
+        .await
+        .ok
+    );
+    let cleared = state.project.read().await.as_ref().unwrap().project.clone();
+    assert!(!reversed(&cleared, &clip));
+    assert!(!reversed(&cleared, &audio));
+    assert!(!reversed(&cleared, &other));
+    state
+        .project
+        .write()
+        .await
+        .as_mut()
+        .unwrap()
+        .project
+        .track_mut("a1t")
+        .unwrap()
+        .locked = true;
+    let locked = state.project.read().await.as_ref().unwrap().project.clone();
+    let refused = dispatch(
+        &state,
+        "edit.reverse",
+        json!({"clip":clip,"enabled":false}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        !refused.ok,
+        "a locked linked audio leg must refuse the whole action"
+    );
+    assert_eq!(state.project.read().await.as_ref().unwrap().project, locked);
 }
 
 #[tokio::test]

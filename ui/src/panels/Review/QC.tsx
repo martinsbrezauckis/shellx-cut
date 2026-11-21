@@ -26,11 +26,11 @@ interface BrandDraft {
 }
 
 /** FLAT verify.judge JOB result — the payload that lands in jobs.status.result.result
- *  (NOT the nested RenderReceipt.judge JudgeEnvelope the Receipts tab reads):
+ *  (NOT the nested RenderReceipt.judge JudgeEnvelope the Render history & checks tab reads):
  *    completed → { render_id, status:'completed', verdict:'needs_review'|'pass'|'fail',
  *                  confidence:0.45, issues:1, receipt:'…/render_001.json' }
  *  `issues` here is a COUNT (number), not the per-issue array — the array lives in
- *  the receipt's judge.review.issues (shown, with seek links, on the Receipts tab).
+ *  the receipt's judge.review.issues (shown, with seek links, on the Render history & checks tab).
  *  status discriminates completed | not_run | error; the degraded cases carry a
  *  human reason (engine uses `not_run_reason`; the task contract calls it `reason`
  *  — read both, since this surface never fabricates a verdict). */
@@ -250,7 +250,7 @@ export default function QC({ project }: { project: Project | null }) {
     try {
       const r = await callVerb('project.brand', {
         brand: kitFromDraft(brandForm),
-        rationale: 'save project brand kit from Review QC',
+        rationale: 'save project brand kit from Review Quality checks',
       })
       if (!r.ok) {
         setBrandError([r.error?.message, r.error?.cause].filter(Boolean).join(' · ') || 'Could not save brand kit')
@@ -270,7 +270,7 @@ export default function QC({ project }: { project: Project | null }) {
     setBrandBusy(true)
     setBrandError(null)
     try {
-      const r = await callVerb('project.brand', { clear: true, rationale: 'clear project brand kit from Review QC' })
+      const r = await callVerb('project.brand', { clear: true, rationale: 'clear project brand kit from Review Quality checks' })
       if (!r.ok) {
         setBrandError([r.error?.message, r.error?.cause].filter(Boolean).join(' · ') || 'Could not clear brand kit')
         return
@@ -303,7 +303,7 @@ export default function QC({ project }: { project: Project | null }) {
     <div className="qc" data-cut-qc>
       <div className="qc__bar">
         <button className="qc__run" data-cut-action="qc-run" disabled={busy} onClick={() => void runChecks()}>
-          {busy ? 'checking…' : <><Icon name="reset" size={14} /> Run QC</>}
+          {busy ? 'checking…' : <><Icon name="reset" size={14} /> Run quality checks</>}
         </button>
         {/* AI perceptual review of the latest render (verify.judge). Async — the
             engine runs a subscription CLI on sampled frames, so it can take ~1 min. */}
@@ -503,7 +503,7 @@ function JudgeCard({ judge, busy }: { judge: Cell<JudgeJobResult>; busy: boolean
             {typeof issues === 'number' ? `${issues} issue${issues === 1 ? '' : 's'}` : 'issues n/a'}
           </li>
           {typeof issues === 'number' && issues > 0 && (
-            <li>open the Receipts tab for per-issue detail + seek links</li>
+            <li>open the Render history & checks tab for per-issue detail + seek links</li>
           )}
         </ul>
       ) : status === 'not_run' ? (

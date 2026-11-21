@@ -127,12 +127,12 @@ export function useRecordingScenes({
     setStatus((current) => {
       if (current.state === 'switching' || current.state === 'saved' || current.state === 'active_unsaved' || current.state === 'error') return current
       return next.supported
-        ? { state: 'ready', message: 'Selected scene will be sent with the next recording.' }
-        : { state: 'draft', message: `${next.detail} Your selection is a local preview only.` }
+        ? { state: 'ready', message: 'Selected for the next recording; Cut will confirm it after Start.' }
+        : { state: 'draft', message: next.detail }
     })
     if (recordingRef.current && !next.supported) {
       controlLifetimeRef.current.clearCapture()
-      setTimerStatus({ state: 'unavailable', message: 'Live timer controls are unavailable because this recorder has not advertised the scene API.' })
+      setTimerStatus({ state: 'unavailable', message: 'Live timer controls are unavailable for this recording.' })
     }
   }, [])
 
@@ -163,8 +163,8 @@ export function useRecordingScenes({
       setSelectedSceneId(scene.id)
       onPreviewScene(scene.id)
       setStatus(capability.supported
-        ? { state: 'ready', message: 'Selected scene will be sent with the next recording.' }
-        : { state: 'draft', message: `${capability.detail} Your selection is a local preview only.` })
+        ? { state: 'ready', message: 'Selected for the next recording; Cut will confirm it after Start.' }
+        : { state: 'draft', message: capability.detail })
       return
     }
     if (!captureId || !capability.supported || !capability.catalog_revision) {
@@ -186,7 +186,7 @@ export function useRecordingScenes({
         return
       }
       if (!recordingSceneAcknowledged(response.result, scene)) {
-        setStatus({ state: 'error', message: 'Scene switch was not acknowledged as saved. The preview was not changed.' })
+        setStatus({ state: 'error', message: 'Could not confirm the scene change. The preview keeps the previous scene; the recording may have changed.' })
         return
       }
       setSelectedSceneId(scene.id)
@@ -194,21 +194,21 @@ export function useRecordingScenes({
       setStatus({ state: 'saved', message: `${scene.name} is live and saved with this recording.` })
     } catch {
       if (!controlLifetimeRef.current.isCurrent(controlLease)) return
-      setStatus({ state: 'error', message: 'Scene switch did not reach the recorder. The preview was not changed.' })
+      setStatus({ state: 'error', message: 'Could not confirm the scene change. The preview keeps the previous scene; the recording may have changed.' })
     }
   }, [capability, captureId, onPreviewScene, recording])
 
   const markCaptureStarted = useCallback((startAcknowledgement: unknown) => {
     if (!capability.supported) {
-      setTimerStatus({ state: 'unavailable', message: 'This recording started without the scene API, so live timer controls are unavailable.' })
+      setTimerStatus({ state: 'unavailable', message: 'Live timer controls are unavailable for this recording.' })
       return
     }
     if (!recordingSceneAcknowledged(startAcknowledgement, selectedScene)) {
       setStatus({
         state: 'error',
-        message: 'The recording started, but its selected scene was not acknowledged as saved. The preview is local only.',
+        message: 'The recording started, but Cut could not confirm the selected scene. The preview is local only; the recording scene is unknown.',
       })
-      setTimerStatus({ state: 'error', message: 'Timer configuration was not acknowledged by Start.' })
+      setTimerStatus({ state: 'error', message: 'Could not confirm the timer setting after Start. The recording timer state is unknown.' })
       return
     }
     setStatus({
@@ -217,17 +217,17 @@ export function useRecordingScenes({
     })
     setTimerStatus({
       state: 'awaiting_ack',
-      message: 'Timer configuration was sent with start. Use a live timer control to confirm a later change.',
+      message: 'Timer selected for this recording. Use a live timer control to confirm its current state.',
     })
   }, [capability.supported, selectedScene.name])
 
   const selectTimer = useCallback((nextTimer: RecordingSceneTimer) => {
     if (recording) return
     setTimer(nextTimer)
-    setTimerStatus({ state: 'not_started', message: 'Timer selection will be sent with the next recording.' })
+    setTimerStatus({ state: 'not_started', message: capability.supported ? 'Timer selected for the next recording; Cut will confirm it after Start.' : 'Timer selected locally. Live timer controls are not confirmed.' })
     setStatus(capability.supported
-      ? { state: 'ready', message: 'The selected timer will be sent with the next recording.' }
-      : { state: 'draft', message: `${capability.detail} The timer is a local preview only.` })
+      ? { state: 'ready', message: 'Timer selected for the next recording; Cut will confirm it after Start.' }
+      : { state: 'draft', message: capability.detail })
   }, [capability, recording])
 
   const controlTimer = useCallback(async (action: RecordingSceneTimerAction) => {
@@ -247,14 +247,14 @@ export function useRecordingScenes({
       }
       const timerResult = response.result
       if (!recordingSceneTimerAcknowledged(timerResult, action)) {
-        setTimerStatus({ state: 'error', message: 'Timer action was not acknowledged with an exact state. Its state was not changed here.' })
+        setTimerStatus({ state: 'error', message: 'Could not confirm the timer change. This preview keeps the previous state; the recording timer state is unknown.' })
         return
       }
       const nextState = timerResult.state
       setTimerStatus({ state: nextState, message: timerMessageAfter(action, nextState) })
     } catch {
       if (!controlLifetimeRef.current.isCurrent(controlLease)) return
-      setTimerStatus({ state: 'error', message: 'Timer change did not reach the recorder. Its state was not changed here.' })
+      setTimerStatus({ state: 'error', message: 'Could not confirm the timer change. This preview keeps the previous state; the recording timer state is unknown.' })
     }
   }, [capability.supported, captureId, recording])
 

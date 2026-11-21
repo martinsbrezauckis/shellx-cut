@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
+<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.117 source; v0.6.117 is the latest published release.
+This reference describes the Debug API in v0.6.118 source; v0.6.118 is the latest published release.
 
 ## Starting the server
 
@@ -135,6 +135,7 @@ All verbs go through one route; the rest are read-side support surfaces.
 | `/api/export/*path` | GET | download rendered artifacts by PROJECT-RELATIVE path, resolved against the open project's `exports/` subtree. Refuses (409) when the same relative name also matches a different file in the chosen output folder — an ambiguous request is never answered with a guess |
 | `/api/export-file?path=` | GET | download ONE exact export by absolute path — the shape that can name a file in the folder chosen with `project.set_output_dir`. Fenced to the authorized export roots (project `exports/` subtree, `CUTD_OUTPUTS_DIR`, the chosen output folder); a path that is missing or outside them is refused, never substituted |
 | `/api/source/{asset}` | GET | stream a registered asset's original source (seekable, chunked; fenced to the asset registry) |
+| `/api/recording-rehearsal/{handle}` | GET | play a disposable rehearsal MP4 by its opaque playback handle; unavailable handles return 404 |
 | `/api/library-blob/{file}` | GET | fenced blob serving for library-stored media |
 | `/api/library-poster?id=` | GET | library item poster/thumbnail (id-fenced via the library manifest) |
 | `/proxies/{file}` · `/frames/{file}` · `/filmstrip/{file}` | GET | preview proxies, extracted frames, and timeline filmstrips from the current project dir |
@@ -158,10 +159,10 @@ project folder for repair or migration; truncating `ops.jsonl` loses history.
 Oversized derived `project.json` and snapshot caches are skipped and rebuilt
 from an admitted journal.
 
-### Health & Recovery read
+### Health & recovery read
 
 `project.health {cursor?, revision?, limit?:1..128}` is the separate, read-only
-filesystem check for Settings → Health & Recovery. It first strictly validates
+filesystem check for Settings → Health & recovery. It first strictly validates
 the live journal identity. If that validation finds an external change or is
 unavailable, it returns an honest `journal.status:"attention"|"unavailable"`
 report with `media.status:"unavailable"`, zero checked assets, and no
@@ -188,7 +189,7 @@ same project revision and active jobs. This verb never repairs, relinks, deletes
 promotes, purges cache files, or follows an unregistered derived path. Job-record
 persistence notices remain on `jobs.list`; capture-recovery inventory is
 separately exposed by `screen_record.recovery_status`. Settings → Health &
-Recovery reads that inventory independently of `screen_record.doctor`, using
+recovery reads that inventory independently of `screen_record.doctor`, using
 only one complete lexical traversal for its capture result. Because the recorder
 API has no revision, its UI copy says the evidence was reported/read in that
 check, not that it is a timeless snapshot. A malformed, partial, or failed
@@ -251,7 +252,7 @@ unowned path remain outside both verbs' deletion roots.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 306 schemas once at startup and applies the selected schema at the shared
+all 317 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -481,7 +482,7 @@ and finite Screen Record ffmpeg work. The shared foreground budget is 30 minutes
 unless a shorter probe budget is documented by its caller; JSON sidecar stdin is
 written under that same cancellation/deadline boundary, and perception progress
 lines are streamed while bounded diagnostics are drained. The only intentionally
-independent process is `motion.open`, which hands ShellX Motion to the desktop
+independent process is `motion.link.edit`, which hands a linked ShellX Motion package to the desktop editor
 rather than starting a Cut job. Screen Record export/raw mux retain the recorder
 crate's separately implemented 30-minute owner because `record-render` cannot
 depend on the server job crate; it has the equivalent deadline/cancellation,
@@ -687,8 +688,8 @@ curl -sS http://127.0.0.1:6161/api/verb/edit.trim \
 The human timeline's Q and W bindings are playhead-to-edge ripple trims, not
 whole-clip deletes: Q trims the selected linked pair from the playhead back to
 its start; W trims from the playhead forward to its end. The remaining timeline
-closes the removed span. The toolbar also exposes explicit Add Video Track and
-Add Audio Track controls.
+closes the removed span. The toolbar also exposes explicit Video track and
+Audio track controls.
 
 ## Native recording permissions
 
@@ -703,14 +704,15 @@ The installed Record UI and global F9 handle the no-project case before calling
 this verb: they create a uniquely named recording project through
 `project.create`, bind its returned identity, and then pass that identity as
 `expected_project_identity`. Direct Debug API callers still need to create or
-open a project and provide the matching identity themselves.
+open a project. Pass the matching optional identity to bind Start to that project.
 
 Record's current setup choices remain active after switching to Edit; app-wide
 F9 revalidates that draft rather than the last successful take. An invalid draft
 refuses capture without changing workspace. The UI's live Pause/Resume
 acknowledgement also survives that navigation. Direct API clients own their
-setup and must inspect the actual Pause/Resume replies themselves;
-`screen_record.status` does not project Pause state.
+setup and must inspect the actual Pause/Resume replies themselves.
+`screen_record.status` also reports `pause:{enabled,state,reason}`, including
+pending `pausing` and `resuming` states.
 
 `screen_record.start` creates a private, project-local checkpoint journal before a
 backend starts. Its output is not an open live MP4: each Linux, Windows, or macOS
@@ -1016,12 +1018,21 @@ system show its screen-recording alert, so use it only when the person asks to
 check or starts a recording; `status` returns the same fields without starting a
 capture or a system prompt (the screen card is the last check, or not checked
 yet); `microphone` reads only the microphone choice and permission. Record and
-Settings > Health & Recovery read `status` when they open and run `check` from
+Settings > Health & recovery read `status` when they open and run `check` from
 their check button; voiceover reads `microphone`. In `check` mode,
 `screen_record.doctor` reports a native backend as `ok` only after a bounded,
 discarded frame reaches Cut. It does not persist image content. On Linux, the
 XDG ScreenCast portal could open a source picker or a new consent request, so
 doctor reports `unknown` instead of triggering it; `unknown` is never ready/green.
+Linux microphone readiness is separate from that screen check: a disposable
+PipeWire inventory reports `microphone_blocked.reason:"no_microphone_device"`
+only after the normal PipeWire-Pulse audio route is identifiable and its
+server answered with no real or virtual capture source. Output monitors do not count as microphones. If the server or audio route cannot be
+checked, `microphone_blocked` remains null and mic-enabled Start keeps its
+existing admission path. The result is cached for two seconds; a newly attached
+input is seen after that cache expires. Screen-only and system-sound-only
+recordings do not query microphone readiness at Start. Windows and macOS keep
+their native input and permission checks.
 Doctor accepts the recording's optional `fps` (default 30), `monitor`,
 `monitor_id`, or `window` selection. Record and Start check their current
 selection and frame rate. On Windows, `check` also tests whether the video
@@ -1112,10 +1123,12 @@ frames are resampled to the plan FPS using their timestamps, so a source with a
 higher nominal codec rate cannot duplicate frames and lengthen the export.
 
 On GNOME Wayland, global evdev button events do not provide an absolute captured-frame
-position. Cut pairs each click only with the nearest `SPA_META_Cursor` sample on the
-same capture clock when it is at most 100 ms away. SPA positions are already
-monitor-local video pixels; Cut validates them against negotiated frame bounds
-and uses them directly. On X11 and native monitor
+position. Cut uses a preceding `SPA_META_Cursor` sample on the same capture
+clock only when complete evdev observation proves no intervening pointer motion
+and no hidden or outside cursor signal invalidates it within the same segment.
+A validated sample at most 100 ms old is `exact`; an older validated position is
+`held`. SPA positions are already monitor-local video pixels; Cut validates them
+against negotiated frame bounds and uses them directly. On X11 and native monitor
 capture on Windows/macOS, rdevin global desktop points likewise become exact only after
 the selected portal/native monitor origin and coordinate size are transformed into the
 final encoded output frame. Linux waits for `source.mp4` dimensions rather than
@@ -1146,7 +1159,7 @@ or the capture tail with generated silence. Security software may ask to approve
 the new signed binary; if it blocks the audio worker, video and microphone capture
 continue and `raw_has_system` remains false.
 
-## Sequence Index and QC status
+## Sequence Index and quality check status
 
 `project.sequence_index` is the path-light cross-timeline table used by Find →
 Sequence. It searches active and inactive sequences without switching them and
@@ -1250,7 +1263,7 @@ The eight Agent Chat prompt presets only pre-fill the editable composer. Their
 verb metadata is limited to the contained Chat policy's inspect/edit routes; it
 does not make an external speech service, render/delivery route, or verification
 route available. Use **Transcript Tools** for speaker labels or dubbing,
-**Clips** for candidates and delivery, and **Review > QC** for verification.
+**Clips** for candidates and delivery, and **Review > Quality checks** for verification.
 
 `agent.chat` can also carry one immutable
 `shellx-cut/chat-timeline-target/1` from a Comment, selected timeline range,

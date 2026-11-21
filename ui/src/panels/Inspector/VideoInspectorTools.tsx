@@ -13,6 +13,7 @@ import {
   VIDEO_EFFECTS,
   ZOOM_INTENSITIES,
   blendModeFromInput,
+  blendModeLabel,
   clipEffectFromCatalog,
   isObject,
   redactModeFromInput,
@@ -235,7 +236,7 @@ export default function VideoInspectorTools({
                     }, 'Could not change the blend mode.'))
                   }}
                 >
-                  {BLEND_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+                  {BLEND_MODES.map((mode) => <option key={mode} value={mode}>{blendModeLabel(mode)}</option>)}
                 </select>
               </div>
             </>

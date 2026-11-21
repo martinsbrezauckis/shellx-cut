@@ -55,6 +55,8 @@ pub(crate) fn valid_mark(mark: &str) -> bool {
 
 /// Run as the watcher when started as one; never returns then.
 pub(crate) fn run_if_requested() {
+    #[cfg(target_os = "linux")]
+    crate::linux_microphone_probe::run_if_requested();
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(LIFELINE_ARG)) {
         return;
     }

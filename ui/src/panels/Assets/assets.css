@@ -172,6 +172,7 @@
   border-color: color-mix(in srgb, var(--green-soft) 42%, transparent);
   background: color-mix(in srgb, var(--green-soft) 10%, transparent);
 }
+[data-theme="light"] .assets__readiness-badge--good { color: var(--green); }
 .assets__readiness-badge--warn {
   color: var(--amber);
   border-color: color-mix(in srgb, var(--amber) 52%, transparent);
@@ -428,7 +429,7 @@
   color: var(--ink-3);
   cursor: pointer;
 }
-.assets__chip--on { color: #fff; background: var(--brand, #6366f1); border-color: var(--brand, #6366f1); }
+.assets__chip--on { color: #fff; background: color-mix(in srgb, var(--brand, #6366f1) 98%, #000); border-color: var(--brand, #6366f1); }
 .assets__chip--attention { background: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); color: #141414; }
 .assets__chip--save { color: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); }
 .assets__bin-unavailable { display: inline-flex; align-items: center; gap: 6px; width: 100%; font-size: 11px; color: var(--amber, #f59e0b); }

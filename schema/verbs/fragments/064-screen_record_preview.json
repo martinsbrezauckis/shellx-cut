@@ -25,7 +25,7 @@
     {
       "name": "screen_record.preview_start",
       "domain": "screen_record",
-      "description": "Start one bounded, process-local native source preview for exactly one opaque monitor or window identity from the current screen_record.doctor enumeration. Windows and macOS re-resolve that identity immediately; Linux accepts only Portal and opens a new user-consented, ephemeral PipeWire session. Every adapter retains only the latest bounded BMP in memory. A preview cannot start while a recording owns capture devices. Replacing a source stops/releases the predecessor first; no title, ordinal, native handle, region coordinates, file, restore token, or browser getDisplayMedia fallback is accepted.",
+      "description": "Start one bounded, process-local native source preview for one opaque monitor or window identity from the current screen_record.doctor enumeration, or a fresh Linux Portal selection. Windows and macOS re-resolve that identity immediately; Linux accepts only Portal and opens a new user-consented, ephemeral PipeWire session. Every adapter retains only the latest bounded BMP in memory. A preview cannot start while a recording owns capture devices. Replacing a source stops/releases the predecessor first; no title, ordinal, native handle, region coordinates, file, restore token, or browser getDisplayMedia fallback is accepted.",
       "args": {
         "type": "object",
         "required": ["source"],

@@ -429,6 +429,7 @@ impl ProjectStore {
             // it only fails on exotic FS states, where we fall back to the joined
             // path rather than refuse to create (parity with open()'s fallback).
             let dir = dir.canonicalize().unwrap_or(dir);
+            let format_explicit = settings.is_some();
             let settings = settings.unwrap_or_default();
             let project = Project::new(name, settings.clone());
             let log = OpLog::open(&dir.join("ops.jsonl"))?;
@@ -447,7 +448,7 @@ impl ProjectStore {
                 ts: OpRecord::now_ts(),
                 actor,
                 verb: "project.create".into(),
-                args: json!({"name": name, "settings": settings}),
+                args: json!({"name": name, "settings": settings, "format_explicit": format_explicit}),
                 rationale: None,
                 effects: vec![],
                 inverse: None, // creation is not undoable

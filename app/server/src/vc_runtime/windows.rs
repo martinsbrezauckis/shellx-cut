@@ -32,8 +32,8 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use super::{
-    classify_exit, download_error, download_url, install_error, signature_error, staging_dir,
-    InstallerExit, Status, MAX_INSTALLER_BYTES, PUBLISHER, SYSTEM_FILES,
+    classify_exit, download_error, download_url, install_error_with_log, signature_error,
+    staging_dir, InstallerExit, Status, MAX_INSTALLER_BYTES, PUBLISHER, SYSTEM_FILES,
 };
 
 fn wide(text: &str) -> Vec<u16> {
@@ -365,14 +365,8 @@ pub(super) fn install(
     let exit = classify_exit(code);
     let after = status();
     if !after.installed {
-        let log_tail = std::fs::read_to_string(&log)
-            .map(|text| text.lines().rev().take(6).collect::<Vec<_>>().join(" | "))
-            .unwrap_or_default();
-        let mut error = install_error(exit, can_approve);
-        if !log_tail.is_empty() {
-            error.cause = format!("{}; installer log: {log_tail}", error.cause);
-        }
-        return Err(error);
+        let log_text = std::fs::read_to_string(&log).unwrap_or_default();
+        return Err(install_error_with_log(exit, can_approve, &log_text));
     }
     let restart_needed = matches!(
         exit,

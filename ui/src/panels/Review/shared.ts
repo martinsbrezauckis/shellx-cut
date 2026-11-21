@@ -257,7 +257,7 @@ export async function dispatchVerb(name: string, args: unknown): Promise<VerbRes
   })
   const body = await res.json()
   return verbResultFrom(body)
-    ?? { ok: false, error: { code: 'bad_response', message: 'server returned an invalid verb envelope', cause: 'invalid JSON envelope' } }
+    ?? { ok: false, error: { code: 'bad_response', message: 'Cut returned an unreadable response. Try again; if it persists, show or copy the error details.', cause: 'The response could not be read.' } }
 }
 
 /** Seek the shared playhead (ui.playhead). Returns confirmed ms or null. */

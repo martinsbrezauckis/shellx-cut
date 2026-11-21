@@ -24,6 +24,8 @@ interface Props {
   disabled: boolean
   /** Browser devicechange is allowed to refresh only in this phase. */
   idle: boolean
+  /** Explicit Refresh sources also refreshes this independent doctor read. */
+  refreshSequence: number
   onAudioChange: (audio: boolean) => void
   onTestingChange: (testing: boolean) => void
 }
@@ -54,7 +56,7 @@ function statusFor(state: TestState): string {
 }
 
 /** Public Record control: tokens + sanitized labels only, never native identity. */
-export function MicInputControl({ audio, disabled, idle, onAudioChange, onTestingChange }: Props) {
+export function MicInputControl({ audio, disabled, idle, refreshSequence, onAudioChange, onTestingChange }: Props) {
   const [state, setState] = useState<TestState>({ kind: 'idle' })
   const [microphones, setMicrophones] = useState<PublicMicrophone[]>([])
   const [selection, setSelection] = useState<MicrophoneSelection>({ mode: 'system_default', status: 'ready' })
@@ -76,7 +78,7 @@ export function MicInputControl({ audio, disabled, idle, onAudioChange, onTestin
     setSelection(result.microphone_selection ?? { mode: 'system_default', status: 'ready' })
   }, [])
 
-  useEffect(() => { void refreshSelection() }, [refreshSelection])
+  useEffect(() => { void refreshSelection() }, [refreshSelection, refreshSequence])
   useEffect(() => () => {
     requestId.current += 1
     onTestingChange(false)

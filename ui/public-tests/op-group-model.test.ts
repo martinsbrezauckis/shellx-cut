@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 import type { OpRecord } from '../src/lib/client'
 import {
+  editActionLabel,
   groupOperations,
   operationGroupHeading,
   operationGroupId,
@@ -34,6 +35,10 @@ assert.deepEqual(groups.map((group) => group.entries.map((entry) => entry.index)
 assert.equal(groups[0].groupId, 'grp-a')
 assert.notEqual(groups[0].key, groups[2].key, 'a later reuse of the tag stays a separate history unit')
 assert.equal(operationGroupHeading(groups[0]), 'CALI: Split linked picture and sound')
-assert.equal(operationGroupHeading(groups[2]), 'CALI: edit.move')
+assert.equal(operationGroupHeading(groups[2]), 'CALI: Move clip')
+
+assert.equal(editActionLabel('transcript.remove_silences'), 'Remove pauses')
+assert.equal(editActionLabel('transcript.remove_fillers'), 'Remove filler words')
+assert.equal(editActionLabel('edit.trim_edges'), 'Trim silent start and end')
 
 console.log('PASS adjacent durable operation groups preserve history order and human summaries')

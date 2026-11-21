@@ -15,7 +15,7 @@
   border: 1px solid var(--line, #2a2e36); border-radius: 7px; padding: 7px 10px;
   font: 600 var(--fs-ui-sm) var(--sans); cursor: pointer;
 }
-.pj-portable-launch-btn, .pj-portable-primary { border-color: var(--cut, #4aa3ff); background: var(--cut, #4aa3ff); color: #06121f; }
+.pj-portable-launch-btn, .pj-portable-primary { border-color: var(--cut, #4aa3ff); background: var(--cut, #4aa3ff); color: #fff; }
 .pj-portable-secondary { background: transparent; color: var(--ink-2, #ccd2dc); }
 .pj-portable-primary:disabled, .pj-portable-secondary:disabled { cursor: default; opacity: .52; }
 

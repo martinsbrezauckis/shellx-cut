@@ -169,7 +169,7 @@ export interface VerbArgs {
   'project.format': { width?: number; height?: number; fps?: number; rationale?: string }
   'project.color': { working?: 'rec709' | 'rec2020' | 'srgb' | 'linear'; output?: 'rec709' | 'rec2020' | 'srgb' | 'linear'; rationale?: string }
   'project.brand': { brand?: BrandKit; clear?: boolean; rationale?: string }
-  'project.set_output_dir': { dir?: string; rationale?: string }
+  'project.set_output_dir': { dir?: string; only_if_empty?: boolean; rationale?: string }
   'project.get_output_dir': Record<string, never>
   'project.revert': { to: string; if_tip?: string; rationale?: string }
   'project.undo': Record<string, never>

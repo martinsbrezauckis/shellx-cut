@@ -8,8 +8,8 @@ type ToolAction = 'trim_edges' | 'split_scenes' | 'mark_scenes'
 const TOOL_ACTIONS: { id: ToolAction; label: string; title: string }[] = [
   {
     id: 'trim_edges',
-    label: 'Trim dead air',
-    title: 'Trim dead air from the top and tail of the timeline',
+    label: 'Trim silent start and end',
+    title: 'Trim silent start and end from the top and tail of the timeline',
   },
   {
     id: 'split_scenes',
@@ -30,7 +30,7 @@ function resultNumber(result: unknown, key: string): number {
 }
 
 function toolResultMessage(id: ToolAction, r: VerbResult<unknown>): string {
-  if (!r.ok) return noTranscriptKind(r.error) ? `Trim dead air: ${noTranscriptSentence(noTranscriptKind(r.error)!)}` : `${id}: ${r.error?.message ?? r.error?.code ?? 'failed'}`
+  if (!r.ok) return noTranscriptKind(r.error) ? `Trim silent start and end: ${noTranscriptSentence(noTranscriptKind(r.error)!)}` : `${id}: ${r.error?.message ?? r.error?.code ?? 'failed'}`
   if (id === 'split_scenes') {
     const splits = resultNumber(r.result, 'splits')
     const sceneCuts = resultNumber(r.result, 'scene_cuts')
@@ -46,7 +46,7 @@ function toolResultMessage(id: ToolAction, r: VerbResult<unknown>): string {
     return 'Mark scenes: no scene cuts found'
   }
   const trimmed = resultNumber(r.result, 'leading_trimmed_ms') + resultNumber(r.result, 'trailing_trimmed_ms')
-  return trimmed > 0 ? `Trim dead air: trimmed ${trimmed}ms` : 'Trim dead air: nothing trimmed'
+  return trimmed > 0 ? `Trim silent start and end: trimmed ${trimmed}ms` : 'Trim silent start and end: nothing trimmed'
 }
 
 export default function TimelineGlobalTools({ project }: { project: Project | null }) {

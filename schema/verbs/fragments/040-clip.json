@@ -5,7 +5,7 @@
     {
       "name": "clip.candidates",
       "domain": "clip",
-      "description": "Rank the windows of an asset most likely to work as standalone short-form clips (social repurposing). READ-ONLY analysis over the transcript — no op, no render. Honest HEURISTIC v1 (scoring:\"heuristic\" — an editorial prior on opening-hook strength + a pacing/filler retention proxy, NOT a trained virality model); every candidate carries a human `reason`. With no `asset`, pools across every asset that has a transcript and re-ranks globally. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
+      "description": "Find highlights (verb `clip.candidates`): rank the windows of an asset most likely to work as standalone short-form clips (social repurposing). READ-ONLY analysis over the transcript — no op, no render. Honest HEURISTIC v1 (scoring:\"heuristic\" — an editorial prior on opening-hook strength + a pacing/filler retention proxy, NOT a trained virality model); every candidate carries a human `reason`. With no `asset`, pools across every asset that has a transcript and re-ranks globally. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "additionalProperties": false,

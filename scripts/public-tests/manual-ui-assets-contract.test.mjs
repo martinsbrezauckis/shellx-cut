@@ -191,7 +191,7 @@ async function captureCurrentUi(appVersion) {
     const require = createRequire(appPackage)
     const { chromium } = require('playwright')
     browser = await chromium.launch({ headless: true })
-    const page = await browser.newPage({ viewport: { width: 2160, height: 1350 }, deviceScaleFactor: 1 })
+    const page = await browser.newPage({ viewport: { width: 1920, height: 1029 }, deviceScaleFactor: 1 })
     const pageErrors = []
     page.on('pageerror', (error) => pageErrors.push(error.stack || error.message))
     await page.goto(base, { waitUntil: 'domcontentloaded' })
@@ -231,7 +231,7 @@ async function captureCurrentUi(appVersion) {
     await page.screenshot({ path: tempEditor })
 
     await page.getByRole('tab', { name: 'Record' }).click()
-    await page.setViewportSize({ width: 1920, height: 1080 })
+    await page.setViewportSize({ width: 1920, height: 1029 })
     await page.waitForSelector('[data-cut-panel="record"]')
     await page.waitForFunction((name) => document.querySelector('[data-cut-project]')?.textContent?.includes(name) === true, captureName)
 
@@ -323,8 +323,8 @@ for (const path of [editorAsset, recordAsset]) {
 const captureEvidence = writeCurrent ? await captureCurrentUi(appVersion) : null
 const editorPng = pngSize(editorAsset)
 const recordPng = pngSize(recordAsset)
-assert.deepEqual({ width: editorPng.width, height: editorPng.height }, { width: 2160, height: 1350 }, 'editor capture keeps its documented desktop viewport')
-assert.deepEqual({ width: recordPng.width, height: recordPng.height }, { width: 1920, height: 1080 }, 'Record capture keeps its documented desktop viewport')
+assert.deepEqual({ width: editorPng.width, height: editorPng.height }, { width: 1920, height: 1029 }, 'editor capture keeps its documented desktop viewport')
+assert.deepEqual({ width: recordPng.width, height: recordPng.height }, { width: 1920, height: 1029 }, 'Record capture keeps its documented desktop viewport')
 assert.ok(editorPng.bytes > 50_000, 'editor capture is a nontrivial raster image')
 assert.ok(recordPng.bytes > 50_000, 'Record capture is a nontrivial raster image')
 

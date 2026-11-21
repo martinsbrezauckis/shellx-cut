@@ -92,5 +92,20 @@ export function useTranscriptSources(
     setState((previous) => previous.key === projectKey ? { ...previous, failed: {} } : previous)
   }, [projectKey])
 
-  return { loaded, loadFailures: failures, retrySources: retry }
+  // A replacement writes the same receipt path, so locator-based cache
+  // pruning cannot detect it. Discard just that asset after the job finishes.
+  const refreshSource = useCallback((assetId: string) => {
+    const owner = ownerRef.current
+    if (owner?.key === projectKey) owner.requests.delete(assetId)
+    setState((previous) => {
+      if (previous.key !== projectKey) return previous
+      const items = { ...previous.items }
+      const failed = { ...previous.failed }
+      delete items[assetId]
+      delete failed[assetId]
+      return { ...previous, items, failed }
+    })
+  }, [projectKey])
+
+  return { loaded, loadFailures: failures, retrySources: retry, refreshSource }
 }

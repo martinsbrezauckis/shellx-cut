@@ -45,7 +45,7 @@ scene map for visual events inside the cut range. If the speaker flubbed a line
 WHILE clicking through a flow, prefer keeping the flub over teleporting the UI
 (or flag for a re-record — that's a human escalation, not an edit).
 
-### 4. Silence pass — conservative
+### 4. Remove pauses — Light amount
 `transcript.remove_silences{aggressiveness:"natural", min_ms:2000}` and then
 review every emitted op against the silence×scene map from step 1. Restore any
 op whose span contained scene events. Long unavoidable waits (build running,

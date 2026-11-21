@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { shouldPublishPlaybackTick, playbackBindingKey } from '../src/panels/Preview/playbackClock'
 import { activeVideo } from '../src/panels/Preview/model'
 import { PlaybackHandoff, PlaybackSeekTracker, acceptPlaybackFrame, canStartPreviewMedia, normalizePlayheadMs, forwardPlaybackPosition, playbackVideoKey } from '../src/panels/Preview/playbackClock'
 import { resolveOverlays } from '../src/panels/Preview/composite'
@@ -12,6 +13,11 @@ assert.equal(activeVideo(project, 30000, new Set()), null)
 assert.equal(resolveOverlays(project, 45000, 'v1', new Set()).overlays[0]?.clipId, 'middle')
 const first = activeVideo(project, 29999, new Set())!
 const last = activeVideo(project, 60000, new Set())!
+assert.equal(playbackBindingKey(first, 0), playbackBindingKey({ ...first, clipId: 'piece', startMs: first.startMs + first.durMs, srcInMs: first.srcOutMs }, 0), 'continuous pieces share a clock binding')
+assert.notEqual(playbackBindingKey(first, 0), playbackBindingKey(first, 1), 'a deck swap rebinds the clock')
+assert.notEqual(playbackBindingKey(first, 0), playbackBindingKey({ ...first, srcInMs: first.srcInMs + 200 }, 0), 'a source jump rebinds the clock')
+assert.equal(playbackBindingKey(null, null), null, 'a gap clears the clock binding')
+assert.notEqual(playbackBindingKey({ ...first, speed: 2 }, 0), playbackBindingKey({ ...first, speed: 2, clipId: 'piece' }, 0), 'other speeds preserve placement boundaries')
 const key = playbackVideoKey(last)
 const frame = (video: typeof last | null, media: number, element: number, ready = true, seeking = false) => acceptPlaybackFrame(key, video, media, element, ready, seeking, 1000/24)
 assert.equal(frame(last, 0, 0, false), false, 'initial callback cannot run before seek readiness')
@@ -39,6 +45,10 @@ assert.equal(tracker.external(7000), true, 'same-clip user seek starts a new epo
 tracker.published(7100)
 assert.equal(tracker.external(7100), false)
 assert.equal(tracker.external(500), true, 'backward external seek detected')
+assert.equal(shouldPublishPlaybackTick(199, 100, 2399, 1, 2400), false, 'inside a gap the usual cadence is sufficient')
+assert.equal(shouldPublishPlaybackTick(199, 100, 2401, 1, 2400), true, 'crossing the next clip start must publish before the next 100 ms tick')
+assert.equal(shouldPublishPlaybackTick(199, 100, 2401, -1, 2400), false, 'reverse playback keeps its cadence')
+assert.equal(shouldPublishPlaybackTick(200, 100, 2399, 1, null), true, 'ordinary publication keeps its cadence')
 console.log('PASS preview playback clock guards')
 
 // Boundary update and a same-clip user seek can be batched before React renders

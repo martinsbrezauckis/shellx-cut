@@ -837,7 +837,7 @@ mod tests {
                 .as_str()
                 .unwrap(),
         );
-        let account = home.join(".codex-acct2");
+        let account = home.join(".codex-second");
         document["providers"][1]["admission"]["enrollment"]["codexAccountHome"] = json!(account);
         document["providers"][1]["effectiveEnvironment"]["CODEX_HOME"] = json!(account);
 

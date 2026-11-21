@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.117",
+    "version": "0.6.118",
     "status": "published",
-    "published_version": "0.6.117"
+    "published_version": "0.6.118"
   },
   "mutation_controls": {
     "request_id": {
@@ -298,7 +298,7 @@
     {
       "name": "project.delete",
       "domain": "project",
-      "description": "PERMANENTLY delete a project's .cutproj directory from disk AND drop it from the recent index (forget = index only; delete = the files). DESTRUCTIVE — the UI confirms before calling. GUARDRAILS: the resolved path must be an existing *.cutproj DIRECTORY, and it must NOT be the currently-open project (open/create another first → error conflict). Source MEDIA referenced by the project lives OUTSIDE the .cutproj (linked by path) and is NEVER touched — only the project's own dir (edits/proxies/receipts) is removed. Pass exactly one of id/path.",
+      "description": "PERMANENTLY delete a project's .cutproj directory from disk AND drop it from the recent index (forget = index only; delete = the files). DESTRUCTIVE — the UI confirms before calling. GUARDRAILS: the resolved path must be an existing *.cutproj DIRECTORY, and it must NOT be the currently-open project (open/create another first → error conflict). Deletes everything inside the .cutproj directory, including any source media stored there. Linked source media outside that directory is not removed. Pass exactly one of id/path.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -405,7 +405,7 @@
     {
       "name": "project.health",
       "domain": "project",
-      "description": "Read a bounded, path-free Health & Recovery report for the open project. It first strictly revalidates the journal identity. A live external-change or identity failure is disclosed as journal attention/unavailable and deliberately returns no asset membership until the project is closed and reopened. When the journal is current, each page checks at most 128 registered assets for source, proxy and filmstrip availability. The first page also reports a bounded apparent-byte inventory of only recognized flat rebuildable proxy and thumbnail outputs, including how much is no longer referenced by the project. Its read-only cleanup preview divides those unreferenced outputs by a 24-hour file-change safety window; this is not last-use evidence or permission to delete, and active producers must be rechecked before any future removal. It never follows symlinks or descends into unexpected directories and excludes exports, captures, receipts, source media, and foreign files. The first page returns an opaque project_revision; every cursor continuation must send that exact revision so pages cannot mix project membership across an edit. This read never repairs, deletes, promotes, or follows an unregistered derived path. Job persistence notices are intentionally reported by jobs.list and capture-recovery inventory by screen_record.recovery_status.",
+      "description": "Read a bounded, path-free Health & recovery report for the open project. It first strictly revalidates the journal identity. A live external-change or identity failure is disclosed as journal attention/unavailable and deliberately returns no asset membership until the project is closed and reopened. When the journal is current, each page checks at most 128 registered assets for source, proxy and filmstrip availability. The first page also reports a bounded apparent-byte inventory of only recognized flat rebuildable proxy and thumbnail outputs, including how much is no longer referenced by the project. Its read-only cleanup preview divides those unreferenced outputs by a 24-hour file-change safety window; this is not last-use evidence or permission to delete, and active producers must be rechecked before any future removal. It never follows symlinks or descends into unexpected directories and excludes exports, captures, receipts, source media, and foreign files. The first page returns an opaque project_revision; every cursor continuation must send that exact revision so pages cannot mix project membership across an edit. This read never repairs, deletes, promotes, or follows an unregistered derived path. Job persistence notices are intentionally reported by jobs.list and capture-recovery inventory by screen_record.recovery_status.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -811,7 +811,7 @@
     {
       "name": "project.package_plan",
       "domain": "project",
-      "description": "B6 dry-run for a Cut-native portable package. The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, refuse offline/symlinked media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; if the current project revision is a B5 grouped relink, its exact durable receipt is required. When supplied it must be immutable, journal-backed, and match the current source revision exactly.",
+      "description": "Preview a project copy with its used media (verb `project.package_plan`). The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, resolve media paths to their canonical targets, refuse offline media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; if the current project revision is a B5 grouped relink, its exact durable receipt is required. When supplied it must be immutable, journal-backed, and match the current source revision exactly.",
       "args": {
         "type": "object",
         "required": [
@@ -860,7 +860,7 @@
     {
       "name": "project.package_create",
       "domain": "project",
-      "description": "B6 Pack project publication used after an explicit Projects > Make a copy confirmation or by direct API. It recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
+      "description": "Save a project copy with its used media (verb `project.package_create`) after an explicit Projects > Make a copy confirmation or a direct API call. It recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
       "args": {
         "type": "object",
         "required": [
@@ -954,7 +954,7 @@
     {
       "name": "project.ops",
       "domain": "project",
-      "description": "Return one bounded cursor page of op-log records from the validated in-memory journal index (incremental sync for review rails).",
+      "description": "Read edit history (verb `project.ops`): return one bounded cursor page of operation records from the validated in-memory journal index (incremental sync for review rails).",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -1140,7 +1140,7 @@
     {
       "name": "project.diff",
       "domain": "project",
-      "description": "Diff between two log positions (checkpoint id/name, op id, or 'now' = the log head): the ops in between plus a computed summary (clips added/removed/moved, duration delta, per-track ranges touched). Canonical pre-render review: {from: last_checkpoint, to: 'now'}.",
+      "description": "Compare edits (verb `project.diff`): compare two log positions (checkpoint id/name, op id, or 'now' = the log head): the ops in between plus a computed summary (clips added/removed/moved, duration delta, per-track ranges touched). Canonical pre-render review: {from: last_checkpoint, to: 'now'}.",
       "args": {
         "type": "object",
         "required": [
@@ -1257,7 +1257,7 @@
     {
       "name": "project.format",
       "domain": "project",
-      "description": "Set the timeline composition FORMAT — canvas resolution (width×height) and frame timing. The first imported video adopts these automatically on a new untouched project. This is not an export-quality picker: delivery aspect, output size, codec, and bitrate can be chosen per render/export without mutating the project. At least one of width/height/fps is required; the rest are left unchanged. Changing fps deterministically regrids existing frame-aware speed ramps to the new output frame/sample grid and reapplies their safe per-frame segment cap. A temporary lower FPS reduces only the effective filtergraph detail; the retained bounded request is restored if a later format permits it. Historic ramps recorded before frame-aware timing retain their millisecond behavior. The format snapshot is logged for replay, so the same regrid order survives reopen. UI: Render > Timeline, with 2160p/1080p/720p/480p and 24/25/30/50/60 fps presets.",
+      "description": "Set the timeline composition FORMAT — canvas resolution (width×height) and frame timing. The first imported video adopts these automatically on a new untouched project. This is not an export-quality picker: delivery aspect, output size, codec, and bitrate can be chosen per render/export without mutating the project. At least one of width/height/fps is required; the rest are left unchanged. Changing fps deterministically regrids existing frame-aware speed ramps to the new output frame/sample grid and reapplies their safe per-frame segment cap. A temporary lower FPS reduces only the effective filtergraph detail; the retained bounded request is restored if a later format permits it. Historic ramps recorded before frame-aware timing retain their millisecond behavior. The format snapshot is logged for replay, so the same regrid order survives reopen. UI: Render > Advanced · timeline format, with 2160p/1080p/720p/480p and 24/25/30/50/60 fps presets.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -1460,7 +1460,7 @@
     {
       "name": "project.set_output_dir",
       "domain": "project",
-      "description": "Choose the FOLDER where exports + renders are written when a verb isn't given an explicit `path` (the UI 'Choose folder…' / agent control over the destination). The folder must already exist and accept files, and on Linux and macOS it must not be writable by EVERYONE on the computer unless it has the sticky bit set (a folder only the group can write to is fine; the render stages exports there and refuses an everyone-writable folder, so it is refused now with `export folder can be written by anyone on this computer`); it is canonicalized and becomes an allowed output-fence root. Empty/omitted `dir` clears the choice (back to <project>/exports). It is an APP-WIDE remembered preference held by the engine, not per project: it stays in force for every project opened afterwards until cleared, the status bar and the Export menu show it, and each change publishes the `output_folder_changed` event. If the chosen folder is later deleted or becomes unwritable, an export that would use it is refused BEFORE it starts, with the folder named and the way forward (choose another folder, or clear it). NOT a timeline op, never replayed.",
+      "description": "Choose the FOLDER where exports + renders are written when a verb isn't given an explicit `path` (the UI 'Choose folder…' / agent control over the destination). The folder must already exist and accept files, and on Linux and macOS it must not be writable by EVERYONE on the computer unless it has the sticky bit set (a folder only the group can write to is fine; the render stages exports there and refuses an everyone-writable folder, so it is refused now with `export folder can be written by anyone on this computer`); it is canonicalized and becomes an allowed output-fence root. Empty/omitted `dir` clears the choice (back to <project>/exports). `only_if_empty:true` is for one-time carry-over of an older UI choice: with a nonempty `dir`, set only when the engine has no folder; otherwise return the current status without changing it. It is an APP-WIDE remembered preference held by the engine, not per project: it stays in force for every project opened afterwards until cleared, the status bar and the Export menu show it, and each change publishes the `output_folder_changed` event. If the chosen folder is later deleted or becomes unwritable, an export that would use it is refused BEFORE it starts, with the folder named and the way forward (choose another folder, or clear it). NOT a timeline op, never replayed.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -1468,6 +1468,10 @@
           "dir": {
             "type": "string",
             "description": "Absolute path to an EXISTING folder for default-named exports. Empty/omitted = clear (revert to <project>/exports)."
+          },
+          "only_if_empty": {
+            "type": "boolean",
+            "description": "One-time legacy UI carry-over only. If the engine already has a choice, return its current status without validating dir or changing the choice. Otherwise requires a nonempty dir."
           },
           "rationale": {
             "type": "string"
@@ -2215,7 +2219,7 @@
     {
       "name": "comment.export",
       "domain": "comment",
-      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside an authorized export folder — the project's exports subtree, CUTD_OUTPUTS_DIR, or the folder chosen with project.set_output_dir — which is where the engine is allowed to deliver a render in the first place; this prevents a tampered receipt from turning the export route into an arbitrary-file reader. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
+      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside the project's exports subtree; a chosen delivery folder does not grant this package permission to copy its files. Render into the project's exports folder before exporting comments. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
       "args": {
         "type": "object",
         "required": [],
@@ -2552,7 +2556,7 @@
           }
         }
       },
-      "result": "{asset_id, job_id, capture_manifest?: {path, events}} — watch job_progress events or poll jobs.status; the chain job result carries capture_manifest.{markers_created, events_skipped, skipped[], note}, and placed plus placement {placed:true, tracks} or {placed:false, reason}: the first import REQUESTED into an empty timeline is the one placed. A folder or an empty file is refused at once with invalid_args; a file ffprobe cannot read fails the chain job with unreadable_media and the import is undone (no dead asset)",
+      "result": "{asset_id, job_id, capture_manifest?: {path, events}} — watch job_progress events or poll jobs.status; the chain job result carries capture_manifest.{markers_created, events_skipped, skipped[], note}, and placed plus placement {placed:true, tracks} or {placed:false, reason}: the first import REQUESTED into an empty timeline is the one placed. A folder or an empty file is refused at once with invalid_args; a file ffprobe cannot read fails the chain job with unreadable_media and the import is undone (no dead asset). If the analysis job cannot be saved, the asset stays registered and the returned job is failed with io and \"Media analysis did not start\"; free space or restore write access to the project folder, then reopen the project to retry analysis for the same asset",
       "behavior": {
         "mutation_class": "asset_metadata",
         "side_effects": {
@@ -2929,7 +2933,7 @@
     {
       "name": "media.filmstrip",
       "domain": "media",
-      "description": "Build a timeline THUMBNAIL TILE for a video asset from its proxy — a horizontal row of evenly-spaced frames. TWO modes: (1) WHOLE-ASSET (no range_ms) = the base strip over [0,duration], stored on the asset (field `filmstrip`), idempotent, built automatically in the import chain after the proxy step; the UI slices it per clip by the linear fraction t/duration. (2) WINDOWED / ZOOM (range_ms given) = sample just that SOURCE sub-range at `count` frames — the per-zoom density path: the UI requests exactly the frames visible for a clip at the current zoom (≈1 thumb per fixed pixel width), so as you zoom in the window shrinks and density rises, approaching per-frame at sub-second zoom; ephemeral (NOT stored on the asset), returns {thumbs, range_ms, count, h}. Cost is bounded because only the visible window is ever sampled. Video assets WITH a proxy only.",
+      "description": "Build a timeline THUMBNAIL TILE for a video asset from its proxy — a horizontal row of evenly-spaced frames. TWO modes: (1) WHOLE-ASSET (no range_ms) = the base strip over [0,duration], stored on the asset (field `filmstrip`), idempotent, built automatically in the import chain after the proxy step; the UI slices it per clip by the linear fraction t/duration. (2) WINDOWED / ZOOM (range_ms given) = sample just that SOURCE sub-range at `count` frames — the per-zoom density path: the UI requests exactly the frames visible for a clip at the current zoom (≈1 thumb per fixed pixel width), so as you zoom in the window shrinks and density rises, approaching per-frame at sub-second zoom; ephemeral (NOT stored on the asset), returns {thumbs, range_ms, count, h}. Cost is bounded because only the visible window is ever sampled. Windowed mode requires a video asset with a proxy. Whole-asset mode also supports a still-image thumbnail from the source without a proxy.",
       "args": {
         "type": "object",
         "required": [
@@ -2939,7 +2943,7 @@
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset id (must be a video asset with a built proxy)"
+            "description": "Asset id. Video requires a built proxy; whole-asset mode also accepts a still image without a proxy."
           },
           "range_ms": {
             "type": "array",
@@ -2988,7 +2992,7 @@
     {
       "name": "media.transcribe",
       "domain": "media",
-      "description": "Run word-level transcription on an asset (job, returns {job_id}). Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
+      "description": "Run word-level transcription on an asset (job, returns {job_id}). It can be run again at any time; a successful run replaces that asset's previous word transcript. Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
       "args": {
         "type": "object",
         "required": [
@@ -3001,7 +3005,7 @@
           },
           "model": {
             "type": "string",
-            "description": "Legacy per-call model override. Prefer system.set_stt_model so the Environment panel, doctor card, and agents agree on the active model."
+            "description": "Legacy per-call model override. Prefer system.set_stt_model so Settings > AI & transcription, doctor card, and agents agree on the active model."
           }
         }
       },
@@ -3466,7 +3470,7 @@
     {
       "name": "jobs.cancel",
       "domain": "jobs",
-      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. A stop that arrives after a render has published its finished file cannot undo the export: the job ends done, the receipt is written, and checks the stop cut short are reported as not measured. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
+      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. A stop that arrives after a render has published its finished file cannot undo the export: the job ends done, the receipt is written, and checks the stop cut short are reported as not measured. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. An active recording-save job (screen_record_stop) is refused with conflict because its finalizer must finish. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
       "args": {
         "type": "object",
         "required": [
@@ -3543,7 +3547,7 @@
     {
       "name": "jobs.before_quit",
       "domain": "jobs",
-      "description": "What closing the desktop app would cancel, and stopping it cleanly. The app asks this before its window closes or it quits. Running work someone asked for (the same rule as a project change: exports, renders, reviews, analysis, downloads; automatic import follow-ups do not count) refuses with jobs_running, naming each job, and nothing is stopped. With cancel_running_jobs:true every running job is cancelled the normal way (an export removes its staging and lock files) and the call returns once they have stopped. There is no verb that closes the app; an agent uses this to see what a quit would cancel.",
+      "description": "What closing the desktop app would cancel, and stopping it cleanly. The app asks this before its window closes or it quits. Running work someone asked for (the same rule as a project change: exports, renders, reviews, analysis, downloads; automatic import follow-ups do not count) refuses with jobs_running, naming each job, and nothing is stopped. An active recording-save job (screen_record_stop) always refuses with jobs_running, even with cancel_running_jobs:true. Otherwise cancel_running_jobs:true cancels running jobs the normal way (an export removes its staging and lock files). If jobs are still stopping after the bounded wait, the call returns job_cancel_pending; repeat it to wait again. There is no verb that closes the app; an agent uses this to see what a quit would cancel.",
       "args": {
         "type": "object",
         "required": [],
@@ -3551,7 +3555,7 @@
         "properties": {
           "cancel_running_jobs": {
             "type": "boolean",
-            "description": "Cancel every running job and wait until they have stopped (default false: refuse with jobs_running when work someone asked for runs)."
+            "description": "Cancel running jobs and wait for them to stop; job_cancel_pending means repeat the call to wait again. An active recording-save job always refuses with jobs_running. Default false: refuse with jobs_running when work someone asked for runs."
           }
         }
       },
@@ -3901,7 +3905,7 @@
     {
       "name": "edit.trim_edges",
       "domain": "edit",
-      "description": "Top-and-tail: remove leading + trailing DEAD AIR (before the first spoken word / after the last) while preserving internal pacing — unlike transcript.remove_silences which removes every silence. Anchors to SPEECH (word timings via the EDL), leaving keep_pad_ms of breath each side. The dedicated fix for the silence_at_edges render check. Transcribed footage with no spoken words = ok with a nothing-found note (untranscribed_assets lists assets that had no transcript). With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
+      "description": "Trim silent start and end (verb `edit.trim_edges`): remove leading + trailing silence (before the first spoken word / after the last) while preserving internal pacing — unlike transcript.remove_silences which removes every silence. Anchors to SPEECH (word timings via the EDL), leaving keep_pad_ms of breath each side. The dedicated fix for the silence_at_edges render check. Transcribed footage with no spoken words = ok with a nothing-found note (untranscribed_assets lists assets that had no transcript). With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "required": [],
@@ -4675,7 +4679,7 @@
     {
       "name": "edit.fit_to_fill",
       "domain": "edit",
-      "description": "FIT TO FILL: drop source footage into an EMPTY timeline slot and SPEED-ADJUST it so it exactly fills the slot. The fit speed = source_span / slot, so the retimed clip's timeline span lands back on the slot duration and NO downstream content moves (the gap is consumed in place, not rippled). The slot is [at_ms, at_ms+duration_ms) on `track`; when `duration_ms` is OMITTED it is inferred from the GAP currently at at_ms (fill THIS gap, from at_ms to the gap's end). The source is an imported `asset` or an existing `source_clip`; `source_in_ms`/`source_out_ms` window it (defaults: 0 / the source_clip's range / the asset's probed duration). Explicit source windows must stay inside the probed asset duration. The target span MUST be EMPTY -- a single gap that covers it, or the track tail -- fit_to_fill FILLS empty space, it does not overwrite media (delete the clip there first, which leaves a gap, or use edit.replace). The required speed must lie in the engine's retime range [0.25x, 4.0x]; if the source is too long or too short to fit, the verb errors with an actionable hint (trim the source / widen the slot). Single track, no linked audio (run it again on the audio track to speed-fit the matching audio slot). Lowers to ONE replay-safe edit.fit_to_fill core op (the resolved slot + source window + speed recorded so replay reproduces the fill; the placed clip's id pinned via added_clip). ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "FIT TO FILL: drop source footage into an EMPTY timeline slot and SPEED-ADJUST it so it exactly fills the slot. The fit speed = source_span / slot, so the retimed clip's timeline span lands back on the slot duration and NO downstream content moves (the gap is consumed in place, not rippled). The slot is [at_ms, at_ms+duration_ms) on `track`; when `duration_ms` is OMITTED it is inferred from the GAP currently at at_ms (fill THIS gap, from at_ms to the gap's end). The source is an imported `asset` or an existing `source_clip`; `source_in_ms`/`source_out_ms` window it (defaults: 0 / the source_clip's range / the asset's probed duration). Explicit source windows must stay inside the probed asset duration. The target span MUST be EMPTY -- a single gap that covers it, or the track tail -- fit_to_fill FILLS empty space, it does not overwrite media (remove the clip's range with edit.ripple_delete{ripple:false} to leave a gap, or use edit.replace). The required speed must lie in the engine's retime range [0.25x, 4.0x]; if the source is too long or too short to fit, the verb errors with an actionable hint (trim the source / widen the slot). Single track, no linked audio (run it again on the audio track to speed-fit the matching audio slot). Lowers to ONE replay-safe edit.fit_to_fill core op (the resolved slot + source window + speed recorded so replay reproduces the fill; the placed clip's id pinned via added_clip). ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -4789,7 +4793,7 @@
     {
       "name": "edit.split_edit",
       "domain": "edit",
-      "description": "J-cut / L-cut (SPLIT EDIT): offset the AUDIO transition relative to the VIDEO cut at a clip boundary, so one clip's audio leads or lags its video -- the standard smooth-dialogue edit in every NLE. MODEL NOTE (see edit.detach_audio): a video clip's audio lives as a SEPARATE audio-track clip (the v1/a1t mirror), and clips trim/move independently. So a J/L cut is a ROLL of the AUDIO edit point against the (untouched) VIDEO cut, expressed as two ordinary edit.trims on the two linked AUDIO clips around the boundary. Because clip positions are CUMULATIVE, extending the outgoing clip's out-edge pushes the incoming clip's start later automatically and trimming the incoming clip's in-edge pulls its end back -- the net downstream effect is ZERO (a true roll), only the A|B audio boundary moves, the video is never touched. L-CUT (video leads, audio lags): extend A_audio out by offset_ms + trim B_audio in by offset_ms -> audio transition lands offset_ms AFTER the video cut (needs offset_ms of source past A_audio's out). J-CUT (audio leads, video lags): extend B_audio in EARLIER by offset_ms + trim A_audio out by offset_ms -> audio transition lands offset_ms BEFORE the video cut (needs offset_ms of source before B_audio's in). REQUIRES the audio to ALREADY be two clips butted at the cut (the natural distinct-sources state, each video clip with its a1t mirror). A single continuous audio clip across the cut has no audio transition to offset -> honest error pointing at edit.split / edit.detach_audio (the verb never silently splits the audio: that would allocate ids for zero semantic gain). v1 refuses a retimed (speed != 1) audio clip. Lowers to exactly TWO replay-safe edit.trim ops (no id allocation), grouped under one undo tag. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "J-cut / L-cut (SPLIT EDIT): offset the AUDIO transition relative to the VIDEO cut at a clip boundary, so one clip's audio leads or lags its video -- the standard smooth-dialogue edit in every NLE. MODEL NOTE (see edit.detach_audio): a video clip's audio lives as a SEPARATE audio-track clip (the v1/a1t mirror), and independent trims or moves use linked:false. So a J/L cut is a ROLL of the AUDIO edit point against the (untouched) VIDEO cut, expressed as two ordinary edit.trims on the two linked AUDIO clips around the boundary. Because clip positions are CUMULATIVE, extending the outgoing clip's out-edge pushes the incoming clip's start later automatically and trimming the incoming clip's in-edge pulls its end back -- the net downstream effect is ZERO (a true roll), only the A|B audio boundary moves, the video is never touched. L-CUT (video leads, audio lags): extend A_audio out by offset_ms + trim B_audio in by offset_ms -> audio transition lands offset_ms AFTER the video cut (needs offset_ms of source past A_audio's out). J-CUT (audio leads, video lags): extend B_audio in EARLIER by offset_ms + trim A_audio out by offset_ms -> audio transition lands offset_ms BEFORE the video cut (needs offset_ms of source before B_audio's in). REQUIRES the audio to ALREADY be two clips butted at the cut (the natural distinct-sources state, each video clip with its a1t mirror). A single continuous audio clip across the cut has no audio transition to offset -> honest error pointing at edit.split / edit.detach_audio (the verb never silently splits the audio: that would allocate ids for zero semantic gain). v1 refuses a retimed (speed != 1) audio clip. Lowers to exactly TWO replay-safe edit.trim ops (no id allocation), grouped under one undo tag. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -4903,7 +4907,7 @@
     {
       "name": "edit.paste",
       "domain": "edit",
-      "description": "Copy/Cut/Paste's PASTE half — duplicate a clip onto a track at a timeline position. THIN verb: it resolves a SOURCE clip to (asset, src_in, src_out) and LOWERS to edit.insert (the logged op is a self-contained edit.insert, so undo/diff/rebase already handle it — zero new core code). SOURCE: pass `clip` (the clip id to duplicate). SNAPSHOT FALLBACK: if `clip` is absent or no longer on the timeline, pass `asset` + `src_range_ms` so a clipboard snapshot whose source was deleted still pastes. `src_range_ms` (when `clip` is live) overrides the source window to paste a sub-range — REFUSED on a retimed (speed≠1) clip (the timeline→source mapping is non-linear there). KIND-CHECK (like edit.move): the source clip's track kind must match the destination track kind; caption clips are refused (use captions.*). RIPPLE: explicit `ripple` wins; omitted resolves from the destination track (base video/audio → true for AV sync, overlay/extra → false). LINKED AUDIO (`link_audio`, default true): when the source is a muxed VIDEO clip whose audio rides a sibling audio clip (same asset + same timeline start — the importer's linked-A/V signature), a SECOND edit.insert places that audio on its base audio track at the same at_ms (two ops, two undos). CURRENT LIMITS: insert-only (no overwrite), no effect/grade copy (a pristine duplicate), single source clip. EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Copy/Cut/Paste's PASTE half — duplicate a clip onto a track at a timeline position. THIN verb: it resolves a SOURCE clip to (asset, src_in, src_out) and LOWERS to edit.insert (the logged op is a self-contained edit.insert, so undo/diff/rebase already handle it — zero new core code). SOURCE: pass `clip` (the clip id to duplicate). SNAPSHOT FALLBACK: if `clip` is absent or no longer on the timeline, pass `asset` + `src_range_ms` so a clipboard snapshot whose source was deleted still pastes. `src_range_ms` (when `clip` is live) overrides the source window to paste a sub-range — REFUSED on a retimed (speed≠1) clip (the timeline→source mapping is non-linear there). KIND-CHECK (like edit.move): the source clip's track kind must match the destination track kind; caption clips are refused (use captions.*). RIPPLE: explicit `ripple` wins; omitted resolves from the destination track (base video/audio → true for AV sync, overlay/extra → false). LINKED AUDIO (`link_audio`, default true): when the source is a muxed VIDEO clip whose audio rides a sibling audio clip (same asset + same timeline start — the importer's linked-A/V signature), a SECOND edit.insert places that audio on its original audio track at the same at_ms with ripple:false (two ops sharing one undo group). CURRENT LIMITS: insert-only (no overwrite), no effect/grade copy (a pristine duplicate), single source clip. EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -4944,7 +4948,7 @@
           "link_audio": {
             "type": "boolean",
             "default": true,
-            "description": "Also paste the source's linked sibling audio (a muxed video clip's audio on the base audio track) as a second insert at the same at_ms. false = the video clip only."
+            "description": "Also paste the source's linked sibling audio on its original audio track as a second insert at the same at_ms with ripple:false. Both inserts share one undo group. false = the video clip only."
           },
           "rationale": {
             "type": "string"
@@ -5033,7 +5037,7 @@
     {
       "name": "edit.fade",
       "domain": "edit",
-      "description": "Set LINEAR fades on a clip or a track. Clip form: provided fields are SET (in_ms = ramp from silence/black at the clip start, out_ms = ramp to it at the clip end; clip-local durations that travel with the clip through ripples), omitted fields keep their value, explicit 0 clears that side; 0/0 clears the fade. Track form: a convenience resolved NOW — in_ms lands on the track's FIRST media clip, out_ms on its LAST (the 'fade the music bed in/out' gesture); recorded as plain clip fades, so re-run it after restructuring the track (edit.duck doctrine). kind selects streams: audio = afade only, video = fade only, both (default) = whatever the track renders; a kind that cannot render on the target's track (audio on a video track — video tracks contribute no audio to the mix; video on an audio track) is refused, never a silent no-op. Render: video fades dip to/from BLACK on the base track and ramp ALPHA on overlay tracks (the overlay dissolves over the base); fades longer than the clip are clamped at render time. Splitting a faded clip leaves the fade-in on the left half and the fade-out on the right (a mid-clip split never invents a dip). HONEST SCOPE: linear ramps only, per-clip; CROSSFADES between adjacent clips are a v2 feature — adjacent fade-out + fade-in (a dip to black) is the v1 approximation.",
+      "description": "Set LINEAR fades on a clip or a track. Clip form: provided fields are SET (in_ms = ramp from silence/black at the clip start, out_ms = ramp to it at the clip end; clip-local durations that travel with the clip through ripples), omitted fields keep their value, explicit 0 clears that side; 0/0 clears the fade. Track form: a convenience resolved NOW — in_ms lands on the track's FIRST media clip, out_ms on its LAST (the 'fade the music bed in/out' gesture); recorded as plain clip fades, so re-run it after restructuring the track (edit.duck doctrine). kind selects streams: audio = afade only, video = fade only, both (default) = whatever the track renders; a kind that cannot render on the target's track (audio on a video track — video tracks contribute no audio to the mix; video on an audio track) is refused, never a silent no-op. Render: video fades dip to/from BLACK on the base track and ramp ALPHA on overlay tracks (the overlay dissolves over the base); fades longer than the clip are clamped at render time. Splitting a faded clip leaves the fade-in on the left half and the fade-out on the right (a mid-clip split never invents a dip). This verb sets per-clip linear ramps. For a crossfade between adjacent clips, use edit.crossfade; adjacent fade-out + fade-in produces a dip to black.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -5120,7 +5124,7 @@
             },
             "minItems": 2,
             "maxItems": 2,
-            "description": "[start_ms, end_ms) to mute, in SOURCE-ASSET time (the src_in/src_out clock — NOT timeline ms). Exactly one of range_ms | clear."
+            "description": "[start_ms, end_ms) to mute, in SOURCE-ASSET time (the src_in/src_out clock — NOT timeline ms). Exactly one of range_ms | remove_ms | clear:true."
           },
           "remove_ms": {
             "type": "array",
@@ -5134,7 +5138,7 @@
           },
           "clear": {
             "type": "boolean",
-            "description": "true = remove ALL mute ranges from the clip (the unmute). Exactly one of range_ms | clear."
+            "description": "true = remove ALL mute ranges from the clip (the unmute). Exactly one of range_ms | remove_ms | clear:true."
           },
           "rationale": {
             "type": "string"
@@ -5484,7 +5488,7 @@
               "ellipse",
               "polygon"
             ],
-            "description": "Window region shape (polygon covers freeform). Required unless enabled:false."
+            "description": "Window region shape (polygon covers freeform). Required when appending; omit when clearing or removing a window."
           },
           "points": {
             "type": "array",
@@ -5801,7 +5805,7 @@
     {
       "name": "edit.auto_balance",
       "domain": "edit",
-      "description": "ONE-CLICK REFERENCE-FREE auto white-balance + exposure on a media clip — a standard 'Auto Color' / 'Balance Color' workflow. Unlike edit.color_match it needs NO reference clip: it samples ONE representative mid-clip frame of clip, NEUTRALISES the frame's OWN colour cast and NUDGES exposure toward a mid-luma target, then DERIVES an edit.grade correction — brightness from the luma-mean delta toward the mid target, contrast a gentle deadbanded pull of the luma spread toward a sane value, temperature_k from the warm/cool (R-B) cast pushed toward neutral (a warm cast cools, a cool cast warms) — scaled by strength (0 = identity/no-op, 1.0 = full correction, default 1.0). mode 'gray_world' (default) assumes the WHOLE-frame average should be neutral grey; mode 'white_patch' measures the cast from the bright NEAR-NEUTRAL region (the highlights that 'should be' white) — more robust when a big saturated object would skew the gray-world average (falls back to gray-world when no such highlights exist). The correction is APPLIED through the normal edit.grade path, so it composes / undoes / replays like any per-clip grade (it OVERWRITES any existing grade). The colour ANALYSIS is live (decodes one frame); the COMMITTED op is a plain, replay-safe grade (concrete params, no resampling on replay). An already-neutral, well-exposed frame derives a near-identity grade (a clean no-op), NOT an error. v1 LIMITATIONS: single mid-clip frame; plain RGB (LAB is the perceptual fast-follow); saturation is left untouched (no principled reference-free target); edit.grade has no green-magenta tint knob, so only the warm/cool axis of the cast is corrected. Video media clips only.",
+      "description": "ONE-CLICK REFERENCE-FREE auto white-balance + exposure on a media clip — a standard 'Auto Color' / 'Balance Color' workflow. Unlike edit.color_match it needs NO reference clip: it samples ONE representative mid-clip frame of clip, NEUTRALISES the frame's OWN colour cast and NUDGES exposure toward a mid-luma target, then DERIVES an edit.grade correction — brightness from the luma-mean delta toward the mid target, contrast a gentle deadbanded pull of the luma spread toward a sane value, temperature_k from the warm/cool (R-B) cast pushed toward neutral (a warm cast cools, a cool cast warms) — scaled by strength (0 = identity/no-op, 1.0 = full correction, default 1.0). mode 'gray_world' (default) assumes the WHOLE-frame average should be neutral grey; mode 'white_patch' measures the cast from the bright NEAR-NEUTRAL region (the highlights that 'should be' white) — more robust when a big saturated object would skew the gray-world average (falls back to gray-world when no such highlights exist). The correction is APPLIED through the normal edit.grade path, so it composes / undoes / replays like any per-clip grade (it OVERWRITES any existing grade). The colour ANALYSIS is live (decodes one frame); the COMMITTED op is a plain, replay-safe grade (concrete params, no resampling on replay). An already-neutral, well-exposed frame derives a near-identity grade (a clean no-op), NOT an error. v1 LIMITATIONS: single mid-clip frame; plain RGB (LAB is the perceptual fast-follow); the derived grade uses identity saturation (no principled reference-free target); edit.grade has no green-magenta tint knob, so only the warm/cool axis of the cast is corrected. Video media clips only.",
       "args": {
         "type": "object",
         "required": [
@@ -6096,7 +6100,7 @@
     {
       "name": "title.add",
       "domain": "title",
-      "description": "Add a native MOTION-GRAPHICS title: ANIMATED text rendered by resvg per-frame (distinct from captions.add_text's STATIC cards, and built in-house — no external tool). Builds a TitleSpec from a PRESET (lower_third = text near the bottom on an optional translucent bar, fade + slide-up in/out; title_card = large centred text, fade + scale in/out for intros/outros), renders it to a TRANSPARENT overlay video, and composites it on a dedicated TOP-MOST 'title1' overlay video track over [range_ms[0], range_ms[1]). Lowers to honest import + insert ops (the generated .mov lives in the project's titles/ dir; replay re-reads it like any imported media). Geometry/fps come from the project; font_px defaults to a preset-appropriate size from the project height; color defaults to white; bg (the lower_third/top_bar bar) defaults on for lower_third. PRESETS: lower_third | title_card | top_bar (top chyron) | subtitle (small centred bottom line) | headline (bold upper-third banner) — or free placement via x+y. ANIMATION override (fade|slide_up|slide_down|slide_left|slide_right|pop|none) restyles the motion across any preset, so the look count = presets × animations. Use captions.kinetic for per-word text synchronized to a transcript.",
+      "description": "Add a native MOTION-GRAPHICS title: ANIMATED text rendered by resvg per-frame (distinct from captions.add_text's STATIC cards, and built in-house — no external tool). Builds a TitleSpec from a PRESET (lower_third = text near the bottom on an optional translucent bar, fade + slide-up in/out; title_card = large centred text, fade + scale in/out for intros/outros), renders it to a TRANSPARENT overlay video, and composites it on an available title overlay video track, creating a new titleN track when needed over [range_ms[0], range_ms[1]). Registers the generated media and commits placement as one title.add op (the generated .mov lives in the project's titles/ dir; replay re-reads it like any imported media). Geometry/fps come from the project; font_px defaults to a preset-appropriate size from the project height; color defaults to white; bg (the lower_third/top_bar bar) defaults on for lower_third. PRESETS: lower_third | title_card | top_bar (top chyron) | subtitle (small centred bottom line) | headline (bold upper-third banner) — or free placement via x+y. ANIMATION override (fade|slide_up|slide_down|slide_left|slide_right|pop|none) restyles the motion across any preset, so the look count = presets × animations. Use captions.kinetic for per-word text synchronized to a transcript.",
       "args": {
         "type": "object",
         "required": [
@@ -6382,7 +6386,7 @@
     {
       "name": "edit.add_shape",
       "domain": "edit",
-      "description": "Place a vector SHAPE overlay: rect | ellipse | line | arrow — plus an optional centered label on a box shape (a styled callout box). Rendered by the same in-house resvg keyframe engine as titles (so it gets overlay placement + fade animation + content-addressing) and composited on a top-most title overlay track over [range_ms[0], range_ms[1]). Lowers to honest import + insert ops (the generated .mov lives in the project's titles/ dir). GEOMETRY (all normalized [0,1] against the project geometry): rect/ellipse use the BOX x,y,w,h; line/arrow use x,y as the START point and x2,y2 as the END point. PAINT: fill (#RRGGBB, omit for outline-only on box shapes) + opacity; stroke (#RRGGBB border / line color) + stroke_px; radius_px (rect corners); head_px (arrowhead length). A box shape with neither fill nor stroke defaults to a white outline so it's never invisible. text (+ color, font_px) draws a centered label inside a rect/ellipse. animation overrides the default fade (fade|slide_up|slide_down|slide_left|slide_right|pop|none).",
+      "description": "Place a vector SHAPE overlay: rect | ellipse | line | arrow — plus an optional centered label on a box shape (a styled callout box). Rendered by the same in-house resvg keyframe engine as titles (so it gets overlay placement + fade animation + content-addressing) and composited on a top-most title overlay track over [range_ms[0], range_ms[1]). Registers the generated media and commits placement as one edit.add_shape op (the generated .mov lives in the project's titles/ dir). GEOMETRY (all normalized [0,1] against the project geometry): rect/ellipse use the BOX x,y,w,h; line/arrow use x,y as the START point and x2,y2 as the END point. PAINT: fill (#RRGGBB, omit for outline-only on box shapes) + opacity; stroke (#RRGGBB border / line color) + stroke_px; radius_px (rect corners); head_px (arrowhead length). A box shape with neither fill nor stroke defaults to a white outline so it's never invisible. text (+ color, font_px) draws a centered label inside a rect/ellipse. animation overrides the default fade (fade|slide_up|slide_down|slide_left|slide_right|pop|none).",
       "args": {
         "type": "object",
         "required": [
@@ -6496,7 +6500,7 @@
               "pop",
               "none"
             ],
-            "description": "Entry/exit animation override (default is a tasteful fade)"
+            "description": "Entry/exit animation override: Slide up (`slide_up`), Slide down (`slide_down`), Slide left (`slide_left`), Slide right (`slide_right`), Fade (`fade`), Pop (`pop`), or None (`none`). Default is fade."
           },
           "group_id": {
             "type": "string",
@@ -6601,7 +6605,7 @@
               "pop",
               "none"
             ],
-            "description": "Override the entry/exit animation"
+            "description": "Override the entry/exit animation: Slide up (`slide_up`), Slide down (`slide_down`), Slide left (`slide_left`), Slide right (`slide_right`), Fade (`fade`), Pop (`pop`), or None (`none`)."
           },
           "x": {
             "type": "number",
@@ -7295,7 +7299,7 @@
     {
       "name": "plugins.call",
       "domain": "plugins",
-      "description": "The SCOPED-DISPATCH GATEWAY: run `verb` with `args` UNDER plugin `plugin`'s identity — but ONLY if the plugin is ENABLED and the verb is within its declared scope (provides ∪ consumes). Out-of-scope, disabled, corrupt, or unavailable permission state → rejected (guardrail), so a plugin is 'callable only within its scope'. The host re-dispatches through the SAME verb registry (no parallel API), so the inner verb is fully arg-checked + behaves identically, just permission-fenced. `plugins.*` can never be invoked through the gateway (no privilege escalation). Returns the inner verb's envelope under {plugin, verb, result}.",
+      "description": "The SCOPED-DISPATCH GATEWAY: run `verb` with `args` UNDER plugin `plugin`'s identity — but ONLY if the plugin is ENABLED and the verb is within its declared scope (provides ∪ consumes). Out-of-scope, disabled, corrupt, or unavailable permission state → rejected (guardrail), so a plugin is 'callable only within its scope'. The host re-dispatches through the SAME verb registry (no parallel API), so the inner verb is fully arg-checked + behaves identically, just permission-fenced. `plugins.*` can never be invoked through the gateway (no privilege escalation). On success, returns the inner verb's envelope under {plugin, verb, result}. Inner failures return the inner envelope directly.",
       "args": {
         "type": "object",
         "required": [
@@ -7630,7 +7634,7 @@
     {
       "name": "edit.freeze",
       "domain": "edit",
-      "description": "Freeze-frame: HOLD one source frame for a media clip's whole timeline slot. enabled:true (the default when omitted) freezes; enabled:false clears. at_ms is the offset INTO the clip's visible range of the frame to hold (default 0 = the clip's first frame; clamped to the last available frame). The TIMELINE DURATION is UNCHANGED (the held frame fills the existing slot) and later clips do not ripple. The AUDIO plays through untouched (the common 'freeze the picture, audio rolls' effect). A frozen clip IGNORES speed (a held frame has no speed). Compose: split a clip first (edit.split) then freeze one half for a mid-clip 'freeze span'; freeze + edit.animate = Ken Burns pan/zoom over a still. VIDEO-track media clips only (audio/caption clips have no frame to hold). CPU-only (tpad clone), so a frozen clip renders on the software path.",
+      "description": "Freeze at first frame by default (verb `edit.freeze`); set `at_ms` to choose another frame. HOLD one source frame for a media clip's whole timeline slot. enabled:true (the default when omitted) freezes; enabled:false clears. at_ms is the offset INTO the clip's visible range of the frame to hold (default 0 = the clip's first frame; clamped to the last available frame). The TIMELINE DURATION is UNCHANGED (the held frame fills the existing slot) and later clips do not ripple. The AUDIO plays through untouched (the common 'freeze the picture, audio rolls' effect). A frozen clip IGNORES speed (a held frame has no speed). Compose: split a clip first (edit.split) then freeze one half for a mid-clip 'freeze span'; freeze + edit.animate = Ken Burns pan/zoom over a still. VIDEO-track media clips only (audio/caption clips have no frame to hold). CPU-only (tpad clone), so a frozen clip renders on the software path.",
       "args": {
         "type": "object",
         "required": [
@@ -7933,7 +7937,7 @@
           "max_zooms": {
             "type": "integer",
             "minimum": 0,
-            "description": "Cap on the number of punches (default ≈ one per 8 s of clip, capped at 24). The strongest emphasis beats win. 0 = no zooms."
+            "description": "Cap on the number of punches (default ≈ one per 8 s of clip, capped at 24). Energy mode selects the strongest peaks; transcript mode selects utterance starts in time order. 0 = no zooms."
           },
           "hold_ms": {
             "type": "integer",
@@ -7976,7 +7980,7 @@
     {
       "name": "edit.add_mask",
       "domain": "edit",
-      "description": "Add (or clear) a vector/freeform MASK on a BASE-track video clip — a region effect (blur/pixelate/black) scoped to a SHAPE, the region-blur / privacy-redaction primitive (region-scoped cleanup; blur a face/label; censor a password). shape: 'rect' (points = 2 opposite corners [[x0,y0],[x1,y1]]), 'ellipse' (points = [[cx,cy],[rx,ry]] centre + radii), or 'polygon'/freeform (points = the vertices, ≥3, drawn closed). All points are FRACTIONS of frame width/height (0..1). effect: 'blur' (default, gaussian; strength = sigma px, default 15), 'pixelate' (mosaic; strength = block px, default 16), or 'black' (solid censor). feather = soft-edge fraction of frame HEIGHT (0 = hard). invert = scope the effect OUTSIDE the shape. enabled:false (or omitting shape) CLEARS the mask. The renderer bakes a feathered shape alpha (resvg) and alphamerge+overlays the effect inside the region (CPU/software path); animatable later via keyframes/tracking. v1 renders on the BASE (first) video track only — an overlay-track clip is refused (clear error). A core op (replay-safe).",
+      "description": "Add (or clear) a vector/freeform MASK on a BASE-track video clip — a region effect (blur/pixelate/black) scoped to a SHAPE, the region-blur / privacy-redaction primitive (region-scoped cleanup; blur a face/label; censor a password). shape: 'rect' (points = 2 opposite corners [[x0,y0],[x1,y1]]), 'ellipse' (points = [[cx,cy],[rx,ry]] centre + radii), or 'polygon'/freeform (points = the vertices, ≥3, drawn closed). All points are FRACTIONS of frame width/height (0..1). effect: 'blur' (default, gaussian; strength = sigma px, default 15), 'pixelate' (mosaic; strength = block px, default 16), or 'black' (solid censor). feather = soft-edge fraction of frame HEIGHT (0 = hard). invert = scope the effect OUTSIDE the shape. enabled:false CLEARS the mask. Otherwise shape is required. The renderer bakes a feathered shape alpha (resvg) and alphamerge+overlays the effect inside the region (CPU/software path); animatable later via keyframes/tracking. v1 renders on the BASE (first) video track only — an overlay-track clip is refused (clear error). A core op (replay-safe).",
       "args": {
         "type": "object",
         "required": [
@@ -8069,7 +8073,7 @@
     {
       "name": "edit.redact",
       "domain": "edit",
-      "description": "REDACTION — a TIME-BOUNDED privacy effect: blur / pixelate / black-box a SHAPE region on a BASE-track video clip, active ONLY during `range_ms` (clip-local [start,end] ms; omit = the whole clip). The editor-side complement to capture-time anonymization: redact a password / API key / face / PII that appears mid-edit in ANY footage (screen recordings, imported clips). Shares the mask field + render path with edit.add_mask but is SECURITY-FRAMED: `mode` is blur (default) / pixelate / box (solid black censor), and an unset blur/pixelate strength uses a heavier OVER-BLUR fail-safe (never under-redact). shape: 'rect' (points = [[x0,y0],[x1,y1]]), 'ellipse' ([[cx,cy],[rx,ry]]) or 'polygon' (vertices ≥3); all points are FRACTIONS of frame W/H (0..1). feather = soft-edge fraction of frame height; invert = redact OUTSIDE the shape. enabled:false (or omitting shape) CLEARS. Render: the baked shape alpha gates the effect (alphamerge+overlay) with `enable='between(t,…)'` for the range (CPU/software path). v1: BASE (first) video track only; one region per clip (multi-region + motion-tracked + OCR auto-detect are next). A core op (replay-safe). To make it FOLLOW a moving subject, track with edit.track then keyframe the region (until tracked-redact lands).",
+      "description": "REDACTION — a TIME-BOUNDED privacy effect: blur / pixelate / black-box a SHAPE region on a BASE-track video clip, active ONLY during `range_ms` (clip-local [start,end] ms; omit = the whole clip). The editor-side complement to capture-time anonymization: redact a password / API key / face / PII that appears mid-edit in ANY footage (screen recordings, imported clips). Shares the mask field + render path with edit.add_mask but is SECURITY-FRAMED: `mode` is blur (default) / pixelate / box (solid black censor), and an unset blur/pixelate strength uses a heavier OVER-BLUR fail-safe (never under-redact). shape: 'rect' (points = [[x0,y0],[x1,y1]]), 'ellipse' ([[cx,cy],[rx,ry]]) or 'polygon' (vertices ≥3); all points are FRACTIONS of frame W/H (0..1). feather = soft-edge fraction of frame height; invert = redact OUTSIDE the shape. enabled:false CLEARS. Otherwise shape is required unless faces or ocr_auto computes it. Render: the baked shape alpha gates the effect (alphamerge+overlay) with `enable='between(t,…)'` for the range (CPU/software path). BASE (first) video track only. Use boxes for additional regions, track for motion-centre points from edit.track, ocr_auto for PII detection, or faces for face detection with optional tracking. A core op (replay-safe).",
       "args": {
         "type": "object",
         "required": [
@@ -8437,7 +8441,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The camera-angle VIDEO track ids to switch between (≥2). Omit to auto-detect every video track holding a media clip."
+            "description": "The camera-angle VIDEO track ids to switch between (≥2). Omit to auto-detect video tracks holding media clips, excluding __mc_program and program."
           },
           "min_shot_ms": {
             "type": "integer",
@@ -8593,7 +8597,7 @@
     {
       "name": "audio.cleanup_voice",
       "domain": "audio",
-      "description": "One-shot talking-head / podcast VOICE CHAIN — the agent-first 'make my voice publish-ready' button. Applies a cleanup chain to the target audio clip(s): edit.eq{preset:voice} (low-cut rumble + de-mud + presence) THEN edit.effect{denoise, gate, compressor} (afftdn hiss/hum reduction -> agate room-tone-between-phrases -> acompressor dynamics + auto makeup gain). The render emits these in the fixed audio-chain order, so this is 'clean the voice', not surgical mastering. SCOPE: `clip` = one audio clip; `track` = every media clip on that audio track; neither = EVERY media clip on EVERY audio track (clean the whole project's voice in one call). `strength` (light|medium|strong, default medium) scales the denoise/gate/compressor amounts. ORCHESTRATOR: records no op of its own; wraps the sub-verbs in an auto-checkpoint and dispatches edit.eq + edit.effect as real replay-safe ops, so the whole pass reverts in ONE step (project.revert{to:checkpoint}) and replay needs no new arm. Stops on the first failing sub-verb and returns the checkpoint (never half-applied). Loudness is a RENDER-time setting (render.final{normalize_loudness}), not baked here — the receipt recommends a target in `loudness_hint`.",
+      "description": "One-shot talking-head / podcast VOICE CHAIN — the agent-first 'make my voice publish-ready' button. Applies a cleanup chain to the target audio clip(s): edit.eq{preset:voice} (low-cut rumble + de-mud + presence) THEN edit.effect{denoise, gate, compressor} (afftdn hiss/hum reduction -> agate room-tone-between-phrases -> acompressor dynamics + auto makeup gain). The render emits these in the fixed audio-chain order, so this is 'clean the voice', not surgical mastering. SCOPE: `clip` = one audio clip; `track` = every media clip on that audio track; neither = EVERY media clip on EVERY audio track (clean the whole project's voice in one call). `strength` (light|medium|strong, default medium) scales the denoise/gate/compressor amounts. ORCHESTRATOR: records no op of its own; wraps the sub-verbs in an auto-checkpoint and dispatches edit.eq + edit.effect as real replay-safe ops, so the whole pass reverts in ONE step (project.revert{to:checkpoint}) and replay needs no new arm. Stops on the first failing sub-verb and returns the checkpoint and a revert hint; earlier steps remain applied until reverted. Loudness is a RENDER-time setting (render.final{normalize_loudness}), not baked here — the receipt recommends a target in `loudness_hint`.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -9192,7 +9196,7 @@
     {
       "name": "edit.blend",
       "domain": "edit",
-      "description": "Set an OVERLAY video track's LAYER blend mode — how the whole track composites onto everything below it (a standard layer blend mode). mode 'normal' (the default when omitted) = the usual alpha-over composite (clears the blend); other modes blend the layer with the base ONLY where the overlay has content: multiply (darken/burn), screen (brighten/glow), overlay (contrast), darken, lighten, difference, addition, subtract, softlight, hardlight. Useful for light leaks, textures, double-exposure, and grade layers. A LAYER property (it applies to the whole track) — put a clip on its own overlay track via edit.add_track to blend just that clip. VIDEO tracks only (the first non-empty video track is the base; empty tracks do not claim the base slot; audio/caption tracks ignore it). CPU-only → opts the timeline out of the GPU fast-track.",
+      "description": "Set an OVERLAY video track's LAYER blend mode — how the whole track composites onto everything below it (a standard layer blend mode). mode 'normal' (the default when omitted) = the usual alpha-over composite (clears the blend); other modes blend the layer with the base ONLY where the overlay has content: multiply (darken/burn), screen (brighten/glow), overlay (contrast), darken, lighten, difference, addition, subtract, Soft Light (`softlight`), Hard Light (`hardlight`). Useful for light leaks, textures, double-exposure, and grade layers. A LAYER property (it applies to the whole track) — put a clip on its own overlay track via edit.add_track to blend just that clip. VIDEO tracks only (the first non-empty video track is the base; empty tracks do not claim the base slot; audio/caption tracks ignore it). CPU-only → opts the timeline out of the GPU fast-track.",
       "args": {
         "type": "object",
         "required": [
@@ -10258,7 +10262,7 @@
     {
       "name": "transcript.timeline",
       "domain": "transcript",
-      "description": "EDL-AWARE transcript: every asset word mapped to its position ON THE TIMELINE through the current edit, so what you read matches what is actually on the timeline (not raw per-asset words, some already cut). Each entry = {clip_id, track, track_kind, asset, word_index, word, src_start_ms, src_end_ms, timeline_start_ms, timeline_end_ms}; a word reused across clips appears once PER clip. `clip` narrows to ONE clip (the SELECTED-CLIP view → feed word_index back into transcript.cut_words{clip} to trim just that clip); `track` narrows to one track; both omitted = the PROGRAM transcript (the output line in timeline order, linked video/audio de-duplicated to one entry per spoken word). The ONE shared word→timeline mapping the panel, cut_words, captions, and search all read. Read-only.",
+      "description": "EDL-AWARE transcript: every asset word mapped to its position ON THE TIMELINE through the current edit, so what you read matches what is actually on the timeline (not raw per-asset words, some already cut). Each entry = {clip_id, track, track_kind, asset, word_index, word, src_start_ms, src_end_ms, timeline_start_ms, timeline_end_ms}; a word reused across clips appears once PER clip. `clip` narrows to ONE clip (the SELECTED-CLIP view → feed word_index back into transcript.cut_words{clip} to trim just that clip); `track` narrows to one track; both omitted = the Program transcript (words in the edited video, in timeline order, linked video/audio de-duplicated to one entry per spoken word). The ONE shared word→timeline mapping the panel, cut_words, captions, and search all read. Read-only.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -10807,7 +10811,7 @@
     {
       "name": "transcript.remove_silences",
       "domain": "transcript",
-      "description": "Remove detected silences. Timeline-wide by default; optional asset/track narrows scope. aggressiveness is REQUIRED — named presets: calm = long pauses only, natural = default feel, jumpy = tight cut. ONE op per removed span (skim-reviewable).",
+      "description": "Remove pauses (verb `transcript.remove_silences`) from detected silence in the edit. Timeline-wide by default; optional asset/track narrows scope. Choose the required pause removal amount with `aggressiveness`: Light (`calm`) removes pauses of at least 1200 ms and keeps 200 ms at each end; Standard (`natural`) uses 700/120 ms; Strong (`jumpy`) uses 350/60 ms. ONE op per removed span (skim-reviewable).",
       "args": {
         "type": "object",
         "required": [
@@ -10817,6 +10821,7 @@
         "properties": {
           "aggressiveness": {
             "type": "string",
+            "description": "Pause removal amount: Light (`calm`, at least 1200 ms, keep 200 ms each end), Standard (`natural`, 700/120 ms), or Strong (`jumpy`, 350/60 ms). Required; enum values remain the API values.",
             "enum": [
               "calm",
               "natural",
@@ -10882,7 +10887,7 @@
     {
       "name": "transcript.remove_fillers",
       "domain": "transcript",
-      "description": "Cut filler words (default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
+      "description": "Remove filler words (verb `transcript.remove_fillers`; default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -11763,7 +11768,7 @@
     {
       "name": "captions.set_range",
       "domain": "captions",
-      "description": "Set a caption clip's absolute timeline range: retime (shift both edges) or trim (move one edge) for direct manipulation of caption clips. edit.move/edit.trim REFUSE caption clips (captions carry absolute ranges, not source ranges), so this is the only way to reposition a caption clip. The clip must be a caption clip; the range must be non-empty.",
+      "description": "Set a caption clip's absolute timeline range: retime (shift both edges) or trim (move one edge) for direct manipulation of caption clips. edit.move/edit.trim REFUSE caption clips (captions carry absolute ranges, not source ranges), so use this verb to reposition one caption clip; captions.shift moves all cues on a caption track. The clip must be a caption clip; the range must be non-empty.",
       "args": {
         "type": "object",
         "required": [
@@ -11994,7 +11999,7 @@
     {
       "name": "render.preview",
       "domain": "render",
-      "description": "Fast low-res render of a window starting at at_ms (default 5000ms) for quick agent/human review, OR (draft:true) the incremental whole-timeline draft preview: the export's frames at draft size (the project's aspect inside 960x540) — every output frame shows the same source frame as render.final at the same index, with the same length, speed, reversed clips, captions and overlays. It is made of pieces cut at the base track's clip boundaries; after an edit only the pieces whose content changed are remade and the rest are reused (a piece moved by a whole number of frames is reused). DERIVED state (cache under proxies/preview-cache/), never an op, never a receipt input — receipts stay render.final.",
+      "description": "Fast low-res render of a window starting at the required at_ms, with duration_ms defaulting to 5000 ms for quick agent/human review, OR (draft:true) the incremental whole-timeline draft preview: the export's frames at draft size (the project's aspect inside 960x540) — every output frame shows the same source frame as render.final at the same index, with the same length, speed, reversed clips, captions and overlays. It is made of pieces cut at the base track's clip boundaries; after an edit only the pieces whose content changed are remade and the rest are reused (a piece moved by a whole number of frames is reused). DERIVED state (cache under proxies/preview-cache/), never an op, never a receipt input — receipts stay render.final.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12145,7 +12150,7 @@
     {
       "name": "render.storyboard",
       "domain": "render",
-      "description": "Contact sheet: `count` evenly-spaced frames of the composed timeline tiled into a grid image — the agent/judge's see-the-whole-edit-at-a-glance view (one image instead of N frame fetches). Fast proxy-scrub frames by default; compose:true forces exact composed frames (captions/overlays). Single-frame extraction failures are replaced with black placeholder tiles and reported in frame_warnings. Written to the engine-owned frames/ dir.",
+      "description": "Timeline contact sheet (verb `render.storyboard`): `count` evenly-spaced frames of the composed timeline tiled into a grid image — the agent/judge's see-the-whole-edit-at-a-glance view (one image instead of N frame fetches). Fast proxy-scrub frames by default; compose:true forces exact composed frames (captions/overlays). Single-frame extraction failures are replaced with black placeholder tiles and reported in frame_warnings. Written to the engine-owned frames/ dir.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12304,7 +12309,7 @@
     {
       "name": "render.qc",
       "domain": "render",
-      "description": "DIRECTOR QC pass (job): REVIEW a reframed OUTPUT and decide what to fix. Resolves the actual render.reframe output from receipts/<reframe_id>.json output_path, with legacy fallback to exports/<reframe_id>.mp4. Samples one keyframe per scene of the finished reframe and tiles them into a review sheet WITH cheap CV composition hints per scene — subject_present, face_present, face centering (off_center = |cx-0.5|), headroom (face-top y; a head clipped at the top), and a `needs_review` flag. A foundation model reads the qc_sheet image and for any bad scene re-issue render.reframe{aspect, direction:{<scene>:{cx}|{mode:'widen'}}} with a correction. Closes the director loop: direct -> reframe -> qc -> reframe.",
+      "description": "Review reframed output quality (verb `render.qc`, job): inspect the result and decide what to fix. Resolves the actual render.reframe output from receipts/<reframe_id>.json output_path, with legacy fallback to exports/<reframe_id>.mp4. Samples one keyframe per scene of the finished reframe and tiles them into a review sheet WITH cheap CV composition hints per scene — subject_present, face_present, face centering (off_center = |cx-0.5|), headroom (face-top y; a head clipped at the top), and a `needs_review` flag. A foundation model reads the qc_sheet image and for any bad scene re-issue render.reframe{aspect, direction:{<scene>:{cx}|{mode:'widen'}}} with a correction. Closes the director loop: direct -> reframe -> qc -> reframe.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12326,7 +12331,7 @@
               "general"
             ],
             "default": "talking_head",
-            "description": "Candidate class set for the QC detector (same set as render.reframe's preset)."
+            "description": "Subject class for quality checks on the reframed output (same set as render.reframe's preset)."
           },
           "rationale": {
             "type": "string",
@@ -12424,7 +12429,7 @@
               "silent_screen_demo"
             ],
             "default": "talking_head",
-            "description": "Footage profile for the auto-run check battery (profile regression coverage): talking_head = the full strict battery (without an explicit profile, lufs applies only when normalize_loudness is set and silence_at_edges does not apply; an explicit profile turns both on, talking_head at -16 LUFS); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. NOTE: the uniform_border check `uniform_border` is NOT waived by any profile — a baked-in margin is a defect on screen demos too. The receipt's footage_profile entry records the active profile + auto-detect proposal."
+            "description": "Content type for quality checks (argument `profile`) for the auto-run check battery (profile regression coverage): talking_head = the full strict battery (without an explicit profile, lufs applies only when normalize_loudness is set and silence_at_edges does not apply; an explicit profile turns both on, talking_head at -16 LUFS); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. NOTE: the uniform_border check `uniform_border` is NOT waived by any profile — a baked-in margin is a defect on screen demos too. The receipt's footage_profile entry records the active profile + auto-detect proposal."
           },
           "fit": {
             "type": "string",
@@ -12510,7 +12515,7 @@
     {
       "name": "verify.checks",
       "domain": "verify",
-      "description": "Run (or fetch) the deterministic check battery for a render: cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any footage profile), silence_at_edges, duration_matches_edl (measured on the container AND on each stream: video duration and frame count, each audio stream; reported unmeasured without stream data), plus sources_decodable when a source on the timeline was decode-checked (fails naming a cut-off or damaged source). Each → {name, pass, details, evidence}. A check with nothing to check on this export is NOT APPLICABLE (details.status:\"not_applicable\", details.applies_when, details.reason; pass stays true, never a failure or warning): caption_presence without visible caption clips, cut_on_word without a transcript, lufs without sound or without a loudness target (normalize_loudness) or explicit profile, silence_at_edges without sound or explicit profile, black_or_frozen_frames and uniform_border without picture; frozen frames do not apply to an all-still timeline. Different from details.status:\"unmeasured\" (applies, but could not be measured here, with its reason).",
+      "description": "Run (or fetch) the deterministic check battery for a render: cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any content type for quality checks), silence_at_edges, duration_matches_edl (measured on the container AND on each stream: video duration and frame count, each audio stream; reported unmeasured without stream data), plus sources_decodable when a source on the timeline was decode-checked (fails naming a cut-off or damaged source). Each → {name, pass, details, evidence}. A check with nothing to check on this export is NOT APPLICABLE (details.status:\"not_applicable\", details.applies_when, details.reason; pass stays true, never a failure or warning): caption_presence without visible caption clips, cut_on_word without a transcript, lufs without sound or without a loudness target (normalize_loudness) or explicit profile, silence_at_edges without sound or explicit profile, black_or_frozen_frames and uniform_border without picture; frozen frames do not apply to an all-still timeline. Different from details.status:\"unmeasured\" (applies, but could not be measured here, with its reason).",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12619,7 +12624,7 @@
     {
       "name": "verify.captions",
       "domain": "verify",
-      "description": "Caption-QC receipt : measures each caption cue against the published timed-text standards — reading speed (chars/sec), on-screen duration, inter-cue gap, line length. Thresholds default to BBC/Netflix values (17 CPS, 833ms min / 7s max display, 80ms min gap, 84-char line cap) and are overridable per call. Read-only measurement; pass=true only when every cue is within spec.",
+      "description": "Caption quality checks (verb `verify.captions`): measures each caption cue against the published timed-text standards — reading speed (chars/sec), on-screen duration, inter-cue gap, line length. Thresholds default to BBC/Netflix values (17 CPS, 833ms min / 7s max display, 80ms min gap, 84-char line cap) and are overridable per call. Read-only measurement; pass=true only when every cue is within spec.",
       "args": {
         "type": "object",
         "required": [],
@@ -12728,7 +12733,7 @@
     {
       "name": "verify.loudness",
       "domain": "verify",
-      "description": "Integrated-loudness RECEIPT for one audio-bearing asset: integrated loudness (LUFS), true peak (dBTP), loudness range (LRA), gating threshold, the gap to a target, and a one-line recommendation. The MEASURE half of the loudness loop — the NORMALIZE half is render.final's `normalize_loudness` (a rendered output's loudness is already checked by verify.checks/render.qc). Single fast ffmpeg `loudnorm` analysis pass (no re-encode); ffmpeg-only, needs NO perception venv. Read-only. Standard targets: -14 social, -16 long-form/podcast, -23 EBU R128. Use it to decide whether (and how far) to normalize before publishing, then re-check the render with verify.checks.",
+      "description": "Integrated-loudness RECEIPT for one audio-bearing asset: integrated loudness (LUFS), true peak (dBTP), loudness range (LRA), gating threshold, the gap to a target, and a one-line recommendation. The MEASURE half of the loudness loop — the NORMALIZE half is render.final's `normalize_loudness` (a rendered output's loudness is already checked by verify.checks). Single fast ffmpeg `loudnorm` analysis pass (no re-encode); ffmpeg-only, needs NO perception venv. Read-only. Standard targets: -14 social, -16 long-form/podcast, -23 EBU R128. Use it to decide whether (and how far) to normalize before publishing, then re-check the render with verify.checks.",
       "args": {
         "type": "object",
         "required": [
@@ -13110,7 +13115,7 @@
           },
           "track": {
             "type": "string",
-            "description": "Optional: export ONLY this audio track's contribution (its processed audio incl. gain + ducking, at full timeline length) = a per-track STEM. The sum of every track's stem == the full mix (WYSIWYG). Powers the mixer's per-track meters. ids from project.state (audio tracks only)."
+            "description": "Optional: export ONLY this audio track's processed audio, including gain and ducking, at full timeline length as a per-track stem. The stem ignores mute and solo so the track can be metered and auditioned even when silent in the full mix. Powers the mixer's per-track meters. ids from project.state (audio tracks only)."
           },
           "to_asset": {
             "type": "boolean",
@@ -13150,7 +13155,7 @@
     {
       "name": "export.publish",
       "domain": "export",
-      "description": "ONE-CLICK platform export. Resolves a platform id to its 2026-researched encoding spec (output geometry, video + audio bitrate, H.264/mp4) and delegates to render.final with those args — reusing the full render path (background job, auto-run check battery, receipt). The optional `profile` passes through verbatim to render.final's footage-profile check battery (omit = render.final's default). Vertical platforms (tiktok/reels) output 9:16 via explicit geometry + cover fit; YouTube/X output 16:9. The result carries the chosen platform spec under `publish`, plus render.final's {job_id, render_id}. This is convenience over render.final — an agent can equally call render.final{width,height,bitrate,format,...} directly. fps comes from the project settings (a publish does not resample fps). For SUBJECT-AWARE vertical reframing use render.reframe instead.",
+      "description": "Platform exports (verb `export.publish`): save a video file locally for YouTube, TikTok, Instagram or X; no upload is performed. Resolves a platform id to its 2026-researched encoding spec (output geometry, video + audio bitrate, H.264/mp4) and delegates to render.final with those args — reusing the full render path (background job, auto-run check battery, receipt). The optional `profile` passes through verbatim to render.final's content-type quality checks (omit = render.final's default). Vertical platforms (tiktok/reels) output 9:16 via explicit geometry + cover fit; YouTube/X output 16:9. The result carries the chosen platform spec under `publish`, plus render.final's {job_id, render_id}. This is convenience over render.final — an agent can equally call render.final{width,height,bitrate,format,...} directly. fps comes from the project settings (a platform export does not resample fps). For SUBJECT-AWARE vertical reframing use render.reframe instead.",
       "args": {
         "type": "object",
         "required": [
@@ -13169,7 +13174,7 @@
               "x",
               "square"
             ],
-            "description": "Target platform. youtube = 1920×1080 12 Mbps AAC 384k (16:9). youtube_4k = 3840×2160 45 Mbps. tiktok = 1080×1920 12 Mbps (9:16, alias shorts). reels = 1080×1920 10 Mbps (9:16, alias instagram/ig). instagram_feed = 1080×1350 10 Mbps (4:5). x = 1920×1080 20 Mbps (16:9, alias twitter). square = 1080×1080 10 Mbps (1:1). All H.264/AAC/mp4 — the universal ingest combo."
+            "description": "Platform export target (local file only). Target platform. youtube = 1920×1080 12 Mbps AAC 384k (16:9). youtube_4k = 3840×2160 45 Mbps. tiktok = 1080×1920 12 Mbps (9:16, alias shorts). reels = 1080×1920 10 Mbps (9:16, alias instagram/ig). instagram_feed = 1080×1350 10 Mbps (4:5). x = 1920×1080 20 Mbps (16:9, alias twitter). square = 1080×1080 10 Mbps (1:1). All H.264/AAC/mp4 — the universal ingest combo."
           },
           "preset": {
             "type": "string",
@@ -13197,7 +13202,7 @@
               "silent_screen_demo"
             ],
             "default": "talking_head",
-            "description": "Footage profile passthrough to render.final's auto-run check battery: talking_head = the full strict battery (without an explicit profile, lufs applies only when a loudness target is set and silence_at_edges does not apply); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
+            "description": "Content type for quality checks (argument `profile`) passthrough to render.final's auto-run check battery: talking_head = the full strict battery (without an explicit profile, lufs applies only when a loudness target is set and silence_at_edges does not apply); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
           },
           "path": {
             "type": "string",
@@ -13585,7 +13590,7 @@
     {
       "name": "export.transcript",
       "domain": "export",
-      "description": "Write the caption track as a readable transcript — the script of the FINAL cut (timeline-accurate; reflects what survived the cut, not the raw recording) — for show notes, blog repurposing, or an accessibility transcript page. Cues join into paragraphs, a new paragraph after a natural >2s pause. format txt (plain paragraphs) | md (heading + paragraphs, [m:ss]-prefixed when timestamps:true). Requires captions.generate first.",
+      "description": "Write the caption track as a readable transcript — the script of the FINAL cut (timeline-accurate; reflects what survived the cut, not the raw recording) — for show notes, blog repurposing, or an accessibility transcript page. Cues join into paragraphs, a new paragraph after a natural >2s pause. format txt (plain paragraphs) | md (heading + paragraphs, [m:ss]-prefixed when timestamps:true). Requires a caption track with usable cues.",
       "args": {
         "type": "object",
         "required": [],
@@ -13666,7 +13671,7 @@
     {
       "name": "clip.candidates",
       "domain": "clip",
-      "description": "Rank the windows of an asset most likely to work as standalone short-form clips (social repurposing). READ-ONLY analysis over the transcript — no op, no render. Honest HEURISTIC v1 (scoring:\"heuristic\" — an editorial prior on opening-hook strength + a pacing/filler retention proxy, NOT a trained virality model); every candidate carries a human `reason`. With no `asset`, pools across every asset that has a transcript and re-ranks globally. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
+      "description": "Find highlights (verb `clip.candidates`): rank the windows of an asset most likely to work as standalone short-form clips (social repurposing). READ-ONLY analysis over the transcript — no op, no render. Honest HEURISTIC v1 (scoring:\"heuristic\" — an editorial prior on opening-hook strength + a pacing/filler retention proxy, NOT a trained virality model); every candidate carries a human `reason`. With no `asset`, pools across every asset that has a transcript and re-ranks globally. With no transcript in scope it is refused, never an empty ok: captions not installed gives the shared refusal (code sidecar, Install captions or system.setup_perception); captions installed but nothing transcribed gives not_found naming media.transcribe. A transcribed asset with nothing found stays ok and says so.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -13788,7 +13793,7 @@
     {
       "name": "render.bundle",
       "domain": "render",
-      "description": "Render ONE timeline window into a publish package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, QC, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
+      "description": "Export ONE timeline window into a local export package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, quality checks, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -13949,7 +13954,7 @@
             "description": "The deliveries to render, in order. Each entry is a render.final arg SUBSET; the render.final dispatch is the authoritative validator (unknown keys / bad enums are rejected per entry, up front, via a dry_run).",
             "items": {
               "type": "object",
-              "description": "A render.final arg-set for one delivery. `output` aliases render.final's `path` (the file to write, FENCED per ). Other keys mirror render.final: preset, format, hardware, bitrate, target_size_mb, rate_control, audio_bitrate, profile, fit, resolution, aspect, width, height, normalize_loudness.",
+              "description": "A render.final arg-set for one delivery. `output` aliases render.final's `path` (the file to write, FENCED). Other keys mirror render.final: preset, format, hardware, bitrate, target_size_mb, rate_control, audio_bitrate, profile, fit, resolution, aspect, width, height, normalize_loudness.",
               "properties": {
                 "output": {
                   "type": "string",
@@ -14108,7 +14113,7 @@
     {
       "name": "autopilot.run",
       "domain": "autopilot",
-      "description": "Receipted Autopilot : render → verify → MECHANICALLY self-fix from the receipt's fix_actions → re-verify, capped, all under ONE auto-checkpoint so the whole run reverts in one step. Autopilot renders with the talking_head footage profile, so loudness and edge silence are checked. The self-fix loop is deterministic (no model): a render-param fix (lufs→normalize_loudness, uniform_border→fit:cover) merges into the next render; a timeline-edit fix (cut_on_word→edit.trim snap-to-word-edge, silence_at_edges→edit.trim_edges, caption overlap→captions.reflow) is applied as its verb. policy:\"preview\" (DEFAULT) renders+verifies once and returns the PLAN (what it WOULD fix) WITHOUT applying — approve first; \"auto_low_risk\" applies the mechanical fixes. comment_id pre-applies that review note's drafted changes (comment.apply). returns {job_id, checkpoint}; the clean report lands in the job result.",
+      "description": "Receipted Autopilot : render → verify → MECHANICALLY self-fix from the receipt's fix_actions → re-verify, capped, all under ONE auto-checkpoint so the whole run reverts in one step. Autopilot renders with the talking_head content type profile, so loudness and edge silence are checked. The self-fix loop is deterministic (no model): a render-param fix (lufs→normalize_loudness, uniform_border→fit:cover) merges into the next render; a timeline-edit fix (cut_on_word→edit.trim snap-to-word-edge, silence_at_edges→edit.trim_edges, caption overlap→captions.reflow) is applied as its verb. policy:\"preview\" (DEFAULT) renders+verifies once and returns the PLAN (what it WOULD fix) WITHOUT applying the self-fixes — approve first; \"auto_low_risk\" applies the mechanical fixes. comment_id pre-applies that review note's drafted changes (comment.apply), even with preview policy. returns {job_id, checkpoint}; the clean report lands in the job result.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -14276,7 +14281,7 @@
     {
       "name": "generate.preview",
       "domain": "generate",
-      "description": "Render a non-mutating PNG evidence frame for one Generate template after resolving params and lowering args. Pure preview: no project required, no op, no checkpoint. With an open project it writes into <project>/frames and returns a /frames/{file} URL; without a project it writes a temp PNG path. Preview supports templates that lower to title.add or edit.add_shape; project-dependent templates report INVALID_ARGS honestly.",
+      "description": "Render a non-mutating PNG evidence frame for one Generate template after resolving params and lowering args. Pure preview: no project required, no op, no checkpoint. With an open project it writes into <project>/frames and returns a /frames/{file} URL; without a project it writes a temp PNG path. Preview supports templates that lower to title.add, edit.add_shape, motion.template_to_cut, or motion.script_to_cut; unsupported lowerings report INVALID_ARGS.",
       "args": {
         "type": "object",
         "required": [
@@ -14334,7 +14339,7 @@
     {
       "name": "generate.insert",
       "domain": "generate",
-      "description": "Materialize one Generate template into the open project by resolving params, lowering to an existing native verb, and dispatching that verb through the normal replay-safe path. Inserts are grouped by an auto-checkpoint and return instance evidence: op ids, generated clip/asset ids, resolved params, lowering args, and the native verb result. Supported template verbs are title.add, edit.add_shape, and captions.kinetic. Requires an open project.",
+      "description": "Materialize one Generate template into the open project by resolving params, lowering to an existing native verb, and dispatching that verb through the normal replay-safe path. Inserts are grouped by an auto-checkpoint and return instance evidence: op ids, generated clip/asset ids, resolved params, lowering args, and the native verb result. Supported template verbs are title.add, edit.add_shape, captions.kinetic, motion.template_to_cut, and motion.script_to_cut. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -14500,7 +14505,7 @@
               "script",
               "existing_media"
             ],
-            "description": "Planning path. auto lets the adapter infer the path from input/context."
+            "description": "Planning path. Quick prompt (`quick_prompt`), Director brief (`director_brief`), Script (`script`), or Existing media (`existing_media`). Auto (`auto`) lets the adapter infer the path from input/context."
           },
           "policy": {
             "type": "string",
@@ -15187,7 +15192,7 @@
     {
       "name": "assemble.broll",
       "domain": "assemble",
-      "description": "ASSEMBLY AUTOMATION — fill a list of b-roll SLOTS by retrieving a clip per slot and placing it on a b-roll track. For each `{query, at_ms, duration_ms}`: search the `provider` (default local_folder; any assets.* provider — openverse/archive_org/wikimedia/nasa for stock, or local_folder with `dir`) for `query`, FETCH the top hit as a project asset, and edit.insert its first `duration_ms` at `at_ms` (no ripple — the b-roll lands on its own track). ORCHESTRATOR (like audio.cleanup_voice / autopilot.run): records NO op of its own — it wraps the work in an auto-checkpoint and dispatches assets.search + assets.fetch + edit.insert as real, replay-safe ops, so the whole assembly reverts in ONE step. STOPS on the first failing slot and returns the checkpoint + a revert_hint (never a silently half-assembled timeline). `track` targets an existing track; omitted = a 'broll' video track (created if absent). `source:\"generate\"` is reserved for assets.generate. Requires an open project.",
+      "description": "ASSEMBLY AUTOMATION — fill a list of b-roll SLOTS by retrieving a clip per slot and placing it on a b-roll track. For each `{query, at_ms, duration_ms}`: search the `provider` (default local_folder; any assets.* provider — openverse/archive_org/wikimedia/nasa for stock, or local_folder with `dir`) for `query`, FETCH the top hit as a project asset, and edit.insert its first `duration_ms` at `at_ms` (no ripple — the b-roll lands on its own track). ORCHESTRATOR (like audio.cleanup_voice / autopilot.run): records NO op of its own — it wraps the work in an auto-checkpoint and dispatches assets.search + assets.fetch + edit.insert as real, replay-safe ops, so the whole assembly reverts in ONE step. STOPS on the first failing slot and returns the checkpoint + a revert_hint (never a silently half-assembled timeline). `track` selects the target track; omitted = 'broll'. A missing target track is created as a video track. `source:\"generate\"` is reserved for assets.generate. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -15252,7 +15257,7 @@
           },
           "track": {
             "type": "string",
-            "description": "Target track id (default: a 'broll' video track, created if absent)."
+            "description": "Target track id (default 'broll'); created as a video track if absent."
           },
           "rationale": {
             "type": "string"
@@ -15322,12 +15327,12 @@
           }
         }
       },
-      "result": "{mode:\"check\"|\"status\", screen_check:\"checked\"|\"not_checked\"|\"permission_needed\"|\"not_applicable\", cards, video_encoder?:{checked:boolean,ready:boolean,reason:string|null,message:string,detail:string|null,width:number|null,height:number|null,fps:number}, ready, start_allowed, monitors:[{id?,index,name,width,height,primary}], windows:[{id,title,app?}], window_capture_supported:boolean, camera:{supported,devices:[{id,label,state,detail}],detail}, scenes:{supported,catalog_revision,layouts,timers,timer_actions,camera_required_layouts,recovery,detail}, pause:{supported,layouts?,streams?,requires?,incompatible,recovery?,detail}, quality:{supported,output_sizes,profiles,detail}, microphones:[{token,label}], microphone_selection:{mode:\"system_default\"|\"selected\",label?,status}, mic_warm?} — scenes is passive/path-free and opens no device; Presenter PiP readiness is conditional on an explicitly selected camera. pause is a passive capability: macOS may advertise the bounded exact-display/integer-FPS screen plus optional mic/system-audio owner and its current incompatibility reasons; it never opens a device and Linux/Windows advertise supported:false. camera enumeration is passive and never opens a device or permission prompt; ids are opaque and labels are display-only. A selected camera is used only by the explicit screen_record.start{camera_id} action. `quality.supported` is true only when this compiled backend owns and final-verifies simple Source/1080p/720p plus Standard/High output requests; its lists are empty otherwise and callers must omit `screen_record.start.quality`. On Windows, `video_encoder` reports whether the selected source, dimensions and frame rate can initialize video recording; the `video_encoder` card is ok, degraded, or unknown and contains only the plain message. `status` reads the matching cached check without opening a capture or encoder. An encoder preparation failure uses reason `video_encoder_unavailable` and keeps native details outside the card. A minimized selected window stays minimized and is not checked; `video_encoder.reason` is `window_minimized` and the plain message asks the person to restore it and check again. Only explicit recording Start may restore the window. `window_capture_supported` reports whether the compiled native backend can capture application windows, even when the current window list is empty; Linux portal capture reports false. Windows/macOS window rows carry an opaque live native `windows[].id`; the UI passes the selected id unchanged and capture revalidates it, while title and app remain display-only. Windows/macOS monitor rows include an opaque versioned native `id` only when an exact native identity is available; no surrogate is generated. Pass that `id` unchanged as `screen_record.start.monitor_id` to require a fresh exact revalidation; display name, ordinal, primary status, and dimensions never replace it. The legacy display picker continues to use only `index` when `id` is absent; Linux returns no in-app monitor rows. microphones are generic category-and-ordinal labels and expiring opaque tokens only. microphone_selection status is ready, unavailable, system_default_only, or recovered_corruption. A saved selected source that is absent remains unavailable and blocks mic-enabled start; it never falls back. mic_warm is present only when requested and tests the resolved source. No native endpoint ID/UID, vendor/friendly name, serial, backend name, auth, monitor device path, or filesystem path is returned. In `status` mode, screen_check `not_checked` keeps start_allowed true because Start runs the full check, and `permission_needed` means macOS has not given ShellX Cut screen recording permission (System Settings > Privacy & Security > Screen & System Audio Recording); the screen card detail says so in plain words. `microphone` mode returns only {mode:\"microphone\", start_allowed, microphone_access:\"granted\"|\"not_determined\"|\"denied\"|\"restricted\"|\"not_applicable\", microphone_blocked:{reason,message,suggested_action}|null, microphones, microphone_selection, mic_warm?}; start_allowed there means a voiceover take may start, and microphone_blocked names the missing permission, device or recorder and where the person provides it. `reason` is windows_microphone_access_off, windows_apps_microphone_off or windows_desktop_apps_microphone_off (a Windows privacy switch under Settings > Privacy & security > Microphone is off; microphone_access is then denied), no_microphone_device (Windows lists no microphone), macos_denied, macos_restricted or no_recorder. The `status` and `check` results carry the same microphone_access and microphone_blocked. When a microphone test could not open the device, mic_warm carries reason and message.",
+      "result": "{mode:\"check\"|\"status\", screen_check:\"checked\"|\"not_checked\"|\"permission_needed\"|\"not_applicable\", cards, video_encoder?:{checked:boolean,ready:boolean,reason:string|null,message:string,detail:string|null,width:number|null,height:number|null,fps:number}, ready, start_allowed, monitors:[{id?,index,name,width,height,primary}], windows:[{id,title,app?}], window_capture_supported:boolean, camera:{supported,devices:[{id,label,state,detail}],detail}, scenes:{supported,catalog_revision,layouts,timers,timer_actions,camera_required_layouts,recovery,detail}, pause:{supported,layouts?,streams?,requires?,incompatible,recovery?,detail}, quality:{supported,output_sizes,profiles,detail}, microphones:[{token,label}], microphone_selection:{mode:\"system_default\"|\"selected\",label?,status}, mic_warm?} — scenes is passive/path-free and opens no device; Presenter PiP readiness is conditional on an explicitly selected camera. pause is a passive capability: macOS may advertise the bounded exact-display/integer-FPS screen plus optional mic/system-audio owner and its current incompatibility reasons; it never opens a device and Linux/Windows advertise supported:false. camera enumeration is passive and never opens a device or permission prompt; ids are opaque and labels are display-only. A selected camera is used only by the explicit screen_record.start{camera_id} action. `quality.supported` is true only when this compiled backend owns and final-verifies simple Source/1080p/720p plus Standard/High output requests; its lists are empty otherwise and callers must omit `screen_record.start.quality`. On Windows, `video_encoder` reports whether the selected source, dimensions and frame rate can initialize video recording; the `video_encoder` card is ok, degraded, or unknown and contains only the plain message. `status` reads the matching cached check without opening a capture or encoder. An encoder preparation failure uses reason `video_encoder_unavailable` and keeps native details outside the card. A minimized selected window stays minimized and is not checked; `video_encoder.reason` is `window_minimized` and the plain message asks the person to restore it and check again. Only explicit recording Start may restore the window. `window_capture_supported` reports whether the compiled native backend can capture application windows, even when the current window list is empty; Linux portal capture reports false. Windows/macOS window rows carry an opaque live native `windows[].id`; the UI passes the selected id unchanged and capture revalidates it, while title and app remain display-only. Windows/macOS monitor rows include an opaque versioned native `id` only when an exact native identity is available; no surrogate is generated. Pass that `id` unchanged as `screen_record.start.monitor_id` to require a fresh exact revalidation; display name, ordinal, primary status, and dimensions never replace it. The legacy display picker continues to use only `index` when `id` is absent; Linux returns no in-app monitor rows. microphones are generic category-and-ordinal labels and expiring opaque tokens only. microphone_selection status is ready, unavailable, system_default_only, or recovered_corruption. A saved selected source that is absent remains unavailable and blocks mic-enabled start; it never falls back. mic_warm is present only when requested and tests the resolved source. No native endpoint ID/UID, vendor/friendly name, serial, backend name, auth, monitor device path, or filesystem path is returned. In `status` mode, screen_check `not_checked` keeps start_allowed true because Start runs the full check, and `permission_needed` means macOS has not given ShellX Cut screen recording permission (System Settings > Privacy & Security > Screen & System Audio Recording); the screen card detail says so in plain words. `microphone` mode returns only {mode:\"microphone\", start_allowed, microphone_access:\"granted\"|\"not_determined\"|\"denied\"|\"restricted\"|\"not_applicable\", microphone_blocked:{reason,message,suggested_action}|null, microphones, microphone_selection, mic_warm?}; start_allowed there means a voiceover take may start, and microphone_blocked names the missing permission, device or recorder and where the person provides it. `reason` is windows_microphone_access_off, windows_apps_microphone_off or windows_desktop_apps_microphone_off (a Windows privacy switch under Settings > Privacy & security > Microphone is off; microphone_access is then denied), no_microphone_device (Windows, macOS or a completed Linux PipeWire-Pulse audio inventory finds no capture source), macos_denied, macos_restricted or no_recorder. A missing, stalled, failing or ambiguous Linux audio route leaves microphone_blocked null and permits Start; output monitor nodes do not count as microphones. The Linux answer is cached for two seconds. The `status` and `check` results carry the same microphone_access and microphone_blocked. When a microphone test could not open the device, mic_warm carries reason and message.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
           "filesystem": true,
-          "process": false,
+          "process": true,
           "network": false,
           "ui": true
         },
@@ -15425,7 +15430,7 @@
     {
       "name": "screen_record.start",
       "domain": "screen_record",
-      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A simple `quality` request is accepted only when the current `screen_record.doctor.quality.supported` capability says so; that backend records final verified dimensions, cadence, and encoder facts in the stop result, while unsupported backends refuse rather than silently ignore it. A second active capture returns conflict until the first capture and its audio worker finish. While a microphone or system-audio test runs, start returns conflict ('An audio test is still running, so the recording cannot start yet.') with the action to wait a few seconds and start again. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, Start freshly prepares the native video encoder for the exact selected source size and frame rate before creating a capture folder; an unavailable encoder returns code video_encoder_unavailable with a plain message and action, while the native cause stays in error.cause. There is no software encoder fallback. When `audio:true` requests the microphone, a problem reported by the passive microphone readiness read refuses Start before any capture begins, with the stable microphone reason in the existing error.cause and its existing message and suggested_action; a start without microphone audio does not depend on microphone readiness. Start does not open or test the microphone as part of this readiness read. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `window`, when set on Windows/macOS, must be the opaque identity from the latest doctor enumeration and is revalidated exactly; titles are display-only, and a window that is not in the current doctor window list is refused with not_found ('the selected window is no longer available') before any marker or worker is created. `monitor_id`, when set, must be the opaque identity from a current doctor monitor row and is revalidated exactly before capture; it never falls back to `monitor`, name, primary state, or dimensions. `monitor` remains the compatible ordinal path when monitor_id is omitted. Capture state is filesystem-based (no AppState change). Optional expected_project_identity must equal the exact path-free project.state.project_identity under the project-transition lock; a closed project returns no_project and a switched project returns conflict before rehearsal cleanup, native admission, marker, or reservation. Requires an open project.",
+      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A simple `quality` request is accepted only when the current `screen_record.doctor.quality.supported` capability says so; that backend records final verified dimensions, cadence, and encoder facts in the stop result, while unsupported backends refuse rather than silently ignore it. A second active capture returns conflict until the first capture and its audio worker finish. While a microphone or system-audio test runs, start returns conflict ('An audio test is still running, so the recording cannot start yet.') with the action to wait a few seconds and start again. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, Start freshly prepares the native video encoder for the exact selected source size and frame rate before creating a capture folder; an unavailable encoder returns code video_encoder_unavailable with a plain message and action, while the native cause stays in error.cause. There is no software encoder fallback. When `audio:true` requests the microphone, a problem reported by the passive microphone readiness read refuses Start before any capture begins, with the stable microphone reason in the existing error.cause and its existing message and suggested_action; a start without microphone audio does not depend on microphone readiness. Start does not open or test the microphone as part of this readiness read. On Linux, a disposable child checks capture-source nodes on an identifiable PipeWire-Pulse audio route with a real deadline; an output monitor is excluded, and a missing, stalled, failing, or ambiguous audio route leaves the answer unknown and permits the take. The answer is shared and cached for two seconds. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `window`, when set on Windows/macOS, must be the opaque identity from the latest doctor enumeration and is revalidated exactly; titles are display-only, and a window that is not in the current doctor window list is refused with not_found ('the selected window is no longer available') before any marker or worker is created. `monitor_id`, when set, must be the opaque identity from a current doctor monitor row and is revalidated exactly before capture; it never falls back to `monitor`, name, primary state, or dimensions. `monitor` remains the compatible ordinal path when monitor_id is omitted. Capture state is filesystem-based (no AppState change). Optional expected_project_identity must equal the exact path-free project.state.project_identity under the project-transition lock; a closed project returns no_project and a switched project returns conflict before rehearsal cleanup, native admission, marker, or reservation. Requires an open project.",
       "args": {
         "type": "object",
         "required": [],
@@ -15810,7 +15815,7 @@
                   "recording",
                   "background"
                 ],
-                "description": "Event source. V1 supports camera composition and recording markers."
+                "description": "Event source: camera composition, recording markers, or background style."
               },
               "kind": {
                 "type": "string",
@@ -15956,7 +15961,7 @@
     {
       "name": "screen_record.polish",
       "domain": "screen_record",
-      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) then edit.insert at `at_ms` (default 0, no ripple). When the source capture directory contains a validated CameraArtifact@1, polish additionally imports its contained camera media onto a separate hidden v_camera video track at first_frame_offset_ms, with an explicit source range limited to the measured camera duration. It is editable but hidden to prevent duplicating the legacy baked webcam bubble until B7 adds the real visible-track/preview workflow. A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project. The bake runs as a screen_record_polish job: jobs.list, jobs.status, the status bar and the quit question show it with frame progress (\"Polishing the recording: frame N of M\"), a project change asks before cancelling it, and the job ends when the clip is placed, before the verb answers. The clip belongs to the project that was open when polish was called: if another project is open when it is ready (a change confirmed with cancel_running_jobs), nothing is added to any project, the recording is offered again in its own project (screen_record.pending), and the reply says so (placed:false, waiting_in_project, message); a forced change during the bake stops it with job_cancelled naming the project the recording stays in. Frames are composed on several cores at once and the editable clip is encoded at the faster x264 polish preset (veryfast); a 62 s 4K bake took about 2 minutes before.",
+      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) reuse an existing timeline clip for the imported asset if one exists, including a clip placed automatically by the first import; otherwise ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) and edit.insert at `at_ms` (default 0, no ripple). When the source capture directory contains a validated CameraArtifact@1, polish additionally imports its contained camera media onto a separate hidden identity-bound v_camera_<digest> video track at the screen clip's start plus first_frame_offset_ms, with an explicit source range limited to the measured camera duration. It is editable but hidden to prevent duplicating the legacy baked webcam bubble until B7 adds the real visible-track/preview workflow. A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project. The bake runs as a screen_record_polish job: jobs.list, jobs.status, the status bar and the quit question show it with frame progress (\"Polishing the recording: frame N of M\"), a project change asks before cancelling it, and the job ends when the clip is placed, before the verb answers. The clip belongs to the project that was open when polish was called: if another project is open when it is ready (a change confirmed with cancel_running_jobs), nothing is added to any project, the recording is offered again in its own project (screen_record.pending), and the reply says so (placed:false, waiting_in_project, message); a forced change during the bake stops it with job_cancelled naming the project the recording stays in. Frames are composed on several cores at once and the editable clip is encoded at the faster x264 polish preset (veryfast); a 62 s 4K bake took about 2 minutes before.",
       "args": {
         "type": "object",
         "required": [
@@ -15975,12 +15980,12 @@
           },
           "track": {
             "type": "string",
-            "description": "Target video track id (default \"v1\"; created if absent)."
+            "description": "Target video track id when inserting a new clip (default \"v1\"; created if absent). An existing clip for the imported asset is reused without moving it."
           },
           "at_ms": {
             "type": "integer",
             "minimum": 0,
-            "description": "Timeline position to insert the baked clip (default 0)."
+            "description": "Timeline position when inserting a new baked clip (default 0). An existing clip for the imported asset is reused without moving it."
           },
           "rationale": {
             "type": "string"
@@ -16197,7 +16202,7 @@
     {
       "name": "screen_record.pending",
       "domain": "screen_record",
-      "description": "List recordings the person has not been told about yet, across all projects, with no project open. A note is kept for every recording from its start until Stop saves it. It remains when the app or computer stopped during a recording (situation interrupted: what was saved can be recovered; nothing_saved: it stopped before any part was saved), when the app was closed during a recording and Stop ran because of that (saved_on_close, with added_to_timeline), when a recording finished but was never added (saved_not_added), when a recording ended with an error after part of it was saved (failed), or when the files are gone (files_missing). message is a sentence for the person; suggested_action says what to do. Recover with project.open{project_path} then screen_record.recover{capture_id}; dismiss with screen_record.pending_dismiss. A recording still running in this process is not listed. Reads file names and sizes only.",
+      "description": "List recordings the person has not been told about yet, across all projects, with no project open. A note is kept for every recording from its start until Stop saves it. It remains when the app or computer stopped during a recording (situation interrupted: what was saved can be recovered; nothing_saved: it stopped before any part was saved), when the app was closed during a recording and Stop ran because of that (saved_on_close, with added_to_timeline), when a recording finished but was never added (saved_not_added), when a recording ended with an error after part of it was saved (failed), or when the files are gone (files_missing). message is a sentence for the person; suggested_action says what to do. Recover with project.open{project_path} then screen_record.recover{capture_id}; dismiss with screen_record.pending_dismiss. A recording still running in this process is not listed. Reads saved notices, recovery journals, file metadata, and audio headers to describe recoverable media.",
       "args": {
         "type": "object",
         "required": [],
@@ -16336,7 +16341,7 @@
     {
       "name": "ui.screenshot",
       "domain": "ui",
-      "description": "Ask the connected UI client to capture itself. returns {path, mime}; inline:true adds base64. Errors no_ui_client when no UI is connected; partial fallback = render.frame composite + DOM-state JSON marked partial.",
+      "description": "Ask the connected UI client to capture itself. returns {path, mime}; inline:true adds base64. Errors no_ui_client when no UI is connected, or job_failed when the UI returns no image or invalid base64.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -16371,7 +16376,7 @@
     {
       "name": "debug.screenshot",
       "domain": "debug",
-      "description": "DEBUG (verification primitive): capture a SERVER-SIDE screenshot of the actual primary display (or a chosen `monitor`/`window`) to a PNG, returned inline as base64. Unlike `ui.screenshot` (which relays to the connected WebView and fails with no UI client), this grabs the REAL screen via the in-process OS recorder (ScreenCaptureKit/macOS, WGC/Windows, portal/Linux) — so it works HEADLESS / regardless of UI-client state, the tool for visually verifying the app, dialogs and right-click menus while driving cutd over the debug API. Implemented as a sub-second screen capture whose first frame is extracted to PNG. No project required; no audio, no input capture.",
+      "description": "DEBUG (verification primitive): capture a SERVER-SIDE screenshot of the actual primary display (or a chosen `monitor`/`window`) to a PNG, returned inline as base64. Unlike `ui.screenshot` (which relays to the connected WebView and fails with no UI client), this grabs the REAL screen via the in-process OS recorder (ScreenCaptureKit/macOS, WGC/Windows, portal/Linux) — so it works without a connected UI client but requires a desktop session with a capture backend. Use it to visually verify the app, dialogs and right-click menus while driving cutd over the debug API. Implemented as a sub-second screen capture whose first frame is extracted to PNG. No project required; no audio, no input capture.",
       "args": {
         "type": "object",
         "required": [],
@@ -16749,7 +16754,7 @@
     {
       "name": "system.doctor",
       "domain": "system",
-      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, the Settings>Environment panel, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, a platform-specific hint when missing, and details.setup = {route: builtin_download|homebrew|package_manager, fetch_available, steps[], commands[{label, command}], help_url, custom_build, download?: {publisher, publisher_url, version, size_bytes, size_is_exact, license, license_url, source_url, limitation, consent}} (steps/commands are the other way when a download exists, e.g. Homebrew on Apple silicon): the same setup guide the engine's tool_missing refusals point to; a refresh notices an ffmpeg installed or chosen since the last scan without restarting Cut); gpu-encode (details.ffmpeg_missing:true when no ffmpeg exists at all: nothing can export yet); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. For Codex direct-frame review, the image/schema and tool-free capability check must pass before details.judge_ready can be true; Antigravity remains unready for render judging. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}.",
+      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, Settings, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, a platform-specific hint when missing, and details.setup = {route: builtin_download|homebrew|package_manager, fetch_available, steps[], commands[{label, command}], help_url, custom_build, download?: {publisher, publisher_url, version, size_bytes, size_is_exact, license, license_url, source_url, limitation, consent}} (steps/commands are the other way when a download exists, e.g. Homebrew on Apple silicon): the same setup guide the engine's tool_missing refusals point to; a refresh notices an ffmpeg installed or chosen since the last scan without restarting Cut); gpu-encode (details.ffmpeg_missing:true when no ffmpeg exists at all: nothing can export yet); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. For Codex direct-frame review, the image/schema and tool-free capability check must pass before details.judge_ready can be true; Antigravity remains unready for render judging. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}. The ffmpeg card also has details.version_advice: null, or {in_use, tested_versions: [string], message, upgrade} when its readable major version is below 7; this is optional upgrade advice, leaves status and essential_ok unchanged, and preserves a manually chosen FFmpeg.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -16948,7 +16953,7 @@
     {
       "name": "system.setup_perception",
       "domain": "system",
-      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ready. rationale is recorded on the job.",
+      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ok. rationale is recorded on the job.",
       "args": {
         "type": "object",
         "required": [],
@@ -16986,7 +16991,7 @@
     {
       "name": "system.setup_matte",
       "domain": "system",
-      "description": "Make AI BACKGROUND REMOVAL (edit.matte) usable LOCALLY — the seamless, one-click install of the user-side matte runtime (the ffmpeg pattern; the user NEVER runs pip or sees a terminal). With NO args: DOWNLOAD the 14 MB RVM model (PeterL1n/RobustVideoMatting v1.0.0, sha256-pinned) into the app-data matte dir, as a background job (returns {job_id}; progress via the jobs domain). onnxruntime rides the PERCEPTION venv (so for anyone who's set up perception the install is just the model). With `path`: BROWSE-to-existing — point at an rvm.onnx already on disk (validated + persisted, synchronous). On success the doctor `matte` card flips missing -> ready. The runtime is invisible plumbing cutd manages (a one-shot CLI spawned per bake, like the perception sidecar) — one app, no second window. OPTIONAL — core editing + render work without it. RVM is GPL: we ship integration, the user installs the model on consent.",
+      "description": "Make AI BACKGROUND REMOVAL (edit.matte) usable LOCALLY — the seamless, one-click install of the user-side matte runtime (the ffmpeg pattern; the user NEVER runs pip or sees a terminal). With a prepared native runtime, reports its RVM readiness without downloading and refuses model-path overrides or MatAnyone2. Otherwise, with NO args: DOWNLOAD the 14 MB RVM model (PeterL1n/RobustVideoMatting v1.0.0, sha256-pinned) into the app-data matte dir, as a background job (returns {job_id}; progress via the jobs domain). onnxruntime rides the PERCEPTION venv (so for anyone who's set up perception the install is just the model). With `path`: BROWSE-to-existing — point at an rvm.onnx already on disk (validated + persisted, synchronous). On success the doctor `matte` card flips missing -> ok. The runtime is invisible plumbing cutd manages (a one-shot CLI spawned per bake, like the perception sidecar) — one app, no second window. OPTIONAL — core editing + render work without it. RVM is GPL: we ship integration, the user installs the model on consent.",
       "args": {
         "type": "object",
         "required": [],
@@ -17006,7 +17011,7 @@
           },
           "accept_noncommercial": {
             "type": "boolean",
-            "description": "REQUIRED to install model=matanyone: explicit acceptance that the MatAnyone2 weights are NON-COMMERCIAL (NTU S-Lab License 1.0). Download happens on your consent and responsibility. Without it the verb returns an invalid_args licence notice."
+            "description": "REQUIRED to download model=matanyone: explicit acceptance that the MatAnyone2 weights are NON-COMMERCIAL (NTU S-Lab License 1.0). Download happens on your consent and responsibility. Without it a download request returns an invalid_args licence notice. Browsing to an existing checkpoint does not require this flag."
           },
           "rationale": {
             "type": "string",
@@ -18201,7 +18206,7 @@
     {
       "name": "voiceover.start",
       "domain": "voiceover",
-      "description": "Start one authenticated Timeline voiceover take on an unlocked current audio track. `request_id` and `expected_revision` are both required: Cut binds the selected start or In/Out range to that exact revision before it reserves the private microphone source or creates any WAV. A live exact retry checks the original caller/request/track/range owner before the current revision, so it can reattach after ordinary project edits; a new target still needs the current revision and a different B is refused while A is active. The server issues one memory-only opaque owner claim, bound to that request and Timeline caller; every later tick, Stop, Cancel, and Out observation must present it. Only the explicit `voiceover_start_retry_rejected` response code proves no matching owner survived and pre-admission was refused, so only it permits the UI to discard its non-secret retry identity. A changed request id payload, foreign caller, stale revision, locked/non-audio/removed track, unavailable selected microphone, or a missing microphone prerequisite is refused. Voiceover needs only the microphone: it never reads, lists, or checks screen capture. On macOS, the first start after install makes the OS show its microphone prompt and returns a refusal that says to choose Allow and press Record voiceover again; denied microphone permission is refused with the System Settings > Privacy & Security > Microphone path. On Windows a microphone privacy switch that is off (windows_microphone_access_off, windows_apps_microphone_off, windows_desktop_apps_microphone_off) or no microphone (no_microphone_device) is refused with its reason and the Settings > Privacy & security > Microphone switch to turn on. The server owns readiness, the visual count-in, sealed WAV verification, Preview correlation, atomic asset-plus-clip placement, and the one Undoable project history operation. Direct microphone monitoring is always off.",
+      "description": "Start one authenticated Timeline voiceover take on an unlocked current audio track. `request_id` and `expected_revision` are both required: Cut binds the selected start or In/Out range to that exact revision before it reserves the private microphone source or creates any WAV. A live exact retry checks the original caller/request/track/range owner before the current revision, so it can reattach after ordinary project edits; a new target still needs the current revision and a different B is refused while A is active. The server issues one memory-only opaque owner claim, bound to that request and Timeline caller; every later tick, Stop, Cancel, and Out observation must present it. Only the explicit `voiceover_start_retry_rejected` response code proves no matching owner survived and pre-admission was refused, so only it permits the UI to discard its non-secret retry identity. A changed request id payload, foreign caller, stale revision, locked/non-audio/removed track, unavailable selected microphone, or a missing microphone prerequisite is refused. Voiceover needs only the microphone: it never reads, lists, or checks screen capture. On macOS, the first start after install makes the OS show its microphone prompt and returns a refusal that says to choose Allow and press Record voiceover again; denied microphone permission is refused with the System Settings > Privacy & Security > Microphone path. On Windows a microphone privacy switch that is off (windows_microphone_access_off, windows_apps_microphone_off, windows_desktop_apps_microphone_off) or no microphone (no_microphone_device) is refused with its reason and the Settings > Privacy & security > Microphone switch to turn on. On Linux, a completed inventory on an identifiable PipeWire-Pulse audio route with no real or virtual capture source refuses the take with no_microphone_device and the same plain No microphone was found message as Windows and macOS; a missing, stalled, or ambiguous audio route leaves readiness unknown and permits Start. Output monitors are not microphones. The server owns readiness, the visual count-in, sealed WAV verification, Preview correlation, atomic asset-plus-clip placement, and the one Undoable project history operation. Direct microphone monitoring is always off.",
       "args": {
         "type": "object",
         "required": [
@@ -18555,7 +18560,7 @@
     {
       "name": "screen_record.pause",
       "domain": "screen_record",
-      "description": "Request an explicit pause of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after the native owner seals the exact screen plus optional microphone/system-audio run and appends the durable Pause transition. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows return unavailable.",
+      "description": "Request an explicit pause of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after the native owner seals the exact screen plus optional microphone/system-audio run and appends the durable Pause transition. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows refuse with code not_found.",
       "args": {
         "type": "object",
         "required": [
@@ -18594,7 +18599,7 @@
     {
       "name": "screen_record.resume",
       "domain": "screen_record",
-      "description": "Request an explicit resume of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after native readiness is accepted and the durable Resume transition is appended. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows return unavailable.",
+      "description": "Request an explicit resume of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after native readiness is accepted and the durable Resume transition is appended. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows refuse with code not_found.",
       "args": {
         "type": "object",
         "required": [
@@ -18662,7 +18667,7 @@
     {
       "name": "screen_record.preview_start",
       "domain": "screen_record",
-      "description": "Start one bounded, process-local native source preview for exactly one opaque monitor or window identity from the current screen_record.doctor enumeration. Windows and macOS re-resolve that identity immediately; Linux accepts only Portal and opens a new user-consented, ephemeral PipeWire session. Every adapter retains only the latest bounded BMP in memory. A preview cannot start while a recording owns capture devices. Replacing a source stops/releases the predecessor first; no title, ordinal, native handle, region coordinates, file, restore token, or browser getDisplayMedia fallback is accepted.",
+      "description": "Start one bounded, process-local native source preview for one opaque monitor or window identity from the current screen_record.doctor enumeration, or a fresh Linux Portal selection. Windows and macOS re-resolve that identity immediately; Linux accepts only Portal and opens a new user-consented, ephemeral PipeWire session. Every adapter retains only the latest bounded BMP in memory. A preview cannot start while a recording owns capture devices. Replacing a source stops/releases the predecessor first; no title, ordinal, native handle, region coordinates, file, restore token, or browser getDisplayMedia fallback is accepted.",
       "args": {
         "type": "object",
         "required": [

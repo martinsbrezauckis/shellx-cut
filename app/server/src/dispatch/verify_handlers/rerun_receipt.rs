@@ -142,7 +142,7 @@ pub(super) fn profile_from_receipt(
     let Some(active) = entry.details.get("active_profile").and_then(Value::as_str) else {
         return Err(CutError::new(
             error_codes::CONFLICT,
-            "render receipt has invalid footage-profile evidence",
+            "Render history has incomplete content-type quality checks",
             "the footage_profile entry is missing details.active_profile",
         )
         .with_suggested_action("render again to create a complete receipt"));
@@ -150,10 +150,12 @@ pub(super) fn profile_from_receipt(
     active.parse().map_err(|reason: String| {
         CutError::new(
             error_codes::CONFLICT,
-            "render receipt has an unknown footage profile",
+            "Render history has an unknown content type for quality checks",
             reason,
         )
-        .with_suggested_action("render again with a supported footage profile")
+        .with_suggested_action(
+            "Render again with a supported content type for quality checks (profile).",
+        )
     })
 }
 

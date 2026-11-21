@@ -80,3 +80,5 @@
 .rec-video-timer__clock input[aria-invalid="true"] { border-color: var(--err, #ef4444); }
 .rec-video-timer [data-cut-rec-video-timer-draft="invalid"] { color: #ffb4a0; }
 .rec-video-timer :is(button, input):focus-visible { outline: 2px solid var(--cut-soft, #5b8def); outline-offset: 2px; }
+/* Light theme: fixed light inks take the theme's text tokens. */
+[data-theme="light"] .rec-video-timer [data-cut-rec-video-timer-draft="invalid"] { color: var(--danger); }

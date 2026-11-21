@@ -1,6 +1,6 @@
 // A check with nothing to check on this export (details.status
 // "not_applicable", e.g. caption_presence on an export without captions) is
-// neither a pass nor a failure nor "unmeasured". The Receipts tab shows it as
+// neither a pass nor a failure nor "unmeasured". The Render history & checks tab shows it as
 // N/A with its reason and counts it apart; the status-bar chip does too.
 
 import { strict as assert } from 'node:assert'
@@ -23,6 +23,7 @@ const receipt = renderReceiptFrom({
     na('cut_on_word', 'No clip on the timeline has a transcript, so cuts cannot be compared with words.', 'a clip on the timeline has a transcript'),
     pass('duration_matches_edl'),
     pass('lufs'),
+    { name: 'footage_profile', pass: true, details: { active_profile: 'talking_head', selection: 'explicit', proposed_profile: 'silent_screen_demo' }, evidence: {} },
   ],
   outcome: { verdict: 'passed', summary: 'The export was written and passed its checks.', not_applicable: ['cut_on_word', 'caption_presence'] },
 })
@@ -38,6 +39,10 @@ assert.match(html, /rr-check__state--na">N\/A</, 'the row reads N/A, never PASS'
 assert.match(html, /title="Not applicable: This export has no captions."/, 'the reason is on the row')
 assert.match(html, /data-cut-check="lufs" data-cut-check-state="pass"/)
 assert.doesNotMatch(html, /data-cut-receipt-outcome/, 'no problem line on a clean export')
+
+assert.match(html, /data-cut-profile="talking_head"/, 'the serialized profile value stays exact')
+assert.match(html, /Content type for quality checks: Talking head/)
+assert.match(html, /Auto-detect proposes Screen demo/)
 
 assert.equal(receiptSummary(receipt).text, '4.0s · 2 checks pass · 2 not applicable')
 assert.equal(receiptSummary(receipt).tone, 'pass')

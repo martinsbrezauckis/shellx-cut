@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates'
 import { isSettingsCategoryId, type SettingsCategoryId } from '../panels/Environment/settingsModel'
 import type { AppDrawer } from './AppDrawerStack'
@@ -41,6 +41,18 @@ export function useAppSurfaceEvents({
   setAgentChatPrefill,
   claimAgentChatPrefill,
 }: AppSurfaceEventsArgs) {
+  const pendingFocus = useRef<string | null>(null)
+  // A frame can run before React commits the workspace switch. Focus the
+  // synchronous Edit panel only once that switch has mounted its DOM.
+  useLayoutEffect(() => {
+    const selector = pendingFocus.current
+    pendingFocus.current = null
+    if (!selector) return
+    const element = document.querySelector<HTMLElement>(selector)
+    element?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    element?.focus()
+  })
+
   const openSurface = useCallback((id: string): boolean => {
     const entry = uiSurface(id)
     const action = entry?.action
@@ -59,11 +71,7 @@ export function useAppSurfaceEvents({
     switch (action.kind) {
       case 'focus':
         if (!showEditor()) return false
-        window.requestAnimationFrame(() => {
-          const element = document.querySelector<HTMLElement>(entry.selector)
-          element?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-          element?.focus()
-        })
+        pendingFocus.current = entry.selector
         return true
       case 'left':
         if (!showEditor()) return false

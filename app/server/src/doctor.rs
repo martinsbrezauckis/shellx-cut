@@ -47,6 +47,9 @@ pub(crate) mod cache;
 mod judge_admission;
 mod premium_matte;
 use premium_matte::matte_premium_card;
+mod ffmpeg_version_advice;
+#[cfg(test)]
+mod ffmpeg_version_tests;
 mod service_cards;
 
 /// Card schema version (bumped only on a breaking shape change).
@@ -511,6 +514,7 @@ fn ffmpeg_cards() -> Vec<Card> {
 fn ffmpeg_card_with_selection() -> Card {
     let selection = cut_media::toolpath::ffmpeg_selection();
     let mut card = media_tool_card("ffmpeg", selection.program.clone());
+    ffmpeg_version_advice::preserve_choice(&mut card, selection.reason);
     if let Some(details) = card.details.as_object_mut() {
         details.insert("selection".into(), json!(selection));
     }
@@ -538,6 +542,9 @@ fn media_tool_card(stem: &str, prog: std::ffi::OsString) -> Card {
         // token (drop the "ffmpeg version " prefix + the trailing Copyright clause)
         // so the card shows "6.1.1-3ubuntu5".
         let version = match &outcome {
+            ProbeOutcome::Ran(_) if stem == "ffmpeg" => {
+                cut_media::hwencode::ffmpeg_version_at(&prog)
+            }
             ProbeOutcome::Ran(line) if !line.is_empty() => {
                 let v = line
                     .trim_start_matches("ffmpeg version ")
@@ -583,6 +590,15 @@ fn media_tool_card(stem: &str, prog: std::ffi::OsString) -> Card {
                 }
             }
         };
+        let version_advice = (stem == "ffmpeg" && runnable)
+            .then(|| {
+                ffmpeg_version_advice::for_version(
+                    version.as_deref(),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                )
+            })
+            .flatten();
         Card {
             id: stem.to_string(),
             kind: "tool".into(),
@@ -593,6 +609,7 @@ fn media_tool_card(stem: &str, prog: std::ffi::OsString) -> Card {
             details: json!({
                 "resolved": resolved,
                 "runnable": runnable,
+                "version_advice": version_advice,
                 "essential": true,
                 // The app-data dir the wizard's Download button installs into.
                 "install_dir": cut_media::toolpath::appdata_tools_dir()
@@ -1461,12 +1478,11 @@ fn judge_card(
         None
     } else {
         Some(format!(
-            "This CLI is installed, but render-judge admission is unavailable: {}. \
-             Agent Chat remains a separate capability; Re-scan after correcting the issue.",
+            "{} Agent Chat is checked separately. Re-scan to check again.",
             admission
                 .availability_reason
                 .as_deref()
-                .unwrap_or("the adapter did not affirmatively report readiness")
+                .unwrap_or("Could not check whether this agent can review exports.")
         ))
     };
     let resolved = selected

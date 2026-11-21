@@ -1,11 +1,13 @@
 import { sourceMsAtTimelinePosition, timelineMsAtSourcePosition } from '../../lib/mediaTime'
 import type { ActiveVideo } from './model'
+import { continuesInPlace } from './baseDeckPlan'
 import {
   acceptPlaybackFrame,
   canStartPreviewMedia,
   PlaybackHandoff,
   mediaTimingCapability,
   playbackVideoKey,
+  playbackBindingKey,
   startsInPlace,
   TimelineMediaClock,
   type PlaybackSeekTracker,
@@ -32,18 +34,21 @@ export interface FreeRunScheduler {
 }
 
 export interface FreeRunState {
+  rate: number
   playheadMs: number
   durationMs: number
   frameMs: number
   seekRevision: number
   video: ActiveVideo | null
+  /** End of the uninterrupted source run, before a gap or different mapping. */
+  continuousEndMs?: number
   voiceoverPlayback: { outMs: number | null } | null
 }
 
 export interface FreeRunArgs {
   video: FreeRunVideo
   callbacks: FreeRunFrameCallbacks
-  /** The clip placement this clock instance was started for. */
+  /** Initial placement; contiguous pieces retain this clock instance. */
   expectedKey: string | null
   /** Latest rendered state, read on every callback. */
   state: { readonly current: FreeRunState }
@@ -52,6 +57,8 @@ export interface FreeRunArgs {
   publish: (positionMs: number) => void
   /** Stop playback at the end of program content. */
   stop: () => void
+  /** The deck still shows this element after the next render. */
+  isCurrentVideo?: () => boolean
   scheduler?: FreeRunScheduler
 }
 
@@ -66,10 +73,13 @@ const browserScheduler: FreeRunScheduler = {
  * The timeline stays the authority (see TimelineMediaClock): an element that
  * does not start, stops advancing, fails or jumps ahead is resynchronized while
  * the timeline keeps playing, so no media event order can hold playback.
- * Returns the cleanup that detaches every listener and pauses the element. */
+ * Cleanup detaches every listener. Contiguous cuts keep their decoder playing. */
 export function runFreeRunClock(args: FreeRunArgs): () => void {
-  const { video: v, callbacks, expectedKey, state: cfg, tracker, publish, stop } = args
+  const { video: v, callbacks, state: cfg, tracker, publish, stop } = args
+  let expectedKey = args.expectedKey
+  let clockVideo = cfg.current.video
   const scheduler = args.scheduler ?? browserScheduler
+  const initialSeekRevision = cfg.current.seekRevision
   let rafId = 0
   let fallbackRaf = 0
   let stopped = false
@@ -89,7 +99,9 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
   const seekMedia = (positionMs: number, force = false, userSeek = false) => {
     const c = cfg.current
     if (!c.video) return
-    seekTargetMs = sourceMsAtTimelinePosition(c.video, positionMs)
+    const end = Math.max(c.video.startMs + c.video.durMs, c.continuousEndMs ?? 0)
+    const sourceOutMs = c.video.srcInMs + (end - c.video.startMs) * c.video.speed
+    seekTargetMs = sourceMsAtTimelinePosition({ ...c.video, srcOutMs: sourceOutMs }, positionMs)
     ready = false
     const inPlace = !force && !userSeek && startsInPlace(v.paused, v.seeking, v.readyState, seekTargetMs - v.currentTime * 1000, c.video.speed)
     if (inPlace) seekTargetMs = v.currentTime * 1000
@@ -135,8 +147,8 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
   const onSeeked = () => {
     if (!stopped && initialised && !v.seeking && Math.abs(v.currentTime * 1000 - seekTargetMs) <= cfg.current.frameMs * 2) ready = true
   }
-  // Cross the clip's out point → jump the playhead to the next clip start;
-  // the src swap re-arms this clock, which reseeks + plays the next proxy.
+  // Publish the next placement at its boundary. A different source re-arms
+  // the clock; a continuous piece keeps this frame subscription and clock.
   const advance = (toMs: number) => {
     if (!handoff.begin()) return
     const c = cfg.current
@@ -152,8 +164,12 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
       if (!c.voiceoverPlayback) stop()
       return
     }
-    if (timelineMs >= clipEndMs - 1) advance(Math.min(c.durationMs, clipEndMs))
-    else if (now - lastDispatch >= 100) {
+    if (timelineMs >= clipEndMs - 1) {
+      const runEnd = Math.max(clipEndMs, c.continuousEndMs ?? clipEndMs)
+      advance(Math.min(c.durationMs, runEnd, Math.max(clipEndMs, timelineMs)))
+    }
+    // Keep the readout close to the presented frame between cut publications.
+    else if (now - lastDispatch >= 50) {
       lastDispatch = now
       publish(previewPlaybackClockPosition(timelineMs, c.durationMs, c.voiceoverPlayback).positionMs)
     }
@@ -161,15 +177,25 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
   // 'continue' when this clock may run: no handoff pending and no user seek.
   const observe = (): boolean => {
     const c = cfg.current
-    if (playbackVideoKey(c.video) !== expectedKey) return false
+    if (c.rate !== 1 || !(args.isCurrentVideo?.() ?? true)) return false
     const state = handoff.observe(c.playheadMs, c.seekRevision)
+    const key = playbackVideoKey(c.video)
+    const changed = key !== expectedKey
+    if (changed) {
+      if (!clockVideo || !c.video || playbackBindingKey(clockVideo, 0) !== playbackBindingKey(c.video, 0)) return false
+      expectedKey = key
+      clockVideo = c.video
+      handoff.complete()
+    }
     if (state === 'seek') { startPlay(true); return false }
-    return state === 'continue'
+    return changed || state === 'continue'
   }
   const syncFromMediaTime = (now: number, mediaTime: number) => {
     if (stopped || !observe()) return
     const vid = cfg.current.video
-    if (vid && acceptPlaybackFrame(expectedKey, vid, mediaTime * 1000, v.currentTime * 1000, ready, v.seeking, cfg.current.frameMs)) {
+    if (vid && mediaTime * 1000 >= vid.srcInMs - cfg.current.frameMs
+      && acceptPlaybackFrame(expectedKey, vid, mediaTime * 1000, v.currentTime * 1000, ready, v.seeking, cfg.current.frameMs,
+        vid.srcInMs + (Math.max(vid.startMs + vid.durMs, cfg.current.continuousEndMs ?? 0) - vid.startMs) * vid.speed)) {
       const mediaMs = Math.max(timelineMsAtSourcePosition(vid, mediaTime * 1000), vid.startMs)
       emit(now, clock.media(mediaMs, now))
     }
@@ -215,6 +241,10 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
     v.removeEventListener('ended', onEnded)
     callbacks.cancel(rafId)
     scheduler.cancelFrame(fallbackRaf)
-    v.pause()
+    const c = cfg.current
+    const continuing = c.rate === 1 && c.seekRevision === initialSeekRevision
+      && clockVideo && c.video && continuesInPlace(clockVideo, c.video, c.frameMs)
+      && (args.isCurrentVideo?.() ?? true)
+    if (!continuing) v.pause()
   }
 }

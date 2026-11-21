@@ -164,7 +164,7 @@ pub fn run_tracker(
             CutError::new(
                 error_codes::IO,
                 format!("track runner spawn failed: {e}"),
-                "the local motion-tracking runtime could not be started",
+                "Motion tracking tools could not be started. Choose Install captions to repair them.",
             )
             .with_suggested_action(cut_perception::captions_setup_action())
         })?;
@@ -173,8 +173,9 @@ pub fn run_tracker(
         return Err(CutError::new(
             error_codes::IO,
             format!("track runner failed: {}", err.trim()),
-            "the local tracking runtime errored (is cv2 installed in the perception venv?)",
-        ));
+            "Motion tracking could not run; its analysis tools may be missing or damaged. Choose Install captions to set them up again.",
+        )
+        .with_suggested_action(cut_perception::captions_setup_action()));
     }
     // The runner prints exactly one JSON line; tolerate leading noise.
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -188,8 +189,9 @@ pub fn run_tracker(
         CutError::new(
             error_codes::IO,
             format!("track runner output not JSON ({e}); got: {line}"),
-            "the runner must print one JSON track line on stdout",
+            "Motion tracking did not return usable results. Choose Install captions to repair its analysis tools.",
         )
+        .with_suggested_action(cut_perception::captions_setup_action())
     })
 }
 
@@ -258,6 +260,53 @@ pub fn to_keyframes(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn analysis_failures_name_the_feature_and_setup_action() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("failed-analysis.sh");
+        for body in [
+            "exit 1",
+            "printf 'unusable output\\n'",
+            "missing interpreter",
+        ] {
+            std::fs::write(&script, body).unwrap();
+            let rt = Runtime {
+                python: if body == "missing interpreter" {
+                    root.path().join("missing")
+                } else {
+                    PathBuf::from("/bin/sh")
+                },
+                script: script.clone(),
+                native_context: false,
+            };
+            let error = run_tracker(
+                &rt,
+                Path::new("unused.mp4"),
+                &Seed::Bbox([0.1, 0.1, 0.2, 0.2]),
+                0,
+                100,
+                20,
+                "csrt",
+            )
+            .unwrap_err();
+            assert_eq!(error.code, error_codes::IO);
+            assert!(error.cause.contains("Motion tracking"), "{error:?}");
+            assert!(error.cause.contains("Install captions"), "{error:?}");
+            assert!(
+                error
+                    .suggested_action
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("system.setup_perception"),
+                "{error:?}"
+            );
+            for jargon in ["venv", "opencv", "cv2", "rapidocr", "stdout"] {
+                assert!(!error.cause.contains(jargon), "{error:?}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

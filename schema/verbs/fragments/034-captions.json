@@ -89,7 +89,7 @@
     {
       "name": "captions.set_range",
       "domain": "captions",
-      "description": "Set a caption clip's absolute timeline range: retime (shift both edges) or trim (move one edge) for direct manipulation of caption clips. edit.move/edit.trim REFUSE caption clips (captions carry absolute ranges, not source ranges), so this is the only way to reposition a caption clip. The clip must be a caption clip; the range must be non-empty.",
+      "description": "Set a caption clip's absolute timeline range: retime (shift both edges) or trim (move one edge) for direct manipulation of caption clips. edit.move/edit.trim REFUSE caption clips (captions carry absolute ranges, not source ranges), so use this verb to reposition one caption clip; captions.shift moves all cues on a caption track. The clip must be a caption clip; the range must be non-empty.",
       "args": {
         "type": "object",
         "required": [

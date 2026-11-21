@@ -5,7 +5,7 @@
     {
       "name": "project.package_plan",
       "domain": "project",
-      "description": "B6 dry-run for a Cut-native portable package. The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, refuse offline/symlinked media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; if the current project revision is a B5 grouped relink, its exact durable receipt is required. When supplied it must be immutable, journal-backed, and match the current source revision exactly.",
+      "description": "Preview a project copy with its used media (verb `project.package_plan`). The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, resolve media paths to their canonical targets, refuse offline media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; if the current project revision is a B5 grouped relink, its exact durable receipt is required. When supplied it must be immutable, journal-backed, and match the current source revision exactly.",
       "args": {
         "type": "object",
         "required": [
@@ -54,7 +54,7 @@
     {
       "name": "project.package_create",
       "domain": "project",
-      "description": "B6 Pack project publication used after an explicit Projects > Make a copy confirmation or by direct API. It recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
+      "description": "Save a project copy with its used media (verb `project.package_create`) after an explicit Projects > Make a copy confirmation or a direct API call. It recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
       "args": {
         "type": "object",
         "required": [

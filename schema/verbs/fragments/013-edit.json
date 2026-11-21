@@ -107,7 +107,7 @@
               "ellipse",
               "polygon"
             ],
-            "description": "Window region shape (polygon covers freeform). Required unless enabled:false."
+            "description": "Window region shape (polygon covers freeform). Required when appending; omit when clearing or removing a window."
           },
           "points": {
             "type": "array",

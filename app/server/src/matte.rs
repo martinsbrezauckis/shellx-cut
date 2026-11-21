@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 #[path = "matte_cache_bake.rs"]
 mod cache_bake;
 #[cfg(test)]
+#[path = "matte_download_tests.rs"]
+mod download_tests;
+#[cfg(test)]
 #[path = "matte_http_stream_tests.rs"]
 mod http_stream_tests;
 #[path = "matte_native_runtime.rs"]
@@ -346,6 +349,8 @@ fn receive_http_alpha(
 /// 14 MB, opset 12). We ship integration; the USER fetches the model on consent.
 const RVM_URL: &str =
     "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx";
+// GitHub release asset is 14,975,696 bytes; 16 MiB allows 12% headroom.
+const RVM_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The resolved local matte runtime (the one-shot CLI): a python carrying
 /// onnxruntime, the runner script (ships beside the perception payload), and the
@@ -435,44 +440,70 @@ pub fn install_model(progress: &dyn Fn(f32, &str)) -> Result<PathBuf, CutError> 
     let dir = appdata_matte_dir().ok_or_else(|| io_err("matte dir", "HOME/LOCALAPPDATA unset"))?;
     std::fs::create_dir_all(&dir).map_err(|e| io_err("create matte dir", e))?;
     let dest = dir.join("rvm.onnx");
-    if dest.exists() {
-        if let Ok(bytes) = std::fs::read(&dest) {
-            if hex_sha256(&bytes) == RVM_MODEL_SHA256 {
-                progress(1.0, "model already installed");
-                return Ok(dest);
-            }
-        }
+    if pinned_file_is_valid(&dest, RVM_MODEL_SHA256, RVM_MAX_BYTES) {
+        progress(1.0, "model already installed");
+        return Ok(dest);
     }
     progress(0.05, "downloading the background-removal model (14 MB)");
-    let resp = ureq::get(RVM_URL).call().map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("model download failed: {e}"),
-            "could not reach the RVM model release (needs internet for the one-time download)",
-        )
-    })?;
-    // Stream the body (ureq's read_to_vec caps at 10 MB; the model is 14 MB).
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut resp.into_body().into_reader(), &mut bytes)
-        .map_err(|e| io_err("read model", e))?;
-    let got = hex_sha256(&bytes);
-    if got != RVM_MODEL_SHA256 {
+    let dest = install_pinned_model(RVM_URL, &dir, "rvm.onnx", RVM_MODEL_SHA256, RVM_MAX_BYTES)?;
+    progress(1.0, "background-removal model installed");
+    Ok(dest)
+}
+
+fn pinned_file_is_valid(path: &Path, expected: &str, limit: u64) -> bool {
+    use sha2::{Digest, Sha256};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hash = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let Ok(n) = std::io::Read::read(&mut file, &mut buf) else {
+            return false;
+        };
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > limit {
+            return false;
+        }
+        hash.update(&buf[..n]);
+    }
+    format!("{:x}", hash.finalize()) == expected
+}
+
+/// Download with the established fetch limit/hash path into a private sibling
+/// temp file. Its guard removes every failed or mismatched download.
+fn install_pinned_model(
+    url: &str,
+    dir: &Path,
+    name: &str,
+    expected: &str,
+    limit: u64,
+) -> Result<PathBuf, CutError> {
+    let temp = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|e| io_err("create private model file", e))?
+        .into_temp_path();
+    let (_, got) =
+        crate::fetch::download_file(url, temp.as_ref(), limit, &|_, _| {}).map_err(|e| {
+            CutError::new(
+                error_codes::IO,
+                e.message.replace("tool archive", "model file"),
+                e.cause,
+            )
+        })?;
+    if got != expected {
         return Err(CutError::new(
             error_codes::IO,
             format!("model checksum mismatch (got {got})"),
             "the downloaded model did not match the pinned hash; try the install again",
         ));
     }
-    let tmp = dir.join("rvm.onnx.part");
-    std::fs::write(&tmp, &bytes).map_err(|e| io_err("write model", e))?;
-    std::fs::rename(&tmp, &dest).map_err(|e| io_err("place model", e))?;
-    progress(1.0, "background-removal model installed");
+    let dest = dir.join(name);
+    crate::output_paths::publish_output_atomic(temp.as_ref(), &dest)?;
     Ok(dest)
-}
-
-fn hex_sha256(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(bytes))
 }
 
 // ===========================================================================
@@ -494,6 +525,8 @@ fn hex_sha256(bytes: &[u8]) -> String {
 const MATANYONE_URL: &str =
     "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth";
 const MATANYONE_SHA256: &str = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914";
+// GitHub release asset is 141,429,115 bytes; 152 MiB allows 12.7% headroom.
+const MATANYONE_MAX_BYTES: u64 = 152 * 1024 * 1024;
 
 /// The resolved premium runtime: a torch python (its own isolated venv), the
 /// runner script (ships beside `instruments.py`), and the MatAnyone2 checkpoint.
@@ -820,36 +853,18 @@ pub fn install_matanyone_model(progress: &dyn Fn(f32, &str)) -> Result<PathBuf, 
     let dir = matanyone_dir().ok_or_else(|| io_err("matanyone dir", "HOME/LOCALAPPDATA unset"))?;
     std::fs::create_dir_all(&dir).map_err(|e| io_err("create matanyone dir", e))?;
     let dest = dir.join("matanyone2.pth");
-    if dest.exists() {
-        if let Ok(bytes) = std::fs::read(&dest) {
-            if hex_sha256(&bytes) == MATANYONE_SHA256 {
-                progress(1.0, "checkpoint already installed");
-                return Ok(dest);
-            }
-        }
+    if pinned_file_is_valid(&dest, MATANYONE_SHA256, MATANYONE_MAX_BYTES) {
+        progress(1.0, "checkpoint already installed");
+        return Ok(dest);
     }
     progress(0.05, "downloading the MatAnyone2 checkpoint (135 MB)");
-    let resp = ureq::get(MATANYONE_URL).call().map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("checkpoint download failed: {e}"),
-            "could not reach the MatAnyone2 release (needs internet for the one-time download)",
-        )
-    })?;
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut resp.into_body().into_reader(), &mut bytes)
-        .map_err(|e| io_err("read checkpoint", e))?;
-    let got = hex_sha256(&bytes);
-    if got != MATANYONE_SHA256 {
-        return Err(CutError::new(
-            error_codes::IO,
-            format!("checkpoint checksum mismatch (got {got})"),
-            "the downloaded checkpoint did not match the pinned hash; try the install again",
-        ));
-    }
-    let tmp = dir.join("matanyone2.pth.part");
-    std::fs::write(&tmp, &bytes).map_err(|e| io_err("write checkpoint", e))?;
-    std::fs::rename(&tmp, &dest).map_err(|e| io_err("place checkpoint", e))?;
+    let dest = install_pinned_model(
+        MATANYONE_URL,
+        &dir,
+        "matanyone2.pth",
+        MATANYONE_SHA256,
+        MATANYONE_MAX_BYTES,
+    )?;
     progress(1.0, "MatAnyone2 checkpoint installed");
     Ok(dest)
 }

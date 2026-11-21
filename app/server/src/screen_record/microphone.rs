@@ -3,7 +3,10 @@
 mod outcome;
 mod preference;
 mod start_admission;
+#[cfg(not(target_os = "linux"))]
 pub(crate) use start_admission::source_for_recording_start;
+#[cfg(target_os = "linux")]
+pub(crate) use start_admission::source_for_recording_start_linux;
 pub(crate) mod readiness;
 #[cfg(test)]
 mod tests;

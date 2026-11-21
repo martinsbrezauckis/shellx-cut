@@ -129,6 +129,19 @@ export function loadPublishedTestInventory({ repoRoot = '.', inventoryPath = DEF
     fail(`node_test_count ${inventory.contract.node_test_count} does not match ${tests.length} declared tests`)
   }
 
+  const pythonTests = inventory.python_tests ?? []
+  const pythonCount = inventory.contract.python_test_count ?? 0
+  if (!Array.isArray(pythonTests) || !Number.isInteger(pythonCount) || pythonCount < 0
+    || pythonTests.length !== pythonCount || new Set(pythonTests).size !== pythonCount) {
+    fail('python_test_count must match the unique declared Python tests')
+  }
+  for (const path of pythonTests) {
+    safeRelativePath(path, 'Python test path')
+    if (!path.startsWith('app/perception/py/') || !path.endsWith('_test.py')) fail(`invalid Python test path: ${path}`)
+    resources.add(path)
+  }
+  if (pythonTests.length && !prerequisites.has('python')) fail('Python tests require the python prerequisite')
+
   const ui = inventory.ui_library_tests
   if (!ui || typeof ui !== 'object' || Array.isArray(ui)) fail('inventory must declare ui_library_tests')
   const uiRoot = safeRelativePath(ui.root, 'ui library root')
@@ -162,6 +175,7 @@ export function loadPublishedTestInventory({ repoRoot = '.', inventoryPath = DEF
     contract: Object.freeze({ ...inventory.contract }),
     prerequisites,
     tests,
+    pythonTests: Object.freeze([...pythonTests]),
     resources: [...resources].sort(),
     uiLibraryTests: Object.freeze({ root: uiRoot, runner: uiRunner, discovery: uiDiscovery, exclusions: uiExclusions, tests: uiTests }),
   })
@@ -251,6 +265,7 @@ export function resolvePublishedPrerequisites(inventory, {
   probe = defaultProbe,
 } = {}) {
   const required = new Set(inventory.tests.flatMap((test) => test.requires))
+  if (inventory.pythonTests.length) required.add('python')
   const resolved = new Map()
   for (const id of required) {
     const prerequisite = inventory.prerequisites.get(id)

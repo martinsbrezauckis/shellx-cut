@@ -14,7 +14,7 @@ CONTRAST:       4.5:1 minimum vs background — in practice: light text + dark p
 POSITION:       bottom-center default; AVOID bottom ~300px on vertical (platform UI)
 BURN-IN vs SRT: social = burn-in mandatory · YouTube long-form = SRT sidecar (+optional burn)
 VERIFY BY EYE:  render.frame at 3–4 caption moments — styling is only provable visually
-AUTO-QC:        verify.captions (reading speed / duration / gaps / line length) → captions.reflow to fix
+QUALITY CHECKS:  verify.captions (reading speed / duration / gaps / line length) → captions.reflow to fix
 BRAND:          verify.brand (font / colour / position / aspect vs the kit) before ship
 ```
 

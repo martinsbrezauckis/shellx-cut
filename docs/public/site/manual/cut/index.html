@@ -46,7 +46,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.117" data-release-status="published" data-published-version="0.6.117">0.6.117</span>
+          <span class="manual-version" data-app-version="0.6.118" data-release-status="published" data-published-version="0.6.118">0.6.118</span>
         </div>
         <input
           class="manual-search"
@@ -60,9 +60,9 @@
           <summary>Start</summary>
           <div class="manual-tree-subgroup">Video readiness</div>
           <button class="manual-node" data-feature-id="cut.setup.ffmpeg">Why FFmpeg is required</button>
-          <button class="manual-node" data-feature-id="cut.setup.doctor">Run system doctor</button>
+          <button class="manual-node" data-feature-id="cut.setup.doctor">Check setup</button>
           <button class="manual-node" data-feature-id="cut.setup.ffmpeg_path">Set FFmpeg path</button>
-          <button class="manual-node" data-feature-id="cut.setup.captions">Install captions and STT</button>
+          <button class="manual-node" data-feature-id="cut.setup.captions">Captions and transcription</button>
           <div class="manual-tree-subgroup">Agents</div>
           <button class="manual-node" data-feature-id="cut.setup.cli_install">Install a CLI agent</button>
           <button class="manual-node" data-feature-id="cut.setup.cli_connect">Connect agent in Settings</button>
@@ -86,8 +86,8 @@
           <button class="manual-node" data-feature-id="cut.header.repurpose">Repurpose into shorts</button>
           <button class="manual-node" data-feature-id="cut.header.autopilot">Autopilot</button>
           <button class="manual-node" data-feature-id="cut.header.recipes">Recipes</button>
-          <button class="manual-node" data-feature-id="cut.header.assemble">Assemble AI</button>
-          <button class="manual-node" data-feature-id="cut.header.storyboard">Storyboard</button>
+          <button class="manual-node" data-feature-id="cut.header.assemble">Assemble (AI)</button>
+          <button class="manual-node" data-feature-id="cut.header.storyboard">Timeline contact sheet</button>
           <button class="manual-node" data-feature-id="cut.header.comments">Comments</button>
           <button class="manual-node" data-feature-id="cut.header.gpu">Faster exports (GPU)</button>
 
@@ -114,8 +114,8 @@
           <button class="manual-node" data-feature-id="cut.header.repurpose.highlights">Repurpose: find highlights</button>
           <button class="manual-node" data-feature-id="cut.header.repurpose.vertical">Repurpose: vertical crop</button>
           <button class="manual-node" data-feature-id="cut.header.repurpose.variants">Repurpose: shorts variants</button>
-          <button class="manual-node" data-feature-id="cut.header.autopilot.plan">Autopilot: plan edit</button>
-          <button class="manual-node" data-feature-id="cut.header.autopilot.apply">Autopilot: apply safe ops</button>
+          <button class="manual-node" data-feature-id="cut.header.autopilot.plan">Autopilot: preview fixes</button>
+          <button class="manual-node" data-feature-id="cut.header.autopilot.apply">Autopilot: apply fixes</button>
           <button class="manual-node" data-feature-id="cut.header.recipes.browse">Recipes: browse</button>
           <button class="manual-node" data-feature-id="cut.header.recipes.edit_for_clarity">Recipes: edit for clarity</button>
           <button class="manual-node" data-feature-id="cut.header.recipes.describe">Recipes: describe</button>
@@ -205,10 +205,10 @@
           <button class="manual-node" data-feature-id="cut.timeline.multicam">Auto multicam</button>
           <button class="manual-node" data-feature-id="cut.timeline.beat">Cut to beat</button>
           <button class="manual-node" data-feature-id="cut.timeline.cleanup_tools">Cleanup tools</button>
-          <button class="manual-node" data-feature-id="cut.timeline.trim_dead_air">Trim dead air</button>
+          <button class="manual-node" data-feature-id="cut.timeline.trim_dead_air">Trim silent start and end</button>
           <button class="manual-node" data-feature-id="cut.timeline.split_scenes">Split scenes</button>
           <button class="manual-node" data-feature-id="cut.timeline.mark_scenes">Mark scenes</button>
-          <button class="manual-node" data-feature-id="cut.timeline.grade">Grade, Layer, Matte</button>
+          <button class="manual-node" data-feature-id="cut.timeline.grade">Color, Transform, Remove background</button>
           <button class="manual-node" data-feature-id="cut.timeline.ask_agent">Ask agent</button>
           <button class="manual-node" data-feature-id="cut.timeline.track_controls">Timeline: track controls</button>
           <button class="manual-node" data-feature-id="cut.timeline.track_visibility">Track: show or hide</button>
@@ -246,8 +246,8 @@
           <button class="manual-node" data-feature-id="cut.inspector.pin">Pin tools</button>
           <button class="manual-node" data-feature-id="cut.inspector.fades">Fades</button>
           <button class="manual-node" data-feature-id="cut.inspector.transform">Transform</button>
-          <button class="manual-node" data-feature-id="cut.review.ops">Review Ops</button>
-          <button class="manual-node" data-feature-id="cut.review.receipts">Receipts, QC, Scopes, Diff</button>
+          <button class="manual-node" data-feature-id="cut.review.ops">Edit history</button>
+          <button class="manual-node" data-feature-id="cut.review.receipts">Render history & checks, Quality checks, Scopes, Compare edits</button>
           <button class="manual-node" data-feature-id="cut.review.scopes">Video scopes</button>
         </details>
 
@@ -283,7 +283,7 @@
           <button class="manual-node" data-feature-id="cut.workflow.sequence_index">Search across sequences</button>
           <button class="manual-node" data-feature-id="cut.workflow.agent_change">Applied agent change</button>
           <button class="manual-node" data-feature-id="cut.workflow.recording">Record, polish, export, and retry</button>
-          <button class="manual-node" data-feature-id="cut.workflow.review">Review receipts</button>
+          <button class="manual-node" data-feature-id="cut.workflow.review">Review render history & checks</button>
           <button class="manual-node" data-feature-id="cut.workflow.export">Render and export</button>
         </details>
 
@@ -321,13 +321,15 @@
           <h2>Click a feature to see where it lives.</h2>
           <div class="manual-surface" data-manual-surface="editor" aria-label="ShellX Cut interface map">
             <img
-              src="../assets/cut/cut-main-editor-current.png?v=a864bddb-editor"
-              alt="ShellX Cut editor with the Assets tab, editing-readiness summary, preview, and timeline tracks visible"
+              src="../assets/cut/cut-main-editor-current.png?v=528bdaa5-editor"
+              width="1920" height="1029"
+              alt="ShellX Cut v0.6.118 editing Autumn weekend, with travel footage in Assets, a composed title frame, analysis ready, selected timeline clip and Edit history"
             />
             <div class="manual-highlight" data-manual-highlight="editor" data-label="Assets" aria-hidden="true"></div>
             <div class="manual-popover" data-manual-popover hidden></div>
           </div>
 
+          <p class="manual-note">Captured in the installed v0.6.118 Linux app with the Autumn weekend demo project. Composed preview is on, and the remembered export folder is shown as Exports. Conditional menus and horizontally scrolling timeline tools are highlighted at their destination areas.</p>
           <article class="manual-detail" aria-live="polite">
             <p class="manual-eyebrow">Selected item</p>
             <h3 data-detail-title>Assets tab</h3>
@@ -358,12 +360,13 @@
           <h2>Record with F9, keep the original, then edit.</h2>
           <div class="manual-surface" data-manual-surface="recording" aria-label="ShellX Cut Recording Studio surface">
             <img
-              src="../assets/cut/cut-recording-studio-current.png?v=362a69d5-record"
-              width="1920" height="1080"
-              alt="ShellX Cut Record workspace: screen and sound on the left, real-source preview in the centre, camera and recording settings on the right, and Start recording at the bottom"
+              src="../assets/cut/cut-recording-studio-current.png?v=bda99423-record"
+              width="1920" height="1029"
+              alt="ShellX Cut v0.6.118 Record workspace on Linux: screen and sound on the left, source preview off in the centre, camera unavailable on the right, and Start recording at the bottom"
             />
             <div class="manual-highlight" data-manual-highlight="recording" data-label="Recording Studio" aria-hidden="true" hidden></div>
           </div>
+          <p class="manual-note">Captured in v0.6.118 on Linux before choosing a screen. This machine has no microphone or camera attached; source preview is off. The Start, length &amp; pause tab is visible on the right.</p>
           <p>Set up your take here, or <a href="#polished-example">see a finished Polished clip</a>.</p>
           <div class="manual-grid">
             <article class="manual-card">
@@ -376,7 +379,7 @@
             </article>
             <article class="manual-card">
               <h3>Use the right-side settings</h3>
-              <p>Choose <strong>Camera</strong>, <strong>Background</strong>, <strong>Video timer</strong>, <strong>Capture timing</strong> or <strong>Video quality</strong>. That section's controls appear directly below the buttons. You can switch sections without losing draft settings. Current Record choices also stay available when you return to Edit and start with F9.</p>
+              <p>Choose <strong>Camera</strong>, <strong>Background</strong>, <strong>Video timer</strong>, <strong>Start, length &amp; pause</strong> or <strong>Video quality</strong>. That section's controls appear directly below the buttons. You can switch sections without losing draft settings. Current Record choices also stay available when you return to Edit and start with F9.</p>
             </article>
             <article class="manual-card">
               <h3>Choose your camera layout</h3>
@@ -396,7 +399,7 @@
             </article>
             <article class="manual-card">
               <h3>Two different countdowns</h3>
-              <p><strong>Capture timing</strong> controls the delay before Start and whether capture ends after a chosen length or runs until Stop. <strong>Video timer</strong> adds an overlay: Off, Count up or Count down, with a custom <code>HH:MM:SS</code> duration and quick minute choices. Its Pause, Resume, Reset, Restart and End buttons affect the visible timer only. Reaching zero does not stop capture.</p>
+              <p><strong>Start, length &amp; pause</strong> controls the delay before Start and whether capture ends after a chosen length or runs until Stop. <strong>Video timer</strong> adds an overlay: Off, Count up or Count down, with a custom <code>HH:MM:SS</code> duration and quick minute choices. Its Pause, Resume, Reset, Restart and End buttons affect the visible timer only. Reaching zero does not stop capture.</p>
             </article>
             <article class="manual-card">
               <h3>Quality and capture Pause</h3>
@@ -461,7 +464,7 @@
               </p>
             </article>
             <article class="manual-card">
-              <h3>Perception and STT</h3>
+              <h3>Media analysis and transcription</h3>
               <p>
                 Optional local model setup for transcripts, word cuts, scenes,
                 OCR, diarization inputs, and caption workflows.
@@ -494,10 +497,10 @@
         <section class="manual-section" id="agent-chat">
           <p class="manual-eyebrow">Agent Chat</p>
           <h2>Ask for an edit in the open project.</h2>
-          <p>Choose your installed CLI agent in Chat, attach project assets or a timeline target, and describe the change. Leave Model empty to use the CLI's configured default. After a turn, inspect Preview and Diff before continuing; Step back is available while the change can safely be reverted.</p>
+          <p>Choose your installed CLI agent in Chat, attach project assets or a timeline target, and describe the change. Leave Model empty to use the CLI's configured default. After a turn, inspect Preview and Compare edits before continuing; Step back is available while the change can safely be reverted.</p>
           <div class="manual-surface" aria-label="Agent Chat in the editor">
-            <img src="../assets/cut/cut-agent-chat-v06115.webp" loading="lazy" width="2160" height="1350"
-              alt="ShellX Cut v0.6.115 Agent Chat beside the shared project and timeline" />
+            <img src="../assets/cut/cut-agent-chat-v06115.webp?v=06118-round2" loading="lazy" width="1920" height="1029"
+              alt="ShellX Cut v0.6.118 Chat beside the selected kayak clip in Autumn weekend, with analysis ready and real Edit history; the local CLI agent needs login" />
           </div>
         </section>
 
@@ -511,11 +514,11 @@
             </article>
             <article class="manual-card">
               <h3>Base track and overlays</h3>
-              <p>Use normal Insert or drag from Assets or Library for the story timeline. Imported picture and sound stay linked when moved or trimmed. Use Alt-drag from Assets, or an overlay lane, only when the clip should sit on top, then use track headers to reorder, mute, or solo lanes.</p>
+              <p>Use Add at playhead or drag from Assets (or Insert at playhead from Library) for the story timeline. Imported picture and sound stay linked when moved or trimmed. Use Alt-drag from Assets, or an overlay lane, only when the clip should sit on top, then use track headers to reorder, mute, or solo lanes.</p>
             </article>
             <article class="manual-card">
               <h3>Edit and retime</h3>
-              <p>Split, trim, ripple delete, lift delete, snap, change speed, grade clips, and keep edits reversible. Q ripple-trims from the playhead to the selected clip's start; W trims to its end, closing the gap for linked picture and sound. Add Video Track and Add Audio Track are available in the timeline toolbar.</p>
+              <p>Split, trim, ripple delete, lift delete, snap, change speed, grade clips, and keep edits reversible. Q ripple-trims from the playhead to the selected clip's start; W trims to its end, closing the gap for linked picture and sound. Video track and Audio track are available in the timeline toolbar.</p>
             </article>
             <article class="manual-card">
               <h3>Caption and translate</h3>
@@ -531,7 +534,7 @@
             </article>
             <article class="manual-card">
               <h3>Sequence Index</h3>
-              <p>Open Find and choose Sequence Index to search clips and markers across every sequence. Filter by kind, track, offline media, gaps, effects, or hidden, locked, and muted tracks; compact badges expose the matching state. Open a row to switch and seek, or copy the currently shown path-light rows as spreadsheet-safe CSV for QC handoff.</p>
+              <p>Open Find and choose Sequence Index to search clips and markers across every sequence. Filter by kind, track, offline media, gaps, effects, or hidden, locked, and muted tracks; compact badges expose the matching state. Open a row to switch and seek, or copy the currently shown path-light rows as spreadsheet-safe CSV for quality-check handoff.</p>
             </article>
             <article class="manual-card">
               <h3>Generated media lifecycle</h3>
@@ -539,11 +542,11 @@
             </article>
             <article class="manual-card">
               <h3>Find ShellX Motion</h3>
-              <p>Open <strong>Settings → Motion</strong> to find an existing ShellX Motion installation and view its status. ShellX Motion is a separate application with its own installation and manual.</p>
+              <p>Open <strong>Settings → Video &amp; performance</strong> to find an existing ShellX Motion installation and view its status. ShellX Motion is a separate application with its own installation and manual.</p>
             </article>
             <article class="manual-card">
               <h3>Agent Chat changes</h3>
-              <p>Choose an agent, optionally enter a model supported by that CLI, then attach registered assets or a timeline target and send the request. Leave Model empty to use the CLI default. Inspect Preview and Diff after the edit; Step back stays available only while its guarded revert is safe, and Ask replacement rechecks the saved target.</p>
+              <p>Choose an agent, optionally enter a model supported by that CLI, then attach registered assets or a timeline target and send the request. Leave Model empty to use the CLI default. Inspect Preview and Compare edits after the edit; Step back stays available only while its guarded revert is safe, and Ask replacement rechecks the saved target.</p>
             </article>
             <article class="manual-card">
               <h3>Record and polish</h3>
@@ -551,7 +554,7 @@
             </article>
             <article class="manual-card">
               <h3>Review and export</h3>
-              <p>Read ops, receipts, QC, scopes, and diffs before rendering previews, final files, or platform-ready exports.</p>
+              <p>Read edit history, render history and checks, quality checks, scopes, and edit comparisons before rendering previews, final files, or platform-ready exports.</p>
               <p>Closing or quitting while an export runs asks first: <strong>An export is still running</strong>, with <strong>Keep working</strong> (the default) or <strong>Quit and stop it</strong>. After a crash or power loss, the next start says which export was interrupted and that its unfinished files were removed.</p>
             </article>
           </div>
@@ -569,8 +572,8 @@
             </p>
           </div>
           <div class="manual-surface" aria-label="Agent control settings">
-            <img src="../assets/cut/cut-agent-control-v06115.webp" loading="lazy" width="1040" height="1026"
-              alt="ShellX Cut v0.6.115 Agent control settings with the local Debug API and MCP setup controls" />
+            <img src="../assets/cut/cut-agent-control-v06115.webp?v=06118" loading="lazy" width="1040" height="975"
+              alt="ShellX Cut v0.6.118 Agent control settings with Debug API connected locally, MCP proxy ready to test, and the current Settings categories" />
           </div>
           <p>Open <strong>Settings → Agent control</strong> to inspect the local connection, copy the MCP configuration and test that a client reaches the running editor.</p>
           <table class="manual-api-table">

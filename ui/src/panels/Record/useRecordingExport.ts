@@ -179,8 +179,8 @@ export function useRecordingExport({ capture, projectKey, ownerKey, format, outp
       }
       const id = (response.result as { job_id?: unknown } | undefined)?.job_id
       if (typeof id !== 'string' || !id.trim() || id !== id.trim()) {
-        if (projectKey === projectRef.current) setNote('Export admission could not be confirmed. Check Jobs before exporting again; another attempt may create a duplicate.')
-        else setNote('A previous project export admission could not be confirmed. Check Jobs there before exporting again; another attempt may create a duplicate.')
+        if (projectKey === projectRef.current) setNote('Could not confirm that exporting started. Check Jobs before trying again; a second attempt may create a duplicate.')
+        else setNote('Could not confirm that exporting started in the previous project. Open it and check Jobs before trying again; a second attempt may create a duplicate.')
         return
       }
       const admitted = { id, format, startedAt: Date.now(), ownerKey, projectKey }
@@ -191,8 +191,8 @@ export function useRecordingExport({ capture, projectKey, ownerKey, format, outp
     } catch (error) {
       if (!liveRef.current) return
       if (submitted) {
-        if (projectKey === projectRef.current) setNote('Export admission could not be confirmed. Check Jobs before exporting again; another attempt may create a duplicate.')
-        else setNote('A previous project export admission could not be confirmed. Check Jobs there before exporting again; another attempt may create a duplicate.')
+        if (projectKey === projectRef.current) setNote('Could not confirm that exporting started. Check Jobs before trying again; a second attempt may create a duplicate.')
+        else setNote('Could not confirm that exporting started in the previous project. Open it and check Jobs before trying again; a second attempt may create a duplicate.')
         return
       }
       if (!intentCurrent()) {

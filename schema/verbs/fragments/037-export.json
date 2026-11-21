@@ -131,7 +131,7 @@
           },
           "track": {
             "type": "string",
-            "description": "Optional: export ONLY this audio track's contribution (its processed audio incl. gain + ducking, at full timeline length) = a per-track STEM. The sum of every track's stem == the full mix (WYSIWYG). Powers the mixer's per-track meters. ids from project.state (audio tracks only)."
+            "description": "Optional: export ONLY this audio track's processed audio, including gain and ducking, at full timeline length as a per-track stem. The stem ignores mute and solo so the track can be metered and auditioned even when silent in the full mix. Powers the mixer's per-track meters. ids from project.state (audio tracks only)."
           },
           "to_asset": {
             "type": "boolean",
@@ -171,7 +171,7 @@
     {
       "name": "export.publish",
       "domain": "export",
-      "description": "ONE-CLICK platform export. Resolves a platform id to its 2026-researched encoding spec (output geometry, video + audio bitrate, H.264/mp4) and delegates to render.final with those args — reusing the full render path (background job, auto-run check battery, receipt). The optional `profile` passes through verbatim to render.final's footage-profile check battery (omit = render.final's default). Vertical platforms (tiktok/reels) output 9:16 via explicit geometry + cover fit; YouTube/X output 16:9. The result carries the chosen platform spec under `publish`, plus render.final's {job_id, render_id}. This is convenience over render.final — an agent can equally call render.final{width,height,bitrate,format,...} directly. fps comes from the project settings (a publish does not resample fps). For SUBJECT-AWARE vertical reframing use render.reframe instead.",
+      "description": "Platform exports (verb `export.publish`): save a video file locally for YouTube, TikTok, Instagram or X; no upload is performed. Resolves a platform id to its 2026-researched encoding spec (output geometry, video + audio bitrate, H.264/mp4) and delegates to render.final with those args — reusing the full render path (background job, auto-run check battery, receipt). The optional `profile` passes through verbatim to render.final's content-type quality checks (omit = render.final's default). Vertical platforms (tiktok/reels) output 9:16 via explicit geometry + cover fit; YouTube/X output 16:9. The result carries the chosen platform spec under `publish`, plus render.final's {job_id, render_id}. This is convenience over render.final — an agent can equally call render.final{width,height,bitrate,format,...} directly. fps comes from the project settings (a platform export does not resample fps). For SUBJECT-AWARE vertical reframing use render.reframe instead.",
       "args": {
         "type": "object",
         "required": [
@@ -190,7 +190,7 @@
               "x",
               "square"
             ],
-            "description": "Target platform. youtube = 1920×1080 12 Mbps AAC 384k (16:9). youtube_4k = 3840×2160 45 Mbps. tiktok = 1080×1920 12 Mbps (9:16, alias shorts). reels = 1080×1920 10 Mbps (9:16, alias instagram/ig). instagram_feed = 1080×1350 10 Mbps (4:5). x = 1920×1080 20 Mbps (16:9, alias twitter). square = 1080×1080 10 Mbps (1:1). All H.264/AAC/mp4 — the universal ingest combo."
+            "description": "Platform export target (local file only). Target platform. youtube = 1920×1080 12 Mbps AAC 384k (16:9). youtube_4k = 3840×2160 45 Mbps. tiktok = 1080×1920 12 Mbps (9:16, alias shorts). reels = 1080×1920 10 Mbps (9:16, alias instagram/ig). instagram_feed = 1080×1350 10 Mbps (4:5). x = 1920×1080 20 Mbps (16:9, alias twitter). square = 1080×1080 10 Mbps (1:1). All H.264/AAC/mp4 — the universal ingest combo."
           },
           "preset": {
             "type": "string",
@@ -218,7 +218,7 @@
               "silent_screen_demo"
             ],
             "default": "talking_head",
-            "description": "Footage profile passthrough to render.final's auto-run check battery: talking_head = the full strict battery (without an explicit profile, lufs applies only when a loudness target is set and silence_at_edges does not apply); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
+            "description": "Content type for quality checks (argument `profile`) passthrough to render.final's auto-run check battery: talking_head = the full strict battery (without an explicit profile, lufs applies only when a loudness target is set and silence_at_edges does not apply); silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
           },
           "path": {
             "type": "string",

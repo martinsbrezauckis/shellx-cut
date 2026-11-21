@@ -36,6 +36,12 @@ pub(crate) async fn screen_record_start(
     }
     let a: Args = parse_args(args)?;
     audio_test_gate::refuse_start_during_audio_test()?;
+    #[cfg(target_os = "linux")]
+    let linux_readiness = if a.audio {
+        Some(microphone::readiness::MicrophoneReadiness::current_linux().await)
+    } else {
+        None
+    };
     // Project replacement and native-capture admission share one linearization
     // order. Hold this before selecting the project directory and retain it
     // through reservation/worker admission, so a switch cannot retarget a
@@ -54,6 +60,9 @@ pub(crate) async fn screen_record_start(
     let capture_quality = record_capture::admit_capture_quality(a.quality).map_err(record_err)?;
     let cadence = cadence::from_server_fps(fps)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
+    #[cfg(target_os = "linux")]
+    let microphone_source = microphone::source_for_recording_start_linux(a.audio, linux_readiness)?;
+    #[cfg(not(target_os = "linux"))]
     let microphone_source = microphone::source_for_recording_start(a.audio)?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards, a.keys)?;

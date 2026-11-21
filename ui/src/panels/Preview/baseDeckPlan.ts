@@ -16,7 +16,7 @@ import type { Project } from '../../lib/client'
 import { baseVideoTrackId } from '../../lib/layerStack'
 import { layoutTrack } from '../Timeline/layout'
 import { activeVideo, type ActiveVideo } from './model'
-import { playbackVideoKey } from './playbackClock'
+import { playbackBindingKey, playbackVideoKey } from './playbackClock'
 
 /** How far ahead of its start the next base clip is loaded and parked. Long
  * enough for a slow first load plus a seek, short enough that scrubbing does
@@ -50,6 +50,32 @@ export function continuesInPlace(current: ActiveVideo, next: ActiveVideo, frameM
     && current.freezeAtMs == null && next.freezeAtMs == null
     && Math.abs(current.startMs + current.durMs - next.startMs) <= 1
     && Math.abs(current.srcOutMs - next.srcInMs) <= frameMs / 2
+}
+
+/** Last timeline millisecond covered by the current uninterrupted source run.
+ * The clock may follow the presented media position across these cuts, but it
+ * must stop at a gap, a source jump, or a clip requiring a different decoder. */
+export function continuousBaseVideoEnd(
+  project: Project | null, active: ActiveVideo | null, failed: Set<string>, frameMs: number,
+): number | null {
+  if (!active) return null
+  let endMs = active.startMs + active.durMs
+  if (!project || active.speed !== 1 || active.reverse || active.freezeAtMs != null) return endMs
+  const track = project.tracks.find((candidate) => candidate.id === baseVideoTrackId(project.tracks))
+  if (!track || track.visible === false) return endMs
+  const items = layoutTrack(track)
+  const index = items.findIndex((item) => item.kind === 'video' && item.id === active.clipId && item.startMs === active.startMs)
+  if (index < 0) return endMs
+  const binding = playbackBindingKey(active, 0)
+  let previous = active
+  for (const item of items.slice(index + 1)) {
+    if (item.kind !== 'video' || !item.asset || Math.abs(item.startMs - endMs) > 1) break
+    const next = activeVideo(project, item.startMs, failed)
+    if (!next || next.speed !== 1 || playbackBindingKey(next, 0) !== binding || !continuesInPlace(previous, next, frameMs)) break
+    endMs = next.startMs + next.durMs
+    previous = next
+  }
+  return endMs
 }
 
 /** One element of the deck: the clip it holds and where it waits (source ms). */

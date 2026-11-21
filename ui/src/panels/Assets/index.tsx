@@ -662,6 +662,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
                 key={k || 'all'}
                 type="button"
                 className={`assets__chip${filterKind === k ? ' assets__chip--on' : ''}`}
+                aria-pressed={filterKind === k}
                 data-cut-asset-kind-filter={k || 'all'}
                 onClick={() => { setFilterKind(k); setActiveBin(null) }}
               >
@@ -671,6 +672,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
             <button
               type="button"
               className={`assets__chip${filterUnused ? ' assets__chip--on' : ''}`}
+              aria-pressed={filterUnused}
               data-cut-asset-unused-filter
               title="Only assets not used by any timeline clip"
               onClick={() => { setFilterUnused((v) => !v); setActiveBin(null) }}
@@ -680,6 +682,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
             <button
               type="button"
               className={`assets__chip${filterLarge ? ' assets__chip--on' : ''}`}
+              aria-pressed={filterLarge}
               data-cut-asset-resolution-filter
               title="Only high-resolution clips, including 4K phone and camera footage"
               onClick={() => { setFilterLarge((v) => !v); setActiveBin(null) }}
@@ -689,6 +692,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
             <button
               type="button"
               className={`assets__chip${filterOffline ? ' assets__chip--on' : ''}`}
+              aria-pressed={filterOffline}
               data-cut-asset-offline-filter
               title="Only missing source files that need relinking"
               onClick={() => { setFilterOffline((v) => !v); setActiveBin(null) }}
@@ -698,6 +702,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
             <button
               type="button"
               className={`assets__chip${filterRecent ? ' assets__chip--on' : ''}`}
+              aria-pressed={filterRecent}
               data-cut-asset-recent-filter
               title="Only files modified in the last 30 days"
               onClick={() => { setFilterRecent((v) => !v); setActiveBin(null) }}
@@ -707,6 +712,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
             <button
               type="button"
               className={`assets__chip${filterNeedsAction ? ' assets__chip--on assets__chip--attention' : ''}`}
+              aria-pressed={filterNeedsAction}
               data-cut-asset-attention-filter
               title="Only clips that need a user action, such as relink or proxy attention"
               onClick={() => { setFilterNeedsAction((v) => !v); setActiveBin(null) }}

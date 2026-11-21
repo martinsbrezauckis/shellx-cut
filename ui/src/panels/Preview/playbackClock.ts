@@ -10,6 +10,12 @@ export function canStartPreviewMedia(readyState: number): boolean {
   return readyState >= 2
 }
 
+/** Keep the normal cadence, but enter the next clip as soon as its start is
+ * crossed. Waiting for another 100 ms tick in a gap postpones its parked video. */
+export function shouldPublishPlaybackTick(now: number, lastDispatch: number, positionMs: number, rate: number, nextVideoStartMs: number | null): boolean {
+  return now - lastDispatch >= 100 || (rate === 1 && nextVideoStartMs !== null && positionMs >= nextVideoStartMs)
+}
+
 /** Distinguish the clock's asynchronous React updates from a user seek. */
 export class PlaybackSeekTracker {
   private observed: number
@@ -51,6 +57,7 @@ export class PlaybackHandoff {
     this.waiting = true
     return true
   }
+  complete() { this.waiting = false }
   observe(positionMs: number, revision?: number): 'seek' | 'wait' | 'continue' {
     if (this.tracker.external(positionMs, revision)) {
       this.waiting = false
@@ -64,16 +71,26 @@ export function playbackVideoKey(video: ActiveVideo | null): string | null {
   return video ? `${video.clipId}:${video.src}:${video.startMs}:${video.srcInMs}:${video.srcOutMs}:${video.speed}` : null
 }
 
+/** Ordinary pieces with the same source-to-timeline offset share a decoder
+ * and clock. Other speeds retain their existing per-placement clock. */
+export function playbackBindingKey(video: ActiveVideo | null, slot: number | null): string | null {
+  if (!video || slot === null) return null
+  return video.speed === 1
+    ? `${slot}:${video.src}:${video.startMs - video.srcInMs}`
+    : `${slot}:${playbackVideoKey(video)}`
+}
+
 /** A frame belongs to the current seek epoch and clip, and is near the
  * element's actual clock. The latter rejects queued frames from an older seek. */
 export function acceptPlaybackFrame(
   expectedKey: string | null, video: ActiveVideo | null, mediaMs: number,
   elementMs: number, ready: boolean, seeking: boolean, frameMs: number,
+  sourceOutMs = video?.srcOutMs,
 ): boolean {
   if (!ready || seeking || !video || playbackVideoKey(video) !== expectedKey) return false
   if (!Number.isFinite(mediaMs) || !Number.isFinite(elementMs)) return false
   const tolerance = Math.max(250, frameMs * 2) * Math.max(1, video.speed)
-  return mediaMs >= video.srcInMs - tolerance && mediaMs <= video.srcOutMs + tolerance
+  return mediaMs >= video.srcInMs - tolerance && mediaMs <= (sourceOutMs ?? video.srcOutMs) + tolerance
     && Math.abs(mediaMs - elementMs) <= tolerance
 }
 

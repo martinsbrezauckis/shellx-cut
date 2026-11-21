@@ -60,7 +60,7 @@
     {
       "name": "comment.export",
       "domain": "comment",
-      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside an authorized export folder — the project's exports subtree, CUTD_OUTPUTS_DIR, or the folder chosen with project.set_output_dir — which is where the engine is allowed to deliver a render in the first place; this prevents a tampered receipt from turning the export route into an arbitrary-file reader. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
+      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside the project's exports subtree; a chosen delivery folder does not grant this package permission to copy its files. Render into the project's exports folder before exporting comments. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
       "args": {
         "type": "object",
         "required": [],

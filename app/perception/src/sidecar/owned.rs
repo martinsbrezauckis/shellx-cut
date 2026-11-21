@@ -180,7 +180,7 @@ pub(super) fn build_qc_sheet_with_owner(
         "qc_sheet": out_dir,
         "subject_preset": preset,
     });
-    tracing::info!(preset, "building director QC sheet");
+    tracing::info!(preset, "building director quality check sheet");
     let stdout = spawn_with_optional_owner(&request, control)?;
     serde_json::from_str(stdout.trim())
         .map_err(|e| invalid_json("qc-sheet sidecar emitted invalid JSON", &stdout, e))

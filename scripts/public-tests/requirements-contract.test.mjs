@@ -5,6 +5,7 @@
 // say it needs FFmpeg.
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -14,7 +15,7 @@ import {
   requirementProblems,
   verbRequirements,
 } from '../lib/requirements-contract.mjs'
-import { expectedDocuments } from '../generate-requirements-docs.mjs'
+import { expectedDocuments, renderSkillSection } from '../generate-requirements-docs.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const registry = loadRequirements(ROOT)
@@ -71,6 +72,19 @@ test('the agent documents are generated from the registry (node scripts/generate
   }
 })
 
+test('generated table cells escape a backslash before a pipe', () => {
+  const section = renderSkillSection({
+    requirements: [{ id: 'sample', name: 'a\\b|c', get: { person: 'Use it.' } }],
+    features: [],
+  }, [])
+  assert.ok(section.includes(String.raw`a\\b\|c`), section)
+})
+
+test('captions setup requires the fixed filelock line', () => {
+  const requirements = readFileSync(resolve(ROOT, 'app/perception/py/requirements.txt'), 'utf8')
+  assert.match(requirements, /^filelock>=4\.2\.1(?:\s|$)/m)
+})
+
 test('every control, Settings page, verb and argument a registry text names exists', async () => {
   const { loadUiSources, registryNameProblems } = await import('../lib/requirements-names.mjs')
   assert.deepEqual(registryNameProblems(registry, verbs, loadUiSources(ROOT)), [])
@@ -87,4 +101,11 @@ test('the name check catches a missing control, verb and argument', async () => 
   assert.ok(problems.some((line) => line.includes("names a control 'Retranscribe'")), problems.join('\n'))
   assert.ok(problems.some((line) => line.includes('names verb media.retranscribe')), problems.join('\n'))
   assert.ok(problems.some((line) => line.includes("media.transcribe has no argument 'speed'")), problems.join('\n'))
+})
+
+test('runtime setup instructions describe what a person can do', () => {
+  const runtime = registry.requirements.find((tool) => tool.id === 'vc_runtime')
+  assert.doesNotMatch(runtime.get.person, /agent|system\.fetch_tool/i)
+  assert.match(runtime.get.person, /administrator permission/)
+  assert.equal(runtime.get.verb, 'system.fetch_tool')
 })

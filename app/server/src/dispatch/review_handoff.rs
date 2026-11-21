@@ -244,21 +244,13 @@ pub(super) async fn comment_export(state: &AppState, args: Value) -> Result<Verb
     } else {
         dir.join(receipt_path)
     };
-    // The review render is read from wherever the engine was AUTHORIZED to deliver
-    // it — the project's exports subtree, CUTD_OUTPUTS_DIR, or the folder the user
-    // chose with project.set_output_dir. Fencing this to <project>/exports alone
-    // made the whole verb unreachable for anyone with a default export folder set:
-    // render.final delivers there, so the receipt's output_path was outside the
-    // fence and comment.export refused a file the engine had just written itself.
-    // (Symptom: render=done, export=false, with the project's receipt pointing
-    // at the configured output dir.) The package
-    // itself is unaffected — the media is COPIED next to the .html inside
-    // <project>/exports, so a shared package stays self-contained.
-    let source = fenced_existing_export_read(
+    // The receipt names the render, but its path is untrusted project data.
+    // A review package copies only a render within this project's exports tree.
+    let source = fenced_existing_project_export_read(
         &dir,
         &receipt_path,
         "review render",
-        "render the current cut, then export its review package",
+        "render into this project's exports folder, then export its review package",
     )?;
     let source_for_fingerprint = source.clone();
     let actual_fingerprint = run_blocking("comment.export.verify_render", move || {

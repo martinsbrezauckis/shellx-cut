@@ -228,6 +228,16 @@ pub fn load() -> ProjectsIndex {
     }
 }
 
+/// Read a test assertion's snapshot under the same lock as dispatch writers.
+/// Raw `load` can otherwise observe a truncated or partially written index.
+#[cfg(test)]
+pub(crate) fn load_for_test() -> ProjectsIndex {
+    let _guard = projects_index_io_lock()
+        .lock()
+        .expect("projects index lock");
+    load()
+}
+
 /// Persist the index (mkdir -p the dotdir; pretty JSON).
 pub fn save(idx: &ProjectsIndex) -> io::Result<()> {
     let Some(p) = userdata::projects_index_path() else {

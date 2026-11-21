@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { activeVideo } from '../src/panels/Preview/model'
-import { continuesInPlace, EMPTY_DECK, nextDeck, PREROLL_MS, upcomingBaseVideo, type DeckState } from '../src/panels/Preview/baseDeckPlan'
+import { continuesInPlace, continuousBaseVideoEnd, EMPTY_DECK, nextDeck, PREROLL_MS, upcomingBaseVideo, type DeckState } from '../src/panels/Preview/baseDeckPlan'
 import { liveBaseGap, MAX_OVERLAYS, resolveOverlays, resolveUpcomingOverlays } from '../src/panels/Preview/composite'
 
 // The base preview video is a deck of two elements: the clip under the
@@ -75,6 +75,35 @@ assert.deepEqual([deck.front, deck.slots[1]], [0, null], 'no standby for a cut t
 deck = nextDeck(deck, at(contiguous, 1000), next(contiguous, 1000), frameMs)
 assert.equal(deck.front, 0, 'the same element plays across the cut')
 assert.equal(deck.slots[0]?.video.clipId, 'c1')
+
+// The clock may use the actual presented frame across a run of source-contiguous
+// short cuts. A gap or source jump ends that permission before another picture.
+const pieces = (prefix: string, firstSourceMs: number) => Array.from({ length: 20 }, (_, i) =>
+  clip(`${prefix}${i}`, firstSourceMs + i * 200, firstSourceMs + (i + 1) * 200))
+const manyCuts: any = { assets: { a: { proxy: '/a.mp4' } }, tracks: [
+  { id: 'v1', kind: 'video', clips: [...pieces('a', 0), gap(200), ...pieces('b', 4000), ...pieces('c', 10000)] },
+] }
+assert.equal(continuousBaseVideoEnd(manyCuts, at(manyCuts, 0), none, frameMs), 4000, 'the first 20 pieces end at a gap')
+assert.equal(continuousBaseVideoEnd(manyCuts, at(manyCuts, 2400), none, frameMs), 4000, 'a later piece has the same run end')
+assert.equal(continuousBaseVideoEnd(manyCuts, at(manyCuts, 4000), none, frameMs), null, 'a gap has no playing base clip')
+assert.equal(continuousBaseVideoEnd(manyCuts, at(manyCuts, 4200), none, frameMs), 8200, 'the second run ends at a source jump')
+assert.equal(continuousBaseVideoEnd(manyCuts, at(manyCuts, 8200), none, frameMs), 12200, 'the third run reaches the timeline end')
+assert.equal(continuousBaseVideoEnd(null, at(manyCuts, 0), none, frameMs), 200, 'unknown project cannot extend a run')
+
+const speedChange: any = { assets: manyCuts.assets, tracks: [
+  { id: 'v1', kind: 'video', clips: [clip('normal', 0, 200), { ...clip('fast', 200, 600), speed: 2 }, clip('normal-again', 600, 800)] },
+] }
+assert.equal(continuousBaseVideoEnd(speedChange, at(speedChange, 0), none, frameMs), 200, 'speed change ends the run')
+assert.equal(continuousBaseVideoEnd(speedChange, at(speedChange, 200), none, frameMs), 400, 'non-1x playback stays inside its clip')
+const freezeChange: any = { assets: manyCuts.assets, tracks: [
+  { id: 'v1', kind: 'video', clips: [clip('normal', 0, 200), { ...clip('frozen', 200, 400), freeze: { at_ms: 250 } }, clip('after', 400, 600)] },
+] }
+assert.equal(continuousBaseVideoEnd(freezeChange, at(freezeChange, 0), none, frameMs), 200, 'frozen clip ends the run')
+assert.equal(continuousBaseVideoEnd(freezeChange, at(freezeChange, 200), none, frameMs), 400, 'a frozen clip cannot extend its run')
+const reverseChange: any = { assets: manyCuts.assets, tracks: [
+  { id: 'v1', kind: 'video', clips: [clip('normal', 0, 200), { ...clip('reversed', 200, 400), reverse: true }] },
+] }
+assert.equal(continuousBaseVideoEnd(reverseChange, at(reverseChange, 0), none, frameMs), 200, 'reverse clip ends the run')
 
 // --- a seek to a clip nobody parked moves the on-screen element (one element as before)
 deck = nextDeck(EMPTY_DECK, at(shuffle, 0), next(shuffle, 0), frameMs)

@@ -56,6 +56,9 @@ pub(crate) async fn start(
     let args: StartArgs = parse_args(args)?;
     let owner_session_id = args.owner_session_id.clone();
     let request = start_request(args, &actor)?;
+    #[cfg(target_os = "linux")]
+    let linux_readiness =
+        crate::screen_record::microphone::readiness::MicrophoneReadiness::current_linux().await;
     let _transition = state.project_transition.lock().await;
     let mut project = state.project.write().await;
     let store = project.as_mut().ok_or_else(no_project)?;
@@ -81,7 +84,14 @@ pub(crate) async fn start(
     // OS must allow microphone access. Neither check touches screen capture.
     let source =
         crate::screen_record::microphone::source_for_start().map_err(start_retry_rejected)?;
-    crate::screen_record::ensure_voiceover_ready()
+    #[cfg(target_os = "linux")]
+    let microphone_admission = crate::screen_record::microphone::readiness::admit_voiceover(
+        linux_readiness,
+        record_capture::request_microphone_access,
+    );
+    #[cfg(not(target_os = "linux"))]
+    let microphone_admission = crate::screen_record::ensure_voiceover_ready();
+    microphone_admission
         .map_err(|error| start_retry_rejected(error.with_requirement("microphone_permission")))?;
     let status = owner
         .accept_native(

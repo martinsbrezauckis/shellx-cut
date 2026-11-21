@@ -309,7 +309,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
             data-cut-review-tab={t}
             onClick={() => setTab(t)}
           >
-            {t.toUpperCase()}
+            {{ ops: 'Edit history', receipts: 'Render history & checks', qc: 'Quality checks', scopes: 'Scopes', diff: 'Compare edits' }[t]}
             {t === 'receipts' && receipts.length > 0 && <span className="rr__tab-count">{receipts.length}</span>}
           </button>
         ))}
@@ -358,7 +358,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
       {tab === 'ops' && undoGuidance && (
         <div className="rr__undo-guidance" data-cut-undo-guidance role="status">
           <div className="rr__undo-guidance-head">
-            <span className="rr__undo-guidance-tag">restore refused</span>
+            <span className="rr__undo-guidance-tag">Could not undo this edit</span>
             <button className="rr__undo-guidance-x" data-cut-action="dismiss-guidance" title="dismiss" onClick={() => setUndoGuidance(null)}><Icon name="close" size={14} label="dismiss" /></button>
           </div>
           <div className="rr__undo-guidance-msg">{undoGuidance.message}</div>

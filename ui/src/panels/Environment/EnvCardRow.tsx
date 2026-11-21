@@ -4,6 +4,7 @@ import {
   cardLabel,
   ffmpegDownloadOffer,
   ffmpegSetupGuide,
+  ffmpegVersionAdvice,
   fetchTool,
   hasFetchAction,
   hasMatteSetupAction,
@@ -28,6 +29,9 @@ import { useEnvironmentSetupJob } from './useEnvironmentSetupJob'
 /** Status -> display token (label + color class). Fixed family semantics. */
 function statusChip(card: DoctorCard): { label: string; cls: string } {
   const status = environmentCardStatus(card)
+  if (ffmpegVersionAdvice(card)) {
+    return { label: 'Works, older than tested', cls: `env-st--${status}` }
+  }
   if (card.id === 'gpu-encode' && card.details?.ffmpeg_missing === true) {
     return { label: 'Needs setup', cls: 'env-st--missing' }
   }
@@ -69,6 +73,11 @@ function compactFact(card: DoctorCard): string | null {
 
 function compactHint(card: DoctorCard): string | null {
   const status = environmentCardStatus(card)
+  const advice = ffmpegVersionAdvice(card)
+  if (advice) {
+    const missing = unavailableFeatures(card)
+    return `${advice.message} ${advice.upgrade}${missing.length > 0 ? ` Not available with this build: ${missing.join(', ')}.` : ''}`
+  }
   if (card.id === 'matte_premium') {
     const availability = premiumMatteAvailability(card)
     if (availability === 'ready') return null
@@ -81,11 +90,11 @@ function compactHint(card: DoctorCard): string | null {
     if (card.details?.judge_ready === false) {
       const reason = typeof card.details?.availability_reason === 'string'
         ? card.details.availability_reason
-        : 'Render-review admission is unavailable for this CLI.'
-      return `${reason} Agent Chat is checked separately.`
+        : 'This agent cannot review exports right now.'
+      return `${reason} Re-scan to check again. Agent Chat is checked separately.`
     }
     if (card.details?.judge_ready !== true && status !== 'missing') {
-      return 'Could not verify render-review admission. Re-scan to check again; Agent Chat is checked separately.'
+      return 'Could not check whether this agent can review exports. Re-scan to try again; Agent Chat is checked separately.'
     }
   }
   if (card.id === 'gpu-encode' && card.details?.ffmpeg_missing === true) {

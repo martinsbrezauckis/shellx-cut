@@ -31,6 +31,7 @@ pub(crate) struct Blocker {
 
 impl MicrophoneReadiness {
     /// Read the current state without prompting or starting an audio stream.
+    #[cfg(any(not(target_os = "linux"), test))]
     pub(crate) fn current() -> Self {
         #[cfg(test)]
         if let Some(readiness) = TEST_READINESS.with(std::cell::Cell::get) {
@@ -41,6 +42,20 @@ impl MicrophoneReadiness {
             access: record_capture::microphone_access(),
             windows_switch: record_capture::microphone_privacy_block(),
             no_device: record_capture::no_microphone_device(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn current_linux() -> Self {
+        #[cfg(test)]
+        if let Some(readiness) = TEST_READINESS.with(std::cell::Cell::get) {
+            return readiness;
+        }
+        Self {
+            compiled: record_capture::MICROPHONE_CAPTURE_COMPILED,
+            access: record_capture::microphone_access(),
+            windows_switch: None,
+            no_device: linux_no_device(crate::linux_microphone_probe::availability().await),
         }
     }
 
@@ -100,6 +115,11 @@ impl MicrophoneReadiness {
             .with_suggested_action(SETTINGS_ACTION),
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_no_device(answer: crate::linux_microphone_probe::Availability) -> bool {
+    answer == crate::linux_microphone_probe::Availability::Absent
 }
 
 /// The Windows problem as a refusal: its plain sentence and where to fix it.
@@ -168,6 +188,35 @@ pub(crate) fn projection(readiness: MicrophoneReadiness, mic_warm: Option<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_completed_absent_linux_answer_blocks_microphone_start() {
+        use crate::linux_microphone_probe::Availability;
+        for (answer, blocked) in [
+            (Availability::Present, false),
+            (Availability::Absent, true),
+            (Availability::Unknown, false),
+        ] {
+            let readiness = MicrophoneReadiness {
+                no_device: linux_no_device(answer),
+                ..ready(MicrophoneAccess::NotApplicable)
+            };
+            assert_eq!(readiness.problem().is_some(), blocked, "{answer:?}");
+            let doctor = projection(readiness, None);
+            assert_eq!(doctor["start_allowed"], !blocked, "{answer:?}");
+            assert_eq!(
+                doctor["microphone_blocked"].is_null(),
+                !blocked,
+                "{answer:?}"
+            );
+            if blocked {
+                let problem = readiness.problem().unwrap();
+                assert_eq!(problem.reason, "no_microphone_device");
+                assert_eq!(problem.error.message, "No microphone was found");
+            }
+        }
+    }
 
     #[cfg(not(windows))]
     #[test]

@@ -453,6 +453,8 @@ pub use doctor::{doctor, Card};
 pub use doctor_portal::{is_linux_portal_prompt_deferred, LINUX_PORTAL_PROMPT_DEFERRED_DETAIL};
 pub use doctor_probe::ScreenCheck;
 pub use doctor_status::{doctor_status, DoctorStatus};
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+pub use mic_endpoint::linux_microphone_probe_answer;
 pub use mic_endpoint::{
     explain_open_error, list_microphone_endpoints, microphone_access, microphone_privacy_block,
     no_microphone_device, request_microphone_access, resolve_microphone_source, MicrophoneAccess,

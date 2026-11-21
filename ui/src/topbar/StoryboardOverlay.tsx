@@ -53,7 +53,7 @@ export default function StoryboardOverlay({ busy, result, error, onClose }: Stor
         data-cut-storyboard-state={busy ? 'busy' : error ? 'error' : result ? 'ready' : 'empty'}
         role="dialog"
         aria-modal="true"
-        aria-label="Storyboard"
+        aria-label="Timeline contact sheet"
         data-cut-blocking-overlay
         tabIndex={-1}
         onKeyDown={overlay.onDialogKeyDown}
@@ -61,7 +61,7 @@ export default function StoryboardOverlay({ busy, result, error, onClose }: Stor
       >
         <header className="sb-head">
           <div>
-            <h2 className="sb-title">Storyboard</h2>
+            <h2 className="sb-title">Timeline contact sheet</h2>
             <p className="sb-sub">
               {/* meta = fact, in mono; only meaningful once we have a sheet */}
               {result ? (
@@ -97,7 +97,7 @@ export default function StoryboardOverlay({ busy, result, error, onClose }: Stor
               className="sb-img"
               data-cut-storyboard-img
               src={`data:${result.mime || 'image/jpeg'};base64,${result.base64}`}
-              alt={`Storyboard — ${result.count} frames of the composed timeline`}
+              alt={`Timeline contact sheet — ${result.count} frames of the composed timeline`}
             />
           ) : (
             // ok envelope without base64 (caller asked inline:true, so this is

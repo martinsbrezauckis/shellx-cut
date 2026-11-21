@@ -195,3 +195,61 @@ fn output_size_follows_bitrate_or_codec() {
     let prores = estimate_output_mb(13_313, 3840, 2160, 58.6, &s(&["-c:v", "prores_ks"]), 1536);
     assert!(prores > 1500, "{prores}");
 }
+
+/// Reverse holds source frames before scaling and frame-rate conversion.
+#[test]
+fn reverse_counts_source_frames_before_output_conversion() {
+    let (mut p, _) = project(1280, 720, 3840, 2160, &[(0, 2_000)]);
+    p.settings.fps = 24.0;
+    let cut_core::Clip::Media(clip) = &mut p.track_mut("v1").unwrap().clips[0] else {
+        panic!("media clip");
+    };
+    clip.reverse = true;
+    clip.speed = 2.0;
+    let e = cut_core::edl_from_project(&p);
+    let est = estimate_memory_for(&p, &e, 1280, 720, &s(VT), 8);
+    let source_frames = super::super::reverse_memory::frame_bytes(&p.assets["a1"]) * 120;
+    assert!(
+        est.held_frames_mb * 1024 * 1024 >= source_frames,
+        "reverse holds all 120 source frames before the 24 fps 720p output: {est:?}"
+    );
+}
+
+#[test]
+fn reverse_estimate_uses_the_renderers_split_windows() {
+    let (mut p, _) = project(1280, 720, 3840, 2160, &[(0, 20_000)]);
+    let cut_core::Clip::Media(clip) = &mut p.track_mut("v1").unwrap().clips[0] else {
+        panic!("media clip");
+    };
+    clip.reverse = true;
+    let e = cut_core::edl_from_project(&p);
+    let windows = super::super::reverse_memory::split_windows(
+        &p,
+        &e,
+        crate::render::plan_windows(&e, crate::render::render_window_ms(1280, 720, 0), 60.0),
+        60.0,
+    );
+    let est = estimate_memory_for(&p, &e, 1280, 720, &s(VT), 8);
+    assert_eq!(
+        est.windows,
+        Some(windows.len()),
+        "the estimate must use the same reverse windows as rendering"
+    );
+}
+
+#[test]
+fn reverse_keeps_source_rate_when_pixels_need_no_conversion() {
+    let (mut p, _) = project(3840, 2160, 3840, 2160, &[(0, 2_000)]);
+    p.settings.fps = 24.0;
+    let cut_core::Clip::Media(clip) = &mut p.track_mut("v1").unwrap().clips[0] else {
+        panic!("media clip");
+    };
+    clip.reverse = true;
+    let e = cut_core::edl_from_project(&p);
+    let est = estimate_memory_for(&p, &e, 3840, 2160, &s(VT), 8);
+    let source_frames = super::super::reverse_memory::frame_bytes(&p.assets["a1"]) * 120;
+    assert!(
+        est.held_frames_mb * 1024 * 1024 >= source_frames,
+        "reverse holds every source frame before frame-rate conversion: {est:?}"
+    );
+}

@@ -55,7 +55,7 @@ if (!process.exitCode) {
     await verifyPublishedUiLibraryMembership(inventory, undefined, { exact })
     verifyPublishedNodeTestMembership(inventory, { exact })
     if (!run) {
-      process.stdout.write(`PASS ${PUBLISHED_TEST_INVENTORY_GUARD} (${inventory.version}; ${inventory.tests.length} node tests, ${inventory.uiLibraryTests.tests.length} UI library tests)\n`)
+      process.stdout.write(`PASS ${PUBLISHED_TEST_INVENTORY_GUARD} (${inventory.version}; ${inventory.tests.length} node tests, ${inventory.pythonTests.length} Python tests, ${inventory.uiLibraryTests.tests.length} UI library tests)\n`)
     } else {
       const prerequisites = resolvePublishedPrerequisites(inventory)
       const environment = { ...process.env }
@@ -64,12 +64,16 @@ if (!process.exitCode) {
       }
 
       const failures = []
-      for (const entry of inventory.tests) {
+      const entries = [...inventory.tests, ...inventory.pythonTests.map((path) => ({ path, python: true }))]
+      for (const entry of entries) {
         process.stdout.write(`${PUBLISHED_TEST_INVENTORY_GUARD}: RUN ${entry.path}\n`)
-        const result = spawnSync(process.execPath, ['--test', resolve(inventory.root, entry.path)], {
+        const command = entry.python ? prerequisites.get('python').command : process.execPath
+        const args = [...(entry.python ? [] : ['--test']), resolve(inventory.root, entry.path)]
+        const result = spawnSync(command, args, {
           cwd: inventory.root,
           env: environment,
           stdio: 'inherit',
+          timeout: entry.python ? 120_000 : undefined,
         })
         const message = result.error?.message
           ?? (result.signal ? `terminated by ${result.signal}` : null)
@@ -81,11 +85,11 @@ if (!process.exitCode) {
         }
       }
       if (failures.length > 0) {
-        process.stderr.write(`${PUBLISHED_TEST_INVENTORY_GUARD}: ${failures.length} of ${inventory.tests.length} published tests failed\n`)
+        process.stderr.write(`${PUBLISHED_TEST_INVENTORY_GUARD}: ${failures.length} of ${entries.length} published tests failed\n`)
         for (const failure of failures) process.stderr.write(`- ${failure.path}: ${failure.message}\n`)
         process.exitCode = 1
       } else {
-        process.stdout.write(`PASS ${PUBLISHED_TEST_INVENTORY_GUARD} ran ${inventory.tests.length} published node tests and verified ${inventory.uiLibraryTests.tests.length} UI library tests${noBail ? ' (collect-all)' : ''}\n`)
+        process.stdout.write(`PASS ${PUBLISHED_TEST_INVENTORY_GUARD} ran ${inventory.tests.length} published node tests and ${inventory.pythonTests.length} Python tests and verified ${inventory.uiLibraryTests.tests.length} UI library tests${noBail ? ' (collect-all)' : ''}\n`)
       }
     }
   } catch (error) {

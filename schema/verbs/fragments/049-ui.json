@@ -34,7 +34,7 @@
     {
       "name": "ui.screenshot",
       "domain": "ui",
-      "description": "Ask the connected UI client to capture itself. returns {path, mime}; inline:true adds base64. Errors no_ui_client when no UI is connected; partial fallback = render.frame composite + DOM-state JSON marked partial.",
+      "description": "Ask the connected UI client to capture itself. returns {path, mime}; inline:true adds base64. Errors no_ui_client when no UI is connected, or job_failed when the UI returns no image or invalid base64.",
       "args": {
         "type": "object",
         "additionalProperties": false,

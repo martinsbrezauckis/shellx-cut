@@ -77,6 +77,30 @@ export interface FetchOutcome {
 
 type DoctorReply = ReturnType<typeof callVerb<'system.doctor'>>
 const doctorFlights: { read?: DoctorReply; scan?: DoctorReply } = {}
+let latestDoctor: DoctorReport | null = null
+let doctorEventRevision = 0
+
+function isOlderDoctor(report: DoctorReport): boolean {
+  if (!latestDoctor) return false
+  const delta = Date.parse(report.scanned_at) - Date.parse(latestDoctor.scanned_at)
+  if (delta !== 0) return delta < 0
+  // Engine RFC3339 timestamps retain nanoseconds; Date.parse drops digits
+  // after milliseconds. Compare the padded fractions when those times tie.
+  const fraction = (stamp: string) => (stamp.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/)?.[1] ?? '').padEnd(9, '0')
+  return fraction(report.scanned_at) < fraction(latestDoctor.scanned_at)
+}
+
+/** Keep every setup surface on the newest scan. An accepted event also retires
+ * flights started before it: a later refresh must ask the engine again, while
+ * existing borrowers settle with the current report instead of the old reply. */
+export function acceptDoctorEvent(report: DoctorReport): boolean {
+  if (isOlderDoctor(report)) return false
+  latestDoctor = report
+  ++doctorEventRevision
+  delete doctorFlights.read
+  delete doctorFlights.scan
+  return true
+}
 
 /** Ask the engine for the doctor report. The first scan on a machine with the
  * captions and perception tools installed can take many seconds, and several
@@ -87,7 +111,14 @@ export function callDoctor(refresh = false): DoctorReply {
   const shared = refresh ? doctorFlights.scan : doctorFlights.scan ?? doctorFlights.read
   if (shared) return shared
   const key = refresh ? 'scan' : 'read'
-  const flight: DoctorReply = callVerb('system.doctor', refresh ? { refresh: true } : {}).finally(() => {
+  const eventRevision = doctorEventRevision
+  const flight: DoctorReply = callVerb('system.doctor', refresh ? { refresh: true } : {}).then((reply) => {
+    if (!reply.ok) return reply
+    const report = reply.result as DoctorReport | null
+    if (!report || typeof report.scanned_at !== 'string' || !Array.isArray(report.cards)) return reply
+    if (eventRevision === doctorEventRevision && !isOlderDoctor(report)) latestDoctor = report
+    return { ...reply, result: latestDoctor ?? report }
+  }).finally(() => {
     if (doctorFlights[key] === flight) delete doctorFlights[key]
   })
   doctorFlights[key] = flight
@@ -158,11 +189,11 @@ export async function fetchTool(tool: 'ffmpeg' | 'vc-runtime'): Promise<SetupSta
 
 /** A setup verb's answer: its job, or the engine's refusal in plain words
  *  (e.g. captions refusing up front without the Microsoft runtime). */
-export type SetupStart = { job_id: string } | { refused: string } | null
+export type SetupStart = { job_id: string } | { refused: string; requirement?: string } | null
 
-function setupStart(r: { ok: boolean; result?: unknown; error?: { message?: string; suggested_action?: string } | null }): SetupStart {
+function setupStart(r: { ok: boolean; result?: unknown; error?: { message?: string; suggested_action?: string; requirement?: { id?: string } } | null }): SetupStart {
   if (r.ok) return r.result as { job_id: string }
-  return r.error?.message ? { refused: errorText(r.error, '') } : null
+  return r.error?.message ? { refused: errorText(r.error, ''), ...(r.error.requirement?.id ? { requirement: r.error.requirement.id } : {}) } : null
 }
 
 /** The Microsoft Visual C++ runtime card (Windows only) when it is MISSING:
@@ -236,6 +267,15 @@ export function unavailableFeatures(card: DoctorCard): string[] {
 export function ffmpegDownloadOffer(card: DoctorCard): FfmpegDownloadOffer | null {
   const offer = ffmpegSetupGuide(card)?.download
   return offer && typeof offer.consent === 'string' ? offer : null
+}
+
+/** Informational advice for the runnable FFmpeg in use; never a setup gate. */
+export function ffmpegVersionAdvice(card: DoctorCard): { message: string; upgrade: string } | null {
+  if (card.id !== 'ffmpeg' || (card.status !== 'ok' && card.status !== 'degraded')) return null
+  const advice = card.details?.version_advice as { message?: unknown; upgrade?: unknown } | null
+  return advice && typeof advice.message === 'string' && typeof advice.upgrade === 'string'
+    ? { message: advice.message, upgrade: advice.upgrade }
+    : null
 }
 
 /** True only when the doctor has CONFIRMED ffmpeg or ffprobe is absent (either
@@ -372,6 +412,10 @@ export function hasFetchAction(card: DoctorCard, os: string, arch: string): bool
   // Microsoft's runtime: the engine says when its own download applies.
   if (card.id === 'vc-runtime') return card.status === 'missing' && card.details?.fetch_available === true
   if (card.id !== 'ffmpeg' && card.id !== 'ffprobe') return false
+  if (ffmpegVersionAdvice(card)) {
+    return (os === 'windows' || os === 'linux') && arch === 'x86_64'
+      && (ffmpegSetupGuide(card)?.fetch_available ?? true)
+  }
   if (card.status !== 'missing' && (card.id !== 'ffmpeg' || card.status !== 'degraded')) return false
   // The engine says where its download exists; older reports fall back to the
   // platform pair the registry has always served.

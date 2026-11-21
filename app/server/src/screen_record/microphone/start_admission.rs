@@ -4,8 +4,21 @@ use super::readiness::MicrophoneReadiness;
 use cut_core::CutError;
 use record_capture::MicrophoneSource;
 
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn source_for_recording_start(audio: bool) -> Result<MicrophoneSource, CutError> {
     admit_requested(audio, MicrophoneReadiness::current, super::source_for_start)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn source_for_recording_start_linux(
+    audio: bool,
+    readiness: Option<MicrophoneReadiness>,
+) -> Result<MicrophoneSource, CutError> {
+    admit_requested(
+        audio,
+        || readiness.expect("microphone readiness is sampled before mic-enabled Start"),
+        super::source_for_start,
+    )
 }
 
 fn admit_requested(

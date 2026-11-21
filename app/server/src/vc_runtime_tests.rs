@@ -172,3 +172,20 @@ fn nothing_is_needed_off_windows() {
     assert!(doctor_card().is_none());
     assert!(require_for("Captions and transcription").is_ok());
 }
+
+#[test]
+fn declined_installation_keeps_the_reason_without_installer_output() {
+    for can_approve in [true, false] {
+        let error = install_error_with_log(
+            InstallerExit::Declined,
+            can_approve,
+            "installer detail\nprivate path",
+        );
+        assert_eq!(
+            error.cause,
+            install_error(InstallerExit::Declined, can_approve).cause
+        );
+    }
+    let failed = install_error_with_log(InstallerExit::Failed(5100), true, "diagnostic detail");
+    assert!(failed.cause.contains("diagnostic detail"));
+}

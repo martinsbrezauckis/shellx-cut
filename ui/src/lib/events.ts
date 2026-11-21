@@ -15,7 +15,7 @@ import { outputFolderStatusFrom, type OutputFolderStatus } from './outputFolderS
 import type { FixAction, JudgeEnvelope, OpRecord, RenderReceipt } from './client'
 import type { ReceiptCheckOutcome } from './receiptModel'
 import type { ColorReport, EncodeReport } from './encodeReport'
-import type { DoctorReport } from './doctor'
+import { acceptDoctorEvent, type DoctorReport } from './doctor'
 import type { UiObservableState } from '../app/uiControlState'
 
 /** Server→client events — mirrors server/src/events.rs exactly, plus the
@@ -471,6 +471,7 @@ export class EventsClient {
         }
         const event = cutEventFrom(ev)
         if (!event) return
+        if (event.type === 'doctor_updated' && !acceptDoctorEvent(event.report)) return
         this.listeners.forEach((l) => l(event))
       } catch {
         // Non-JSON frames are ignored — the stream contract is JSON-only.

@@ -230,6 +230,17 @@ function sourceReadiness(asset: MediaReadinessAsset): AssetReadiness {
   }
 
   if (isLargeSourcePlayback(asset)) {
+    const w = asset.probe.width ?? 0
+    const h = asset.probe.height ?? 0
+    if (!(w >= 3840 || h >= 2160 || w * h >= 3840 * 2160)) {
+      return {
+        level: 'large-source',
+        label: 'High frame rate',
+        hint: 'This clip may stutter during preview. Turn on proxies for future imports, or re-import it with proxies if playback lags.',
+        needsAction: true,
+        badges: [{ label: 'High frame rate', tone: 'warn', title: 'High-frame-rate source playback can stutter without a proxy.' }],
+      }
+    }
     return {
       level: 'large-source',
       label: '4K source',

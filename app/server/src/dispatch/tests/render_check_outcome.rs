@@ -392,6 +392,8 @@ async fn a_recheck_and_an_autopilot_with_failing_checks_do_not_read_plain_done()
     assert_eq!(auto["state"], "done", "{auto}");
     assert_eq!(auto["result"]["checks_pass"], false, "{auto}");
     assert_eq!(auto["completion"], "done_with_warnings", "{auto}");
+    assert_eq!(auto["outcome"], "partial", "{auto}");
+    assert_eq!(auto["outcome_reason"], "checks_failed", "{auto}");
     assert_eq!(
         auto["result"]["warnings"][0],
         auto["result"]["summary_line"]

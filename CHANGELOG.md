@@ -1,0 +1,38 @@
+This changelog records release notes for ShellX Cut. For older versions, see the [GitHub releases page](https://github.com/martinsbrezauckis/shellx-cut/releases).
+
+## 0.6.118 - 2026-11-21
+- Clearer wording across the app and the manual, following the terms of the leading video editors.
+- Light theme: every label is readable, and keyboard focus is visible.
+- On Linux, recording says when no microphone is available before trying to use it.
+- Reversing a video clip also reverses its linked sound.
+- A 1080p recording at 60 fps is labelled High frame rate instead of 4K source.
+- The setup status always shows the newest check and says when FFmpeg is older than the tested versions.
+- Fixed: exports could lose a picture where clips that are not whole frames meet.
+- Fixed: a new project lost the size you chose after a 4K import.
+- Many smaller fixes.
+
+## 0.6.117 - 2026-11-21
+- Fixed: screen recordings on macOS and Windows keep moving as they are saved in parts.
+- On Windows, Stop responds at once while the recording finishes saving in the background.
+- The Record screen shows whether the current recording is paused.
+- On Linux Wayland, screen recording no longer requires keyboard input access.
+- On Windows and macOS, recording says when no microphone is available before trying to use it.
+- On Windows, recording checks video support before starting and says why when a PC cannot record.
+- Fixed: Add to timeline messages follow the right recording and project.
+- Fixed: recordings already added to the timeline no longer keep offering recovery.
+- Fixed: the chosen export folder is kept when updating from 0.6.115.
+
+## 0.6.116 - 2026-11-21
+- The preview shows the finished picture when you pause, with titles, effects and fades.
+- Exports match the timeline exactly: picture and sound stay in sync on timelines with many cuts or mixed frame rates.
+- Closing or quitting during a recording saves the recording first; during an export, ShellX Cut asks before stopping it.
+- A recording or export cut short by a crash or power loss is reported at the next start; recordings come back with their sound and say how much was recovered.
+- Stopping a screen recording is quicker, and a recording made while an export runs is kept.
+- One export folder for all projects, remembered between sessions and shown in the status bar.
+- FFmpeg can be downloaded from inside the app on Apple-silicon Macs too, and every download shows its publisher, version, size and licence first.
+- When a feature needs a tool that is not installed, ShellX Cut says what is missing and offers the download in Settings, including Microsoft's Visual C++ runtime for captions on Windows.
+- In the timeline, dragging a clip overwrites and Alt-dragging inserts, and the timeline names which one you are doing.
+- An export that stops making progress ends with a clear message, and a render queue tells you when some of its exports failed.
+- ShellX Cut opens in one window that fits your screen.
+- Fixed: playback looping or jumping back to 00:00 when the middle part of a split clip is on a second video track (#2).
+- Many smaller fixes.

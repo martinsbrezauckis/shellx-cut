@@ -106,7 +106,7 @@ impl std::str::FromStr for FootageProfile {
             "talking_head" => Ok(FootageProfile::TalkingHead),
             "silent_screen_demo" => Ok(FootageProfile::SilentScreenDemo),
             other => Err(format!(
-                "unknown footage profile '{other}' — valid: talking_head, silent_screen_demo"
+                "Unknown content type for quality checks '{other}' — choose Talking head (talking_head) or Screen demo (silent_screen_demo)."
             )),
         }
     }
@@ -283,7 +283,7 @@ fn footage_profile_record(
             "active_profile": active.as_str(),
             "selection": if explicit { "explicit" } else { "default" },
             "proposed_profile": proposal.map(|p| p.profile.as_str()),
-            "note": "auto-detect only PROPOSES a profile; switching requires the explicit profile arg",
+            "note": "Auto-detect proposes a content type for quality checks; choose it explicitly with the profile argument.",
         }),
         evidence: json!({
             "proposal_reasons": proposal.map(|p| p.reasons.clone()),
@@ -1204,7 +1204,7 @@ pub fn caption_qc(cues: &[cut_core::CaptionClip], opts: CaptionQcOpts) -> serde_
         return json!({
             "cue_count": 0,
             "pass": false,
-            "note": "no caption cues to QC — run captions.generate first",
+            "note": "No captions to check. Generate captions first (verb captions.generate).",
             "thresholds": opts,
         });
     }
@@ -3914,7 +3914,10 @@ mod tests {
         ] {
             assert_eq!(FootageProfile::from_str(p.as_str()).unwrap(), p);
         }
-        assert!(FootageProfile::from_str("camera").is_err());
+        assert_eq!(
+            FootageProfile::from_str("camera").unwrap_err(),
+            "Unknown content type for quality checks 'camera' — choose Talking head (talking_head) or Screen demo (silent_screen_demo)."
+        );
         // serde wire form matches as_str (server passes the arg through serde).
         assert_eq!(
             serde_json::to_value(FootageProfile::SilentScreenDemo).unwrap(),

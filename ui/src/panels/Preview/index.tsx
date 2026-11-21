@@ -29,13 +29,13 @@ import {
   openVideoToolsSettings,
   recheckVideoTools,
 } from '../../lib/videoToolsSetup'
-import { playbackVideoKey, PlaybackSeekTracker } from './playbackClock'
+import { playbackVideoKey, playbackBindingKey, PlaybackSeekTracker, shouldPublishPlaybackTick } from './playbackClock'
 import { runFreeRunClock } from './freeRunClock'
 import { posterChip } from './posterChip'
 import { BaseVideoDeck } from './BaseVideoDeck'
 import { ComposedFrameOverlay } from './ComposedFrameOverlay'
 import { hiddenInLivePreview, livePreviewNotice } from './livePreviewCoverage'
-import { EMPTY_DECK, nextDeck, upcomingBaseVideo, type DeckState } from './baseDeckPlan'
+import { EMPTY_DECK, nextDeck, upcomingBaseVideo, continuousBaseVideoEnd, type DeckState } from './baseDeckPlan'
 import { PreviewDecodeNotice, usePreviewDecodeHealth } from './usePreviewDecodeHealth'
 import { useTimeDisplay } from '../../lib/timedisplay'
 import { contentExtentMs, imageAssetIds, timecode } from '../Timeline/layout'
@@ -415,14 +415,18 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   // plays but does not deliver frame callbacks. Reverse/shuttle and composed/
   // poster modes use the seek-driven rAF clock below.
   const canFreeRun = showVideo && RVFC_SUPPORTED && !!video && canPlayPreviewVideo(rate, video.reverse, video.freezeAtMs)
+  const playbackSrcKey = canFreeRun && video ? playbackBindingKey(video, deck.front) : null
+  // A run keeps its end across ordinary pieces. Explicit seeks and edits
+  // recalculate it, including a seek across a gap with the same source offset.
+  const continuousEndMs = useMemo(() => canFreeRun ? continuousBaseVideoEnd(project, video, failedSources, frameMs) ?? undefined : undefined, [project, playbackSrcKey, seekRevision, failedSources, frameMs])
 
   // cfg ref: the playback clock + key handler read current values without
   // re-binding (same configRef pattern as the Timeline gestures). `video`
   // carries the active clip placement so the rVFC clock maps presented source
   // time → timeline position without re-subscribing each frame.
   const { playback: voiceoverPlayback, outUnconfirmed } = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
-  const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback })
-  cfg.current = { playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback }
+  const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback, continuousEndMs, nextVideoStartMs: upcoming?.startMs ?? null })
+  cfg.current = { playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback, continuousEndMs, nextVideoStartMs: upcoming?.startMs ?? null }
   // --- playback clock --------------------------------------------------------
   // FREE-RUN (forward 1×, <video> mounted): the element plays itself, hardware-
   // decoded + vsync-timed; we read the presented frame back via rVFC when it is
@@ -430,11 +434,8 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   // fires. SEEK PATH
   // (reverse / 2×/4× shuttle / composed-poster with no <video>): the original
   // rAF clock that repositions the playhead ~10×/s. playbackSrcKey re-arms the
-  // effect when the clip under the playhead changes (proxy src swap at a cut),
-  // so play resumes on the new source.
-  const playbackSrcKey = canFreeRun && video
-    ? playbackVideoKey(video)
-    : null
+  // effect when the source mapping or front element changes. Contiguous pieces
+  // keep the same clock and frame subscription.
   useEffect(() => {
     if (rate === 0) return
     const v = videoRef.current
@@ -443,7 +444,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
 
     const callbacks = v ? videoFrameCallbacks(v) : null
     if (canFreeRun && v && callbacks) {
-      const stopClock = runFreeRunClock({ video: v, callbacks, expectedKey: playbackSrcKey, state: cfg, tracker, publish, stop: () => setRate(0) })
+      const stopClock = runFreeRunClock({ video: v, callbacks, expectedKey: playbackVideoKey(cfg.current.video), state: cfg, tracker, publish, stop: () => setRate(0), isCurrentVideo: () => videoRef.current === v })
       return () => {
         stopClock()
         const c = cfg.current
@@ -468,7 +469,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
         setRate(0)
         return
       }
-      if (now - lastDispatch >= 100) {
+      if (shouldPublishPlaybackTick(now, lastDispatch, acc, c.rate, c.nextVideoStartMs)) {
         lastDispatch = now
         publish(position.positionMs)
       }

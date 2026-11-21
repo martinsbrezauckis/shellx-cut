@@ -1,7 +1,7 @@
 # Security policy
 
-<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
-This policy covers the v0.6.117 source and the latest published v0.6.117 release.
+<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
+This policy covers the v0.6.118 source and the latest published v0.6.118 release.
 
 ## Supported versions
 

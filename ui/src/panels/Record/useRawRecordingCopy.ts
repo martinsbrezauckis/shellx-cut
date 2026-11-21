@@ -150,8 +150,8 @@ export function useRawRecordingCopy(rawPath: string | null, projectKey: string |
       const id = (reply.result as { job_id?: unknown } | undefined)?.job_id
       if (typeof id !== 'string' || !id.trim() || id !== id.trim()) {
         setNote(projectKey === projectRef.current
-          ? 'Copy admission could not be confirmed. Check Jobs before copying again; another attempt may create a duplicate.'
-          : 'A previous project copy admission could not be confirmed. Check Jobs there before copying again; another attempt may create a duplicate.')
+          ? 'Could not confirm that copying started. Check Jobs before trying again; a second attempt may create a duplicate.'
+          : 'Could not confirm that copying started in the previous project. Open it and check Jobs before trying again; a second attempt may create a duplicate.')
         return
       }
       const admitted = { id, projectKey, ownerKey }
@@ -163,8 +163,8 @@ export function useRawRecordingCopy(rawPath: string | null, projectKey: string |
       if (!liveRef.current) return
       if (submitted) {
         setNote(projectKey === projectRef.current
-          ? 'Copy admission could not be confirmed. Check Jobs before copying again; another attempt may create a duplicate.'
-          : 'A previous project copy admission could not be confirmed. Check Jobs there before copying again; another attempt may create a duplicate.')
+          ? 'Could not confirm that copying started. Check Jobs before trying again; a second attempt may create a duplicate.'
+          : 'Could not confirm that copying started in the previous project. Open it and check Jobs before trying again; a second attempt may create a duplicate.')
       } else if (!intentCurrent()) {
         setNote('Recording changed before copy started. Choose Save a copy again.')
       } else {

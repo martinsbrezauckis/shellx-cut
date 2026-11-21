@@ -125,7 +125,7 @@ pub fn run_faces(
             CutError::new(
                 error_codes::IO,
                 format!("face runner spawn failed: {e}"),
-                "the local face-detect runtime could not be started",
+                "Face detection tools could not be started. Choose Install captions to repair them.",
             )
             .with_suggested_action(cut_perception::captions_setup_action())
         })?;
@@ -134,8 +134,9 @@ pub fn run_faces(
         return Err(CutError::new(
             error_codes::IO,
             format!("face runner failed: {}", err.trim()),
-            "the local face-detect runtime errored (is opencv installed in the perception venv?)",
-        ));
+            "Face detection could not run; its analysis tools may be missing or damaged. Choose Install captions to set them up again.",
+        )
+        .with_suggested_action(cut_perception::captions_setup_action()));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = stdout
@@ -148,8 +149,9 @@ pub fn run_faces(
         CutError::new(
             error_codes::IO,
             format!("face runner output not JSON ({e}); got: {line}"),
-            "the runner must print one JSON line on stdout",
+            "Face detection did not return usable results. Choose Install captions to repair its analysis tools.",
         )
+        .with_suggested_action(cut_perception::captions_setup_action())
     })
 }
 
@@ -165,6 +167,44 @@ pub fn box_to_rect(b: &FaceBox) -> [[f64; 2]; 2] {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn analysis_failures_name_the_feature_and_setup_action() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("failed-analysis.sh");
+        for body in [
+            "exit 1",
+            "printf 'unusable output\\n'",
+            "missing interpreter",
+        ] {
+            std::fs::write(&script, body).unwrap();
+            let rt = Runtime {
+                python: if body == "missing interpreter" {
+                    root.path().join("missing")
+                } else {
+                    PathBuf::from("/bin/sh")
+                },
+                script: script.clone(),
+                native_context: false,
+            };
+            let error = run_faces(&rt, Path::new("unused.mp4"), 0, false).unwrap_err();
+            assert_eq!(error.code, error_codes::IO);
+            assert!(error.cause.contains("Face detection"), "{error:?}");
+            assert!(error.cause.contains("Install captions"), "{error:?}");
+            assert!(
+                error
+                    .suggested_action
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("system.setup_perception"),
+                "{error:?}"
+            );
+            for jargon in ["venv", "opencv", "cv2", "rapidocr", "stdout"] {
+                assert!(!error.cause.contains(jargon), "{error:?}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

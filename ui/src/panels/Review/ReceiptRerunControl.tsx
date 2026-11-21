@@ -1,4 +1,4 @@
-// Receipt-bound output verification for Review > Receipts.
+// Receipt-bound output verification for Review > Render history & checks.
 // A completed job is accepted only when its ids, hash, and profile agree with
 // this immutable source receipt. A stale result is a visible failure, never a
 // green recheck.

@@ -36,6 +36,10 @@ export const EQ_PRESETS: { preset: 'voice' | 'warmth' | 'de_rumble' | 'phone' | 
 export const BLEND_MODES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'difference', 'addition', 'subtract', 'softlight', 'hardlight'] as const
 export type BlendMode = (typeof BLEND_MODES)[number]
 
+export function blendModeLabel(mode: BlendMode): string {
+  return mode === 'softlight' ? 'Soft Light' : mode === 'hardlight' ? 'Hard Light' : mode
+}
+
 export function blendModeFromInput(value: string, fallback: BlendMode): BlendMode {
   for (const option of BLEND_MODES) {
     if (option === value) return option

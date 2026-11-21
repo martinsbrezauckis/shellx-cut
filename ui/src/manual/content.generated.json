@@ -1,6 +1,6 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.117",
+  "appVersion": "0.6.118",
   "featureCount": 201,
   "features": [
     {
@@ -15,12 +15,12 @@
     },
     {
       "id": "cut.setup.doctor",
-      "label": "Run system doctor",
+      "label": "Check setup",
       "group": "setup",
-      "title": "Run system doctor",
+      "title": "Check setup",
       "where": "Settings",
-      "description": "Use the doctor check when Cut cannot import, preview, transcribe, record, or render. It separates missing tools from project problems.",
-      "requirement": "Open Settings and run the readiness check.",
+      "description": "Check setup when Cut cannot import, preview, transcribe, record, or render. It separates missing tools from project problems.",
+      "requirement": "Open Settings and choose Re-scan.",
       "api": "system.doctor"
     },
     {
@@ -35,11 +35,11 @@
     },
     {
       "id": "cut.setup.captions",
-      "label": "Install captions and STT",
+      "label": "Captions and transcription",
       "group": "setup",
-      "title": "Install captions and STT",
+      "title": "Captions and transcription",
       "where": "Transcript tab and Settings",
-      "description": "Captions need speech-to-text tooling in addition to FFmpeg. Install this when transcript actions show a setup message.",
+      "description": "Captions need speech-to-text tooling in addition to FFmpeg. Install this when transcript actions show a setup message. If you run Cut inside a container, enable container nesting before installing captions. Without it, setup can fail with Permission denied.",
       "requirement": "Install captions sets up Cut's own captions environment and speech model; no Python of your own is needed, and one you installed is not used. Until then, transcript and caption actions say that captions and transcription are not installed and offer Install captions. Captions on Windows need the Microsoft Visual C++ Redistributable; ShellX Cut tells you when it is missing and gets it from Microsoft for you: Settings > AI & transcription > Microsoft Visual C++ runtime > Install downloads Microsoft's own installer, checks Microsoft's signature, and Windows asks for administrator permission. Uninstalling ShellX Cut keeps it.",
       "api": "system.setup_perception, system.fetch_tool, system.set_stt_model, media.transcribe"
     },
@@ -99,8 +99,8 @@
       "group": "top",
       "title": "Settings and editing cache",
       "where": "Top bar",
-      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > About shows the third-party notices: every library in the app with its licence. Health & Recovery can estimate and rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup with before/removed/after reconciliation. The Motion card can find an existing ShellX Motion installation and show its status. Connecting, installing, repairing, or updating Motion from Cut is not ready yet.",
-      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; review the complete cache preview before cleanup. Cut refuses files it cannot safely identify as its own. Motion status only checks an existing installation; it does not change it or sign you in.",
+      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > About shows the third-party notices: every library in the app with its licence. Health & recovery can estimate and rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup with before/removed/after reconciliation. The Motion card can find an existing ShellX Motion installation and show its status. Connecting, installing, repairing, or updating Motion from Cut is not ready yet.",
+      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; review the complete cache preview before cleanup. Cut refuses files it cannot safely identify as its own. Motion status only checks an existing installation; it does not change it or sign you in. On Linux, removing the DEB or RPM package keeps your projects, settings and downloaded tools; after quitting Cut, you can optionally erase settings and downloaded tools at ~/.shellx-cut, ~/.config/lv.shellx.cut, ~/.local/share/lv.shellx.cut and ~/.local/share/shellx-cut (use your custom XDG_CONFIG_HOME and XDG_DATA_HOME locations if set). Delete project folders (normally ~/ShellX Cut Projects) only if you also want to erase those projects. On macOS, moving ShellX Cut.app to the Trash keeps your projects, settings and downloaded tools; after quitting Cut, you can optionally erase settings and downloaded tools at ~/.shellx-cut, ~/Library/Application Support/lv.shellx.cut and ~/Library/Application Support/ShellX Cut. Delete project folders (normally ~/ShellX Cut Projects) only if you also want to erase those projects.",
       "api": "system.doctor, system.mcp_test, system.motion_status, project.cache_rebuild, project.cache_preview, project.cache_purge, jobs.cancel"
     },
     {
@@ -109,7 +109,7 @@
       "group": "top",
       "title": "Manual",
       "where": "Top bar",
-      "description": "Open Cut's bundled, indexed manual. Selecting an entry reveals its real editor surface without running the highlighted action.",
+      "description": "Open Cut's bundled, indexed manual. Select an entry to read it, then choose Show in Cut to reveal its editor surface without running the highlighted action. Reference-only entries cannot be revealed.",
       "requirement": "Available in the desktop editor. The separately published online manual is a read-only reference.",
       "api": "Manual panel, read-only reveal"
     },
@@ -179,8 +179,8 @@
       "group": "header",
       "title": "Autopilot",
       "where": "Header tools",
-      "description": "Let an agent plan safe edits, apply reversible operations, and leave reviewable receipts.",
-      "requirement": "Requires a configured CLI agent.",
+      "description": "Preview a render-quality check, then apply its low-risk fixes and inspect the receipts.",
+      "requirement": "Requires an open project with a renderable timeline and FFmpeg.",
       "api": "autopilot.run"
     },
     {
@@ -195,9 +195,9 @@
     },
     {
       "id": "cut.header.assemble",
-      "label": "Assemble AI",
+      "label": "Assemble (AI)",
       "group": "header",
-      "title": "Assemble AI",
+      "title": "Assemble (AI)",
       "where": "Header tools",
       "description": "Choose Repurpose, Shorts, or From script to review source ranges first, then choose Add reviewed plan to timeline to commit one editable, normal-Undo action. Shorts also applies its reviewed crop and transcript captions when the project aspect matches. B-roll finds and places footage in a slot; when a folder is needed, use the desktop folder dialog, which shows only its final folder name.",
       "requirement": "Requires a configured CLI agent and source media. A changed timeline or transcript requires a fresh reviewed plan. Shorts requires the requested project aspect before applying; change the format and plan again if it differs. Folder selection requires the desktop app.",
@@ -205,13 +205,13 @@
     },
     {
       "id": "cut.header.storyboard",
-      "label": "Storyboard",
+      "label": "Timeline contact sheet",
       "group": "header",
-      "title": "Storyboard",
+      "title": "Timeline contact sheet",
       "where": "Header tools",
-      "description": "Generate or inspect storyboard plans before inserting a sequence into the timeline.",
-      "requirement": "Prompt/storyboard generation needs a configured CLI agent.",
-      "api": "generate.storyboard, generate.preview, generate.insert"
+      "description": "View 12 evenly spaced frames from the current edit in one image. For shot planning, use Generate > Storyboard.",
+      "requirement": "Requires a non-empty timeline and video processing tools.",
+      "api": "render.storyboard"
     },
     {
       "id": "cut.header.comments",
@@ -455,22 +455,22 @@
     },
     {
       "id": "cut.header.autopilot.plan",
-      "label": "Autopilot: plan edit",
+      "label": "Autopilot: preview fixes",
       "group": "header",
-      "title": "Plan edit",
-      "where": "Autopilot menu",
-      "description": "Ask the configured agent to propose an edit plan.",
-      "requirement": "Requires a configured CLI agent.",
+      "title": "Preview fixes",
+      "where": "Autopilot",
+      "description": "Choose Preview fixes to render and check the timeline, then inspect the proposed fixes without applying them.",
+      "requirement": "Requires an open project with a renderable timeline and FFmpeg.",
       "api": "autopilot.run {policy:\"preview\"}"
     },
     {
       "id": "cut.header.autopilot.apply",
-      "label": "Autopilot: apply safe ops",
+      "label": "Autopilot: apply fixes",
       "group": "header",
-      "title": "Apply safe ops",
-      "where": "Autopilot menu",
-      "description": "Apply reversible operations from an agent plan and leave them in review.",
-      "requirement": "Requires a reviewed agent plan.",
+      "title": "Apply fixes",
+      "where": "Autopilot",
+      "description": "Run the quality check again and apply its low-risk fixes, keeping receipts and a restore point.",
+      "requirement": "Available after Preview finds an automatic fix; requires a renderable timeline and FFmpeg.",
       "api": "autopilot.run {policy:\"auto_low_risk\"}"
     },
     {
@@ -578,7 +578,7 @@
       "label": "Assemble: prompt",
       "group": "header",
       "title": "Assemble prompt",
-      "where": "Assemble AI menu",
+      "where": "Assemble (AI) menu",
       "description": "Choose Repurpose to find highlights, or From script to match script lines to footage. Review the proposed source ranges before adding them to the timeline.",
       "requirement": "Requires a configured CLI agent.",
       "api": "assemble.from_script, assemble.repurpose"
@@ -588,7 +588,7 @@
       "label": "Assemble: source clips",
       "group": "header",
       "title": "Source clips",
-      "where": "Assemble AI menu",
+      "where": "Assemble (AI) menu",
       "description": "Choose imported source footage for the reviewed plan, or find and place footage in a B-roll slot. Local B-roll folders use the desktop folder picker.",
       "requirement": "Requires imported media.",
       "api": "assemble.broll, media.search"
@@ -598,7 +598,7 @@
       "label": "Assemble: build draft",
       "group": "header",
       "title": "Build draft",
-      "where": "Assemble AI menu",
+      "where": "Assemble (AI) menu",
       "description": "Review the Repurpose or Shorts plan, then choose Add reviewed plan to timeline to add its ranges as one editable Undo action. Shorts applies its crop and transcript captions only when the project already has the requested aspect.",
       "requirement": "Requires source clips, a configured CLI agent, and a current reviewed plan. Changed timeline or transcript evidence requires a new review.",
       "api": "assemble.repurpose, assemble.shorts"
@@ -608,7 +608,7 @@
       "label": "Storyboard: generate plan",
       "group": "header",
       "title": "Generate storyboard plan",
-      "where": "Storyboard menu",
+      "where": "Generate > Storyboard",
       "description": "Generate a storyboard plan before inserting clips or generated assets.",
       "requirement": "Requires a configured CLI agent.",
       "api": "generate.storyboard"
@@ -618,7 +618,7 @@
       "label": "Storyboard: review shots",
       "group": "header",
       "title": "Review shots",
-      "where": "Storyboard menu",
+      "where": "Generate > Storyboard",
       "description": "Inspect planned shots before committing them to the timeline.",
       "requirement": "Requires an open project.",
       "api": "generate.preview"
@@ -628,7 +628,7 @@
       "label": "Storyboard: preview sequence",
       "group": "header",
       "title": "Preview sequence",
-      "where": "Storyboard menu",
+      "where": "Generate > Storyboard",
       "description": "Preview the storyboard sequence before insertion.",
       "requirement": "Requires an open project.",
       "api": "generate.preview"
@@ -638,7 +638,7 @@
       "label": "Storyboard: insert",
       "group": "header",
       "title": "Insert storyboard",
-      "where": "Storyboard menu",
+      "where": "Generate > Storyboard",
       "description": "Insert the storyboard plan into the timeline.",
       "requirement": "Requires a generated storyboard plan.",
       "api": "generate.insert"
@@ -769,9 +769,9 @@
       "group": "top",
       "title": "Render selected range",
       "where": "Preview monitor",
-      "description": "Mark a range on the timeline ruler, then use Render selection under the Preview monitor to render only that window.",
-      "requirement": "Requires a marked range on the ruler.",
-      "api": "render.preview"
+      "description": "Mark a range on the timeline ruler or select clips, then use Render selection under the Preview monitor to render only that window.",
+      "requirement": "Requires a marked range on the ruler or a selected clip.",
+      "api": "export.range, media.import"
     },
     {
       "id": "cut.top.export.video",
@@ -787,9 +787,9 @@
       "id": "cut.top.export.bundle",
       "label": "Export: platform bundle",
       "group": "top",
-      "title": "Publish presets",
+      "title": "Platform exports",
       "where": "Export menu",
-      "description": "Publish straight to a platform's geometry and bitrate: YouTube 16:9, TikTok/Shorts 9:16, Instagram Reels 9:16, or X 16:9. A multi-platform pack with captions and a thumbnail comes from the Social short bundle recipe instead.",
+      "description": "Export for a platform's geometry and bitrate. The file is saved locally; Cut does not upload it. Presets: YouTube 16:9, TikTok/Shorts 9:16, Instagram Reels 9:16, or X 16:9. A multi-platform pack with captions and a thumbnail comes from the Social short bundle recipe instead.",
       "requirement": "Requires a renderable timeline and FFmpeg.",
       "api": "export.publish, render.bundle"
     },
@@ -799,7 +799,7 @@
       "group": "top",
       "title": "Keeping a copy of a project",
       "where": "Export menu",
-      "description": "There is no project-archive export in this release. A project is an ordinary .cutproj folder holding the operation log and cached artifacts, so copying or zipping that folder keeps everything; use Interchange (OTIO, EDL, XML) to hand the edit to another tool.",
+      "description": "There is no project-archive option in Export. To copy the project with its used media, choose Projects > Make a copy. A project-folder copy alone may still need the original linked media. Use Interchange (OTIO, EDL, XML) to hand the edit to another tool.",
       "requirement": "Requires an open project.",
       "api": "export.otio, export.xml, export.edl"
     },
@@ -1091,7 +1091,7 @@
       "where": "Preview controls",
       "description": "Capture or save the current preview frame for review or reuse.",
       "requirement": "Requires a visible preview frame.",
-      "api": "render.frame, media.import"
+      "api": "export.frame"
     },
     {
       "id": "cut.preview.render_selection",
@@ -1099,9 +1099,9 @@
       "group": "preview",
       "title": "Render selection",
       "where": "Preview controls",
-      "description": "Render only the selected range when a timeline range is active.",
-      "requirement": "Requires an export range on the ruler.",
-      "api": "render.preview"
+      "description": "Render only the selected ruler span or clip range to inspect the exact composite with full audio.",
+      "requirement": "Requires an export range on the ruler or a selected clip.",
+      "api": "export.range, media.import"
     },
     {
       "id": "cut.preview.audio",
@@ -1265,9 +1265,9 @@
     },
     {
       "id": "cut.timeline.trim_dead_air",
-      "label": "Trim dead air",
+      "label": "Trim silent start and end",
       "group": "timeline",
-      "title": "Trim dead air",
+      "title": "Trim silent start and end",
       "where": "Timeline toolbar",
       "description": "Trim silence from the beginning and end of the current timeline while keeping the operation reversible.",
       "requirement": "Requires an open timeline with audio analysis available.",
@@ -1295,11 +1295,11 @@
     },
     {
       "id": "cut.timeline.grade",
-      "label": "Grade, Layer, Matte",
+      "label": "Color, Transform, Remove background",
       "group": "timeline",
-      "title": "Grade, Layer, Matte",
+      "title": "Color, Transform, Remove background",
       "where": "Timeline toolbar",
-      "description": "Open visual editing groups for color, compositing, layer behavior, and matte work.",
+      "description": "Open the Color, Transform and Remove background controls for the selected clip.",
       "requirement": "Requires a selected visual clip.",
       "api": "edit.grade, edit.effect"
     },
@@ -1410,7 +1410,7 @@
       "title": "Timeline voiceover",
       "where": "Audio track header",
       "description": "Record into the selected audio track after a visible three-second count-in. Start at the playhead or use the current In-Out range; Stop places one sealed take as one Undoable edit, while Cancel adds nothing.",
-      "requirement": "Requires an unlocked audio track, a microphone and microphone permission; it never checks screen capture. If Windows privacy settings or macOS block the microphone, the control says which setting to turn on. Direct monitoring stays off.",
+      "requirement": "Requires an unlocked audio track, a microphone and microphone permission; it never checks screen capture. Windows privacy settings and macOS permission blocks name the setting to change. Windows, macOS and Linux say when no microphone is found; Linux allows Start if its sound server or audio route cannot be checked. Direct monitoring stays off.",
       "api": "voiceover.start, voiceover.tick, voiceover.stop, voiceover.cancel, voiceover.observe_playhead"
     },
     {
@@ -1419,7 +1419,7 @@
       "group": "timeline",
       "title": "Base track and overlays",
       "where": "Timeline tracks",
-      "description": "Normal Insert and normal drops from Assets build the base story timeline and push later clips right. A probed video with audio is placed in one aligned picture-and-sound action; both destinations are checked or created together. Extra video tracks are overlays: use Alt-drag from Assets, a new overlay lane, or an existing overlay lane when the clip should appear on top.",
+      "description": "Add at playhead and normal drops from Assets build the base story timeline and push later clips right. A probed video with audio is placed in one aligned picture-and-sound action; both destinations are checked or created together. Extra video tracks are overlays: use Alt-drag from Assets, a new overlay lane, or an existing overlay lane when the clip should appear on top.",
       "requirement": "Requires an open project; overlay placement requires an overlay lane or Alt-drag. Video with sound needs available video and audio tracks.",
       "api": "edit.insert, edit.insert_linked, edit.add_track"
     },
@@ -1431,7 +1431,7 @@
       "where": "Timeline toolbar",
       "description": "Save selected output back into project assets or create a GIF from the current selection.",
       "requirement": "Requires a selected range or renderable clip.",
-      "api": "media.import, render.preview"
+      "api": "export.range, export.gif"
     },
     {
       "id": "cut.context.menu",
@@ -1635,9 +1635,9 @@
     },
     {
       "id": "cut.review.ops",
-      "label": "Review Ops",
+      "label": "Edit history",
       "group": "review",
-      "title": "Review Ops",
+      "title": "Edit history",
       "where": "Review panel",
       "description": "Read every applied operation so edits remain auditable and reversible.",
       "requirement": "Requires project operations in the current session or file.",
@@ -1645,11 +1645,11 @@
     },
     {
       "id": "cut.review.receipts",
-      "label": "Receipts, QC, Scopes, Diff",
+      "label": "Render history & checks, Quality checks, Scopes, Compare edits",
       "group": "review",
-      "title": "Receipts, QC, Scopes, Diff",
+      "title": "Render history & checks, Quality checks, Scopes, Compare edits",
       "where": "Review panel",
-      "description": "Switch review tabs to inspect receipts, quality checks, video scopes, and project diffs before delivery.",
+      "description": "Switch review tabs to inspect render history and checks, quality checks, video scopes, and edit comparisons before delivery.",
       "requirement": "Some tabs depend on completed review, render, or scope-check jobs.",
       "api": "project.diff, verify.checks, verify.scopes, ui.open"
     },
@@ -1669,7 +1669,7 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Focused Record workspace",
-      "description": "Screen and sound, the real selected-source preview, recording settings, and a persistent Start/Stop transport share the Record workspace. Native preview shows source pixels before Start; during capture the exact active capture supplies live frames, or Record shows an unavailable or stale state while keeping Stop usable. A selected whole display includes Cut when Cut is visible. Refresh sources after a source or device change, and use optional video-only rehearsal to check framing. Recording settings contain Camera, Background, Video timer, Capture timing, and Video quality. Advanced frame rate accepts whole-number custom 1–240 FPS only after Apply or Enter; an invalid draft leaves the prior rate active. Cut remembers one selected microphone as an app-local preference. If Cut restarts, refresh the source preview before Start. After a Stop error, Cut checks whether that take is still recording before offering Retry Stop.",
+      "description": "Screen and sound, the real selected-source preview, recording settings, and a persistent Start/Stop transport share the Record workspace. Native preview shows source pixels before Start; during capture the exact active capture supplies live frames, or Record shows an unavailable or stale state while keeping Stop usable. A selected whole display includes Cut when Cut is visible. Refresh sources after a source or device change, and use optional video-only rehearsal to check framing. Recording settings contain Camera, Background, Video timer, Start, length & pause, and Video quality. Advanced frame rate accepts whole-number custom 1–240 FPS only after Apply or Enter; an invalid draft leaves the prior rate active. Cut remembers one selected microphone as an app-local preference. If Cut restarts, refresh the source preview before Start. After a Stop error, Cut checks whether that take is still recording before offering Retry Stop.",
       "requirement": "Requires a supported screen source, recording permission, FFmpeg, and a writable export folder. Preview, camera, meters, and Pause depend on your system and devices.",
       "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_frame, screen_record.live_frame, screen_record.rehearsal_start, screen_record.start, screen_record.status, screen_record.stop"
     },
@@ -1689,7 +1689,7 @@
       "group": "record",
       "title": "On-video timer",
       "where": "Record workspace",
-      "description": "Choose Off, Count up, or Count down. Apply a custom countdown duration from 00:00:01 to 23:59:59; 1, 5, and 10 minutes are shortcuts. During capture, timer Pause, Resume, Reset, Restart, and End affect the overlay only. Reaching zero does not stop recording.",
+      "description": "Choose Off, Count up, or Count down. Apply a custom countdown duration from 00:00:01 to 23:59:59; 1, 5, and 10 minutes are shortcuts. During capture, timer Pause, Resume, Reset, Restart, and End timer affect the overlay only. Reaching zero does not stop recording.",
       "requirement": "Requires a saved timer configuration and native scene support. Capture Pause and capture length are separate controls.",
       "api": "screen_record.start {scenes.timer}, screen_record.scene_timer"
     },
@@ -1909,7 +1909,7 @@
       "group": "workflow",
       "title": "Applied agent change",
       "where": "Chat tab",
-      "description": "Attach registered project assets or a timeline target, choose or edit a prompt, and run the turn. A validated result applies directly; inspect Preview and Diff, use Step back only while it is safe, or Ask replacement to re-resolve the retained target.",
+      "description": "Attach registered project assets or a timeline target, choose or edit a prompt, and run the turn. A validated result applies directly; inspect Preview and Compare edits, use Step back only while it is safe, or Ask replacement to re-resolve the retained target.",
       "requirement": "Requires a configured CLI agent and an open project. Concurrent later operations can make Step back unavailable.",
       "api": "agent.chat, project.diff, project.revert"
     },
@@ -1925,11 +1925,11 @@
     },
     {
       "id": "cut.workflow.review",
-      "label": "Review receipts",
+      "label": "Review render history & checks",
       "group": "workflow",
-      "title": "Review receipts",
+      "title": "Review render history & checks",
       "where": "Review panel",
-      "description": "Check operation history, receipts, QC, scopes, and diffs to understand the project state before rendering final output.",
+      "description": "Check edit history, render history and checks, quality checks, scopes, and edit comparisons to understand the project state before rendering final output.",
       "requirement": "Requires project operations or completed checks.",
       "api": "project.ops, project.diff, verify.checks, verify.scopes"
     },

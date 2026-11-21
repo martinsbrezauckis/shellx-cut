@@ -18,6 +18,7 @@ import type { OpRecord } from '../../lib/client'
 import { Icon } from '../../icons'
 import { mutatesTimeline } from '../../lib/ops'
 import {
+  editActionLabel,
   groupOperations,
   operationGroupHeading,
   type IndexedOperation,
@@ -216,7 +217,7 @@ function OpRow({
       <div className="rr-op__l1">
         <span className={`rr-badge rr-badge--${actorKind}`}>{actorKind.toUpperCase()}</span>
         <span className="rr-op__via">via {op.actor?.via ?? '?'}</span>
-        <span className="rr-op__verb">{op.verb}</span>
+        <span className="rr-op__verb" title={op.verb}>{editActionLabel(op.verb)}</span>
         {/* transient KEPT badge — this op was re-based OVER and kept intact */}
         {isKept && <span className="rr-op__kept-badge" data-cut-kept-badge={op.op_id}>kept</span>}
         {/* dependent marker — this later edit blocked the requested selective undo */}
@@ -224,7 +225,7 @@ function OpRow({
         <span className="rr-op__age">{timeAgo(op.ts)}</span>
       </div>
       <div className={`rr-op__rationale ${op.rationale ? '' : 'rr-op__rationale--none'}`}>
-        {op.rationale ?? 'no rationale'}
+        {op.rationale ?? 'No note'}
       </div>
       {effects && <div className="rr-op__effects">{effects}</div>}
       {/* Engine-backed restore mark + inline recovery actions. */}

@@ -1736,6 +1736,7 @@ export interface VerbResults {
   'edit.solo': { track: string; solo: boolean; old_solo: boolean }
   'clip.candidates': ClipCandidatesResult
   'media.waveform': Waveform
+  'media.transcribe': { job_id: string }
   'media.check': MediaCheckResult
   'project.health': ProjectHealthResult
   'screen_record.system_audio_probe': ScreenRecordSystemAudioProbeResult

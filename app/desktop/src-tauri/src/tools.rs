@@ -342,10 +342,20 @@ fn resolves_to_usr_bin_python(python: &Path) -> bool {
                 .is_some_and(|n| n.starts_with("python3."))
 }
 
-/// True when `stem` (a bare tool name) is runnable on the current PATH —
+/// True when `stem` is runnable from an absolute PATH entry —
 /// `<stem> -version` exits successfully. Best-effort; never panics.
 fn runnable_on_path(stem: &str, version_flag: &str) -> bool {
-    std::process::Command::new(stem)
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let Some(program) = std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(exe_name(stem)))
+        .find(|program| program.is_file())
+    else {
+        return false;
+    };
+    std::process::Command::new(program)
         .arg(version_flag)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -668,6 +678,80 @@ impl ToolResolution {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ffmpeg_path_probe_ignores_relative_entry() {
+        const CHILD: &str = "SHELLX_CUT_DESKTOP_PATH_PROBE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let marker = PathBuf::from(std::env::var_os("SHELLX_CUT_TEST_MARKER").unwrap());
+            let safe = PathBuf::from(std::env::var_os("SHELLX_CUT_TEST_SAFE_FFMPEG").unwrap());
+            let exe_dir = PathBuf::from(std::env::var_os("SHELLX_CUT_TEST_EXE_DIR").unwrap());
+            let found = ToolResolution::detect(&exe_dir);
+            assert!(found.ffmpeg_ok);
+            assert_eq!(found.ffmpeg_source, "path");
+            assert!(!marker.exists(), "planted ffmpeg ran during discovery");
+            std::fs::remove_file(safe).unwrap();
+            let missing = ToolResolution::detect(&exe_dir);
+            assert!(!missing.ffmpeg_ok);
+            assert_eq!(missing.ffmpeg_source, "missing");
+            return;
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("scut-desktop-path-{}", std::process::id()));
+        let received = root.join("received");
+        let safe_dir = root.join("safe-bin");
+        let exe_dir = root.join("desktop");
+        std::fs::create_dir_all(&received).unwrap();
+        std::fs::create_dir_all(&safe_dir).unwrap();
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let marker = root.join("planted-ffmpeg-ran");
+        let planted = received.join("ffmpeg");
+        let safe = safe_dir.join("ffmpeg");
+        std::fs::write(
+            &planted,
+            b"#!/bin/sh\nprintf ran > \"$SHELLX_CUT_TEST_MARKER\"\n",
+        )
+        .unwrap();
+        std::fs::write(&safe, b"#!/bin/sh\nexit 0\n").unwrap();
+        for executable in [&planted, &safe] {
+            std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([PathBuf::from("."), safe_dir]).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tools::tests::ffmpeg_path_probe_ignores_relative_entry",
+                "--nocapture",
+            ])
+            .current_dir(&received)
+            .env("PATH", path)
+            .env(CHILD, "1")
+            .env("SHELLX_CUT_TEST_MARKER", &marker)
+            .env("SHELLX_CUT_TEST_SAFE_FFMPEG", &safe)
+            .env("SHELLX_CUT_TEST_EXE_DIR", &exe_dir)
+            .env("SHELLX_CUT_HOME", root.join("home"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("HOME", root.join("home"))
+            .env_remove(CONTEXT_ENV)
+            .env_remove(ENV_FFMPEG_EXE)
+            .env_remove(ENV_FFMPEG_DIR)
+            .output()
+            .unwrap();
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let planted_ran = marker.exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(!planted_ran, "planted ffmpeg ran:\n{report}");
+        assert!(
+            output.status.success() && report.contains("1 passed"),
+            "isolated discovery failed:\n{report}"
+        );
+    }
 
     fn sha256(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))

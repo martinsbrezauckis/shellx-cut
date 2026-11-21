@@ -103,6 +103,8 @@ mod window_fit;
 #[cfg(windows)]
 mod windows_controller_placement;
 mod windows_media_feature;
+#[cfg(windows)]
+mod windows_quit;
 mod windows_region_bridge;
 #[cfg(windows)]
 mod windows_region_picker;
@@ -1015,6 +1017,8 @@ fn grant_engine_origin_capability(
     // acknowledge and finish that hold or answer the question, never close
     // the window.
     let capability = capability.permission("allow-close-guard");
+    #[cfg(windows)]
+    let capability = capability.permission("allow-request-window-close");
     // The window may ask once which project the app was launched with.
     let capability = capability.permission("allow-launch-project");
     let capability = if allow_foreground_region {
@@ -1193,6 +1197,8 @@ pub fn run() {
         builder
     };
     let builder = builder.plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let builder = builder.on_page_load(windows_quit::on_page_load);
 
     // Optional WebDriver support for macOS WKWebView tests. Release packages
     // reject this feature.
@@ -1248,6 +1254,8 @@ pub fn run() {
             quit_question::acknowledge_quit_question,
             quit_question::answer_quit_question,
             single_instance::take_launch_project,
+            #[cfg(windows)]
+            windows_quit::request_window_close,
         ])
         .setup(move |app| {
             // macOS: the menu's Quit, Cmd+Q, Dock Quit, an Apple Event quit and

@@ -112,7 +112,7 @@ export default function LocalManualPanel({ open, requestedFeatureId, requestId, 
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search tools, menus, or verbs"
+          placeholder="Search features, menus, or actions"
           autoFocus
           data-cut-local-manual-search
         />

@@ -359,8 +359,8 @@
 }
 .pv-toggle:hover { color: var(--ink); border-color: var(--border); }
 /* COMPOSED mode active — the editor-blue accent marks "showing composed truth". */
-.pv-toggle--on { color: #0a0a0a; background: var(--cut); border-color: var(--cut); }
-.pv-toggle--on:hover { color: #0a0a0a; border-color: var(--cut); }
+.pv-toggle--on { color: #fff; background: var(--cut); border-color: var(--cut); }
+.pv-toggle--on:hover { color: #fff; border-color: var(--cut); }
 
 /* COMPOSED toggle: stable label + an ON/OFF pill so the control always reads
    as "composed view, on or off" (never relabels to the raw playback kind). */

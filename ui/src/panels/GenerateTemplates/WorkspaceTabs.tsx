@@ -7,7 +7,7 @@ interface WorkspaceTabsProps {
 
 const TABS: Array<{ id: GenerateWorkspaceTab; label: string }> = [
   { id: 'templates', label: 'Templates' },
-  { id: 'prompt', label: 'Native prompt' },
+  { id: 'prompt', label: 'Prompt' },
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'media', label: 'AI media' },
 ]

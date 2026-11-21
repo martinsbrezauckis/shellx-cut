@@ -151,9 +151,9 @@ export default function PromptPanel({
               alt={`${promptResult.plan?.template_id ?? 'Generate'} prompt preview`}
             />
           ) : promptResult?.preview ? (
-            <div className="gt-note">Preview wrote {promptResult.preview.path}, but no browser URL was returned.</div>
+            <div className="gt-note">Preview unavailable. Check the preview details and try again.</div>
           ) : (
-            <div className="gt-empty">Native prompt preview evidence appears here.</div>
+            <div className="gt-empty">Your preview will appear here.</div>
           )}
         </div>
 

@@ -54,4 +54,34 @@ const noProxy = summarizeMediaReadiness([{ ...footage, proxy: undefined }, title
 assert.equal(noProxy.sourceOnly, 1)
 assert.equal(noProxy.dimensions.proxy.value, 'Source')
 
+// High frame rate warns about preview without calling HD footage 4K.
+for (const fps of [60, 59.94]) {
+  const hd = row('hd', '/m/hd.mp4', { kind: 'video', width: 1920, height: 1080, fps })
+  const readiness = assetReadiness(hd)
+  assert.equal(readiness.label, 'High frame rate', '1080p60 is high frame rate, not 4K')
+  assert.equal(readiness.level, 'large-source')
+  assert.equal(readiness.needsAction, true)
+  assert.equal(readiness.hint, 'This clip may stutter during preview. Turn on proxies for future imports, or re-import it with proxies if playback lags.')
+  assert.deepEqual(readiness.badges, [{ label: 'High frame rate', tone: 'warn', title: 'High-frame-rate source playback can stutter without a proxy.' }])
+  assert.ok(!readiness.badges.some((badge) => badge.label.includes('4K')))
+  assert.equal(assetReadiness({ ...hd, proxy: 'proxies/hd.mp4' }).label, 'Proxy ready')
+  assert.equal(assetReadiness({ ...hd, offline: true }).label, 'Missing source')
+}
+assert.equal(assetReadiness(row('hd30', '/m/hd.mp4', { kind: 'video', width: 1920, height: 1080, fps: 30 })).label, 'Source playback')
+for (const probe of [
+  { kind: 'video' as const, width: 3840, height: 2160, fps: 30 },
+  { kind: 'video' as const, width: 3840, height: 2160, fps: 60 },
+  { kind: 'video' as const, width: 2160, height: 3840 },
+]) {
+  const readiness = assetReadiness(row('large', '/m/large.mp4', probe))
+  assert.equal(readiness.label, '4K source')
+  assert.deepEqual(readiness.badges, [{ label: '4K source', tone: 'warn', title: 'High-resolution source playback can stutter without a proxy.' }])
+}
+assert.equal(assetReadiness({ ...title, probe: { kind: 'video', width: 3840, height: 2160, fps: 60 } }).label, 'Title')
+for (const asset of [image, audio]) {
+  const readiness = assetReadiness({ ...asset, probe: { ...asset.probe, width: 3840, height: 2160, fps: 60 } })
+  assert.ok(!['4K source', 'High frame rate'].includes(readiness.label))
+  assert.ok(!readiness.badges.some((badge) => ['4K source', 'High frame rate'].includes(badge.label)))
+}
+
 console.log('PASS each asset kind reads as what it is; a title never counts as footage without a proxy')

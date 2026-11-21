@@ -82,3 +82,6 @@
 @media (max-width: 560px) {
   .rec-audio-meters { grid-template-columns: 1fr; }
 }
+/* Light theme: fixed light inks take the theme's text tokens. */
+[data-theme="light"] .rec-audio-meters__error { color: var(--danger); }
+[data-theme="light"] .rec-audio-meter [data-cut-rec-audio-meter-clipping] { color: var(--amber); }

@@ -284,7 +284,7 @@ export default function RenderQueueModal({ onClose, onPreflight, owner }: Render
             </ul>
             {phase === 'done' && (
               <div className="rq-actions">
-                <span className="rq-count" data-cut-render-queue-done>Find the files in the Review tab.</span>
+                <span className="rq-count" data-cut-render-queue-done>View finished exports in Review &gt; Render history &amp; checks.</span>
                 <button className="rq-btn rq-btn--primary" data-cut-render-queue-done-close onClick={() => { owner.acknowledge(); onClose() }}>Done</button>
               </div>
             )}

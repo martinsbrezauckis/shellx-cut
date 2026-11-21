@@ -47,6 +47,12 @@ assert.deepEqual(recordingSceneCapability({ supported: true, catalog_revision: 8
 }, 'only explicit numeric Doctor capability enables the proposed scene route')
 assert.equal(recordingSceneCapability({ supported: true, catalog_revision: '8' }).supported, false,
   'string fingerprints never masquerade as recorder revisions')
+assert.equal(recordingSceneCapability(null).detail,
+  'Could not confirm live scene controls. Your selection is a local preview only.',
+  'an absent capability is unknown')
+assert.equal(recordingSceneCapability({ supported: false }).detail,
+  'Live scene controls are unavailable for this recording. Your selection is a local preview only.',
+  'an explicit unsupported capability is known unavailable')
 assert.match(recordingSceneTimerLabel({ kind: 'elapsed' }), /begin when the recording starts/)
 assert.match(recordingSceneTimerLabel({ kind: 'countdown', duration_ms: 300_000 }), /will not stop recording/,
   'a configured countdown never promises to stop a capture')

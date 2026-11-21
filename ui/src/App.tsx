@@ -250,16 +250,17 @@ export default function App() {
 
   const { layout, setLayout: setRawLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
     useAppLayoutController(selectedClipIds)
-  const { admission: recordingWorkspaceAdmission, reportAdmission: reportRecordingWorkspaceAdmission, requestLayout } =
+  const { admission: recordingWorkspaceAdmission, reportAdmission: reportRecordingWorkspaceAdmission, requestLayout: requestSystemLayout } =
     useRecordingWorkspaceNavigation(layout, setRawLayout)
   // A project switch can finish pulling state after the editor becomes
-  // clickable. Keep a workspace choice made during that pull.
+  // clickable. Count every accepted navigation, including a same-mode click,
+  // while lifecycle resets below use the system request without claiming intent.
   const workspaceNavigationEpoch = useRef(0)
-  const requestWorkspaceLayout = useCallback<RequestLayout>((update) => {
-    const accepted = requestLayout(update)
+  const requestLayout = useCallback<RequestLayout>((update) => {
+    const accepted = requestSystemLayout(update)
     if (accepted) workspaceNavigationEpoch.current += 1
     return accepted
-  }, [requestLayout])
+  }, [requestSystemLayout])
   const sourceNavigation = useSourceNavigationController(requestLayout)
   const { clipboardHasContent, clipboardKind, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard } = useAppClipboardController({
     project,
@@ -268,7 +269,7 @@ export default function App() {
     setSelectedClipIds,
   })
   const openUiSurface = useAppSurfaceEvents({
-    setLayout: requestWorkspaceLayout,
+    setLayout: requestLayout,
     setCommentsOpen,
     setFocusComment,
     setActiveDrawer,
@@ -381,14 +382,14 @@ export default function App() {
     setActiveDrawer(null)
     clearClipboard()
     if (showProjects) {
-      requestLayout((current) => ({
+      requestSystemLayout((current) => ({
         ...current,
         workspaceMode: 'edit',
         leftTab: 'projects',
         leftCollapsed: false,
       }))
     }
-  }, [clearClipboard, requestLayout, stockImportCoordinator])
+  }, [clearClipboard, requestSystemLayout, stockImportCoordinator])
 
   /** Follow one page at a time and merge only when this same project remains
    * current. Cold loads may transfer full history once; reconnects call this
@@ -564,7 +565,7 @@ export default function App() {
       if (!asyncBoundary.isCurrentResync(token) || activeProject === undefined) return
       const generation = historyLoadGeneration.current
       if (activeProject === null) {
-        requestLayout((current) => (
+        requestSystemLayout((current) => (
           !shouldReturnToProjectsAfterResync(activeProject, current.workspaceMode)
             ? current
             : current.leftTab === 'projects' && !current.leftCollapsed
@@ -608,7 +609,7 @@ export default function App() {
       // Event and panel callbacks intentionally detach resync. A transient
       // transport failure must settle this App-owned task.
     }
-  }, [asyncBoundary, loadFullHistory, refreshDoctor, requestLayout, syncProject])
+  }, [asyncBoundary, loadFullHistory, refreshDoctor, requestSystemLayout, syncProject])
 
   const [recoveryNoticeVisible, setRecoveryNoticeVisible] = useState(false)
   // A project named at launch, or by a second launch of the app.
@@ -668,7 +669,7 @@ export default function App() {
     if (!asyncBoundary.isCurrentOwner(owner) || switchSeq !== projectSwitchSeq.current || nextProject === undefined) return
     const generation = historyLoadGeneration.current
     if (workspaceNavigationEpoch.current === navigationEpoch) {
-      requestLayout((l) => ({
+      requestSystemLayout((l) => ({
         ...l,
         leftTab: nextProject ? preferredProjectLeftTab(nextProject) : 'projects',
         leftCollapsed: false,
@@ -679,7 +680,7 @@ export default function App() {
       const loaded = await loadFullHistory()
       if (asyncBoundary.isCurrentOwner(owner) && switchSeq === projectSwitchSeq.current && generation === historyLoadGeneration.current) initialHistoryLoaded.current = loaded
     }
-  }, [asyncBoundary, layout.workspaceMode, loadFullHistory, recordingWorkspaceAdmission.blocked, resetProjectScopedUi, requestLayout, syncProject])
+  }, [asyncBoundary, layout.workspaceMode, loadFullHistory, recordingWorkspaceAdmission.blocked, resetProjectScopedUi, requestSystemLayout, syncProject])
   useEffect(() => {
     if (recordingWorkspaceAdmission.blocked || !deferredProjectChange.current) return
     deferredProjectChange.current = false
@@ -921,7 +922,7 @@ export default function App() {
       >
         <AppWorkspace
           layout={layout}
-          setLayout={requestWorkspaceLayout}
+          setLayout={requestLayout}
           onRecordWorkspaceAdmission={reportRecordingWorkspaceAdmission}
           sourceNavigation={sourceNavigation}
           mainRef={mainRef}

@@ -1,4 +1,4 @@
-// panels/Review/Receipts.tsx — the RECEIPTS tab: RenderReceipt cards
+// panels/Review/Receipts.tsx — the Render history & checks tab: RenderReceipt cards
 // Verdict banner readable across the room (`6/6 PASS` /
 // `2 FAILED` / amber `CHECKING…`); check rows with status dot + key metric;
 // click row → expandable evidence block with measured values and CLICKABLE
@@ -42,7 +42,7 @@ export interface ReceiptsProps {
 
 export default function Receipts({ receipts, onSeek }: ReceiptsProps) {
   if (receipts.length === 0) {
-    return <div className="rr__empty">No delivery receipts yet — render the timeline to create one.</div>
+    return <div className="rr__empty">No render history yet — render the timeline to see its file and checks here.</div>
   }
   // Newest first — prop order is oldest-first (receipt_ready appends).
   const newestFirst = [...receipts].reverse()
@@ -274,7 +274,7 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
                   )}
                   {waiver && (
                     <div className="rr-check__waiver-note">
-                      waived by profile {waiver.waived_by_profile}
+                      Waived for {profileLabel(waiver.waived_by_profile)} content
                       {waiver.waiver_reason ? ` — ${waiver.waiver_reason}` : ''}
                     </div>
                   )}
@@ -314,6 +314,10 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
 // distinct from check rows (and excluded from the [data-cut-check] count).
 // ---------------------------------------------------------------------------
 
+function profileLabel(profile: string | undefined): string {
+  return profile === 'talking_head' ? 'Talking head' : profile === 'silent_screen_demo' ? 'Screen demo' : profile ?? '—'
+}
+
 function ProfileRow({ entry }: { entry: CheckResult }) {
   const d = isObject(entry.details) ? entry.details : null
   const activeProfile = d ? stringProp(d, 'active_profile') : undefined
@@ -329,8 +333,8 @@ function ProfileRow({ entry }: { entry: CheckResult }) {
       data-cut-profile={activeProfile ?? 'unknown'}
       title={reasons?.length ? `auto-detect:\n${reasons.join('\n')}` : undefined}
     >
-      profile {activeProfile ?? '—'} ({selection ?? '—'})
-      {proposes && <span className="rr-rc__profile-proposal"> · auto-detect proposes {proposes}</span>}
+      Content type for quality checks: {profileLabel(activeProfile)} ({selection ?? '—'})
+      {proposes && <span className="rr-rc__profile-proposal"> · Auto-detect proposes {profileLabel(proposes)}</span>}
     </div>
   )
 }

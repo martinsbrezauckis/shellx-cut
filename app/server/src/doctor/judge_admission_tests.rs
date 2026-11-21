@@ -279,6 +279,15 @@ fn resolve_keeps_installed_but_unready_provider_out_of_ok() {
     let unverified = resolve("claude", true, true, &JudgeAdmissions::Unverified);
     assert_eq!(unverified.status, CardStatus::Unknown);
     assert!(!unverified.judge_ready);
+    assert_eq!(
+        unverified.availability_reason.as_deref(),
+        Some("Could not check whether this agent can review exports. Re-scan to try again.")
+    );
+    let missing = resolve("claude", false, true, &JudgeAdmissions::Unverified);
+    assert_eq!(
+        missing.availability_reason.as_deref(),
+        Some("This agent cannot review exports right now: the command-line app was not found.")
+    );
 }
 
 #[test]

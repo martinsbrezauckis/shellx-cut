@@ -1,10 +1,10 @@
 # ShellX Cut local-machine trust threat model
 
-<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
+<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
 
 ## Executive summary
 
-This v0.6.117 published contract covers the current source and the local
+This v0.6.118 published contract covers the current source and the local
 Debug API, WebSocket endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under
@@ -138,7 +138,7 @@ installed.
 Which output checks apply to an export (no sound, only still pictures) is
 decided on this engine's own probe of the placed sources at render time, never
 on media facts stored in the project, and a check the person asked for by name
-(a loudness target, a footage profile) is never waived; a re-check relies on a
+(a loudness target, a content type for quality checks) is never waived; a re-check relies on a
 receipt's decisions only when this engine wrote that receipt.
 
 A program running under the person's own account while Cut works (for example

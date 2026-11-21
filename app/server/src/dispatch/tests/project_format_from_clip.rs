@@ -315,3 +315,34 @@ async fn one_frame_limit_for_project_format_and_render_size() {
     .await;
     assert!(r.error.unwrap().message.contains("libsvtav1"));
 }
+
+#[tokio::test]
+async fn explicitly_created_default_format_survives_a_four_k_import_and_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("chosen.cutproj");
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({
+            "name": "chosen", "dir": path,
+            "settings": cut_core::ProjectSettings::default(),
+        }),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let opened = dispatch(&state, "project.open", json!({"path": path}), test_actor()).await;
+    assert!(opened.ok, "{:?}", opened.error);
+    let media = make(
+        root.path(),
+        "four-k.mp4",
+        "color=size=3840x2160:rate=24:duration=0.1",
+        &[],
+    );
+    let (job, settings) = import_first(&state, &media).await;
+    assert_eq!(settings["width"], 1920, "{settings}");
+    assert_eq!(settings["height"], 1080);
+    assert_eq!(settings["fps"], 30.0);
+    assert_eq!(job.result.unwrap()["format"]["adopted"], false);
+}

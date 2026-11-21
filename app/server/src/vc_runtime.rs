@@ -264,6 +264,16 @@ pub fn install_error(exit: InstallerExit, can_approve: bool) -> CutError {
     }
 }
 
+/// Include diagnostic output for an installer failure.
+pub fn install_error_with_log(exit: InstallerExit, can_approve: bool, log: &str) -> CutError {
+    let mut error = install_error(exit, can_approve);
+    let tail = log.lines().rev().take(6).collect::<Vec<_>>().join(" | ");
+    if exit != InstallerExit::Declined && !tail.is_empty() {
+        error.cause = format!("{}; installer log: {tail}", error.cause);
+    }
+    error
+}
+
 pub fn download_error(cause: CutError) -> CutError {
     CutError::new(
         error_codes::JOB_FAILED,

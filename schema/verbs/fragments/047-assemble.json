@@ -5,7 +5,7 @@
     {
       "name": "assemble.broll",
       "domain": "assemble",
-      "description": "ASSEMBLY AUTOMATION — fill a list of b-roll SLOTS by retrieving a clip per slot and placing it on a b-roll track. For each `{query, at_ms, duration_ms}`: search the `provider` (default local_folder; any assets.* provider — openverse/archive_org/wikimedia/nasa for stock, or local_folder with `dir`) for `query`, FETCH the top hit as a project asset, and edit.insert its first `duration_ms` at `at_ms` (no ripple — the b-roll lands on its own track). ORCHESTRATOR (like audio.cleanup_voice / autopilot.run): records NO op of its own — it wraps the work in an auto-checkpoint and dispatches assets.search + assets.fetch + edit.insert as real, replay-safe ops, so the whole assembly reverts in ONE step. STOPS on the first failing slot and returns the checkpoint + a revert_hint (never a silently half-assembled timeline). `track` targets an existing track; omitted = a 'broll' video track (created if absent). `source:\"generate\"` is reserved for assets.generate. Requires an open project.",
+      "description": "ASSEMBLY AUTOMATION — fill a list of b-roll SLOTS by retrieving a clip per slot and placing it on a b-roll track. For each `{query, at_ms, duration_ms}`: search the `provider` (default local_folder; any assets.* provider — openverse/archive_org/wikimedia/nasa for stock, or local_folder with `dir`) for `query`, FETCH the top hit as a project asset, and edit.insert its first `duration_ms` at `at_ms` (no ripple — the b-roll lands on its own track). ORCHESTRATOR (like audio.cleanup_voice / autopilot.run): records NO op of its own — it wraps the work in an auto-checkpoint and dispatches assets.search + assets.fetch + edit.insert as real, replay-safe ops, so the whole assembly reverts in ONE step. STOPS on the first failing slot and returns the checkpoint + a revert_hint (never a silently half-assembled timeline). `track` selects the target track; omitted = 'broll'. A missing target track is created as a video track. `source:\"generate\"` is reserved for assets.generate. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -70,7 +70,7 @@
           },
           "track": {
             "type": "string",
-            "description": "Target track id (default: a 'broll' video track, created if absent)."
+            "description": "Target track id (default 'broll'); created as a video track if absent."
           },
           "rationale": {
             "type": "string"

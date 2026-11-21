@@ -16,7 +16,7 @@ export const REFERENCE_PATH = 'skill/shellx-cut/reference.md'
 const START = '<!-- generated:requirements:start (node scripts/generate-requirements-docs.mjs) -->'
 const END = '<!-- generated:requirements:end -->'
 
-const cell = (text) => String(text).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim()
+const cell = (text) => String(text).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim()
 
 function names(registry, ids) {
   return ids.map((id) => registry.requirements.find((item) => item.id === id)?.name ?? id)

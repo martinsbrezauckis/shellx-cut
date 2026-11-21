@@ -135,7 +135,7 @@ pub fn run_ocr(rt: &Runtime, video: &Path, at_ms: u64) -> Result<OcrResult, CutE
             CutError::new(
                 error_codes::IO,
                 format!("ocr runner spawn failed: {e}"),
-                "the local OCR runtime could not be started",
+                "Text detection tools could not be started. Choose Install captions to repair them.",
             )
             .with_suggested_action(cut_perception::captions_setup_action())
         },
@@ -145,8 +145,9 @@ pub fn run_ocr(rt: &Runtime, video: &Path, at_ms: u64) -> Result<OcrResult, CutE
         return Err(CutError::new(
             error_codes::IO,
             format!("ocr runner failed: {}", err.trim()),
-            "the local OCR runtime errored (is rapidocr-onnxruntime installed in the perception venv?)",
-        ));
+            "Text detection could not run; its analysis tools may be missing or damaged. Choose Install captions to set them up again.",
+        )
+        .with_suggested_action(cut_perception::captions_setup_action()));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = stdout
@@ -159,13 +160,52 @@ pub fn run_ocr(rt: &Runtime, video: &Path, at_ms: u64) -> Result<OcrResult, CutE
         CutError::new(
             error_codes::IO,
             format!("ocr runner output not JSON ({e}); got: {line}"),
-            "the runner must print one JSON line on stdout",
+            "Text detection did not return usable results. Choose Install captions to repair its analysis tools.",
         )
+        .with_suggested_action(cut_perception::captions_setup_action())
     })
 }
 
 #[cfg(test)]
 mod runtime_tests {
+    #[cfg(unix)]
+    #[test]
+    fn analysis_failures_name_the_feature_and_setup_action() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("failed-analysis.sh");
+        for body in [
+            "exit 1",
+            "printf 'unusable output\\n'",
+            "missing interpreter",
+        ] {
+            std::fs::write(&script, body).unwrap();
+            let rt = Runtime {
+                python: if body == "missing interpreter" {
+                    root.path().join("missing")
+                } else {
+                    PathBuf::from("/bin/sh")
+                },
+                script: script.clone(),
+                native_context: false,
+            };
+            let error = run_ocr(&rt, Path::new("unused.mp4"), 0).unwrap_err();
+            assert_eq!(error.code, error_codes::IO);
+            assert!(error.cause.contains("Text detection"), "{error:?}");
+            assert!(error.cause.contains("Install captions"), "{error:?}");
+            assert!(
+                error
+                    .suggested_action
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("system.setup_perception"),
+                "{error:?}"
+            );
+            for jargon in ["venv", "opencv", "cv2", "rapidocr", "stdout"] {
+                assert!(!error.cause.contains(jargon), "{error:?}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

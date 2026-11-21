@@ -16,6 +16,8 @@ use std::thread::{self, JoinHandle};
 #[cfg(feature = "mic")]
 use std::time::Instant;
 
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod privacy;
@@ -98,24 +100,20 @@ pub fn microphone_privacy_block() -> Option<MicrophoneSwitch> {
     None
 }
 
-/// True when the native input inventory reports no microphone. This reads
-/// device/configuration availability without starting an audio stream.
+/// True when the Windows or macOS native inventory reports no microphone.
+/// Linux inventory runs only in a disposable child through the server owner.
 pub fn no_microphone_device() -> bool {
     #[cfg(any(windows, target_os = "macos"))]
     {
         return list_microphone_endpoints().is_empty();
     }
-    #[cfg(all(target_os = "linux", feature = "mic"))]
-    {
-        use cpal::traits::HostTrait;
-        // Linux has no selectable endpoint identities. Query CPAL's input
-        // inventory instead; an enumeration error does not prove absence.
-        return cpal::default_host()
-            .input_devices()
-            .is_ok_and(|mut devices| devices.next().is_none());
-    }
     #[allow(unreachable_code)]
     false
+}
+
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+pub fn linux_microphone_probe_answer() -> &'static str {
+    linux::probe_answer()
 }
 
 /// Rewrite an error raised while resolving or opening the microphone into its
@@ -401,36 +399,9 @@ mod tests {
         assert_eq!(MicrophoneSource::default(), MicrophoneSource::SystemDefault);
     }
 
-    #[cfg(all(target_os = "linux", feature = "mic"))]
+    #[cfg(target_os = "linux")]
     #[test]
-    fn no_input_is_absent_but_a_silent_input_is_present() {
-        use cpal::traits::HostTrait;
-        const CASE: &str = "CUT_MICROPHONE_INVENTORY_CASE";
-        if let Ok(case) = std::env::var(CASE) {
-            let count = cpal::default_host().input_devices().unwrap().count();
-            assert_eq!(
-                count,
-                usize::from(case == "silent"),
-                "controlled input inventory"
-            );
-            assert_eq!(super::no_microphone_device(), case == "empty");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        for (case, config) in [
-            ("empty", ""),
-            ("silent", "pcm.silent_input { type null hint { show on description \"Silent input\" ioid \"Input\" } }"),
-        ] {
-            let path = dir.path().join(case);
-            std::fs::write(&path, config).unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "mic_endpoint::tests::no_input_is_absent_but_a_silent_input_is_present", "--nocapture"])
-                .env("ALSA_CONFIG_PATH", path)
-                .env(CASE, case)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{case}: {} {}",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        }
+    fn linux_parent_never_enumerates_cpal_input_devices() {
+        assert!(!super::no_microphone_device());
     }
 }

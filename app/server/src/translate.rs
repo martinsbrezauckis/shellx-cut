@@ -229,7 +229,7 @@ pub fn select_backend(
                 Err(CutError::new(
                     error_codes::SIDECAR,
                     "no translation backend available",
-                    "neither a subscription CLI agent (claude/codex/grok) nor the local MT sidecar is set up",
+                    "No translation agent or local translation tools are set up. Choose Install captions to add local translation tools.",
                 )
                 .with_suggested_action(
                     "install + log in to claude (best quality), or choose Install captions to set up the local model (Opus-MT)",
@@ -258,7 +258,7 @@ fn no_local_error() -> CutError {
     CutError::new(
         error_codes::SIDECAR,
         "the local MT sidecar is not available for backend:\"local\"",
-        "translate_runner.py or its python (perception venv) was not found",
+        "Local translation tools are not installed. Choose Install captions to set them up.",
     )
     .with_suggested_action(format!(
         "{} Or use backend:\"cli\" / \"auto\".",
@@ -377,13 +377,7 @@ async fn run_translation_once(
             ))
         }
         Backend::Local => {
-            let rt = runtime.ok_or_else(|| {
-                CutError::new(
-                    error_codes::SIDECAR,
-                    "the local MT sidecar is not available",
-                    "translate_runner.py / its python were not found",
-                )
-            })?;
+            let rt = runtime.ok_or_else(no_local_error)?;
             let src = source_lang
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -432,8 +426,9 @@ async fn run_translation_once(
                         return Err(CutError::new(
                             error_codes::IO,
                             format!("the local translate runner errored: {error}"),
-                            "local MT failed",
-                        ))
+                            "Local translation tools could not start. Choose Install captions to repair them.",
+                        )
+                        .with_suggested_action(cut_perception::captions_setup_action()))
                     }
                 },
             };
@@ -447,7 +442,7 @@ async fn run_translation_once(
                 return Err(CutError::new(
                     error_codes::SIDECAR,
                     format!("local translation failed: {}", stderr.trim()),
-                    "the local MT model could not be loaded or run",
+                    "Local translation could not load or run its model; the translation tools or model may be missing or damaged.",
                 )
                 .with_suggested_action(if rt.native_context {
                     "repair the prepared local model group or its admitted runtime; native runs do not download or fall back to a provider"
@@ -1053,6 +1048,27 @@ pub fn distribute_tokens(start_ms: u64, end_ms: u64, translated: &str) -> Vec<(u
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_translation_tools_name_the_setup_action() {
+        for backend in ["local", "auto"] {
+            let error = select_backend(Some(backend), false, false).unwrap_err();
+            assert_eq!(error.code, error_codes::SIDECAR);
+            assert!(error.cause.contains("translation tools"), "{error:?}");
+            assert!(error.cause.contains("Install captions"), "{error:?}");
+            assert!(
+                error
+                    .suggested_action
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("Install captions"),
+                "{error:?}"
+            );
+            for jargon in ["venv", "python", "translate_runner", "MT sidecar"] {
+                assert!(!error.cause.contains(jargon), "{error:?}");
+            }
+        }
+    }
+
     use super::*;
     #[cfg(unix)]
     use std::io::Write;

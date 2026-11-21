@@ -128,17 +128,17 @@ fn safe_extension(path: &Path) -> String {
 fn source_changed(path: &Path) -> CutError {
     CutError::new(
         error_codes::CONFLICT,
-        "referenced media changed while portable package was running",
+        "Used media changed while making the project copy",
         path.display().to_string(),
     )
-    .with_suggested_action("run project.package_plan again; no final package was published")
+    .with_suggested_action("Preview the project copy again with project.package_plan; no copy was saved")
 }
 
 fn cancelled() -> CutError {
     CutError::new(
         "job_cancelled",
-        "portable package was cancelled",
-        "the final destination was not published",
+        "Making a project copy was cancelled",
+        "The project copy was not saved",
     )
 }
 

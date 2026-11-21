@@ -436,7 +436,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
             const res = r.result as { job_id?: string; publish?: { label?: string } }
             const jobId = res?.job_id
             // Publish entries echo the platform label (export.publish result.publish).
-            const what = res?.publish?.label ? `publishing for ${res.publish.label}` : 'rendering video'
+            const what = res?.publish?.label ? `exporting a local file for ${res.publish.label}` : 'rendering video'
             flash(jobId ? `${what} · ${jobId} — Download from the Review tab when done` : `${what} — see Review tab`)
           } else {
             const path = (r.result as { path?: string })?.path
@@ -500,7 +500,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
       } else {
         // The engine's message is the most useful thing we can show ("timeline
         // is empty", …); fall back to the code, then a generic line.
-        setSbError(r.error?.message ?? r.error?.code ?? 'storyboard failed')
+        setSbError(r.error?.message ?? r.error?.code ?? 'timeline contact sheet failed')
       }
     } catch {
       setSbError('server unreachable')
@@ -792,11 +792,11 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
           data-cut-storyboard-btn
           data-cut-manual-id="cut.header.storyboard"
           disabled={!project || sbBusy}
-          aria-label="Storyboard"
+          aria-label="Timeline contact sheet"
           aria-busy={sbBusy}
           title="Create a contact sheet of the whole edit"
           onClick={onStoryboard}
-        >{sbBusy ? <span className="tb-spinner" aria-hidden="true" /> : <Icon name="gridDense" size={18} label="Storyboard" />}</button>
+        >{sbBusy ? <span className="tb-spinner" aria-hidden="true" /> : <Icon name="gridDense" size={18} label="Timeline contact sheet" />}</button>
 
         <span className="tb-divider" aria-hidden="true" />
 
@@ -852,7 +852,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
           data-cut-manual-id="cut.top.render"
           disabled={!project || renderRunning}
           aria-expanded={renderOptsOpen}
-          title="Render options — format, quality, footage profile"
+          title="Render options — format, quality, content type for quality checks"
           onClick={(e) => {
             e.currentTarget.blur()
             setMenuOpen(false)
@@ -901,7 +901,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 className="tb-sel"
                 data-cut-render-format
                 value={fileFormat}
-                title="Output file format (codec + container): H.264 universal mp4, HEVC smaller, WebM/VP9 web, ProRes pro .mov, AV1 best quality (software-slow on CPU — turn GPU on for speed)."
+                title="Output file format (codec and container): H.264 (.mp4), HEVC (.mp4), VP9 (.webm), ProRes (.mov), AV1 (.mp4)."
                 onChange={(e) => setFileFormat(selectedOption(FORMATS, e.target.value, fileFormat))}
               >
                 {FORMATS.map((f) => (
@@ -920,12 +920,12 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
               />
             </label>
             <label className="tb-render-field">
-              <span>Footage</span>
+              <span>Content type for quality checks</span>
               <select
                 className="tb-sel"
                 data-cut-render-profile
                 value={profile}
-                title="Footage profile for the check battery (auto = server default + auto-detect proposal)"
+                title="Content type for quality checks (Auto-detect uses the default checks and proposes a content type)"
                 onChange={(e) => setProfile(selectedOption(PROFILES, e.target.value, profile))}
               >
                 {PROFILES.map((p) => (
@@ -1024,7 +1024,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                   className="tb-direct-btn"
                   data-cut-director-open
                   disabled={!project}
-                  title="Direct the reframe: review each scene's subjects, pick who the shot follows, render, then QC — the foundation-model director loop"
+                  title="Direct the reframe: review each scene's subjects, pick who the shot follows, render, then run quality checks"
                   onClick={() => { setRenderOptsOpen(false); setDirectorOpen(true) }}
                 >
                   🎬 Direct… <span className="tb-direct-tag">choose the subject per scene</span>
@@ -1085,12 +1085,12 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 engine default. */}
             <div className="tb-menu-dest" data-cut-export-profile-section>
               <label className="tb-render-field">
-                <span>Footage</span>
+                <span>Content type for quality checks</span>
                 <select
                   className="tb-sel"
                   data-cut-export-profile
                   value={profile}
-                  title="Footage profile for the publish check battery (auto = server default + auto-detect proposal). Shared with the Render menu — screen demo waives caption/loudness checks that don't apply to silent footage."
+                  title="Content type for quality checks. Shared with the Render menu. Screen demo skips caption and loudness checks that do not apply to silent footage."
                   onChange={(e) => setProfile(selectedOption(PROFILES, e.target.value, profile))}
                 >
                   {PROFILES.map((p) => (

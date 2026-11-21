@@ -5,7 +5,7 @@
     {
       "name": "edit.add_shape",
       "domain": "edit",
-      "description": "Place a vector SHAPE overlay: rect | ellipse | line | arrow — plus an optional centered label on a box shape (a styled callout box). Rendered by the same in-house resvg keyframe engine as titles (so it gets overlay placement + fade animation + content-addressing) and composited on a top-most title overlay track over [range_ms[0], range_ms[1]). Lowers to honest import + insert ops (the generated .mov lives in the project's titles/ dir). GEOMETRY (all normalized [0,1] against the project geometry): rect/ellipse use the BOX x,y,w,h; line/arrow use x,y as the START point and x2,y2 as the END point. PAINT: fill (#RRGGBB, omit for outline-only on box shapes) + opacity; stroke (#RRGGBB border / line color) + stroke_px; radius_px (rect corners); head_px (arrowhead length). A box shape with neither fill nor stroke defaults to a white outline so it's never invisible. text (+ color, font_px) draws a centered label inside a rect/ellipse. animation overrides the default fade (fade|slide_up|slide_down|slide_left|slide_right|pop|none).",
+      "description": "Place a vector SHAPE overlay: rect | ellipse | line | arrow — plus an optional centered label on a box shape (a styled callout box). Rendered by the same in-house resvg keyframe engine as titles (so it gets overlay placement + fade animation + content-addressing) and composited on a top-most title overlay track over [range_ms[0], range_ms[1]). Registers the generated media and commits placement as one edit.add_shape op (the generated .mov lives in the project's titles/ dir). GEOMETRY (all normalized [0,1] against the project geometry): rect/ellipse use the BOX x,y,w,h; line/arrow use x,y as the START point and x2,y2 as the END point. PAINT: fill (#RRGGBB, omit for outline-only on box shapes) + opacity; stroke (#RRGGBB border / line color) + stroke_px; radius_px (rect corners); head_px (arrowhead length). A box shape with neither fill nor stroke defaults to a white outline so it's never invisible. text (+ color, font_px) draws a centered label inside a rect/ellipse. animation overrides the default fade (fade|slide_up|slide_down|slide_left|slide_right|pop|none).",
       "args": {
         "type": "object",
         "required": [
@@ -119,7 +119,7 @@
               "pop",
               "none"
             ],
-            "description": "Entry/exit animation override (default is a tasteful fade)"
+            "description": "Entry/exit animation override: Slide up (`slide_up`), Slide down (`slide_down`), Slide left (`slide_left`), Slide right (`slide_right`), Fade (`fade`), Pop (`pop`), or None (`none`). Default is fade."
           },
           "group_id": {
             "type": "string",

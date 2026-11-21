@@ -1,5 +1,8 @@
 ShellX Cut agent handoff
 
+When speaking to a person, use the person-facing names in the skill's
+terminology table. Keep verb names, argument names and stored values exact.
+
 Use these files first:
 1. skill/shellx-cut/SKILL.md
 2. skill/shellx-cut/reference.md

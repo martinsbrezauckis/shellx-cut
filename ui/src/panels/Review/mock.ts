@@ -174,7 +174,7 @@ const SCRIPT =
   `okay so um today I want to show you how the agent cuts a screen demo ` +
   `without um you know touching the timeline by hand . every change goes ` +
   `through a verb and every verb leaves an operation record with a rationale ` +
-  `attached . uh the silence pass just removed two and a half seconds of dead ` +
+  `attached . uh pause removal just removed two and a half seconds of dead ` +
   `air right here . and like the best part is the render receipt at the end ` +
   `which measures loudness caption presence and uh whether any cut landed ` +
   `inside a word . if a check fails the agent sees the exact timecode and ` +
@@ -316,7 +316,7 @@ const OPS: OpRecord[] = [
   }),
   op({
     ts: iso(-1400), actor: agent, verb: 'transcript.remove_silences',
-    args: { aggressiveness: 'natural' }, rationale: 'silence pass (natural): 2.4s sentence gap',
+    args: { aggressiveness: 'natural' }, rationale: 'Remove pauses (Standard): 2.4s sentence gap',
     effects: [{ track: 'v1', removed_ms: [wend(11) + 200, wend(11) + 2300] }],
   }),
   op({ ts: iso(-900), actor: human, verb: 'edit.trim', args: { clip: 'c1', src_out_ms: 57200 }, effects: [{ track: 'v1', at_ms: 57200 }] }),
@@ -978,7 +978,7 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         return { ok: false, error: { code: 'missing_arg', message: 'aggressiveness is required (the required-argument contract)', cause: 'no default exists by design' } }
       }
       const o = op({
-        actor: human, verb: name, args, rationale: `silence pass (${String(args.aggressiveness)})`,
+        actor: human, verb: name, args, rationale: `Remove pauses (${args.aggressiveness === 'calm' ? 'Light' : args.aggressiveness === 'natural' ? 'Standard' : args.aggressiveness === 'jumpy' ? 'Strong' : String(args.aggressiveness)})`,
         effects: [{ track: 'v1', removed_ms: [wend(30) + 200, wend(30) + 1900] }],
       })
       applyOp(o)

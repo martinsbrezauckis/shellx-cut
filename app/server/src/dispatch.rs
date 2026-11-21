@@ -26,8 +26,8 @@
 use crate::events::Event;
 use crate::generate_handlers;
 use crate::output_paths::{
-    fence_output_path, fence_project_output_path, fenced_existing_export_read,
-    fenced_existing_file_under_dir, make_fence, publish_output_atomic,
+    fence_output_path, fence_project_output_path, fenced_existing_file_under_dir,
+    fenced_existing_project_export_read, make_fence, publish_output_atomic,
     resolve_existing_project_file, temp_output_path_for_render, write_output_atomic,
     OutputPathPolicy,
 };

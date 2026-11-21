@@ -190,6 +190,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   const [systemAudio, setSystemAudio] = useState(draftView?.systemAudio ?? false)
   const [audioProbeRunning, setAudioProbeRunning] = useState(false)
   const [micTestRunning, setMicTestRunning] = useState(false)
+  const [microphoneRefreshSequence, setMicrophoneRefreshSequence] = useState(0)
   const inputUnavailable = recordingInputUnavailable(cards)
   const [keys, setKeys] = useState(draftView?.keys ?? false)
   // RAW CAPTURE mode. false = AUTO-EDIT (the flagship: record → autoedit
@@ -824,6 +825,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     return () => clearInterval(id)
   }, [busy, probe])
   const refreshCaptureSetup = useCallback(async () => {
+    setMicrophoneRefreshSequence((sequence) => sequence + 1)
     const refreshSequence = ++captureSetupRefreshSequenceRef.current
     activeCaptureSetupRefreshRef.current = refreshSequence
     setStartAllowed(null)
@@ -1080,7 +1082,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               </div>
               <span className="rec__settings-state" data-cut-rec-setup-state={setupState}>
                 {setupState === 'attention' ? 'Check setup'
-                  : setupState === 'pending' ? 'Source check remains'
+                  : setupState === 'pending' ? (windowCaptureSupported === true ? 'Choose a screen or window to record' : 'Choose a screen to record')
                     : setupState === 'ready' ? 'Ready to configure'
                       : 'Checking setup'}
               </span>
@@ -1098,6 +1100,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 onWindowChange={setWindowTargetId}
               />
             <MicInputControl
+              refreshSequence={microphoneRefreshSequence}
               audio={audio}
               disabled={busy}
               idle={phase === 'idle'}
@@ -1229,7 +1232,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 {' '}{recordHotkeyCapability?.scope === 'global'
                   ? SHORTCUT_LABEL + ' works globally — even when another app is focused.'
                   : SHORTCUT_LABEL + ' works while ShellX Cut is focused.'}
-                {' '}The first capture on this machine pops a one-time screen-share consent dialog.
+                {' '}Your system may ask you to allow screen recording when you start.
               </p>
             )}
           </div>

@@ -103,7 +103,7 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
       setCaptureId(null)
       setActiveEnabled(false)
       setState('idle')
-      if (enabled) setMessage('The recorder did not acknowledge Pause & resume admission; live controls stay unavailable.')
+      if (enabled) setMessage('Could not confirm Pause & resume for this recording; live controls stay unavailable.')
       return
     }
     controlLifetimeRef.current.replaceCapture(id)

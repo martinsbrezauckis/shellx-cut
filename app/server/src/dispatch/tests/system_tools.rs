@@ -455,11 +455,13 @@ async fn missing_tool_refusal_refreshes_cached_doctor() {
         cut_media::toolpath::refresh_media_tools();
     };
     let state = AppState::new();
-    for (missing, background) in [
-        ("ffmpeg", false),
-        ("ffprobe", false),
-        ("ffmpeg", true),
-        ("ffprobe", true),
+    for (missing, background, wrapped) in [
+        ("ffmpeg", false, false),
+        ("ffprobe", false, false),
+        ("ffmpeg", true, false),
+        ("ffprobe", true, false),
+        ("ffmpeg", true, true),
+        ("ffprobe", true, true),
     ] {
         install();
         let before = dispatch(
@@ -488,8 +490,15 @@ async fn missing_tool_refusal_refreshes_cached_doctor() {
             let path = bin.join(missing);
             jobs.clone().spawn(&job.job_id.clone(), async move {
                 let error = tokio::task::spawn_blocking(move || {
+                    let mut command = if wrapped {
+                        let mut command = std::process::Command::new("/usr/bin/nice");
+                        command.args(["-n", "10"]).arg(path);
+                        command
+                    } else {
+                        std::process::Command::new(path)
+                    };
                     cut_media::ffmpeg::run_bounded_command(
-                        std::process::Command::new(path).arg("-version"),
+                        command.arg("-version"),
                         "probe media tool",
                     )
                     .expect_err("the removed tool cannot spawn")
@@ -504,6 +513,12 @@ async fn missing_tool_refusal_refreshes_cached_doctor() {
                     } else {
                         jobs.fail(&job.job_id, error);
                     }
+                    let error = jobs.get(&job.job_id).unwrap().error.unwrap();
+                    assert_eq!(error.message, format!("{missing} is not installed"));
+                    let tag = error.requirement.unwrap();
+                    assert_eq!(tag.id, missing);
+                    assert!(tag.name.is_some());
+                    assert_eq!(tag.get.unwrap()["verb"], "system.fetch_tool");
                 })
                 .join()
                 .unwrap();
@@ -561,6 +576,6 @@ async fn missing_tool_refusal_refreshes_cached_doctor() {
             .expect("live clients must receive the changed doctor");
             assert!(!event.essential_ok);
         }
-        eprintln!("PASS {missing} background={background}: present -> ready -> removed -> tool_missing -> cached missing + doctor_updated");
+        eprintln!("PASS {missing} background={background} wrapped={wrapped}: present -> ready -> removed -> tool_missing -> cached missing + doctor_updated");
     }
 }

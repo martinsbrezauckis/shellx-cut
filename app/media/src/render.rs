@@ -1619,33 +1619,14 @@ struct SegStream {
     xfade_kind: Option<String>,
 }
 
-/// Fold a track's video segment streams into ONE output label, dissolving at
-/// every seam whose right segment carries `xfade_in_ms > 0` and
-/// hard-cutting (pairwise `concat`) elsewhere. Returns the final label and the
-/// REALIZED total duration (the sum of segment durations minus every applied
-/// overlap — matches the EDL's crossfade-shortened duration).
+/// Join video streams into `out_label`, dissolving marked seams and hard-
+/// cutting the others. Return realized duration: segments minus overlaps.
 ///
-/// WHY PAIRWISE: `xfade` is a two-input filter (transition over an `offset`
-/// into the accumulator), so the chain is built left→right, threading the
-/// running duration as the next xfade offset. `concat` of the whole list can't
-/// express a mid-list dissolve, so we fold pairwise throughout — identical
-/// output to a single `concat` when no seam crossfades (verified by tests).
-/// `out_label` is the label the final stream is bound to.
-///
-/// TIMEBASE: `xfade` requires both input legs to share a timebase and fps, or
-/// it refuses to configure ("First input link main
-/// timebase (1/1000000) do not match the corresponding second input link xfade
-/// timebase (1/60)"). The accumulator side is the trap: a `concat` (and even a
-/// prior `xfade`) emits a MICROSECOND timebase (1/1000000), while a fresh
-/// segment chain ends `fps={fps}` carrying the FRAME timebase (1/fps). At 30fps
-/// both legs happened to negotiate to 1/1000000 and the bug hid; at 60fps the
-/// frame leg stayed 1/60 and the mismatch surfaced — and because the failed
-/// xfade poisons graph configuration, the WHOLE compose render died, not just
-/// the seam. Fix per the documented ffmpeg recipe: normalise BOTH legs through
-/// `settb=AVTB,fps={fps}` immediately before every `xfade` (a tiny no-op pad
-/// chain `[leg]settb=AVTB,fps=..[legN]`), so the timebase is identical on both
-/// sides regardless of project fps. Applied only on the xfade path — the hard-
-/// cut `concat` branch is byte-identical to the older graph (replay invariant).
+/// Each xfade consumes two inputs and uses the running duration for its
+/// offset, so fold from left to right. A concat/prior xfade can use a
+/// microsecond timebase while a fresh segment uses frame time; normalize
+/// both legs to AVTB and project fps before xfade. After a hard join, rebuild
+/// timestamps from the frame index so one-frame clips cannot share a PTS.
 fn fold_video(
     f: &mut String,
     segs: &[SegStream],
@@ -1659,21 +1640,15 @@ fn fold_video(
     for (i, s) in segs.iter().enumerate().skip(1) {
         let next = format!("{out_label}_x{i}");
         if s.xfade_in_ms > 0 {
-            // Normalise BOTH legs to a common timebase + fps before xfade
-            // (the crossfade-timebase contract). The accumulator (concat/xfade output) carries the
-            // microsecond timebase; the segment chain carries the frame
-            // timebase — settb=AVTB on each reconciles them so xfade can
-            // configure its output pad at any project fps (30/60/arbitrary).
+            // Normalize both legs: concat/xfade use microseconds, fresh segments
+            // frame time. xfade needs matching timebases and fps.
             let acc_n = format!("{out_label}_xa{i}");
             let seg_n = format!("{out_label}_xb{i}");
             writeln!(f, "[{acc}]settb=AVTB,fps={fps}[{acc_n}];").unwrap();
             writeln!(f, "[{l}]settb=AVTB,fps={fps}[{seg_n}];", l = s.label).unwrap();
-            // Dissolve: offset = where in the accumulator the transition starts
-            // (its end minus the overlap). Total length = acc + seg - overlap.
+            // Start the dissolve at the accumulator's end minus its overlap.
             let offset = acc_dur.saturating_sub(s.xfade_in_ms);
-            // Transition style (edit.crossfade `transition`): the stored ffmpeg
-            // xfade name, or "fade" (classic dissolve) when unset — byte-identical
-            // to the pre-transitions graph for every existing crossfade.
+            // Use the stored transition, defaulting to a fade.
             let kind = s.xfade_kind.as_deref().unwrap_or("fade");
             if !cut_core::is_valid_transition(kind) {
                 return Err(CutError::new(
@@ -1691,8 +1666,13 @@ fn fold_video(
             .unwrap();
             acc_dur = acc_dur + s.dur_ms - s.xfade_in_ms;
         } else {
-            // Hard cut: pairwise concat keeps the chain uniform with xfade.
-            writeln!(f, "[{acc}][{l}]concat=n=2:v=1:a=0[{next}];", l = s.label).unwrap();
+            // Keep the joined pictures in order and give each frame its own PTS.
+            writeln!(
+                f,
+                "[{acc}][{l}]concat=n=2:v=1:a=0,setpts=N/({fps}*TB)[{next}];",
+                l = s.label
+            )
+            .unwrap();
             acc_dur += s.dur_ms;
         }
         acc = next;
@@ -2234,10 +2214,8 @@ fn build_graph(
         frame_budget::lock_base(&mut f, &mut vsegs, &spans, s.fps);
     }
     // True when ANY base-track seam crossfades — only THEN do we switch to the
-    // pairwise seam fold. With no crossfade we keep the ORIGINAL single N-way
-    // `concat` so older op logs render byte-identical (the pairwise fold is a
-    // different filter graph and is NOT guaranteed to match a single concat
-    // bit-for-bit; the replay-determinism invariant forbids changing it here).
+    // pairwise seam fold. With no crossfade, keep the single N-way concat:
+    // its picture order stays stable, and joined timestamps are rebuilt below.
     let base_has_xfade = vsegs.iter().any(|s| s.xfade_in_ms > 0);
     let mut vcat = if vsegs.is_empty() {
         // No video content at all → black for the whole composition (audio-only edit).
@@ -2257,11 +2235,17 @@ fn build_graph(
         fold_video(&mut f, &vsegs, "vcat", s.fps)?;
         "vcat".to_string()
     } else {
-        // Unchanged hard-cut path: one N-way concat (byte-identical replay).
+        // Frame budgets set the count; rebuild PTS from frame index after
+        // joining so a short clip cannot collide with the next clip's first PTS.
         for s in &vsegs {
             write!(f, "[{l}]", l = s.label).unwrap();
         }
-        writeln!(f, "concat=n={}:v=1:a=0[vcat];", vsegs.len()).unwrap();
+        writeln!(
+            f,
+            "concat=n={}:v=1:a=0,setpts=N/({fps}*TB)[vcat];",
+            vsegs.len()
+        )
+        .unwrap();
         "vcat".to_string()
     };
 
@@ -2610,7 +2594,13 @@ fn build_graph(
                 write!(f, "[{l}]").unwrap();
             }
             let cat = format!("o{ti}");
-            writeln!(f, "concat=n={}:v=1:a=0[{cat}];", olabels.len()).unwrap();
+            // Overlay clips need the same distinct PTS at each joined frame.
+            writeln!(
+                f,
+                "concat=n={}:v=1:a=0,setpts=N/({fps}*TB)[{cat}];",
+                olabels.len()
+            )
+            .unwrap();
             cat
         };
         let composed = format!("vo{ti}");
@@ -3324,7 +3314,13 @@ fn build_graph_gpu(
         for l in &vsegs {
             write!(f, "[{l}]").unwrap();
         }
-        writeln!(f, "concat=n={}:v=1:a=0[gvout];", vsegs.len()).unwrap();
+        // Use the frame index after joining, as in the software base track.
+        writeln!(
+            f,
+            "concat=n={}:v=1:a=0,setpts=N/({fps}*TB)[gvout];",
+            vsegs.len()
+        )
+        .unwrap();
         "gvout".to_string()
     };
 
@@ -3448,7 +3444,13 @@ fn build_graph_gpu(
                 write!(f, "[{l}]").unwrap();
             }
             let cat = format!("og{ti}");
-            writeln!(f, "concat=n={}:v=1:a=0[{cat}];", olabels.len()).unwrap();
+            // Keep GPU overlay frames on the same distinct timestamp grid.
+            writeln!(
+                f,
+                "concat=n={}:v=1:a=0,setpts=N/({fps}*TB)[{cat}];",
+                olabels.len()
+            )
+            .unwrap();
             cat
         };
         // Normalize to yuva420p, then hwupload onto the same CUDA device as the

@@ -39,7 +39,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
   {
     id: 'health-recovery',
     label: 'Health & recovery',
-    description: 'Journal, media, jobs, capture and local-tool recovery evidence.',
+    description: 'Find missing media, recover recordings and retry failed work.',
     keywords: ['health', 'recovery', 'journal', 'offline', 'proxy', 'filmstrip', 'jobs', 'capture', 'repair'],
   },
   {

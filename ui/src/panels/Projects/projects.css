@@ -171,7 +171,7 @@
 }
 .pj-badge--current {
   background: rgba(74, 163, 255, 0.18);
-  color: var(--cut, #4aa3ff);
+  color: var(--cut-soft);
 }
 .pj-badge--missing {
   background: rgba(255, 120, 120, 0.16);

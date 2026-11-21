@@ -475,7 +475,7 @@ def config_read(command: list[str], cwd: str, env: dict | None,
     try:
         send({"id": 1, "method": "initialize", "params": {
             "clientInfo": {"name": "shellx_cut_judge_probe",
-                           "title": "ShellX Cut Judge Probe", "version": "0.6.117"},
+                           "title": "ShellX Cut Judge Probe", "version": "0.6.118"},
             "capabilities": {"experimentalApi": True}}})
         send({"method": "initialized"})
         config = send({"id": 2, "method": "config/read", "params": {

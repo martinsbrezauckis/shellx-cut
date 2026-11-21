@@ -72,7 +72,9 @@ const chosen = (dir: string) => ({ ...projectExports, dir, destination: 'chosen'
 let engine = projectExports
 let refused: string | null = null
 let beforeRead: (() => Promise<void>) | null = null
+let agentBeforeSet: ReturnType<typeof chosen> | null = null
 const applies: string[] = []
+const conditionalCalls: boolean[] = []
 Object.assign(globalThis, {
   fetch: async (url: string, options: RequestInit) => {
     if (url.endsWith('/project.get_output_dir')) {
@@ -81,8 +83,14 @@ Object.assign(globalThis, {
       return Response.json({ ok: true, result })
     }
     assert.equal(url, '/api/verb/project.set_output_dir')
-    const { dir } = JSON.parse(String(options.body))
+    const { dir, only_if_empty } = JSON.parse(String(options.body))
     applies.push(dir)
+    conditionalCalls.push(only_if_empty === true)
+    if (agentBeforeSet) {
+      engine = agentBeforeSet
+      agentBeforeSet = null
+    }
+    if (only_if_empty && engine.dir) return Response.json({ ok: true, result: engine })
     if (refused) return Response.json({ ok: false, error: { code: 'invalid_args', message: refused } })
     engine = chosen(dir)
     return Response.json({ ok: true, result: engine })
@@ -94,7 +102,9 @@ function installation(legacy: string | null, current = projectExports) {
   engine = current
   refused = null
   beforeRead = null
+  agentBeforeSet = null
   applies.length = 0
+  conditionalCalls.length = 0
   notices.length = 0
 }
 
@@ -103,6 +113,7 @@ installation(legacy)
 const firstStarts = await Promise.all([refreshOutputFolder(), refreshOutputFolder()])
 assert.deepEqual(firstStarts, [chosen(legacy), chosen(legacy)], 'concurrent startup reads carry the legacy folder over')
 assert.deepEqual(applies, [legacy], 'carry-over uses the normal setter exactly once')
+assert.deepEqual(conditionalCalls, [true], 'carry-over asks the engine to set only if empty')
 assert.equal(getStoredOutputDir(), legacy, 'the accepted folder stays cached')
 const restarted = await import(new URL('../src/lib/exportDestination.ts?restart', import.meta.url).href)
 assert.equal(restarted.getOutputFolderStatus(), null, 'restart has no in-memory destination state')
@@ -115,6 +126,11 @@ values.set('cut.outputDir', legacy) // even a stale cache cannot resurrect it
 await restarted.refreshOutputFolder()
 assert.deepEqual(applies, [legacy], 'a later clear is never undone')
 assert.equal(getStoredOutputDir(), null)
+
+installation(legacy)
+agentBeforeSet = chosen('/agent/newer')
+assert.deepEqual(await refreshOutputFolder(), chosen('/agent/newer'), 'a choice after the read wins at the server')
+assert.equal(getStoredOutputDir(), '/agent/newer', 'the newer engine choice replaces the legacy cache')
 
 installation(legacy, agentChose)
 await refreshOutputFolder()

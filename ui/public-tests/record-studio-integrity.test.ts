@@ -95,7 +95,7 @@ assert.match(record, /<h1>Recording Studio<\/h1>[\s\S]*'Choose what to capture, 
 assert.doesNotMatch(recordingTopBar, /data-cut-toolbar|data-cut-render-btn|data-cut-export-btn/,
   'recording chrome contains no inactive edit, render, or export toolbar')
 assert.doesNotMatch(record, /<details className="rec__advanced"/,
-  'Capture timing and quality no longer hide in a separate left-rail disclosure')
+  'Start, length & pause and quality no longer hide in a separate left-rail disclosure')
 assert.match(record, /captureTimingControl=\{captureTimingControl\}[\s\S]*videoQualityControl=\{videoQualityControl\}/,
   'timing and quality are wired to the right settings pages')
 assert.match(controls, /<RecordingSettingsTabs pages=\{pages\}/,

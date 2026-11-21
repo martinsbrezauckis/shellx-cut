@@ -20,6 +20,10 @@ export const PROMPT_AGENTS: PromptAgent[] = ['auto', 'claude', 'codex', 'grok']
 export const PROMPT_POLICIES: PromptPolicy[] = ['plan', 'preview', 'insert']
 export const STORYBOARD_MODES: StoryboardMode[] = ['quick_prompt', 'director_brief', 'script', 'existing_media']
 
+export function storyboardModeLabel(mode: StoryboardMode): string {
+  return { quick_prompt: 'Quick prompt', director_brief: 'Director brief', script: 'Script', existing_media: 'Existing media' }[mode]
+}
+
 /** The catalog's automatic visual default is not a human prompt constraint. */
 export function promptTemplateHint(selectedId: string | null, explicitTemplateId: string | null): string | null {
   return selectedId && selectedId === explicitTemplateId ? selectedId : null

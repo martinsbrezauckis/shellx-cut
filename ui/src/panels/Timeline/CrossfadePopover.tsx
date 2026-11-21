@@ -112,7 +112,7 @@ export default function CrossfadePopover({
               ))}
         </select>
       </div>
-      <div className="tl-xfade-pop__note">timeline shortens by the overlap</div>
+      <div className="tl-xfade-pop__note">The transition overlaps the two clips and shortens the timeline.</div>
       <div className="tl-xfade-pop__actions">
         <button className="tl-xfade-pop__btn tl-xfade-pop__btn--primary" data-cut-action="apply-xfade" onClick={() => onApply(val, style)}>
           Apply

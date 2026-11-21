@@ -224,14 +224,33 @@ fn chosen_session_output_dir() -> Option<PathBuf> {
 pub(crate) fn set_session_output_dir(dir: Option<PathBuf>) {
     // Load the saved choice first, so this write replaces it rather than racing it.
     let _ = chosen_session_output_dir();
+    if let Ok(mut g) = SESSION_OUTPUT_DIR.write() {
+        persist_session_output_dir(dir.as_deref());
+        *g = dir;
+    }
+}
+
+#[cfg(not(test))]
+fn persist_session_output_dir(dir: Option<&Path>) {
     if let Some(file) = saved_folder_file() {
-        if let Err(error) = write_saved_folder(&file, dir.as_deref()) {
+        if let Err(error) = write_saved_folder(&file, dir) {
             tracing::warn!(%error, "could not remember the export folder across restarts");
         }
     }
-    if let Ok(mut g) = SESSION_OUTPUT_DIR.write() {
-        *g = dir;
+}
+
+#[cfg(not(test))]
+fn set_session_output_dir_if_empty(dir: PathBuf) -> bool {
+    let _ = chosen_session_output_dir();
+    let Ok(mut current) = SESSION_OUTPUT_DIR.write() else {
+        return false;
+    };
+    if current.is_some() {
+        return false;
     }
+    persist_session_output_dir(Some(&dir));
+    *current = Some(dir);
+    true
 }
 
 #[cfg(test)]
@@ -246,6 +265,22 @@ pub(crate) fn set_session_output_dir(dir: Option<PathBuf>) {
             *slot = dir;
         }
     });
+}
+
+#[cfg(test)]
+fn set_session_output_dir_if_empty(dir: PathBuf) -> bool {
+    test_fixture::make_private(&dir);
+    SESSION_OUTPUT_DIR.with(|store| {
+        let shared = store.borrow().clone();
+        let Ok(mut current) = shared.lock() else {
+            return false;
+        };
+        if current.is_some() {
+            return false;
+        }
+        *current = Some(dir);
+        true
+    })
 }
 
 /// The directories the HTTP export routes may READ from, canonical, most
@@ -1126,6 +1161,28 @@ pub(crate) fn fenced_existing_file_under_dir(
     Ok(target)
 }
 
+/// Read a review-package render only from this project's plain exports tree.
+/// A delivery folder may receive renders, but a saved receipt cannot grant the
+/// review package permission to copy a file from that folder.
+pub(crate) fn fenced_existing_project_export_read(
+    project_dir: &Path,
+    path: &Path,
+    label: &str,
+    suggested_action: &str,
+) -> Result<PathBuf, CutError> {
+    let project = project_dir.canonicalize()?;
+    let exports = project.join("exports");
+    if !record_recovery::is_plain_dir(&exports).unwrap_or(false) {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("{label} needs this project's exports folder"),
+            format!("{} is missing or is not a plain folder", exports.display()),
+        )
+        .with_suggested_action(suggested_action));
+    }
+    fenced_existing_file_under_dir(&exports, path, label, suggested_action)
+}
+
 /// Resolve an EXISTING export the engine itself produced, fenced to the same
 /// authorized read roots the HTTP export routes use
 /// (`authorized_export_read_roots`: the `<project>/exports` subtree,
@@ -1221,7 +1278,7 @@ pub(crate) async fn project_get_output_dir() -> Result<VerbResult, CutError> {
     Ok(VerbResult::ok(output_folder_status()))
 }
 
-/// project.set_output_dir{dir?} — choose where exports/renders land when a verb
+/// project.set_output_dir{dir?, only_if_empty?} — choose where exports/renders land when a verb
 /// isn't given an explicit `path`. Empty/absent `dir` clears it (back to
 /// <project>/exports). The folder must already exist (the UI's native folder
 /// picker only returns existing dirs); it is canonicalized and becomes an
@@ -1235,8 +1292,20 @@ pub(crate) async fn project_set_output_dir(
     #[derive(serde::Deserialize)]
     struct Args {
         dir: Option<String>,
+        #[serde(default)]
+        only_if_empty: bool,
     }
     let a: Args = crate::dispatch::parse_args(args)?;
+    if a.only_if_empty && chosen_session_output_dir().is_some() {
+        return Ok(VerbResult::ok(output_folder_status()));
+    }
+    if a.only_if_empty && a.dir.as_deref().is_none_or(|dir| dir.trim().is_empty()) {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "conditional export folder needs a directory",
+            "only_if_empty requires a nonempty dir",
+        ));
+    }
     let cleared = match a.dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => {
             set_session_output_dir(None);
@@ -1259,7 +1328,13 @@ pub(crate) async fn project_set_output_dir(
             // The render refuses a folder other users can write to; say so now,
             // not at the end of the first export.
             check_export_folder(&path)?;
-            set_session_output_dir(Some(path));
+            if a.only_if_empty {
+                if !set_session_output_dir_if_empty(path) {
+                    return Ok(VerbResult::ok(output_folder_status()));
+                }
+            } else {
+                set_session_output_dir(Some(path));
+            }
             false
         }
     };
@@ -1278,6 +1353,47 @@ pub(crate) async fn project_set_output_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn conditional_folder_carry_over_preserves_a_newer_choice_and_sets_when_empty() {
+        let _fixture = test_fixture::SessionOutputDirFixture::new();
+        let state = crate::state::AppState::new();
+        let parent = tempfile::tempdir().unwrap();
+        let legacy = parent.path().join("legacy");
+        let newer = parent.path().join("newer");
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::create_dir(&newer).unwrap();
+        // The setter stores the canonical folder; on macOS the temporary
+        // folder is reached through a link, so compare canonical paths.
+        let legacy = std::fs::canonicalize(&legacy).unwrap();
+        let newer = std::fs::canonicalize(&newer).unwrap();
+        test_fixture::make_private(&legacy);
+        test_fixture::make_private(&newer);
+
+        set_session_output_dir(Some(newer.clone()));
+        let kept = project_set_output_dir(
+            &state,
+            json!({ "dir": legacy.display().to_string(), "only_if_empty": true }),
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+        assert_eq!(kept["dir"], newer.display().to_string());
+        assert_eq!(chosen_session_output_dir(), Some(newer));
+
+        set_session_output_dir(None);
+        let carried = project_set_output_dir(
+            &state,
+            json!({ "dir": legacy.display().to_string(), "only_if_empty": true }),
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+        assert_eq!(carried["dir"], legacy.display().to_string());
+        assert_eq!(chosen_session_output_dir(), Some(legacy));
+    }
 
     #[test]
     fn the_remembered_export_folder_lives_in_the_state_home_not_the_tools_folder() {
@@ -2020,6 +2136,11 @@ mod tests {
             authorized_export_read_roots(&proj).is_empty(),
             "a linked project exports directory must not be retained as a read root"
         );
+        assert!(
+            fenced_existing_project_export_read(&proj, &private_export_like_file, "render", "x")
+                .is_err(),
+            "a linked exports directory cannot become a review-package source"
+        );
     }
 
     #[cfg(unix)]
@@ -2101,15 +2222,10 @@ mod tests {
         set_session_output_dir(None);
     }
 
-    /// comment.export with a default export folder chosen: `render.final`
-    /// delivers the review render THERE, so the receipt's
-    /// output_path sits outside `<project>/exports` and the old
-    /// `fenced_existing_file_under_dir(&dir.join("exports"), …)` refused a file the
-    /// engine had just written itself (`render=done; export=false`). The read fence
-    /// must be the same authorized set the serve routes use — and must still refuse
-    /// a path in neither root, and still refuse the project's own private files.
+    /// General export serving and verification can read a render from a chosen
+    /// output folder. A review package has a narrower source fence below.
     #[test]
-    fn review_render_reads_from_every_authorized_export_root() {
+    fn export_reads_from_every_authorized_export_root() {
         let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
@@ -2156,6 +2272,26 @@ mod tests {
             .is_err(),
             "a missing file is refused, never substituted"
         );
+        set_session_output_dir(None);
+    }
+
+    #[test]
+    fn review_package_reads_only_this_projects_exports() {
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        std::fs::create_dir_all(proj.join("exports/nested")).unwrap();
+        let inside = proj.join("exports/nested/render.mp4");
+        std::fs::write(&inside, b"project render").unwrap();
+        let chosen = tempfile::tempdir().unwrap();
+        let delivered = chosen.path().join("render.mp4");
+        std::fs::write(&delivered, b"delivery render").unwrap();
+        let private = proj.join("project.json");
+        std::fs::write(&private, b"private").unwrap();
+        set_session_output_dir(Some(chosen.path().to_path_buf()));
+        assert!(fenced_existing_project_export_read(&proj, &inside, "render", "x").is_ok());
+        assert!(fenced_existing_project_export_read(&proj, &delivered, "render", "x").is_err());
+        assert!(fenced_existing_project_export_read(&proj, &private, "render", "x").is_err());
         set_session_output_dir(None);
     }
 

@@ -28,20 +28,21 @@
 
 /* ---- tabs (.rr-tabs pattern) ---------------------------------------------- */
 .rr__tabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1.9fr 1fr 0.9fr 1.2fr;
   border-bottom: 1px solid var(--hairline);
   background: var(--surface);
 }
 
 .rr__tab {
-  flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
   color: var(--ink-3);
-  font: 600 var(--fs-ui-xs) var(--sans);
-  letter-spacing: 0.12em;
-  padding: 7px 0 6px;
+  font: 600 var(--fs-ui-sm) var(--sans);
+  letter-spacing: 0;
+  padding: 11px 2px;
   cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease;
 }
@@ -694,7 +695,7 @@
 .qc__bar { display: flex; align-items: center; gap: 10px; }
 .qc__run {
   font: var(--fs-ui-xs); font-family: var(--mono, monospace);
-  background: var(--cut-soft); color: var(--cut); border: 1px solid var(--border);
+  background: var(--cut-soft); color: var(--accent-ink); border: 1px solid var(--border);
   border-radius: var(--radius-chip, 4px); padding: 3px 10px; cursor: pointer;
 }
 .qc__run:disabled { opacity: .5; cursor: default; }
@@ -710,16 +711,16 @@
 .qc__verdict { font: var(--fs-mono-xs); font-weight: 700; letter-spacing: .04em; }
 .qc__card--pass .qc__verdict { color: var(--receipt-pass, var(--green)); }
 .qc__card--fail .qc__verdict { color: var(--receipt-fail, var(--err)); }
-.qc__card-tag { margin-left: auto; font: var(--fs-mono-xs); color: var(--ink-4); }
+.qc__card-tag { margin-left: auto; font: var(--fs-mono-xs); color: var(--ink-3); }
 .qc__metrics { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .qc__metrics li { font: var(--fs-mono-xs); font-family: var(--mono, monospace); color: var(--ink-2); }
 .qc__fix { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .qc__fixbtn {
   font: var(--fs-mono-xs); font-family: var(--mono, monospace);
-  background: transparent; color: var(--cut); border: 1px solid var(--cut-dim, var(--border));
+  background: transparent; color: var(--cut-soft); border: 1px solid var(--cut-dim, var(--border));
   border-radius: var(--radius-chip, 4px); padding: 2px 8px; cursor: pointer;
 }
-.qc__fixbtn:hover { background: var(--cut-soft); }
+.qc__fixbtn:hover { background: var(--cut-soft); color: var(--accent-ink); }
 .qc__fixbtn:disabled { opacity: .45; cursor: default; }
 .qc__fixbtn--muted { color: var(--ink-3); border-color: var(--border); }
 .qc__fixbtn .cut-icon { vertical-align: -2px; margin-right: 3px; }
@@ -727,6 +728,7 @@
 .qc__shift input { width: 56px; font: var(--fs-mono-xs); font-family: var(--mono, monospace); background: var(--hairline-2); color: var(--ink); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; }
 .qc__fix select { font: var(--fs-mono-xs); font-family: var(--mono, monospace); background: var(--hairline-2); color: var(--ink); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; }
 .qc__dim, .qc__err { font: var(--fs-mono-xs); color: var(--ink-4); margin-top: 4px; }
+.qc__dim { color: var(--ink-3); }
 .qc__brand-status { font: var(--fs-mono-xs); color: var(--ink-3); }
 .qc__brand-editor { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .qc__brand-editor summary { cursor: pointer; font: var(--fs-ui-xs); color: var(--ink-2); }
@@ -794,7 +796,7 @@
 }
 
 .scopes__kind--on {
-  color: var(--cut);
+  color: var(--cut-soft);
   border-color: rgba(59, 130, 246, 0.4);
   background: var(--cut-dim);
 }

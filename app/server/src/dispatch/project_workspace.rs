@@ -344,20 +344,14 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     let store = ProjectStore::open(Path::new(&a.path))?;
     let ops = store.log.read_all()?;
     super::edit_tools::validate_split_metadata_projection(&ops)?;
-    // Touch (or register, if externally-created) this project in the global index,
-    // refreshing its recency + timeline summary for the recent-projects list.
     let clips: u64 = store
         .project
         .tracks
         .iter()
         .map(|t| t.clips.len() as u64)
         .sum();
-    crate::projects_index::note_opened(
-        &store.project.name,
-        &store.dir.to_string_lossy(),
-        Some(store.project.duration_ms()),
-        Some(clips),
-    )?;
+    let recent_name = store.project.name.clone();
+    let recent_duration = store.project.duration_ms();
     let project_revision = store.log.current_revision()?;
     // Item 141: a format larger than Cut makes was reduced while opening.
     let format_warnings = format_reduced_warnings(store.open_health());
@@ -373,6 +367,13 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     let recovery_job = crate::screen_record::recovery::background::start(state, &project_dir)?;
     payload["recovery_scan"] =
         crate::screen_record::recovery::background::started_report(recovery_job);
+    // Only an accepted open may register or refresh the recent-project entry.
+    crate::projects_index::note_opened(
+        &recent_name,
+        &project_dir.to_string_lossy(),
+        Some(recent_duration),
+        Some(clips),
+    )?;
     Ok(VerbResult::ok(with_cancelled_jobs(payload, &cancelled)).with_warnings(format_warnings))
 }
 
