@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
+<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,9 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.117 candidate
+## v0.6.117 published
 
-v0.6.116 remains the latest published release.
+v0.6.117 remains the latest published release.
 
 - Fixed: screen recordings on macOS keep moving as they are saved in parts.
 - Fixed: Windows screen recordings keep moving between saved parts.
@@ -57,7 +57,7 @@ This section records the published v0.6.116 release.
 
 ## v0.6.115 published
 
-v0.6.115 remains the latest published release.
+This section records the published v0.6.115 release.
 
 - Linux Camera: Recording Studio gains a selectable camera source with explicit
   device readiness and capture status.

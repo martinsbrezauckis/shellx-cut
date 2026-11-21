@@ -19,8 +19,8 @@ Example: "FFmpeg is missing. It is free software under the GNU GPL version 3
 (https://www.gnu.org/licenses/gpl-3.0.html). May I download it and accept that
 licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
-> **Engine v0.6.117 candidate.** v0.6.116 is the latest published release.
+<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
+> **Engine v0.6.117 published.** v0.6.117 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **317 verbs across 34 domains** under the public verb contract.

@@ -4,8 +4,8 @@
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
     "version": "0.6.117",
-    "status": "candidate",
-    "published_version": "0.6.116"
+    "status": "published",
+    "published_version": "0.6.117"
   },
   "mutation_controls": {
     "request_id": {

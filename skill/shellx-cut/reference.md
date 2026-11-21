@@ -1,7 +1,7 @@
 # ShellX Cut — verb reference
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
-> **v0.6.117 candidate.** v0.6.116 is the latest published release. Synced to `schema/verbs.json`, which is the
+<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
+> **v0.6.117 published.** v0.6.117 is the latest published release. Synced to `schema/verbs.json`, which is the
 > machine-readable contract for all REST, MCP, CLI, debug, and agent calls.
 > Current contract: **317 verbs across 34 domains**. If this table and the schema
 > disagree, trust the schema and update this reference in the same change.

@@ -10,8 +10,8 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.117; published=0.6.116 -->
-> **STATUS — v0.6.117 candidate; v0.6.116 is the latest published release.**
+<!-- shellx-cut-release-truth: published; version=0.6.117; published=0.6.117 -->
+> **STATUS — v0.6.117 published; v0.6.117 is the latest published release.**
 > The public contract is 317 verbs across 34
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
@@ -61,7 +61,7 @@ PNG, JPEG, WebP, and TIFF, subject to your installed FFmpeg's codec support.
 Imported HLS and concat playlists are rejected because they can reference
 other files. Cut's internally generated render segment lists remain supported.
 
-> **Installing:** v0.6.116 is the current published installer/package from the
+> **Installing:** v0.6.117 is the current published installer/package from the
 > GitHub release. Users already on 0.6.107 can use the
 > in-app update when it is offered. Versions older than 0.6.107 must install
 > 0.6.107 manually before using the in-app update.
