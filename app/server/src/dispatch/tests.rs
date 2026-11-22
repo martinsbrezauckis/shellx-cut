@@ -76,6 +76,7 @@ mod jobs_project_binding;
 mod jobs_retry;
 mod judge_checked_inputs;
 mod judge_project_files;
+mod legacy_keyframe_open;
 mod linked_insert;
 mod linked_move;
 mod media_async_transition;
@@ -104,11 +105,14 @@ mod received_cache_facts;
 mod recipe_runner;
 mod recording_recovery_background;
 mod render_check_outcome;
+mod render_look_cache;
 #[cfg(unix)]
 mod render_project_files;
 mod render_queue_outcome;
+mod render_reduced_size;
 mod render_stop_race;
 mod render_verify;
+mod render_window_keys;
 mod request_idempotency;
 mod reverse_admission;
 mod schema_contract;
@@ -120,6 +124,7 @@ mod screen_record_link_consumers;
 mod screen_record_quality;
 mod screen_record_sparse_export_regression;
 mod screen_record_start_project_identity;
+mod screen_record_take_edit;
 mod screen_record_terminal;
 mod sequence_index;
 mod setup_perception_cancel;
@@ -131,6 +136,7 @@ mod transition_test_support;
 mod truncated_source;
 mod ui_command_confirmation;
 mod unreadable_import;
+mod vfr_decode;
 #[test]
 fn effect_strips_flattened_track_key_from_detail() {
     let e = effect(Some("v1"), json!({"track":"evil","clip":"c1"}));
@@ -1347,6 +1353,7 @@ fn resolve_slide_builds_position_keyframes() {
         y: 0.2,
         scale: 0.3,
         opacity: 1.0,
+        ..cut_core::ClipTransform::identity()
     };
     // slide IN from the left → pos_x from off-screen (-scale) to rest (x).
     let (param, pts) = resolve_slide(&t, 2000, "left", "in", 500).unwrap();
@@ -5964,19 +5971,42 @@ async fn edit_results_match_schema_shapes() {
     .await;
     assert_eq!(res["track_id"], "a2t");
     assert_eq!(res["kind"], "audio");
-    // edit.transform → {clip, transform, old_transform}
+    // Shapes are overlay-only; the base retains its existing rect transform.
+    go("edit.add_track", json!({"kind":"video"})).await;
+    let camera = go(
+        "edit.insert",
+        json!({"asset":"a1","track":"v2","at_ms":0,"src_range_ms":[0,5000]}),
+    )
+    .await["clip_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // edit.transform → {clip, transform, old_transform, shape}
     let res = go(
         "edit.transform",
-        json!({"clip":"c1","x":0.5,"y":0.5,"scale":0.25}),
+        json!({"clip":camera,"x":0.5,"y":0.5,"scale":0.25,"shape":"circle","ring":{"width":0.02,"colour":"#ffffffe6"}}),
     )
     .await;
-    assert_eq!(res["clip"], "c1");
+    assert_eq!(res["shape"], "circle");
+    assert_eq!(res["transform"]["shape"], "circle");
+    assert_eq!(res["transform"]["ring"]["colour"], "#ffffffe6");
+    let invalid = dispatch(
+        &state,
+        "edit.transform",
+        json!({"clip":camera,"shape":"rounded","radius":0.7}),
+        test_actor(),
+    )
+    .await;
+    assert!(!invalid.ok);
+    assert!(invalid.error.unwrap().message.contains("radius"));
+    assert_eq!(res["clip"], camera);
     assert_eq!(res["transform"]["scale"], 0.25);
     assert!(res["old_transform"].is_null());
     // Identity clears (transform → null).
-    let res = go("edit.transform", json!({"clip":"c1"})).await;
+    let res = go("edit.transform", json!({"clip":camera})).await;
     assert!(res["transform"].is_null());
     assert_eq!(res["old_transform"]["x"], 0.5);
+    assert_eq!(res["shape"], "rect");
     // edit.add_marker → {marker_id}; edit.remove_marker → {removed}
     let res = go("edit.add_marker", json!({"at_ms":100,"label":"x"})).await;
     let marker_id = res["marker_id"]

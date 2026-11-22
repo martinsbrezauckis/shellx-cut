@@ -1,9 +1,9 @@
 # ShellX Cut — verb reference
 
-<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
-> **v0.6.118 published.** v0.6.118 is the latest published release. Synced to `schema/verbs.json`, which is the
+<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
+> **v0.6.119 published.** v0.6.119 is the latest published release. Synced to `schema/verbs.json`, which is the
 > machine-readable contract for all REST, MCP, CLI, debug, and agent calls.
-> Current contract: **317 verbs across 34 domains**. If this table and the schema
+> Current contract: **326 verbs across 34 domains**. If this table and the schema
 > disagree, trust the schema and update this reference in the same change.
 > Each entry's `behavior` metadata is executable: it names exactly one mutation
 > class, its project-state requirement, direct bounded engine-interaction flags,
@@ -124,7 +124,7 @@ changing workspace. Live Pause/Resume state survives Edit/Record navigation.
 | `project.state` | `{since_revision?, limit?:1..512}` | Cold/invalid/stale clients receive the materialized project state plus path-free `project_identity:{schema:"shellx-cut/project-identity/1",origin_path_sha256,project_name}`, `project_revision`, and `sync:{mode:"snapshot",reason}`. A current-enough revision receives only `{sync:{mode:"delta",from_revision,project_revision,project_identity,ops,changes,affected,encoded_bytes}}` when every missed op has a lossless bounded client patch; unsupported timeline edits truthfully fall back to the snapshot. The identity is a server-derived canonical-origin digest, never a raw project path. A linked media clip's transient `motion_link.effects` gives bounded path-free keyed/roto counts and safe layer summaries. Geometry and editing stay in Motion; inspect here, use `motion.link.edit`, then `motion.link.refresh` for pixels. `subframe_clips` lists existing media clips shorter than one frame (drawn as an amber marker; new edits refuse to make one). Right after `project.open`, proxies are checked as this engine's own before use (a proxy with no record from this engine is deleted and encoded again, once; so after the update to v0.6.116 an existing project re-encodes its proxies at its first open (a background `proxy_check` job), and the preview plays the original media until each one is ready): meanwhile `proxy_check:{state:"checking",job_id,assets}` lists the assets whose proxy is not used yet; read the project again when that `proxy_check` job ends. The same open makes a proxy for footage that has none (an import cancelled by a project switch, a failed proxy job) through ordinary queued `proxy` jobs, one encode at a time (`proxy_check.result.proxy_check.made` lists them), and an import stopped before its probe is started again (`imports_resumed`); an import made with `media.import{proxy:false}` is left without a proxy. To ask for one yourself: `project.cache_rebuild{asset_ids}` | no | no |
 | `project.health` | `{cursor?, revision?, limit?:1..128}` | `{project_revision?, journal:{status:"verified"\|"recovered"\|"attention"\|"unavailable", cache, snapshot, notices}, editing_cache?:{status:"ready"\|"partial",bytes,files,reclaimable_bytes,reclaimable_files,cleanup_preview:{status:"ready"\|"blocked",minimum_age_ms,aged_unreferenced_bytes,aged_unreferenced_files,recent_unreferenced_bytes,recent_unreferenced_files},latest_modified_ms?,categories:[...]}, media:{status:"ready"\|"unavailable", asset_count, checked_count, page, assets, cursor?, next_cursor?, has_more}}` — a read-only, path-free Health & recovery page. First it strictly revalidates journal identity; `attention`/`unavailable` deliberately omit the revision and asset membership, so close/reopen before relying on media state. When ready, the first page reports a bounded apparent-byte inventory of only recognized flat rebuildable proxies and thumbnails, plus the recognized portion no longer referenced by current asset metadata. Its cleanup preview separates files unchanged for at least 24 hours from newer unreferenced files and blocks on partial scans. That file-change age is not last-use evidence and does not prove active producers are gone; future removal must revalidate the revision and jobs. Foreign files, exports, captures, receipts, source media, paths, and purge behavior are excluded; symlinks and unexpected directories are never followed and make the scan partial. The first page returns the opaque revision and every cursor continuation must repeat it; pages are stable asset-id order and check at most 128 registered source/proxy/filmstrip rows. `next_cursor` is present only when `has_more` is true. Counters describe only that page: aggregate every revision-bound page before calling the project healthy. It never repairs, relinks, deletes, or promotes. Use `jobs.list` for job-persistence notices and the separate `screen_record.recovery_status` inventory for capture recovery. | no | no |
 | `project.cache_preview` | `{}` | `{schema:"shellx-cut/cache-purge-preview/1",status:"ready",plan_id,minimum_age_ms,inventory:{files,bytes},purgeable:{files,bytes},categories,blocked_reasons:[]}` — separate path-free read-only preview. Only current flat proxy/filmstrip files with exact durable ShellX Cut ownership-ledger entries can participate. Unreferenced entries must be unchanged for at least 24 hours before becoming purgeable. Any legacy/unowned/foreign file, symlink, directory, malformed/stale ledger, oversized root, journal drift, or active cooperating producer fails closed without a plan. It never deletes and never returns paths. | no | no |
-| `project.cache_rebuild` | `{asset_ids?: ["a1", ...],estimate_only?:boolean}` — omit `asset_ids` only for projects with at most 64 registered assets; otherwise submit at most 64 unique current asset ids. `estimate_only:true` creates no job or reservation. | `{schema:"shellx-cut/cache-rebuild/1",status:"estimated"\|"queued"\|"already_queued"\|"not_needed",job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets},estimate:{basis:"source_hash_match_and_current_import_metadata",assets,verified_source_bytes,proxy_outputs,filmstrip_outputs,proxy_duration_ms}}` — bounded non-destructive backfill of only missing/stale Cut-owned base proxy/filmstrip outputs. Every successful status has the same count-bearing path-free shape and verified work-unit estimate; the bytes and duration are not a wall-clock prediction. It verifies the imported source hash before admission and publication, reserves ownership only when scheduling output, and reports/rejects legacy/unowned outputs, source changes, unavailable sources, and unsupported media rather than adopting or deleting them. Poll `jobs.status`; `jobs.cancel` leaves only an exact pending reservation so a later identical request can safely resume after cancellation or restart. If a later reservation fails after an earlier retirement, the request fails and the failed job's `jobs.status.result` reports verified path-free pending asset/output identities and counts, or marks ownership verification unavailable. Correct the cause or source identity and retry; do not claim restoration of retired cache bytes. Sources, exports, captures, receipts, and foreign files are untouched. | no | yes (`cache_rebuild`) |
+| `project.cache_rebuild` | `{asset_ids?: ["a1", ...],estimate_only?:boolean}` — omit `asset_ids` only for projects with at most 64 registered assets; otherwise submit at most 64 unique current asset ids. `estimate_only:true` creates no job or reservation. | `{schema:"shellx-cut/cache-rebuild/1",status:"estimated"\|"queued"\|"already_queued"\|"not_needed",job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets},skipped_assets:[{asset_id,kind?,reason:"already_current"\|"source_changed"\|"source_unavailable"\|"unowned_output"\|"legacy_output"\|"unsupported_asset",action}],estimate:{basis:"source_hash_match_and_current_import_metadata",assets,verified_source_bytes,proxy_outputs,filmstrip_outputs,proxy_duration_ms}}` — bounded non-destructive backfill of only missing/stale Cut-owned base proxy/filmstrip outputs. Every successful status names the selected assets that were not scheduled, their reason and next action (with proxy or filmstrip kind where relevant); reason `already_current` marks an up-to-date asset (also counted in `fresh_assets`), not a skip. `counts.unowned_outputs` and `counts.legacy_outputs` count outputs (a proxy and a filmstrip of one asset make two), the other reason counts count assets; assets needing attention = distinct `asset_id` in the entries whose reason is not `already_current`. It also carries the same count-bearing path-free shape and verified work-unit estimate; the bytes and duration are not a wall-clock prediction. It verifies the imported source hash before admission and publication, reserves ownership only when scheduling output, and reports/rejects legacy/unowned outputs, source changes, unavailable sources, and unsupported media rather than adopting or deleting them. Poll `jobs.status`; `jobs.cancel` leaves only an exact pending reservation so a later identical request can safely resume after cancellation or restart. If a later reservation fails after an earlier retirement, the request fails and the failed job's `jobs.status.result` reports verified path-free pending asset/output identities and counts, or marks ownership verification unavailable. Correct the cause or source identity and retry; do not claim restoration of retired cache bytes. Sources, exports, captures, receipts, and foreign files are untouched. | no | yes (`cache_rebuild`) |
 | `project.cache_purge` | `{plan_id,confirm:true}` | `{job_id,status:"queued"}` — consumes one current preview plan and starts a cancellable `cache_purge` job. The job takes an exclusive cache lease and revalidates project revision, cache roots, ledger, and every candidate identity before deletion. It can remove only aged, unreferenced, ledger-owned flat `proxies/` or `filmstrip/` files; sources, exports, captures, receipts, legacy/unowned/foreign files, symlinks, and partial or changed roots are refused. Terminal `jobs.status.result` is path-free `{schema:"shellx-cut/cache-purge-reconciliation/1",status:"completed"\|"cancelled"\|"failed",reconciliation:{before,planned,removed,after,balanced,partial_progress,after_basis:"strict_scan"\|"exclusive_lease_delta",ledger_recovery_required}}`. Normal cleanup remeasures strictly; a project-switch cancellation without a ProjectStore uses the exclusive-lease delta. A ledger publish failure after unlink is failed with known accounting and `ledger_recovery_required:true`, leaving the stale entry to block later preview. Poll `jobs.status`, use `jobs.cancel`, and run a new preview for a later deletion plan when it is not blocked. | no | yes |
 | `project.sequence_list` | `{}` | `{active_sequence, sequences:[{id, name, active, duration_ms, clip_count, settings}]}` — legacy projects expose one implicit Main sequence until sequence management is used | no | no |
 | `project.sequence_index` | `{query?, asset?, kind?:"all"\|"clip"\|"marker", sequence?, track_kind?:"video"\|"audio"\|"caption", status?:"all"\|"issues"\|"offline"\|"gaps"\|"effects"\|"hidden"\|"locked"\|"muted", limit?:1..500}` | `{query, asset?, kind, sequence?, track_kind?, status, total, clip_count, marker_count, issue_count, effect_clip_count, truncated, results:[...]}` — read-only case-insensitive all-term search over clip, effect/status, and marker metadata in every sequence, including inactive timelines. `asset` is an exact stable media-id filter applied before `limit`, so per-asset navigation cannot be crowded out by text-match collisions; it excludes markers, captions, and gaps. Clip rows expose live `offline`, `effects`, `track_visible/locked/muted`, and `issues`; gaps appear only for issue/gap status or a gap query. Rows contain stable sequence/track/item ids and laid ranges: `at_ms`/`end_ms` use the same post-crossfade overlap layout as rendering and `ui.playhead`. Media labels are basenames and source paths are never returned. Human UI: Find → Sequence; copy shown bounded rows as spreadsheet-safe CSV or open to switch sequence and seek to `at_ms` | no | no |
@@ -564,6 +564,105 @@ needed.
 
 ## screen_record (Recording Studio)
 
+### Editing a recording in Edit
+
+For new polished recordings, select the screen clip in Edit and open the Inspector
+Zoom card. Select, add or delete zooms and adjust strength, target, timing or speed.
+Redo automatic zooms keeps your own zooms. Press Update video to see the changes;
+playback keeps the previous zooms until the update finishes. Old polished clips
+and Raw MP4s do not gain editable recording zooms.
+
+A separate camera track is on by default. Select the Camera track clip for the
+Inspector Camera section: corners/centre, size, Circle / Rounded / Rectangle,
+ring, and Back to as recorded. Drag the bubble on the preview; split at both ends
+and delete a piece to hide it for a stretch. Before recording, turn off Edit the
+camera later (own track) on the Record page to bake the bubble in instead.
+
+#### Zoom verbs and recovery
+
+Use `screen_record.zoom_list{clip}` for the recording's zooms. A segment is
+`{id,start_ms,end_ms,scale,cx,cy,ramp_in_ms,ramp_out_ms,origin:"auto"|"manual"}`.
+Times are recording-clock milliseconds; scale is 1–8, targets are clamped in-frame,
+and segments cannot overlap. Each segment includes a server-mapped
+`timeline:{start_ms,end_ms}|null` through trim, constant speed, speed ramp and
+reverse. Do not copy that mapping into clients.
+
+| Verb | Arguments | Result |
+|---|---|---|
+| `screen_record.zoom_list` | `{clip}` | `{clip,take,source:{w,h},duration_ms,segments:[segment & {timeline:{start_ms,end_ms}|null}],stale,applied_plan,pending_plan,missing_video,missing_video_reason,next_action}` |
+| `screen_record.zoom_set` | `{clip,segments,rationale?}` | `{clip,segments,stale}`; empty disables zoom |
+| `screen_record.zoom_add` | `{clip,at_ms? or timeline_ms?,duration_ms?=2000,scale?=2,cx?,cy?}` | `{segment,stale}`; target defaults to pointer |
+| `screen_record.zoom_update` | `{clip,id,target?:"pointer",start_ms?,end_ms?,scale?,cx?,cy?,ramp_in_ms?,ramp_out_ms?}` | `{segment,stale}`; pins manual |
+| `screen_record.zoom_remove` | `{clip,id? or ids?}` | `{removed,stale}` |
+| `screen_record.zoom_auto` | `{clip,keep_manual?=true,config?}` | `{segments,stale}`; autoedit config, keeps manual segments |
+| `screen_record.take_refresh` | `{clip}` | `{job_id,clip,asset,baked,cached,applied_plan}`; initial asset may be null, poll jobs.status |
+| `screen_record.take_link` | Internal only | Polish provenance op; direct calls refuse |
+
+For zoom_add send EXACTLY ONE of recording `at_ms` or absolute project
+`timeline_ms`. The server maps the selected clip's timeline placement; positions
+outside the clip refuse (move inside or use at_ms), and frozen stretches refuse
+(unfreeze or use at_ms). Returned segment times remain recording-clock ms.
+The default add is a two-second, 2× pointer-target zoom.
+
+`screen_record.zoom_update{clip,id,target:"pointer"}` resets cx/cy to the last
+recorded pointer sample at start_ms (centre fallback), normalized and clamped at
+the chosen scale. It overrides explicit cx/cy and pins the segment as manual.
+Editing any automatic zoom pins it as Mine; automatic redo keeps manual zooms by
+default and accepts the same config as autoedit. Empty zoom_set disables zoom.
+Each write is one concrete/resolved-list undoable op, returning stale and
+segments, segment or removed (zoom_set also returns clip); replay needs no events
+file. Undo/redo restore zooms and stale state.
+
+The zoom_list result includes missing_video:boolean, missing_video_reason:string|null,
+and next_action:string|null. The project.state per-clip recording annotation
+also includes these fields alongside take, stale, zoom_count and camera_clip.
+Missing video is independent of stale (pending/applied plan mismatch). A missing
+bake has an explanatory reason and next_action
+`"Update video rebuilds it (screen_record.take_refresh)."`; a present bake has
+false/null/null. In the Zoom card: **Video file missing. Update video rebuilds it.**
+This includes Undo to an older render whose file was deleted by hand or with the cache.
+
+Update video calls `screen_record.take_refresh{clip}`; poll jobs.status for the
+final asset (initially it may be null). It bakes first, refuses a duration mismatch
+over one frame, then swaps the source behind EVERY split/trimmed take clip without
+resetting trim, timing, speed/ramp/freeze/reverse, effects, transform or fades.
+For a missing old file the duration reference is its stored probe; otherwise the
+old file is probed if present, then recording plan/source duration is the fallback.
+A cached target also repairs a missing current asset reference. Earlier renders
+stay in the project's recording cache until the cache is cleared. An unchanged
+take reuses the original plan bytes and cache filename.
+
+`render.final` refuses stale takes with **Update video first** unless the caller
+explicitly passes `allow_stale_recordings:true` to export the old baked picture.
+`edit.auto_zoom` refuses recording clips: “this recording has its own zooms: use
+screen_record.zoom_*”. `screen_record.take_link` is internal to polish and refuses
+direct calls.
+
+#### Camera verbs
+
+`screen_record.polish{source,plan,camera?:"separate"|"baked"}` defaults to separate
+when a validated camera artifact exists: a bubble-free screen and visible Camera
+overlay on the recorded clock, starting at the measured first-frame offset. It
+preserves recorded square-bubble shape, ring, size, position and hold position
+keys, which appear in exact paused frames. camera:"baked" preserves the old baked
+bubble and hidden compatibility track; raw:true and Raw MP4 mode are unchanged.
+Edits to a retained baked-mode camera do not change the bubble baked into video.
+
+Identify a camera clip by `clip.recording?.camera === true`, with the original
+`project.state.recordings[].camera_clip` id as fallback. The take also carries
+camera_asset. Use `edit.transform{clip,x,y,scale,opacity,shape,radius?,ring?}`,
+including unchanged transform fields, to change its look. x/y are top-left frame
+fractions, scale is width/frame width; shape is circle, rounded or rect. The
+optional ring is {width,colour}, for example {width:0.02,colour:"#ffffffe6"}.
+`screen_record.camera_reset{clip}` returns {clip,transform,keyframes} and restores
+the recorded look and placement in one undoable op, leaving trim, timing and speed
+alone. Each camera change/reset supports project.undo. Update video keeps a
+separate screen bubble-free. Make a copy carries each take's source, events,
+plans, camera and audio inputs, and counts their bytes in the copy plan.
+If named take files cannot be carried, `recordings_not_carried` in the plan
+and completed job result names each take and reason; its rendered clips remain.
+
+
 A recording is saved in 15-second parts. On Windows and macOS, the screen keeps
 recording across part boundaries. Known Windows limits: about half a second at
 the start of a take can repeat the first picture. Short, separate system sounds
@@ -582,9 +681,7 @@ Auto-edit-only: Doctor advertises opaque choices, Start sends one current
 choice to the screen-owned sidecar, and that sidecar waits for a real first
 frame after the shared clock opens. The Start acknowledgement alone is not
 camera-media proof; terminal Stop retains the finalized camera as a
-separate take with shared-clock evidence. Polish places it on a hidden track
-and bakes the chosen bubble into the polished clip; later edits to the take
-do not change that bubble. Linux Doctor can show support
+separate take with shared-clock evidence. Linux Doctor can show support
 with zero devices; the selected device and GStreamer plugins are checked at
 Start, and camera failure never selects a replacement. Recording Scenes accepts a
 bounded frozen catalog of named Screen and Presenter PiP presets plus one
@@ -731,7 +828,8 @@ does not end the capture.
 | `screen_record.scene_activate` | `{capture_id, scene_id, preset_revision}` | `{saved:true, scene_id, preset_revision, logical_media_time_ms, scene}` — durably switches the live composition to one exact frozen scene revision. Presenter PiP refuses activation unless the selected camera is currently admitted. |
 | `screen_record.scene_timer` | `{capture_id, action:"pause"|"resume"|"reset"|"restart"|"end"}` | `{saved:true, action, state:"running"|"paused"|"ended", logical_media_time_ms, scene}` — durably changes the one capture-wide timer on the shared recording clock before acknowledging it. |
 | `screen_record.autoedit` | `{track, config?, webcam?, camera_artifact?, studio_events?, scene_receipt?}` | `{plan, summary, config, webcam?, camera_clock?, studio_events?, studio_event_count, scene_receipt?}` — runs the linked recorder auto-edit engine on a project-local EventTrack. Use the returned `plan` path for polish/export; each take or changed result has its own retained plan, so do not predict a shared cache filename. An explicit capture-owned Scenes receipt is revalidated against its source/project bytes and terminal replay before its editable `scene_timeline` is persisted. Presenter spans use only the verified finalized camera artifact and shared camera clock. |
-| `screen_record.polish` | `{source, plan, track?, at_ms?, rationale?}` | `{placed, job_id, clip_id, asset_id, baked, cached}` — **THE centerpiece.** The bake is a `screen_record_polish` job with frame progress in `jobs.list`/`jobs.status` (the status bar and the quit question show it; a project change asks first); it ends when the clip is placed, before the verb answers. The clip belongs to the project open when polish was called: if another project is open when it is ready, nothing is added anywhere (`placed:false`, `waiting_in_project`, `message`) and the recording is offered again in its own project. `source` and `plan` must resolve inside the open project (normally from `screen_record.stop` and `screen_record.autoedit`). (1) CONTENT-ADDRESSED bake (the matte pattern): key = source content hash + plan-bytes hash → `<project>/cache/screen_record/<key>.mp4`; a hit returns `cached:true` and skips the bake, a miss renders through the integrated Cut recorder. (2) `media.import` the baked mp4 + poll `jobs.status` until done/failed. (3) ensure the target track exists (default `"v1"`; an explicit absent `track` is created as video) then `edit.insert` at `at_ms` (default 0, no ripple). A validated camera artifact is retained separately on a hidden track, while the camera layout selected during recording is baked into the polished clip; editing that retained take does not update the bubble. Orchestrator (auto-checkpoint, one-step revert); records no op of its own. Requires an open project. |
+| `screen_record.camera_reset` | `{clip}` | `{clip,transform,keyframes}` — restore the camera clip's as-recorded square-bubble look and hold position keys in one undoable op; timing is unchanged. |
+| `screen_record.polish` | `{source, plan, track?, at_ms?, rationale?, raw?, camera?:"separate"|"baked"}` | `{placed, job_id, clip_id, asset_id, baked, cached}` — **THE centerpiece.** The bake is a `screen_record_polish` job with frame progress in `jobs.list`/`jobs.status` (the status bar and the quit question show it; a project change asks first); it ends when the clip is placed, before the verb answers. The clip belongs to the project open when polish was called: if another project is open when it is ready, nothing is added anywhere (`placed:false`, `waiting_in_project`, `message`) and the recording is offered again in its own project. `source` and `plan` must resolve inside the open project (normally from `screen_record.stop` and `screen_record.autoedit`). (1) CONTENT-ADDRESSED bake (the matte pattern): key = source content hash + plan-bytes hash → `<project>/cache/screen_record/<key>.mp4`; a hit returns `cached:true` and skips the bake, a miss renders through the integrated Cut recorder. (2) `media.import` the baked mp4 + poll `jobs.status` until done/failed. (3) ensure the target track exists (default `"v1"`; an explicit absent `track` is created as video) then `edit.insert` at `at_ms` (default 0, no ripple). A validated camera artifact defaults to a visible Camera overlay with recorded shape/ring/size/position and hold position keys; the screen bake has no bubble. camera:baked retains the old baked bubble plus hidden camera track. raw:true is unchanged. Orchestrator (auto-checkpoint, one-step revert); records no op of its own. Requires an open project. |
 | `screen_record.export` | `{source, plan, path?, format?: mp4\|gif, gif_fps?, gif_width?}` | `{job_id, path, format, status:"queued"}` — queues the project-local polished output to a FENCED file (no timeline touch). `source` and `plan` must resolve inside the open project. `mp4` resamples sparse/variable-rate source timestamps to the plan FPS before compositing, so a high nominal stream rate cannot duplicate frames and lengthen the planned export. For a direct recorder capture source, it validates the fenced sibling mic/system artifacts, honors `system-audio.json.first_packet_offset_ms`, skips a null-timed system stream, and mixes through the normal planned renderer rather than a raw-path bypass. `gif` renders to a temp mp4 then converts to the fenced `.gif` (gif_fps default 15, gif_width default 720; the temp mp4 is removed). The response already owns the output lease, so callers may restore request-scoped output authorization, then poll `jobs.status(job_id)` for `{path, format, frames, elapsed_ms}` or an actionable failure/cancellation. Requires an open project (fence root). |
 | `screen_record.copy_raw` | `{source, path?}` | `{job_id, path, status:"queued"}` — copy the successful Stop `raw_path` byte-for-byte without a plan or timeline edit. Source must remain a plain MP4 under the active project's authorized export-read roots. Destination is fenced and leased; a private stage is removed on cancellation. Poll `jobs.status` for `{path,bytes}`. |
 
@@ -963,7 +1061,7 @@ change the result as described; "one of" means any one alternative is enough.
 | Generated media | `assets.generate` | Media generation provider; Video processing (FFmpeg); Media inspection (ffprobe) | - | - |
 | ShellX Motion templates and tracking | `motion.job.get`, `motion.job.list`, `motion.script_to_cut`, `motion.map_import`, `motion.apply_import`, `motion.link.edit`, `motion.link.tracking.inventory`, `motion.link.tracking.request`, `motion.link.tracking.inspect`, `motion.link.tracking.apply`, `motion.link.tracking.verify`, `motion.link.tracking.detach`, `motion.template_to_cut` | An open project (some verbs); ShellX Motion; `motion.apply_import` also: Video processing (FFmpeg), Media inspection (ffprobe); `motion.template_to_cut` also: Video processing (FFmpeg), Media inspection (ffprobe); `motion.script_to_cut` also: Video processing (FFmpeg), Media inspection (ffprobe) | - | - |
 | Screen recording | `screen_record.start`, `screen_record.stop`, `screen_record.studio_event`, `screen_record.pause`, `screen_record.resume`, `screen_record.scene_activate`, `screen_record.scene_timer`, `screen_record.preview_capability`, `screen_record.preview_start`, `screen_record.preview_status`, `screen_record.live_frame`, `screen_record.preview_frame`, `screen_record.preview_pause`, `screen_record.preview_resume`, `screen_record.preview_hide`, `screen_record.preview_stop`, `screen_record.rehearsal_start`, `screen_record.rehearsal_discard`, `debug.screenshot` | An open project (some verbs); Screen recording permission | - | Microphone access: on Windows and macOS, a requested microphone take is refused when access is blocked or no microphone is present; turn off microphone capture to record without it; System sound capture: the recording has no system sound |
-| Recording results and recovery | `screen_record.autoedit`, `screen_record.polish`, `screen_record.export`, `screen_record.copy_raw`, `screen_record.recover`, `screen_record.recovery_status`, `screen_record.status`, `screen_record.active`, `screen_record.pending`, `screen_record.pending_dismiss` | An open project (some verbs); `screen_record.polish` also: Video processing (FFmpeg), Media inspection (ffprobe); `screen_record.export` also: Video processing (FFmpeg), Media inspection (ffprobe), A usable export folder; `screen_record.recover` also: Video processing (FFmpeg), Media inspection (ffprobe) | - | - |
+| Recording results and recovery | `screen_record.autoedit`, `screen_record.zoom_list`, `screen_record.zoom_set`, `screen_record.zoom_add`, `screen_record.zoom_update`, `screen_record.zoom_remove`, `screen_record.zoom_auto`, `screen_record.take_refresh`, `screen_record.take_link`, `screen_record.camera_reset`, `screen_record.polish`, `screen_record.export`, `screen_record.copy_raw`, `screen_record.recover`, `screen_record.recovery_status`, `screen_record.status`, `screen_record.active`, `screen_record.pending`, `screen_record.pending_dismiss` | An open project (some verbs); `screen_record.take_refresh` also: Video processing (FFmpeg), Media inspection (ffprobe); `screen_record.polish` also: Video processing (FFmpeg), Media inspection (ffprobe); `screen_record.export` also: Video processing (FFmpeg), Media inspection (ffprobe), A usable export folder; `screen_record.recover` also: Video processing (FFmpeg), Media inspection (ffprobe) | - | - |
 | Recording setup checks | `screen_record.doctor`, `screen_record.system_audio_probe`, `screen_record.microphone_selection` | nothing | - | - |
 | Voiceover | `voiceover.start`, `voiceover.tick`, `voiceover.stop`, `voiceover.cancel`, `voiceover.observe_playhead` | An open project; `voiceover.start` also: Microphone access | - | - |
 | Setup and environment | `system.mcp_test`, `system.doctor`, `system.motion_status`, `system.set_stt_model`, `system.set_ffmpeg`, `system.fetch_tool`, `system.setup_perception`, `system.setup_matte` | `system.fetch_tool` also: Internet connection, Free disk space; `system.setup_perception` also: Internet connection, Free disk space, Microsoft Visual C++ Redistributable; `system.setup_matte` also: Internet connection, Free disk space, Microsoft Visual C++ Redistributable | - | - |

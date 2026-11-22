@@ -1,5 +1,7 @@
 //! Public DTO guards for the bounded macOS pause-safe recorder.
 
+import { fmtElapsed } from './recordingUiModel'
+
 export interface RecordingPauseCapability {
   supported: boolean
   detail: string
@@ -13,6 +15,43 @@ export const NO_RECORDING_PAUSE_CAPABILITY: RecordingPauseCapability = {
 }
 
 export type RecordingPauseState = 'idle' | 'recording' | 'pausing' | 'paused' | 'resuming' | 'error'
+
+/** True while the take is paused, including the moment between pressing Resume and the recorder confirming it. */
+export function recordingStandsStill(state: RecordingPauseState): boolean {
+  return state === 'paused' || state === 'resuming'
+}
+
+/**
+ * The recorder's own recorded time (`logical_media_time_ms` of its last Pause or
+ * Resume acknowledgement) and the wall-clock instant the acknowledgement arrived.
+ * That is the only recorded-time figure the engine gives the page.
+ */
+export interface RecordingPauseBoundary {
+  state: 'paused' | 'recording'
+  ms: number
+  at: number
+}
+
+/** A status poll that shows the opposite state outdates the last acknowledgement; transitions keep it. */
+export function boundaryAfterStatus(boundary: RecordingPauseBoundary | null, state: RecordingPauseState): RecordingPauseBoundary | null {
+  if (!boundary) return null
+  if (state === 'paused' && boundary.state !== 'paused') return null
+  if (state === 'recording' && boundary.state !== 'recording') return null
+  return boundary
+}
+
+/** What a paused take says when the recorder's status is all that is known (no pause time). */
+export const PAUSED_STATUS_LINE = 'Paused. Resume to continue recording.'
+
+/** minutes:seconds, the same clock as the live timer; never raw milliseconds. */
+const clock = (ms: number): string => fmtElapsed(Math.max(0, Math.floor(ms / 1000)))
+
+/** The line shown once the recorder confirms a Pause or Resume at `ms` of the recording. */
+export function recordingPauseAcknowledgedLine(state: 'paused' | 'recording', ms: number): string {
+  return state === 'paused'
+    ? `Paused at ${clock(ms)}. Resume to continue recording.`
+    : `Recording resumed at ${clock(ms)}.`
+}
 
 export interface RecordingTakePause {
   enabled: boolean
@@ -32,7 +71,7 @@ export function recordingTakePause(value: unknown, captureId: string): Recording
   if (pause.enabled !== true || status.terminal === true) return null
   const state = pause.state
   if (state !== 'recording' && state !== 'paused' && state !== 'pausing' && state !== 'resuming') return null
-  return { enabled: true, state, message: state === 'paused' ? 'Paused.'
+  return { enabled: true, state, message: state === 'paused' ? PAUSED_STATUS_LINE
     : state === 'pausing' ? 'Waiting for the recorder to seal the pause…'
       : state === 'resuming' ? 'Waiting for the recorder to seal the resume…' : 'Recording.' }
 }

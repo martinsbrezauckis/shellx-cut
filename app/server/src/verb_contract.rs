@@ -321,4 +321,13 @@ pub enum DispatchTarget {
     ScreenRecordRehearsalStart,
     ScreenRecordRehearsalDiscard,
     EditInsertLinked,
+    ScreenRecordCameraReset,
+    ScreenRecordZoomList,
+    ScreenRecordZoomAdd,
+    ScreenRecordZoomUpdate,
+    ScreenRecordZoomRemove,
+    ScreenRecordZoomAuto,
+    ScreenRecordTakeLink,
+    ScreenRecordZoomSet,
+    ScreenRecordTakeRefresh,
 }

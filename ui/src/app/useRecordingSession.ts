@@ -13,7 +13,7 @@ import type { StudioRawStreams, CursorCorrelation, StudioEventPayload, StudioSta
 import type { RecordingSourceKind } from '../panels/Record/regionPickerModel'
 import type { RecordingOutputSize, RecordingQualityProfile } from '../panels/Record/recordingQuality'
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
-import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, recordingReadinessFailure, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
+import { recordingPolishArgs, firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, recordingReadinessFailure, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { recordingInputHook, UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from '../panels/Record/recordingInputHook'
 import { RecordingToggleGate, classifyStopFailure, isNothingRecorded, nothingRecordedText, refusalText, savingProgressText, stopArgs, withSavedNotes } from './recordingSessionModel'
 import { waitForFirstFrame } from './recordingFirstFrame'
@@ -64,6 +64,7 @@ export interface RecordingDraftView {
   systemAudio: boolean
   keys: boolean
   raw: boolean
+  cameraSeparate?: boolean
   cameraDeviceId: string | null
   studio: StudioState
   cameraLayoutCustomized: boolean
@@ -454,7 +455,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       // The bake is a screen_record_polish job: show its progress while the
       // verb runs (a 4K take takes tens of seconds).
       const stopWatching = watchPolishProgress((percent) => publish({ message: `${polishing} ${percent}%` }))
-      const polished = await callVerb('screen_record.polish', { source: result.source, plan: result.plan, raw: false })
+      const polished = await callVerb('screen_record.polish', recordingPolishArgs(result.source, result.plan, preset))
         .finally(stopWatching)
       if (!polished.ok) { publish({ phase: 'error', message: withSavedNotes(`Raw MP4 saved; polish failed: ${polished.error?.message ?? 'unknown error'}`, notes) }); return }
       const placement = polished.result as { placed?: boolean; message?: string } | undefined

@@ -1,7 +1,31 @@
 import type {
   ProjectCacheRebuildEstimate,
   ProjectCacheRebuildResult,
+  ProjectCacheRebuildSkip,
 } from '../../lib/clientResults'
+
+/** A skipped_assets entry for an asset that was NOT rebuilt although its
+ * previews are not current. */
+export type RebuildSkippedAsset = ProjectCacheRebuildSkip
+  & { reason: Exclude<ProjectCacheRebuildSkip['reason'], 'already_current'> }
+
+/** The assets that were really skipped. The engine also lists an asset whose
+ * previews already match its source, with the enum reason `already_current`;
+ * that asset is up to date (counted in `counts.fresh_assets`), not skipped.
+ * The split is made on the reason value, never on its English text. */
+export function rebuildSkips(result: ProjectCacheRebuildResult): RebuildSkippedAsset[] {
+  return result.skipped_assets.filter((item): item is RebuildSkippedAsset => item.reason !== 'already_current')
+}
+
+/** The number of assets that need attention, counted from the per-asset list.
+ * The summary sentence, the skipped-items heading and the
+ * `data-cut-cache-rebuild-attention-count` attribute all read it, so the screen
+ * and the attribute show one number. `counts.unowned_outputs` and
+ * `counts.legacy_outputs` count OUTPUTS (a proxy and a filmstrip of one asset
+ * make two), which is why they are not used here. */
+export function attentionAssetCount(result: ProjectCacheRebuildResult): number {
+  return new Set(rebuildSkips(result).map((item) => item.asset_id)).size
+}
 
 /** Human-facing, path-free cache lifecycle presentation kept outside the
  * request/polling component so result validation stays testable and compact. */
@@ -11,16 +35,23 @@ export function rebuildSummary(result: ProjectCacheRebuildResult, remainingAsset
   const more = remainingAssets > 0
     ? ` ${remainingAssets} more item${remainingAssets === 1 ? '' : 's'} can be rebuilt after this batch completes.`
     : ''
+  const attentionCount = attentionAssetCount(result)
+  const attention = attentionCount > 0
+    ? ` ${attentionCount} item${attentionCount === 1 ? ' needs' : 's need'} attention.`
+    : ''
   if (result.status === 'already_queued') {
-    return `${queued} item${queued === 1 ? '' : 's'} already queued.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${more}`
+    return `${queued} item${queued === 1 ? '' : 's'} already queued.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}${more}`
   }
   if (result.status === 'not_needed') {
+    if (attentionCount > 0) {
+      return `No cache rebuild was scheduled.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}`
+    }
     return `No rebuild was needed.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}`
   }
   if (result.status === 'estimated') {
-    return `${queued} item${queued === 1 ? '' : 's'} have verified rebuild work.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${more}`
+    return `${queued} item${queued === 1 ? '' : 's'} have verified rebuild work.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}${more}`
   }
-  return `${queued} item${queued === 1 ? '' : 's'} queued.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${more}`
+  return `${queued} item${queued === 1 ? '' : 's'} queued.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}${more}`
 }
 
 export function rebuildCostSummary(estimate: ProjectCacheRebuildEstimate): string {

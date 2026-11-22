@@ -274,6 +274,7 @@ fn rejects_time_dependent_boundaries_without_mutating_any_selected_track() {
         }),
         ("parameter keyframes", |clip| {
             clip.keyframes = vec![Keyframe {
+                lead_in: None,
                 param: KfParam::Opacity,
                 points: vec![
                     KfPoint {

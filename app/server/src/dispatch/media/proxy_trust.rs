@@ -279,6 +279,7 @@ async fn remake_proxies(state: &AppState, dir: &Path, assets: Vec<String>) {
                 let probe = asset.probe.as_ref();
                 (
                     asset_source_path(&store.dir, asset),
+                    asset.hash.clone(),
                     probe
                         .and_then(|p| p.get("kind"))
                         .and_then(|k| k.as_str())
@@ -290,7 +291,7 @@ async fn remake_proxies(state: &AppState, dir: &Path, assets: Vec<String>) {
                 )
             })
         };
-        let Some((src, kind, duration_ms)) = source else {
+        let Some((src, hash, kind, duration_ms)) = source else {
             continue;
         };
         if !src.is_file() {
@@ -300,6 +301,7 @@ async fn remake_proxies(state: &AppState, dir: &Path, assets: Vec<String>) {
             state.clone(),
             id,
             src,
+            hash,
             proxies.clone(),
             open_dir.clone(),
             kind,

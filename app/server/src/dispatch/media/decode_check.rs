@@ -1,9 +1,9 @@
 //! Record how much of a video source really decodes, once its proxy exists,
 //! and choose the proxy's HDR to SDR tone map before it is made.
 //!
-//! The proxy job decodes the whole source. Its proxy's stream lengths are the
-//! decodable length; `cut_media::decode_check` compares them with what the
-//! source claims. The record is stored on the asset as `probe.decode_check`
+//! The proxy comparison is cheap. Only suspected frame gaps are confirmed by
+//! bounded source decoding, before proxy timestamp conversion can drop frames.
+//! The record is stored as `probe.decode_check`
 //! (an agent reads it from project.state / media.probe; the Assets card shows
 //! its `warning`), and a warning also rides on the proxy job result.
 
@@ -18,10 +18,7 @@ pub(super) async fn record_decode_check(
     proxy: &Path,
 ) -> Result<Option<String>, CutError> {
     let proxy = proxy.to_path_buf();
-    let streams = run_blocking("media.decode_check", move || {
-        cut_media::probe::stream_extents(&proxy)
-    })
-    .await?;
+    let (source, _) = asset_info(state, asset_id).await?;
     let source_probe = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
@@ -35,7 +32,14 @@ pub(super) async fn record_decode_check(
     if !source_probe.is_object() {
         return Ok(None);
     }
-    let record = cut_media::decode_check::decode_check(&source_probe, &streams);
+    let probe_for_check = source_probe.clone();
+    let control = owned_job_process_control(crate::jobs::current_job_cancellation());
+    let record = run_blocking("media.decode_check", move || {
+        cut_media::ffmpeg::with_render_process_control(&control, || {
+            cut_media::decode_check::check_source(&probe_for_check, &source, &proxy)
+        })
+    })
+    .await?;
     let warning = record
         .get("warning")
         .and_then(Value::as_str)

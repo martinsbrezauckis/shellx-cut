@@ -31,6 +31,9 @@ use cut_media::render::{render_final, RenderOptions, RenderPreset};
 use cut_media::PathFence;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+mod cache_tests;
+
 static BAKE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
 static BAKE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -100,7 +103,11 @@ fn sub_project(parent: &Project, nest: &Nest) -> Project {
 /// tag changes iff the bake would change, so a warm cache is always safe to reuse.
 fn nest_cache_tag(sub: &Project, edl: &Edl) -> String {
     let mut h = Sha256::new();
+    h.update(b"window-time-v3-published-rect");
     h.update(serde_json::to_vec(&sub.settings).unwrap_or_default());
+    // Clip transforms live outside the EDL. Whole records include every look
+    // field and keyframe, including fields introduced by future renderers.
+    h.update(serde_json::to_vec(&sub.tracks).unwrap_or_default());
     // Referenced source assets, sorted + deduped, by (id, content-hash).
     let mut refd: Vec<(&str, &str)> = edl
         .segments

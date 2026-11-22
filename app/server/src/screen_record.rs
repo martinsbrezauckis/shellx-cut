@@ -28,6 +28,8 @@
 //!
 //! Dependencies: record-core/-engine/-render/-capture, cut_core (CutError). Primary
 //! callers: dispatch.rs (`screen_record_doctor`/`_start`/`_autoedit`/`_polish`/`_export`).
+#[path = "dispatch/screen_record_handlers/camera_look.rs"]
+pub(crate) mod camera_look;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -42,6 +44,8 @@ mod camera_capture_sidecar;
 mod camera_public;
 mod capture_artifacts;
 mod plan_output;
+pub(crate) mod take_edit;
+pub(crate) mod take_refresh_job;
 // REC-CAMERA-01d is the private Windows server/project owner. It is not
 // selected by screen_record.start or any verb/UI/Doctor route until installed
 // native proof explicitly admits that separate product surface.

@@ -452,6 +452,23 @@ impl EditPlan {
         {
             return Err(bad("too many zoom keys / click fx / key-cast events"));
         }
+        let mut previous_zoom_time = None;
+        for key in &self.zoom.keys {
+            if previous_zoom_time.is_some_and(|t| key.t_ms <= t) {
+                return Err(bad("zoom keys must be strictly ordered by t_ms"));
+            }
+            previous_zoom_time = Some(key.t_ms);
+            if !key.scale.is_finite() || !(1.0..=8.0).contains(&key.scale) {
+                return Err(bad("zoom scale must be finite and in [1, 8]"));
+            }
+            if !key.cx.is_finite()
+                || !key.cy.is_finite()
+                || !(0.0..=1.0).contains(&key.cx)
+                || !(0.0..=1.0).contains(&key.cy)
+            {
+                return Err(bad("zoom focus must be finite and in [0, 1]"));
+            }
+        }
         if let Some(wc) = &self.webcam {
             if wc.source.trim().is_empty() {
                 return Err(bad("webcam source must not be empty"));

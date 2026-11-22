@@ -73,6 +73,7 @@
     "fragments/063-recording_pause.json",
     "fragments/064-screen_record_preview.json",
     "fragments/065-recording_rehearsal.json",
-    "fragments/066-edit_linked_insert.json"
+    "fragments/066-edit_linked_insert.json",
+    "fragments/067-screen_record_take_edit.json"
   ]
 }

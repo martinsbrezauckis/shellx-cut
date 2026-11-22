@@ -73,11 +73,14 @@ export interface ClipTransform {
   y: number
   scale: number
   opacity?: number
+  shape?: 'rect' | 'circle' | 'rounded'
+  radius?: number | null
+  ring?: { width: number; colour: string } | null
 }
 
 /** True when a transform changes nothing (mirror of cut-core is_identity). */
 export function isIdentityTransform(t: ClipTransform | null | undefined): boolean {
-  return !t || (t.x === 0 && t.y === 0 && t.scale === 1 && (t.opacity ?? 1) === 1)
+  return !t || (t.x === 0 && t.y === 0 && t.scale === 1 && (t.opacity ?? 1) === 1 && (!t.shape || t.shape === 'rect') && t.radius == null && t.ring == null)
 }
 
 /** Per-clip SOURCE crop rectangle (edit.crop storage) — mirror of
@@ -235,6 +238,8 @@ export interface Keyframe {
   param: KfParam
   points: { t_ms: number; value: number }[]
   interp?: KfInterp
+  /** Existing engine cut-window interpolation origin, before clip-local zero. */
+  lead_in?: { t_ms: number; value: number }
 }
 
 /** Untagged clip union — same shapes as cut-core::Clip (timeline/op-log contract).
@@ -276,7 +281,9 @@ export type Clip =
        *  (which carries `title_text` instead) to the title editor. */
       shape_kind?: string; shape_label?: string; shape_color?: string;
       /** TRANSIENT (project.state): replay-backed Motion source/render identity. */
-      motion_link?: MotionClipLink }
+      motion_link?: MotionClipLink;
+      recording?: { take: string; camera?: boolean; stale?: boolean; zoom_count?: number; camera_clip?: string | null;
+        missing_video?: boolean; missing_video_reason?: string | null; next_action?: string | null } }
   | { id: string; text: string; style_ref?: string; range_ms: [number, number] }
 
 /** Duration a constant-speed media clip occupies on the timeline. Mirrors
@@ -295,6 +302,7 @@ export function mediaClipTimelineDurationMs(clip: {
 }
 
 export interface Track {
+  name?: string
   id: string
   kind: TrackKind
   clips: Clip[]
@@ -426,6 +434,7 @@ export interface SequenceSummary {
 }
 
 export interface Project {
+  recordings?: Array<{ camera_clip?: string | null; [key: string]: unknown }>
   schema: string
   name: string
   /** Latest durable operation id returned by project.state / project sync. */

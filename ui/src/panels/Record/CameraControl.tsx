@@ -26,6 +26,8 @@ export interface CameraCapability {
 }
 
 interface CameraControlProps {
+  cameraSeparate?: boolean
+  onCameraSeparate?: (separate: boolean) => void
   capability: CameraCapability
   enabled: boolean
   deviceId: string | null
@@ -83,6 +85,8 @@ export function cameraLayoutUnavailableReason(
 }
 
 export function CameraControl({
+  cameraSeparate = true,
+  onCameraSeparate,
   capability,
   enabled,
   deviceId,
@@ -113,7 +117,7 @@ export function CameraControl({
       <label className="rec-studio-controls__camera-toggle">
         <span>
           <strong>Camera</strong>
-          <small>{rawCapture ? 'Available in Auto-edit mode' : 'Keep a separate, editable camera take'}</small>
+          <small>{rawCapture ? 'Available in Auto-edit mode' : 'Include a camera take'}</small>
         </span>
         <input
           type="checkbox"
@@ -122,6 +126,20 @@ export function CameraControl({
           disabled={disabled || rawCapture || (!enabled && !canEnable)}
           onChange={(event) => onEnabled(event.target.checked)}
         />
+      </label>
+
+      <label className="rec-studio-controls__camera-toggle">
+        <span>
+          <strong>Edit the camera later (own track)</strong>
+          <small>{cameraSeparate
+            ? 'The camera gets its own Camera track in Edit; you can move, resize, cut or hide it.'
+            : 'The camera is drawn into the video as recorded.'}</small>
+          {!enabled && <small id="rec-camera-separate-reason">Turn on Camera to edit it later.</small>}
+        </span>
+        <input type="checkbox" data-cut-action="rec-camera-separate" data-cut-rec-camera-separate checked={cameraSeparate}
+          disabled={disabled || rawCapture || !enabled || !canEnable}
+          aria-describedby={!enabled ? 'rec-camera-separate-reason' : undefined}
+          onChange={(event) => onCameraSeparate?.(event.target.checked)} />
       </label>
 
       {!canEnable ? (

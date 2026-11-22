@@ -23,6 +23,7 @@ import { usePreviewViewOptions } from './usePreviewViewOptions'
 import { previewPlaybackCleanupPosition, previewPlaybackClockPosition, useVoiceoverPlayback } from './useVoiceoverPlayback'
 import { GuideOverlay } from './GuideOverlay'
 import { useContainBox } from './useContainBox'
+import { dragTransform } from './effectiveTransform'
 import { events } from '../../lib/events'
 import {
   openVideoToolsGuide,
@@ -342,7 +343,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   }, [setComposed])
   // While dragging an overlay's on-canvas handles, the LIVE transform (so the
   // overlay <video> + the handle box move together before the edit.transform commit).
-  const [dragOverride, setDragOverride] = useState<{ clipId: string; transform: Required<ClipTransform> } | null>(null)
+  const [dragOverride, setDragOverride] = useState<{ clipId: string; transform: (ClipTransform & { opacity: number }) } | null>(null)
   const imageAssets = useMemo(() => imageAssetIds(project), [project])
   // COMPOSED playback must remain a playback surface. Exact engine frames stay
   // authoritative while paused/scrubbing; while the clock runs, the existing
@@ -735,13 +736,16 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   // Commit an on-canvas transform drag (edit.transform) and flip to the COMPOSED
   // frame so the exact composite is visible. Clearing the override after the verb
   // returns avoids a one-frame jump back to the pre-drag position.
-  const commitTransform = useCallback(async (clipId: string, t: Required<ClipTransform>) => {
+  const commitTransform = useCallback(async (clipId: string, t: (ClipTransform & { opacity: number })) => {
     const r = await runUserVerb('edit.transform', {
       clip: clipId,
-      x: +t.x.toFixed(4),
-      y: +t.y.toFixed(4),
-      scale: +t.scale.toFixed(4),
-      opacity: +t.opacity.toFixed(4),
+      x: t.x,
+      y: t.y,
+      scale: t.scale,
+      opacity: t.opacity,
+      shape: t.shape,
+      radius: t.radius,
+      ring: t.ring,
       rationale: 'user: on-canvas transform',
     }, 'Could not move or resize this overlay.')
     setDragOverride(null)
@@ -899,8 +903,11 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
                 clipId={o.clipId}
                 transform={dragOverride?.clipId === o.clipId ? dragOverride.transform : o.transform}
                 stageRef={stageRef}
+                pinResizePosition={o.keyedCamera}
+                onCancel={() => setDragOverride(null)}
                 onLive={(t) => setDragOverride({ clipId: o.clipId, transform: t })}
-                onCommit={(t) => void commitTransform(o.clipId, t)}
+                onCommit={(t, resize) => void commitTransform(o.clipId,
+                  dragTransform(o.storedTransform ?? o.transform, o.transform, t, !!o.keyedCamera, resize))}
               />
             ))}
             {/* #193b: draggable TITLE GHOST — drag the title to any spot on the actual

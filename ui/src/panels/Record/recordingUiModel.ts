@@ -14,8 +14,11 @@ const RECORD_CARD_LABELS: Record<string, string> = {
   wayland_input: 'Linux input',
 }
 
+/** The check's name in sentence case ("Pointer and keys"); an unlisted id gets its words and a capital first letter. */
 export function recordCardLabel(name: string): string {
-  return RECORD_CARD_LABELS[name] ?? name.replaceAll('_', ' ')
+  if (Object.hasOwn(RECORD_CARD_LABELS, name)) return RECORD_CARD_LABELS[name]
+  const words = name.replaceAll('_', ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
 export const DUR_PRESETS: { label: string; ms: number | null }[] = [

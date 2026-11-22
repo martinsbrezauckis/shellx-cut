@@ -1838,11 +1838,46 @@ impl Drop for ReceiptIdReservation {
 pub(super) static PAUSE_AFTER_PUBLISH_MS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+#[cfg(test)]
+pub(super) mod final_snapshot_gate {
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::sync::Notify;
+
+    #[derive(Clone)]
+    pub struct Gate {
+        pub path: String,
+        pub reached: Arc<Notify>,
+        pub release: Arc<Notify>,
+    }
+
+    static GATE: OnceLock<Mutex<Option<Gate>>> = OnceLock::new();
+    fn slot() -> &'static Mutex<Option<Gate>> {
+        GATE.get_or_init(|| Mutex::new(None))
+    }
+    pub fn install(value: Option<Gate>) {
+        *slot().lock().unwrap() = value;
+    }
+    pub async fn wait(path: Option<&str>) {
+        let gate = slot()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|gate| path == Some(gate.path.as_str()))
+            .cloned();
+        if let Some(gate) = gate {
+            gate.reached.notify_one();
+            gate.release.notified().await;
+        }
+    }
+}
+
 pub(super) async fn render_final(
     state: &AppState,
     args: Value,
     _actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    #[cfg(test)]
+    let gate_path = args["path"].as_str().map(str::to_owned);
     #[derive(serde::Deserialize, Default)]
     struct Args {
         path: Option<String>,
@@ -1880,6 +1915,8 @@ pub(super) async fn render_final(
         /// Target AUDIO bitrate (e.g. "384k", "192k"). Default: the format's
         /// audio rate (192k AAC). Lossless formats (wav/prores PCM) ignore it.
         audio_bitrate: Option<String>,
+        #[serde(default)]
+        allow_stale_recordings: bool,
         #[serde(default)]
         dry_run: bool,
     }
@@ -1992,7 +2029,10 @@ pub(super) async fn render_final(
         loudness_target,
     };
     super::edit_tools::ensure_overlay_movies(state).await?;
+    #[cfg(test)]
+    final_snapshot_gate::wait(gate_path.as_deref()).await;
     let (project, edl, dir, at_op) = snapshot(state).await?;
+    crate::screen_record::take_edit::guard_export(&project, a.allow_stale_recordings)?;
     // Quality tier (draft|standard|high) — validate up front so an unknown name
     // errors BEFORE any encode. It shifts the rate knob within the chosen codec.
     let quality = a.preset.as_deref().unwrap_or("standard");

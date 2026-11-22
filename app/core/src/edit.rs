@@ -281,7 +281,7 @@ pub fn split_pinned(
                         reverse: c.reverse,
                         freeze: c.freeze.clone(),
                         animation: c.animation.clone(),
-                        keyframes: c.keyframes.clone(),
+                        keyframes: crate::keyframe_window::shifted(&c.keyframes, off as i64),
                         eq: c.eq.clone(),
                         // Mute ranges are SOURCE-time: both halves keep the parent's
                         // list verbatim; each renders only the overlap with its own
@@ -487,6 +487,8 @@ pub fn ripple_delete_pinned(
                     }
                     if keeps_right {
                         let mut right = c.clone();
+                        right.keyframes =
+                            crate::keyframe_window::shifted(&c.keyframes, (b - t0) as i64);
                         right.src_in_ms =
                             c.src_in_ms + crate::types::tl_off_to_src(b - t0, c.speed);
                         right.fade = right_fade;
@@ -611,6 +613,7 @@ pub fn trim(
                 )
                 .with_clip(clip_id));
             }
+            crate::keyframe_window::trim_in(c, new_in);
             c.src_in_ms = new_in;
             c.src_out_ms = new_out;
             (old, new_in, new_out, c.asset.clone())
@@ -689,6 +692,7 @@ pub fn speed(project: &mut Project, clip_id: &str, factor: f64) -> Result<Vec<Op
             let mut keyframes_rescaled = 0usize;
             if old_dur > 0 && old_dur != new_dur {
                 for track in &mut c.keyframes {
+                    crate::keyframe_window::retime_lead_in(track, old_dur, new_dur);
                     for point in &mut track.points {
                         point.t_ms = (((point.t_ms as u128) * (new_dur as u128)
                             + (old_dur as u128 / 2))
@@ -1344,7 +1348,7 @@ fn splice_into_track(
                         reverse: c.reverse,
                         freeze: c.freeze.clone(),
                         animation: c.animation.clone(),
-                        keyframes: c.keyframes.clone(),
+                        keyframes: crate::keyframe_window::shifted(&c.keyframes, off as i64),
                         eq: c.eq.clone(),
                         // SOURCE-time mute ranges: both halves keep the parent's list.
                         mute_ranges: c.mute_ranges.clone(),
@@ -2349,6 +2353,7 @@ pub fn transform(
     clip_id: &str,
     t: crate::types::ClipTransform,
 ) -> Result<Vec<OpEffect>, CutError> {
+    t.validate_shape()?;
     if !(t.scale > 0.0 && t.scale <= 1.0) {
         return Err(CutError::new(
             codes::INVALID_ARGS,
@@ -2374,6 +2379,8 @@ pub fn transform(
         .find_clip(clip_id)
         .map(|(tr, i)| (tr.to_string(), i))
         .ok_or_else(|| clip_not_found(clip_id))?;
+    t.validate_shape_track(project, &track_id)?;
+    crate::recording::camera::hand_place(project, clip_id, &t);
     let track = project
         .tracks
         .iter_mut()
@@ -2394,7 +2401,7 @@ pub fn transform(
             c.transform = new.clone();
             Ok(vec![fx(
                 Some(&track_id),
-                json!({"clip": clip_id, "old_transform": old, "new_transform": new}),
+                json!({"clip": clip_id, "old_transform": old, "new_transform": new, "shape": new.as_ref().map(|t| t.shape).unwrap_or_default()}),
             )])
         }
         _ => Err(CutError::new(
@@ -3143,118 +3150,9 @@ pub fn animate(
     )])
 }
 
-/// Set (or clear) a media clip's KEYFRAMES for ONE parameter (verb `edit.keyframe`).
-/// `points` REPLACES that param's keyframe track (SET semantics); an empty list
-/// removes it. The renderer animates the param over the clip via an ffmpeg time-
-/// expression (opacity → overlay alpha, volume → audio gain) — a keyframed param
-/// OVERRIDES its static counterpart. Track validation: `opacity` needs a VIDEO-track
-/// clip (animated on the overlay alpha), `volume` needs an AUDIO-track clip. Returns
-/// the op effect (old + new keyframe lists) for the receipt/undo.
-pub fn keyframe(
-    project: &mut Project,
-    clip_id: &str,
-    param: crate::types::KfParam,
-    mut points: Vec<crate::types::KfPoint>,
-    interp: crate::types::KfInterp,
-) -> Result<Vec<OpEffect>, CutError> {
-    use crate::types::KfParam;
-    let (track_id, idx) = project
-        .find_clip(clip_id)
-        .map(|(tr, i)| (tr.to_string(), i))
-        .ok_or_else(|| clip_not_found(clip_id))?;
-    let kind = project.track(&track_id).unwrap().kind;
-    let timeline_duration_ms = project.track(&track_id).unwrap().clips[idx].timeline_duration_ms();
-    let ok = match param {
-        KfParam::Opacity | KfParam::PosX | KfParam::PosY | KfParam::Scale => {
-            kind == TrackKind::Video
-        }
-        KfParam::Volume => kind == TrackKind::Audio,
-    };
-    if !ok {
-        let need = match param {
-            KfParam::Opacity => "a video-track clip (opacity animates the overlay alpha)",
-            KfParam::PosX | KfParam::PosY => {
-                "a video-track clip (pos_x/pos_y animate the overlay PiP position)"
-            }
-            KfParam::Scale => "a video-track clip (scale animates the clip zoom)",
-            KfParam::Volume => "an audio-track clip (volume animates the audio gain)",
-        };
-        return Err(CutError::new(
-            codes::INVALID_ARGS,
-            format!("keyframing '{param:?}' needs {need}"),
-            "opacity → video clip, volume → audio clip",
-        )
-        .with_clip(clip_id));
-    }
-    let track = project
-        .tracks
-        .iter_mut()
-        .find(|x| x.id == track_id)
-        .unwrap();
-    let Clip::Media(c) = &mut track.clips[idx] else {
-        return Err(CutError::new(
-            codes::INVALID_ARGS,
-            format!("'{clip_id}' is not a media clip"),
-            "keyframes apply to media clips",
-        )
-        .with_clip(clip_id));
-    };
-    if c.speed_ramp.is_some() {
-        return Err(ramp_conflict(clip_id, "edit.keyframe"));
-    }
-    if let Some(point) = points
-        .iter()
-        .find(|point| point.t_ms > timeline_duration_ms)
-    {
-        return Err(CutError::new(
-            codes::INVALID_ARGS,
-            format!(
-                "keyframe at {}ms is beyond '{clip_id}' timeline duration of {timeline_duration_ms}ms",
-                point.t_ms
-            ),
-            "keyframe times are clip-local timeline milliseconds after retiming; move the point within the clip duration",
-        )
-        .with_clip(clip_id));
-    }
-    // Scale keyframes and edit.animate (Ken Burns) BOTH drive a `zoompan` on a base
-    // clip — having both on one clip is ambiguous (two competing zooms). The keyframe
-    // channel is the richer (multi-point, eased) form, so reject it when a static
-    // animation is already set (clear the animation first). Only enforced when there
-    // are actually points to set (an empty Scale list is a CLEAR — always allowed).
-    if matches!(param, KfParam::Scale) && !points.is_empty() && c.animation.is_some() {
-        return Err(CutError::new(
-            codes::INVALID_ARGS,
-            format!("'{clip_id}' already has an edit.animate Ken Burns zoom; scale keyframes and edit.animate are mutually exclusive (the keyframe channel is the multi-point eased form)"),
-            "clear the animation first: edit.animate {clip, enabled:false}, then set the scale keyframes",
-        )
-        .with_clip(clip_id));
-    }
-    // Sort the control points by time (the renderer's expression assumes ordered
-    // points); clamp opacity values into [0,1] (volume is an open multiplier; scale
-    // is clamped to the zoompan-legal [1,10] at render, matching edit.animate).
-    points.sort_by_key(|p| p.t_ms);
-    if matches!(param, KfParam::Opacity) {
-        for p in &mut points {
-            p.value = p.value.clamp(0.0, 1.0);
-        }
-    }
-    let old = c.keyframes.clone();
-    // SET semantics: drop any existing track for this param, then add the new one
-    // (empty points = just clear). Identity (no keyframes) → byte-identical replay.
-    c.keyframes.retain(|k| k.param != param);
-    if !points.is_empty() {
-        c.keyframes.push(crate::types::Keyframe {
-            param,
-            points,
-            interp,
-        });
-    }
-    let new = c.keyframes.clone();
-    Ok(vec![fx(
-        Some(&track_id),
-        json!({"clip": clip_id, "param": param, "old_keyframes": old, "keyframes": new}),
-    )])
-}
+mod keyframe;
+pub use keyframe::keyframe;
+pub(crate) use keyframe::keyframe_legacy;
 
 /// Set (or clear) a media clip's vector/freeform MASK (verb `edit.add_mask`). The
 /// mask scopes an effect (blur/pixelate/black) to a shape REGION — the region-blur /
@@ -4888,41 +4786,7 @@ pub fn restore(
 /// Apply the internal timeline snapshot verb. Shared by restore() (live path)
 /// and store::apply_record (replay path). Project-level timeline state fields
 /// are optional so snapshots written before each extension still apply unchanged.
-pub(crate) fn apply_set_timeline(
-    project: &mut Project,
-    args: &serde_json::Value,
-) -> Result<(), CutError> {
-    #[derive(serde::Deserialize)]
-    struct Snapshot {
-        tracks: Vec<Track>,
-        markers: Vec<Marker>,
-        #[serde(default)]
-        caption_styles: Option<std::collections::BTreeMap<String, crate::types::CaptionStyle>>,
-        #[serde(default)]
-        adjustments: Option<Vec<crate::types::Adjustment>>,
-        #[serde(default)]
-        nests: Option<Vec<crate::types::Nest>>,
-        #[serde(default)]
-        transcript_ignores: Option<Vec<crate::types::TranscriptIgnore>>,
-    }
-    let s: Snapshot = serde_json::from_value(args.clone())?;
-    timeline_snapshot::validate_tracks(&s.tracks)?;
-    project.tracks = s.tracks;
-    project.markers = s.markers;
-    if let Some(styles) = s.caption_styles {
-        project.caption_styles = styles;
-    }
-    if let Some(adjustments) = s.adjustments {
-        project.adjustments = adjustments;
-    }
-    if let Some(nests) = s.nests {
-        project.nests = nests;
-    }
-    if let Some(transcript_ignores) = s.transcript_ignores {
-        project.transcript_ignores = transcript_ignores;
-    }
-    Ok(())
-}
+pub(crate) use timeline_snapshot::apply_set_timeline;
 
 // ---------------------------------------------------------------------------
 // shared error constructors

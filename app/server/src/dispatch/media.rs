@@ -1488,9 +1488,9 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
         h: Option<u32>,
     }
     let a: Args = parse_args(args)?;
-    let (dir, _receipts, proxies) = project_paths(state).await?;
+    let (dir, _receipts, _proxies) = project_paths(state).await?;
     // Read the asset's kind/duration/path (from its probe) under a short read lock.
-    let (kind, dur, has_proxy, src) = {
+    let (kind, dur, has_proxy) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
         let asset = store.project.assets.get(&a.asset).ok_or_else(|| {
@@ -1510,13 +1510,16 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
             .and_then(|p| p.get("duration_ms"))
             .and_then(|d| d.as_u64())
             .unwrap_or(0);
-        (kind, dur, asset.proxy.is_some(), asset.path.clone())
+        (kind, dur, asset.proxy.is_some())
     };
     let film_dir = dir.join("filmstrip");
     // A cleanup job takes this same lease exclusively. Hold it across output
     // publication, durable ownership recording, and asset write-back so a
     // cache plan can never race a cooperating filmstrip producer.
     let _cache_write = state.cache_lifecycle_lease.read().await;
+    let identity =
+        crate::cache_lifecycle::CacheSource::capture(state, &dir, &a.asset, None).await?;
+    let binding = identity.binding(crate::cache_lifecycle::CacheKind::Thumbnails);
 
     // WINDOWED (zoom) mode — sample just the requested source window. Video only
     // (an image is one frame at every zoom); ephemeral (NOT stored on the asset),
@@ -1553,21 +1556,32 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
         let count = a.count.unwrap_or(12);
         let h = a.h.unwrap_or(80);
         let aid = a.asset.clone();
-        let proxy_path = proxies.join(format!("{}.mp4", a.asset));
+        let proxy_path = identity.proxy_input(&dir).await?;
         let path = run_blocking("media.filmstrip.window", move || {
-            cut_media::filmstrip::make_window_thumbs(&proxy_path, &film_dir, &aid, t0, t1, count, h)
+            cut_media::filmstrip::make_window_thumbs_bound(
+                &proxy_path,
+                &film_dir,
+                &aid,
+                t0,
+                t1,
+                count,
+                h,
+                &binding,
+            )
         })
         .await?;
         let rel = format!(
             "filmstrip/{}",
             path.file_name().unwrap_or_default().to_string_lossy()
         );
-        crate::cache_lifecycle::record_generated(
-            &dir,
-            crate::cache_lifecycle::CacheKind::Thumbnails,
-            &a.asset,
-            path.file_name().unwrap_or_default(),
-        )?;
+        identity
+            .record(
+                state,
+                &dir,
+                crate::cache_lifecycle::CacheKind::Thumbnails,
+                &path,
+            )
+            .await?;
         return Ok(VerbResult::ok(json!({
             "thumbs": rel,
             "range_ms": [t0, t1],
@@ -1579,9 +1593,9 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
     let aid = a.asset.clone();
     // Images: a single-frame thumbnail from the source (no proxy/duration needed).
     let path = if kind == "image" {
-        let src = std::path::PathBuf::from(src);
+        let src = identity.source.clone();
         run_blocking("media.image_thumb", move || {
-            cut_media::filmstrip::make_image_thumb(&src, &film_dir, &aid)
+            cut_media::filmstrip::make_image_thumb_bound(&src, &film_dir, &aid, &binding)
         })
         .await?
     } else if kind == "video" {
@@ -1592,9 +1606,9 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
                 "wait for the import chain's proxy step, then retry",
             ));
         }
-        let proxy_path = proxies.join(format!("{}.mp4", a.asset));
+        let proxy_path = identity.proxy_input(&dir).await?;
         run_blocking("media.filmstrip", move || {
-            cut_media::filmstrip::make_filmstrip(&proxy_path, &film_dir, &aid, dur)
+            cut_media::filmstrip::make_filmstrip_bound(&proxy_path, &film_dir, &aid, dur, &binding)
         })
         .await?
     } else {
@@ -1608,12 +1622,14 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
         "filmstrip/{}",
         path.file_name().unwrap_or_default().to_string_lossy()
     );
-    crate::cache_lifecycle::record_generated(
-        &dir,
-        crate::cache_lifecycle::CacheKind::Thumbnails,
-        &a.asset,
-        path.file_name().unwrap_or_default(),
-    )?;
+    identity
+        .record(
+            state,
+            &dir,
+            crate::cache_lifecycle::CacheKind::Thumbnails,
+            &path,
+        )
+        .await?;
     update_asset(state, &a.asset, |asset| asset.filmstrip = Some(rel.clone())).await?;
     Ok(VerbResult::ok(json!({ "filmstrip": rel })))
 }
@@ -1723,8 +1739,13 @@ pub(super) fn spawn_import_chain(
             let film_dir = dir.join("filmstrip");
             let (s, fd, aid) = (src.clone(), film_dir, asset_id.clone());
             let _cache_write = state.cache_lifecycle_lease.read().await;
+            let identity = match crate::cache_lifecycle::CacheSource::capture(&state, &dir, &asset_id, Some((&src, &hash))).await {
+                Ok(identity) => identity,
+                Err(error) => return state.jobs.fail(&jid, error),
+            };
+            let binding = identity.binding(crate::cache_lifecycle::CacheKind::Thumbnails);
             let thumb = run_blocking("media.image_thumb", move || {
-                cut_media::filmstrip::make_image_thumb(&s, &fd, &aid)
+                cut_media::filmstrip::make_image_thumb_bound(&s, &fd, &aid, &binding)
             })
             .await;
             // A thumbnail that could not be made is said, not dropped.
@@ -1739,12 +1760,7 @@ pub(super) fn spawn_import_chain(
                     "filmstrip/{}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                match crate::cache_lifecycle::record_generated(
-                    &dir,
-                    crate::cache_lifecycle::CacheKind::Thumbnails,
-                    &asset_id,
-                    path.file_name().unwrap_or_default(),
-                ) {
+                match identity.record(&state, &dir, crate::cache_lifecycle::CacheKind::Thumbnails, &path).await {
                     Ok(()) => {
                         if let Err(e) = update_asset(&state, &asset_id, |a| a.filmstrip = Some(rel)).await
                         {
@@ -1988,6 +2004,7 @@ pub(super) fn spawn_import_chain(
                 state.clone(),
                 asset_id.clone(),
                 src.clone(),
+                hash.clone(),
                 proxies.clone(),
                 dir.clone(),
                 probed.kind.clone(),
@@ -2105,6 +2122,7 @@ fn spawn_proxy_chain(
     state: AppState,
     asset_id: String,
     src: PathBuf,
+    source_hash: String,
     proxies: PathBuf,
     dir: PathBuf,
     kind: String,
@@ -2120,6 +2138,18 @@ fn spawn_proxy_chain(
         // filmstrip and both ledger records. An exclusive purge either starts
         // before this chain or refuses while this producer is active.
         let _cache_write = state.cache_lifecycle_lease.read().await;
+        let identity = match crate::cache_lifecycle::CacheSource::capture(
+            &state,
+            &dir,
+            &asset_id,
+            Some((&src, &source_hash)),
+        )
+        .await
+        {
+            Ok(identity) => identity,
+            Err(error) => return state.jobs.fail(&jid, error),
+        };
+        let binding = identity.binding(crate::cache_lifecycle::CacheKind::Proxies);
         state.jobs.progress(
             &jid,
             0.05,
@@ -2137,7 +2167,9 @@ fn spawn_proxy_chain(
                     .jobs
                     .progress(&jid_cb, 0.05 + f * 0.80, Some("transcoding proxy".into()));
             };
-            cut_media::make_proxy_with_progress_and_tone_map(&s, &pd, &aid, total, &cb, &tone_map)
+            cut_media::make_proxy_with_progress_and_tone_map_bound(
+                &s, &pd, &aid, total, &cb, &tone_map, &binding,
+            )
         })
         .await
         {
@@ -2146,26 +2178,15 @@ fn spawn_proxy_chain(
                     "proxies/{}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                // Only a proxy this engine made, for this asset's source, is
-                // used by a later preview.
-                let source_hash = {
-                    let guard = state.project.read().await;
-                    guard
-                        .as_ref()
-                        .and_then(|store| store.project.assets.get(&asset_id))
-                        .map(|asset| asset.hash.clone())
-                        .unwrap_or_default()
-                };
-                cut_media::cache_trust::remember_bound(
-                    &path,
-                    &proxy_trust::proxy_binding(&asset_id, &source_hash),
-                );
-                match crate::cache_lifecycle::record_generated(
-                    &dir,
-                    crate::cache_lifecycle::CacheKind::Proxies,
-                    &asset_id,
-                    path.file_name().unwrap_or_default(),
-                ) {
+                match identity
+                    .record(
+                        &state,
+                        &dir,
+                        crate::cache_lifecycle::CacheKind::Proxies,
+                        &path,
+                    )
+                    .await
+                {
                     Ok(()) => {
                         match update_asset(&state, &asset_id, |a| a.proxy = Some(rel)).await {
                             Ok(_) => true,
@@ -2219,8 +2240,9 @@ fn spawn_proxy_chain(
                 let proxy_path = proxies.join(format!("{asset_id}.mp4"));
                 let film_dir = dir.join("filmstrip");
                 let (pp, fd, aid) = (proxy_path, film_dir, asset_id.clone());
+                let binding = identity.binding(crate::cache_lifecycle::CacheKind::Thumbnails);
                 let strip = run_blocking("media.filmstrip", move || {
-                    cut_media::filmstrip::make_filmstrip(&pp, &fd, &aid, d)
+                    cut_media::filmstrip::make_filmstrip_bound(&pp, &fd, &aid, d, &binding)
                 })
                 .await;
                 if let Err(e) = &strip {
@@ -2235,12 +2257,15 @@ fn spawn_proxy_chain(
                         "filmstrip/{}",
                         path.file_name().unwrap_or_default().to_string_lossy()
                     );
-                    match crate::cache_lifecycle::record_generated(
-                        &dir,
-                        crate::cache_lifecycle::CacheKind::Thumbnails,
-                        &asset_id,
-                        path.file_name().unwrap_or_default(),
-                    ) {
+                    match identity
+                        .record(
+                            &state,
+                            &dir,
+                            crate::cache_lifecycle::CacheKind::Thumbnails,
+                            &path,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             if let Err(e) =
                                 update_asset(&state, &asset_id, |a| a.filmstrip = Some(rel)).await

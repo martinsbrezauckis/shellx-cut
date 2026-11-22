@@ -9,7 +9,7 @@
 // Coordinate mapping is direct here: the `.pv-stage` is the normalized space —
 // overlays already position at left=x·100% / top=y·100% / size=scale·100% of the
 // stage (overlayBoxStyle). So a pixel drag → normalized delta = Δpx / stageRect.dim.
-// transform is TOP-LEFT-origin fractions (ox = W·x; NO factor of 2). Round late.
+// transform is TOP-LEFT-origin fractions (ox = W·x; NO factor of 2).
 //
 // Live feedback: onLive fires every move (Preview moves the actual overlay <video>
 // with the box); onCommit fires once on pointer-up (edit.transform) — matching the
@@ -21,7 +21,7 @@
 import { useRef, type PointerEvent as RPointerEvent, type RefObject } from 'react'
 import type { ClipTransform } from '../../lib/client'
 
-type T = Required<ClipTransform>
+type T = (ClipTransform & { opacity: number })
 type Corner = 'tl' | 'tr' | 'bl' | 'br'
 type Mode = 'move' | Corner
 
@@ -29,12 +29,14 @@ const MIN_SCALE = 0.05
 
 /** Clamp a transform: scale into [MIN_SCALE, 1], and x/y so the box stays fully
  *  inside the frame (x,y ∈ [0, 1−scale]). Keeps the overlay on-canvas + visible. */
-function clampT(t: T): T {
-  const scale = Math.min(1, Math.max(MIN_SCALE, t.scale))
+function clampT(t: T, aspect: number): T {
+  const shaped = t.shape && t.shape !== 'rect'
+  const scale = Math.min(shaped ? Math.min(1, 1 / aspect) : 1, Math.max(MIN_SCALE, t.scale))
   const max = Math.max(0, 1 - scale)
   return {
+    ...t,
     x: Math.min(max, Math.max(0, t.x)),
-    y: Math.min(max, Math.max(0, t.y)),
+    y: Math.min(Math.max(0, 1 - scale * (shaped ? aspect : 1)), Math.max(0, t.y)),
     scale,
     opacity: t.opacity,
   }
@@ -54,12 +56,17 @@ export function TransformHandles({
   stageRef,
   onLive,
   onCommit,
+  pinResizePosition = false,
+  onCancel,
 }: {
   clipId: string
   transform: T
   stageRef: RefObject<HTMLDivElement | null>
   onLive: (t: T) => void
-  onCommit: (t: T) => void
+  onCommit: (t: T, resize: boolean) => void
+  /** Keyed cameras resize about their visible top-left, like Inspector Size. */
+  pinResizePosition?: boolean
+  onCancel?: () => void
 }) {
   const drag = useRef<DragState | null>(null)
 
@@ -82,24 +89,27 @@ export function TransformHandles({
       const rect = stageRef.current?.getBoundingClientRect()
       if (!d || !rect || rect.width <= 0 || rect.height <= 0) return
       const s = d.start
+      const aspect = s.shape && s.shape !== 'rect' ? rect.width / rect.height : 1
       let next: T
       if (d.mode === 'move') {
         const dxN = (ev.clientX - d.startX) / rect.width
         const dyN = (ev.clientY - d.startY) / rect.height
-        next = clampT({ ...s, x: s.x + dxN, y: s.y + dyN })
+        next = clampT({ ...s, x: s.x + dxN, y: s.y + dyN }, aspect)
       } else {
-        // Corner scale: hold the OPPOSITE corner fixed. The anchor is the corner
+        // Normally hold the OPPOSITE corner fixed. Keyed cameras keep their
+        // recorded top-left instead, so resizing is the same operation as Size.
+        // The size calculation's anchor is the corner
         // diagonally across from the dragged one; scale = the larger of the
         // cursor→anchor spans (uniform), then recompute top-left to pin the anchor.
         const anchorX = d.mode === 'tl' || d.mode === 'bl' ? s.x + s.scale : s.x
-        const anchorY = d.mode === 'tl' || d.mode === 'tr' ? s.y + s.scale : s.y
+        const anchorY = d.mode === 'tl' || d.mode === 'tr' ? s.y + s.scale * aspect : s.y
         const cx = (ev.clientX - rect.left) / rect.width
         const cy = (ev.clientY - rect.top) / rect.height
-        let scale = Math.max(Math.abs(cx - anchorX), Math.abs(cy - anchorY))
+        let scale = Math.max(Math.abs(cx - anchorX), Math.abs(cy - anchorY) / aspect)
         scale = Math.min(1, Math.max(MIN_SCALE, scale))
         const nx = d.mode === 'tl' || d.mode === 'bl' ? anchorX - scale : anchorX
-        const ny = d.mode === 'tl' || d.mode === 'tr' ? anchorY - scale : anchorY
-        next = clampT({ ...s, x: nx, y: ny, scale })
+        const ny = d.mode === 'tl' || d.mode === 'tr' ? anchorY - scale * aspect : anchorY
+        next = clampT({ ...s, x: pinResizePosition ? s.x : nx, y: pinResizePosition ? s.y : ny, scale }, aspect)
       }
       d.last = next
       onLive(next)
@@ -109,7 +119,10 @@ export function TransformHandles({
       window.removeEventListener('pointerup', onUp)
       const d = drag.current
       drag.current = null
-      if (d) onCommit(d.last)
+      // Clicking a keyed bubble must not turn into a hand placement.
+      if (d && (d.last.x !== d.start.x || d.last.y !== d.start.y || d.last.scale !== d.start.scale)) {
+        onCommit(d.last, d.mode !== 'move')
+      } else onCancel?.()
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -120,7 +133,9 @@ export function TransformHandles({
     left: `${(transform.x * 100).toFixed(3)}%`,
     top: `${(transform.y * 100).toFixed(3)}%`,
     width: `${(transform.scale * 100).toFixed(3)}%`,
-    height: `${(transform.scale * 100).toFixed(3)}%`,
+    ...(transform.shape && transform.shape !== 'rect'
+      ? { height: 'auto', aspectRatio: '1' }
+      : { height: `${(transform.scale * 100).toFixed(3)}%` }),
   }
   const corners: { c: Corner; cursor: string; style: React.CSSProperties }[] = [
     { c: 'tl', cursor: 'nwse-resize', style: { left: 0, top: 0 } },

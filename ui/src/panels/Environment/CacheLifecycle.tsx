@@ -129,7 +129,6 @@ export default function CacheLifecycle({ hasProject, projectSession, rebuildAsse
         return
       }
       setRebuildResult(response.result)
-      if (response.result.status === 'not_needed') setRebuildSuccess('Editing cache is already up to date.')
     } catch {
       if (currentSession.current !== session) return
       setRebuildResult(null)
@@ -154,9 +153,8 @@ export default function CacheLifecycle({ hasProject, projectSession, rebuildAsse
         return
       }
       setRebuildResult(response.result)
-      if (response.result.status === 'not_needed') {
-        setRebuildSuccess('Editing cache is already up to date.')
-      } else if (response.result.job_id) {
+      if (response.result.status === 'not_needed') return
+      if (response.result.job_id) {
         setActiveJob({ id: response.result.job_id, kind: 'rebuild', session })
         setJob(null)
         setJobSession(null)

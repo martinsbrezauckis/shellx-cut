@@ -37,6 +37,7 @@ mod scene_model;
 pub mod scene_projection;
 pub mod scene_reducer;
 mod scene_types;
+pub mod zoom_segments;
 
 #[cfg(test)]
 mod event_run_merge_tests;

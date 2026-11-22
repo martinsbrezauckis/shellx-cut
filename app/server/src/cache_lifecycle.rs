@@ -6,14 +6,16 @@
 
 mod inventory;
 mod ownership;
+mod production;
 mod purge;
 mod rebuild;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use ownership::{
-    pending_rebuild_outputs_for_asset, record_generated, remove_owned_output, OwnedRemoval,
-};
+#[cfg(test)]
+pub(crate) use ownership::record_generated;
+pub(crate) use ownership::{pending_rebuild_outputs_for_asset, remove_owned_output, OwnedRemoval};
+pub(crate) use production::CacheSource;
 pub(crate) use purge::{preview, start_purge};
 pub(crate) use rebuild::start_rebuild;
 pub(crate) use rebuild::SourceCheck;
@@ -46,6 +48,8 @@ pub(crate) struct CacheRebuildActive {
     /// Keeping it only while the job is active lets a repeated human request
     /// explain the already-queued work without scanning or inventing counts.
     pub(crate) counts: serde_json::Value,
+    /// Bounded, path-free reasons for selected assets that were not scheduled.
+    pub(crate) skipped_assets: serde_json::Value,
     /// Exact work-unit estimate from the same source-identity admission pass
     /// that created this worker. A duplicate request must repeat that result,
     /// rather than recomputing a potentially different cost while work runs.

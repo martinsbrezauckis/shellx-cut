@@ -3,9 +3,12 @@ import { callVerb } from '../../lib/client'
 import {
   NO_RECORDING_PAUSE_CAPABILITY,
   recordingPauseAcknowledged,
+  recordingPauseAcknowledgedLine,
   recordingPauseCapability,
   recordingTakePause,
+  boundaryAfterStatus,
   RecordingPauseControlLifetime,
+  type RecordingPauseBoundary,
   type RecordingPauseCapability,
   type RecordingPauseState,
 } from './recordingPause'
@@ -18,9 +21,14 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
   const [state, setState] = useState<RecordingPauseState>('idle')
   const [message, setMessage] = useState('Enable Pause & resume before your next recording.')
   const [captureId, setCaptureId] = useState<string | null>(null)
+  // The recorder's recorded time at the last confirmed Pause or Resume: the timer stands still on it.
+  const [boundary, setBoundary] = useState<RecordingPauseBoundary | null>(null)
   const controlLifetimeRef = useRef(new RecordingPauseControlLifetime())
   const controlRevisionRef = useRef(0)
   const controlPendingRef = useRef(false)
+  // A status poll knows the state but not the time. While it still reports the
+  // pause the person just made, keep the line that says when it happened.
+  const pausedLineRef = useRef<string | null>(null)
 
   useLayoutEffect(() => {
     const lifetime = controlLifetimeRef.current
@@ -41,14 +49,18 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
         if (cancelled || revision !== controlRevisionRef.current) return
         const pause = reply.ok ? recordingTakePause(reply.result, activeCaptureId) : null
         if (!pause) return
+        if (pause.state !== 'paused') pausedLineRef.current = null
         setCaptureId(activeCaptureId)
         setActiveEnabled(pause.enabled)
         setState(pause.state)
-        setMessage(pause.message)
+        setBoundary((current) => boundaryAfterStatus(current, pause.state))
+        setMessage(pause.state === 'paused' && pausedLineRef.current ? pausedLineRef.current : pause.message)
       } catch { /* A later status poll can recover the same running take. */ }
       finally { checking = false }
     }
     controlLifetimeRef.current.replaceCapture(activeCaptureId)
+    pausedLineRef.current = null
+    setBoundary(null)
     setActiveEnabled(false)
     setState('idle')
     setMessage('Waiting for the recorder’s pause status…')
@@ -97,6 +109,8 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
     // Record may remount while the same capture is paused or a transition is
     // still awaiting its durable acknowledgement. Start is not a new state.
     if (captureId === id && activeEnabled) return
+    pausedLineRef.current = null
+    setBoundary(null)
     const admitted = !!value && typeof value === 'object' && (value as Record<string, unknown>).enabled === true
     if (!admitted) {
       controlLifetimeRef.current.clearCapture()
@@ -115,6 +129,8 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
 
   const clearCapture = useCallback(() => {
     controlLifetimeRef.current.clearCapture()
+    pausedLineRef.current = null
+    setBoundary(null)
     ++controlRevisionRef.current
     controlPendingRef.current = false
     setCaptureId(null)
@@ -153,10 +169,11 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
         : `${response.error?.code ?? 'failed'}: ${response.error?.message ?? 'Pause control failed'}`)
       return
     }
+    const line = recordingPauseAcknowledgedLine(acknowledgement.state, acknowledgement.logical_media_time_ms)
+    pausedLineRef.current = acknowledgement.state === 'paused' ? line : null
+    setBoundary({ state: acknowledgement.state, ms: acknowledgement.logical_media_time_ms, at: Date.now() })
     setState(acknowledgement.state)
-    setMessage(acknowledgement.state === 'paused'
-      ? `Paused at ${acknowledgement.logical_media_time_ms} ms; the durable journal acknowledged it.`
-      : `Resumed at ${acknowledgement.logical_media_time_ms} ms; the durable journal acknowledged it.`)
+    setMessage(line)
   }, [captureId, state])
 
   return {
@@ -165,6 +182,7 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
     activeEnabled,
     state,
     message,
+    boundary,
     resetDoctorCapability,
     setDoctorCapability,
     setPauseEnabled,

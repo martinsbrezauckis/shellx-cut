@@ -5,6 +5,7 @@ struct PublishedPackage {
     file_count: usize,
     bytes: u64,
     warnings: Vec<String>,
+    recordings_not_carried: Vec<RecordingNotCarried>,
 }
 fn publish_package(
     prepared: PreparedPackage,
@@ -12,6 +13,17 @@ fn publish_package(
     mut progress: impl FnMut(f32, String),
     before_publish: impl FnOnce(&Path, &Path) -> Result<(), CutError>,
 ) -> Result<PublishedPackage, CutError> {
+    // Check the complete plan before creating even the private stage. A bad
+    // member must never reach create_dir_all or the no-replace publisher.
+    for file in &prepared.files {
+        if !is_manifest_member_path(&file.package_path) {
+            return Err(CutError::new(
+                error_codes::CONFLICT,
+                "portable package contains an unsafe member path",
+                file.package_path.clone(),
+            ));
+        }
+    }
     ensure_plain_dir(&prepared.destination)?;
     if prepared.target.exists() {
         return Err(CutError::new(
@@ -43,6 +55,7 @@ fn publish_package(
             }
             let first = files.first().expect("non-empty hash group");
             let final_path = package_dir.join(relative);
+            fs::create_dir_all(final_path.parent().expect("package member parent"))?;
             let part = media_dir.join(format!(".package-{index:08}.part"));
             copy_source(first, &part, cancel)?;
             for duplicate in files.iter().skip(1) {
@@ -59,8 +72,13 @@ fn publish_package(
             return Err(cancelled());
         }
         progress(0.80, "writing portable project baseline".into());
-        let mut projected =
-            projected_project(&prepared.source.project, &prepared.files, &prepared.name)?;
+        let mut projected = projected_project(
+            &prepared.source.project,
+            &prepared.source.project_dir,
+            &prepared.files,
+            &prepared.plan.recordings_not_carried,
+            &prepared.name,
+        )?;
         // `ProjectStore::create` uses the requested package name, so retain it
         // in the materialized baseline as well.
         projected.name = prepared.name.clone();
@@ -111,6 +129,7 @@ fn publish_package(
             file_count: manifest.totals.file_count,
             bytes: manifest.totals.bytes,
             warnings,
+            recordings_not_carried: prepared.plan.recordings_not_carried.clone(),
         })
     })();
     if result.is_err() {

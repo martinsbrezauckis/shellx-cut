@@ -15,6 +15,8 @@ pub(super) struct GraphInput {
     pub(super) path: PathBuf,
     /// True when the asset probed as a still image (probe.kind == "image").
     pub(super) image: bool,
+    /// The selected input is a proxy, so raw-source geometry cannot skip conform.
+    pub(super) proxy: bool,
     /// GPU fast-track: NVDEC-decode THIS input to CUDA frames (graph_args emits
     /// `-hwaccel cuda` for it). Per-INPUT (not whole-graph) because the GPU path
     /// keeps the expensive BASE track on the GPU (NVDEC→scale_cuda→nvenc) while
@@ -227,7 +229,9 @@ fn add_graph_asset_input(
     if path.is_relative() {
         path = project_dir.join(path); // Asset (and proxy) paths may be project-relative.
     }
-    if proxy_rel.is_some() && !path.exists() {
+    let mut proxy = proxy_rel.is_some();
+    if proxy && !path.exists() {
+        proxy = false;
         // Proxy vanished — fall back to the raw source so the preview still renders.
         path = PathBuf::from(&asset.path);
         if path.is_relative() {
@@ -269,6 +273,7 @@ fn add_graph_asset_input(
     inputs.push(GraphInput {
         path,
         image,
+        proxy,
         gpu_decode: false,
         decode_threads,
     });
@@ -389,6 +394,7 @@ pub(super) fn collect_graph_inputs(
             inputs.push(GraphInput {
                 path: alpha_path,
                 image: false,
+                proxy: false,
                 gpu_decode: false,
                 decode_threads: None,
             });
@@ -417,6 +423,7 @@ pub(super) fn collect_graph_inputs(
             inputs.push(GraphInput {
                 path: alpha_path,
                 image: true, // a single still PNG (looped at the input like other stills)
+                proxy: false,
                 gpu_decode: false,
                 decode_threads: None,
             });
@@ -442,6 +449,7 @@ pub(super) fn collect_graph_inputs(
                 inputs.push(GraphInput {
                     path: alpha_path,
                     image: true, // a single still PNG (looped at the input like other stills)
+                    proxy: false,
                     gpu_decode: false,
                     decode_threads: None,
                 });

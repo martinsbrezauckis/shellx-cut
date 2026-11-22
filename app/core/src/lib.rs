@@ -25,15 +25,20 @@ pub mod edl;
 pub mod error;
 pub mod frame_size;
 mod journal;
+pub mod keyframe_limit;
+pub mod keyframe_window;
 pub mod matte_cache;
 pub mod move_placement;
 pub mod multicam;
 mod mutation_request;
 pub mod ops;
+mod overlay_shape;
 pub mod overwrite_edit;
 pub mod probe_facts;
 pub mod rebase;
 pub mod receipt;
+pub mod recording;
+pub mod redaction_limit;
 pub mod reparse;
 mod speed_ramp_timing;
 pub mod split_edit;
@@ -68,10 +73,10 @@ pub use speed_ramp_timing::{
 };
 pub use split_edit::{plan_split_edit, SplitEditKind, SplitEditPlan, SplitEditReject};
 pub use store::{
-    apply_edit_verb, apply_record, hash_file, rebuild_from_log, timeline_snapshot,
-    AtomicGroupPreview, AtomicGroupRejectStatus, AtomicMediaInsert, AtomicMediaInsertPlanResult,
-    AtomicMediaInsertResult, AtomicMediaInsertTrack, ProjectCacheHealth, ProjectOpenHealth,
-    ProjectSnapshotHealth, ProjectStore,
+    apply_edit_verb, apply_record, apply_saved_record, hash_file, rebuild_from_log,
+    timeline_snapshot, AtomicGroupPreview, AtomicGroupRejectStatus, AtomicMediaInsert,
+    AtomicMediaInsertPlanResult, AtomicMediaInsertResult, AtomicMediaInsertTrack,
+    ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth, ProjectStore,
 };
 pub use types::{
     default_speed, effect_specs, is_unit_speed, is_valid_chroma_color, is_valid_transition,

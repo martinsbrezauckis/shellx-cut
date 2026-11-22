@@ -63,3 +63,44 @@ export function acceptRecordingLiveFrame(
   }
   return next
 }
+
+export interface RecordingLivePreviewWords {
+  heading: string
+  headingNote: string
+  /** Names the preview: the empty area's title, or the label over a shown frame. */
+  label: string
+  /** Why there is no picture; shown only while the preview is empty. */
+  detail: string
+}
+
+/**
+ * The visible sentences of the live recording preview. While the take is paused
+ * the recorder has no frame to give, so its "waiting" and "stale" states would
+ * read as a fault; a paused take says that it is paused and what to do next.
+ * `presentation.state` stays the machine-readable truth and is not changed here.
+ */
+export function recordingLivePreviewWords(args: {
+  presentation: RecordingLiveFramePresentation | null
+  /** True when a capture is live and the preview can name it. */
+  hasCapture: boolean
+  hasFrame: boolean
+  paused: boolean
+}): RecordingLivePreviewWords {
+  const { presentation, hasCapture, hasFrame, paused } = args
+  if (paused) {
+    return {
+      heading: 'Recording source · paused',
+      headingNote: 'Nothing is recorded until you resume',
+      label: 'Recording paused',
+      detail: 'Resume to continue recording.',
+    }
+  }
+  const waiting = presentation?.state === 'connecting' || presentation?.state === 'awaiting_source'
+    || presentation?.state === 'awaiting_frame'
+  return {
+    heading: 'Recording source · live',
+    headingNote: 'Live source pixels from this capture',
+    label: hasFrame ? 'Recording source · live' : waiting ? 'Waiting for recording preview' : 'Recording preview unavailable',
+    detail: hasCapture ? presentation?.detail ?? 'Waiting for frames from this recording.' : 'Waiting for a confirmed recording capture.',
+  }
+}

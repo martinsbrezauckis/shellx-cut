@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(reg.schema(), "shellx-cut/verbs/1");
         assert_eq!(
             reg.verbs.len(),
-            317,
+            326,
             "verb count is a deliberate-contract tripwire: bump this AND README + \
              skill/shellx-cut/reference.md when verbs.json changes"
         );
@@ -403,6 +403,15 @@ mod tests {
             "assemble.broll",
             "assemble.shorts",
             "screen_record.polish",
+            "screen_record.zoom_list",
+            "screen_record.zoom_set",
+            "screen_record.zoom_add",
+            "screen_record.zoom_update",
+            "screen_record.zoom_remove",
+            "screen_record.zoom_auto",
+            "screen_record.take_refresh",
+            "screen_record.camera_reset",
+            "screen_record.take_link",
             "library.list",
             "library.add",
             "library.add_to_project",

@@ -18,7 +18,7 @@ const doctor = {
 
 // `override(name)` may return a whole engine reply for one verb (for example an
 // engine refusal) instead of the default fixture result.
-async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = false, override = null) {
+async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = false, override = null, search = '') {
   let currentDoctor = initialDoctor
   const cacheDir = mkdtempSync(join(tmpdir(), 'cut-record-handoff-'))
   t.after(() => rmSync(cacheDir, { recursive: true, force: true }))
@@ -69,7 +69,7 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
           : {}
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result }) })
   })
-  await page.goto(new URL('/__record_handoff__', server.resolvedUrls.local[0]).href)
+  await page.goto(new URL(`/__record_handoff__${search}`, server.resolvedUrls.local[0]).href)
   await page.locator('[data-cut-panel="record"]').waitFor({ timeout: 10_000 }).catch(() => {
     throw new Error(`Record did not mount: ${errors.join('; ')}`)
   })
@@ -300,6 +300,48 @@ test('running status overrides this page\'s Start form and recovers after reconn
   assert.deepEqual(errors, [])
 })
 
+for (const separate of [true, false]) {
+  test(`own camera track polish ${separate ? 'separate' : 'baked'}`, async t => {
+    const preset = {
+      schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+      fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+      keys: false, raw: false, cameraId: 'cam', cameraSeparate: separate,
+      studio: { background: 'gradient', camera: { x: 0.7, y: 0.7, size: 0.22, shape: 'circle' } },
+    }
+    const { page, pendingPolishes } = await fixture(t, preset, linuxCamera([cameraDevice('cam', 'ready')]), true)
+    await page.setViewportSize({ width: 1600, height: 1100 })
+    const toggle = page.locator('[data-cut-rec-camera-separate]')
+    await toggle.waitFor()
+    assert.equal(await toggle.isChecked(), separate)
+    await page.locator('[data-cut-rec-camera-toggle]').uncheck()
+    assert.equal(await toggle.isDisabled(), true)
+    await page.getByText('Turn on Camera to edit it later.', { exact: true }).waitFor()
+    await page.locator('[data-cut-rec-camera-toggle]').check()
+    assert.equal(await toggle.isEnabled(), true)
+    if (process.env.CUT_CAMERA_SHOT_DIR && separate) {
+      for (const theme of ['dark', 'light']) {
+        await page.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme)
+        await page.locator('.rec-studio-controls__camera').screenshot({ path: `${process.env.CUT_CAMERA_SHOT_DIR}/camera-${theme}.png` })
+      }
+    }
+    await page.locator('[data-cut-action="record-start"]').click()
+    await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+    await page.locator('[data-test-stop]').click()
+    await page.waitForFunction(() => document.querySelector('[data-cut-rec-result-view]'))
+    for (let i = 0; i < 100 && !pendingPolishes.length; i++) await page.waitForTimeout(25)
+    assert.equal(pendingPolishes[0].request().postDataJSON().camera, separate ? 'separate' : 'baked')
+    await pendingPolishes[0].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: { clip_id: 'clip-fixture' } }) })
+    await page.getByRole('button', { name: 'Export as recorded', exact: true }).waitFor()
+    await page.getByText('Edits you make later in Edit are not in this file. Export from Edit to include them.', { exact: true }).waitFor()
+    if (process.env.CUT_CAMERA_SHOT_DIR && separate) {
+      for (const theme of ['dark', 'light']) {
+        await page.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme)
+        await page.locator('[data-cut-rec-result-view]').screenshot({ path: `${process.env.CUT_CAMERA_SHOT_DIR}/result-${theme}.png` })
+      }
+    }
+  })
+}
+
 const linuxCamera = (devices) => ({
   ...doctor,
   camera: { supported: true, detail: 'Choose a camera at Start.', devices },
@@ -421,3 +463,193 @@ test('an early Stop says nothing was recorded and how to record, with no recover
   assert.deepEqual(errors, [])
 })
 
+// The environment report's operating system reaches Record through the fixture's `os` query value. Only
+// macOS asks for Audio Capture permission, so only macOS may read that sentence under Test system audio.
+for (const [os, search] of [['linux', '?os=linux'], ['windows', '?os=windows'], ['not yet known', '']]) {
+  test(`the system audio hint has no macOS sentence when the system is ${os}`, async t => {
+    const { page, errors } = await fixture(t, null, doctor, false, null, search)
+    const hint = page.locator('[data-cut-rec-system-audio-probe] .rec__audio-probe-status')
+    await hint.waitFor()
+    assert.equal(await hint.textContent(), 'Play a short sound, then test.')
+    assert.deepEqual(errors, [])
+  })
+}
+
+test('the system audio hint keeps the Audio Capture permission sentence on macOS', async t => {
+  const { page, errors } = await fixture(t, null, doctor, false, null, '?os=macos')
+  const hint = page.locator('[data-cut-rec-system-audio-probe] .rec__audio-probe-status')
+  await hint.waitFor()
+  assert.equal(await hint.textContent(), 'Play a short sound, then test. macOS may ask for Audio Capture permission.')
+  assert.deepEqual(errors, [])
+})
+
+// The readiness card says what it will do before Check: only macOS may ask for screen access, so only macOS
+// reads that clause. Windows, Linux and a system that is not known yet read the sentence without it.
+{
+  const notChecked = { ...doctor, ready: false, start_allowed: true, screen_check: 'not_checked' }
+  const base = 'ShellX Cut checks it when you start recording. Check now to see the result first'
+  for (const [os, search] of [['linux', '?os=linux'], ['windows', '?os=windows'], ['not yet known', '']]) {
+    test(`the screen capture not-checked sentence has no macOS clause when the system is ${os}`, async t => {
+      const { page, errors } = await fixture(t, null, notChecked, false, null, search)
+      const detail = page.locator('[data-cut-rec-readiness-detail]')
+      await page.locator('[data-cut-rec-readiness-label]').getByText('Screen capture not checked yet').waitFor()
+      assert.equal(await detail.innerText(), `${base}.`)
+      assert.deepEqual(errors, [])
+    })
+  }
+  test('the screen capture not-checked sentence keeps the macOS clause on macOS', async t => {
+    const { page, errors } = await fixture(t, null, notChecked, false, null, '?os=macos')
+    await page.locator('[data-cut-rec-readiness-label]').getByText('Screen capture not checked yet').waitFor()
+    assert.equal(await page.locator('[data-cut-rec-readiness-detail]').innerText(), `${base}; macOS may ask for screen access.`)
+    assert.deepEqual(errors, [])
+  })
+}
+
+// The live box under the preview while a take is paused. The recorder's recorded time stands still during a pause
+// (its acknowledgement carries `logical_media_time_ms`); a wall-clock count kept running and, after Resume, stayed ahead.
+test('a paused take: the live box says Paused with a pause mark and its timer stands still; Resume counts on from the recorded time', async t => {
+  const preset = {
+    schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+    fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+    keys: false, raw: false, pause: { mode: 'enabled' }, studio: { background: 'gradient' },
+  }
+  const RECORDED_MS = 47_021
+  const { page, errors } = await fixture(t, preset, doctor, false, name => {
+    if (name === 'screen_record.pause') return { ok: true, result: { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: RECORDED_MS } }
+    if (name === 'screen_record.resume') return { ok: true, result: { action: 'resume', saved: true, state: 'recording', logical_media_time_ms: RECORDED_MS } }
+    return null
+  })
+  const hud = page.locator('[data-cut-rec-hud]')
+  const timer = page.locator('[data-cut-rec-elapsed]')
+  const seconds = async () => { const [m, s] = (await timer.textContent()).split(':').map(Number); return m * 60 + s }
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  await page.waitForFunction(() => document.querySelector('[data-cut-rec-elapsed]')?.textContent !== '0:00')
+  assert.match(await hud.locator('small').textContent(), /^Recording · /)
+  assert.equal(await hud.locator('.rec__hud-dot').count(), 1, 'a running take shows the recording dot')
+  assert.equal(await hud.locator('.rec__hud-pause').count(), 0)
+
+  await page.locator('[data-cut-action="record-pause-resume"]').click()
+  await page.locator('[data-cut-rec-pause-state="paused"]').waitFor()
+  assert.match(await hud.locator('small').textContent(), /^Paused · /, 'the word says it')
+  assert.equal(await hud.locator('.rec__hud-dot').count(), 0, 'no red recording dot while paused')
+  const mark = hud.locator('.rec__hud-pause')
+  await mark.waitFor()
+  const markLook = await mark.evaluate(element => {
+    const style = getComputedStyle(element)
+    const [r, g, b] = style.borderLeftColor.match(/\d+(\.\d+)?/g).map(Number)
+    return { box: element.getBoundingClientRect().width, borderLeft: parseFloat(style.borderLeftWidth), r, g, b, animation: style.animationName }
+  })
+  assert.ok(markLook.box >= 8 && markLook.borderLeft >= 2, `the pause mark is visible ${JSON.stringify(markLook)}`)
+  assert.ok(markLook.r - Math.max(markLook.g, markLook.b) < 60, `the pause mark is not red ${JSON.stringify(markLook)}`)
+  assert.equal(markLook.animation, 'none', 'the pause mark does not blink')
+  const boxColours = await hud.evaluate(element => { const s = getComputedStyle(element); return [s.backgroundColor, s.borderTopColor, s.color] })
+  for (const colour of boxColours) {
+    const [r, g, b] = colour.match(/\d+(\.\d+)?/g).map(Number)
+    assert.ok(r - Math.max(g, b) < 60, `the paused box is not red-toned: ${colour}`)
+  }
+  assert.equal(await hud.getAttribute('data-cut-rec-hud') !== null, true, 'machine-readable attribute kept')
+  assert.equal(await timer.getAttribute('data-cut-rec-elapsed') !== null, true, 'machine-readable attribute kept')
+
+  // The time shown is the recorder's recorded time and is the same at two instants during the pause.
+  await page.waitForFunction(() => document.querySelector('[data-cut-rec-elapsed]')?.textContent === '0:47', null, { timeout: 3000 })
+  const firstLook = await timer.textContent()
+  await page.waitForTimeout(2600)
+  const secondLook = await timer.textContent()
+  assert.equal(firstLook, '0:47')
+  assert.equal(secondLook, firstLook, 'the timer does not run while paused')
+  assert.match(await page.locator('[data-cut-rec-pause-status]').textContent(), /^Paused at 0:47\./, 'the line and the timer say the same time')
+
+  await page.locator('[data-cut-action="record-pause-resume"]').click()
+  await page.locator('[data-cut-rec-pause-state="recording"]').waitFor()
+  assert.match(await hud.locator('small').textContent(), /^Recording · /)
+  assert.equal(await hud.locator('.rec__hud-dot').count(), 1)
+  await page.waitForTimeout(2300)
+  const after = await seconds()
+  assert.ok(after >= 48 && after <= 50, `counts on from 0:47 after Resume, not from the wall-clock start: ${await timer.textContent()}`)
+  assert.deepEqual(errors, [])
+})
+
+// With a length limit the HUD shows "Ns left" in place of the timer. The recorder stops a take at its start plus
+// the limit on the wall clock and a pause does not move that deadline, so the seconds left must run on through a
+// pause (they follow the recorder, not the recorded time that stands still).
+test('a paused take with a length limit: the seconds left keep counting down through the pause', async t => {
+  const preset = {
+    schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+    fps: 30, durationMs: 30_000, startCountdownSeconds: 0, audio: false, systemAudio: false,
+    keys: false, raw: false, pause: { mode: 'enabled' }, studio: { background: 'gradient' },
+  }
+  const { page, starts, errors } = await fixture(t, preset, doctor, false, name => {
+    if (name === 'screen_record.pause') return { ok: true, result: { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: 1_500 } }
+    if (name === 'screen_record.resume') return { ok: true, result: { action: 'resume', saved: true, state: 'recording', logical_media_time_ms: 1_500 } }
+    return null
+  })
+  const hud = page.locator('[data-cut-rec-hud]')
+  const left = async () => {
+    const text = await page.locator('[data-cut-rec-elapsed]').textContent()
+    assert.match(text, /^\d+s left$/)
+    return Number.parseInt(text, 10)
+  }
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  assert.equal(starts[0].duration_ms, 30_000, 'the limit goes to the recorder, which enforces it')
+  await page.waitForTimeout(1300)
+  const beforePause = await left()
+  await page.locator('[data-cut-action="record-pause-resume"]').click()
+  await page.locator('[data-cut-rec-pause-state="paused"]').waitFor()
+  assert.match(await hud.locator('small').textContent(), /^Paused · /)
+  await page.waitForTimeout(3300)
+  const duringPause = await left()
+  assert.ok(beforePause - duringPause >= 3, `the limit keeps running while paused: ${beforePause}s left before, ${duringPause}s left 3.3 s into the pause`)
+  await page.locator('[data-cut-action="record-pause-resume"]').click()
+  await page.locator('[data-cut-rec-pause-state="recording"]').waitFor()
+  await page.waitForTimeout(1300)
+  const afterResume = await left()
+  assert.ok(duringPause - afterResume >= 1, `and after Resume: ${duringPause}s -> ${afterResume}s`)
+  assert.deepEqual(errors, [])
+})
+
+test('a paused take says the time in plain words and the preview says it is paused', async t => {
+  const preset = {
+    schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+    fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+    keys: false, raw: false, pause: { mode: 'enabled' }, studio: { background: 'gradient' },
+  }
+  const { page, errors } = await fixture(t, preset, doctor, false, name => {
+    if (name === 'screen_record.live_frame') return { ok: true, result: {
+      capture_id: 'capture-fixture', state: 'awaiting_frame', reason: null, generation: 0, frame: null, frame_age_ms: null,
+    } }
+    if (name === 'screen_record.pause') return { ok: true, result: { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: 47_021 } }
+    return null
+  })
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  const preview = page.locator('[data-cut-rec-preview-unavailable]')
+  const status = page.locator('[data-cut-rec-pause-status]')
+  await page.waitForFunction(() => document.querySelector('[data-cut-rec-preview-unavailable]')?.textContent?.includes('Waiting for the first recorded frame'))
+  assert.equal(await page.locator('[data-cut-rec-preview-phase]').textContent(), 'REC')
+
+  await page.locator('[data-cut-action="record-pause-resume"]').click()
+  await page.locator('[data-cut-rec-pause-state="paused"]').waitFor()
+  const pausedLine = 'Paused at 0:47. Resume to continue recording.'
+  assert.equal(await status.textContent(), pausedLine)
+  // Two status polls pass (one per second); the line that says when stays.
+  await page.waitForTimeout(2300)
+  const later = await status.textContent()
+  assert.equal(later, pausedLine)
+  assert.doesNotMatch(later, /journal|\bms\b/)
+  assert.equal(await page.locator('[data-cut-rec-preview-unavailable] strong').textContent(), 'Recording paused')
+  assert.equal(await page.locator('[data-cut-rec-preview-unavailable] span').textContent(), 'Resume to continue recording.')
+  assert.doesNotMatch(await preview.textContent(), /Waiting|first recorded frame/)
+  assert.equal(await page.locator('[data-cut-rec-preview-phase]').textContent(), 'Paused')
+  assert.equal(await page.locator('[data-cut-rec-preview-phase]').getAttribute('data-cut-rec-preview-phase'), 'recording', 'the machine-readable phase is unchanged')
+  assert.equal(await page.locator('[data-cut-rec-native-preview-state]').getAttribute('data-cut-rec-native-preview-state'), 'awaiting_frame', 'the engine preview state is unchanged')
+  if (process.env.CUT_PAUSE_SHOT_DIR) await page.locator('[data-cut-studio-preview]').screenshot({ path: `${process.env.CUT_PAUSE_SHOT_DIR}/paused-preview.png` })
+  if (process.env.CUT_PAUSE_SHOT_DIR) await page.locator('[data-cut-rec-live-controls]').screenshot({ path: `${process.env.CUT_PAUSE_SHOT_DIR}/paused-live-controls.png` })
+
+  await page.locator('[data-cut-action="record-pause-resume"]').click()
+  await page.locator('[data-cut-rec-pause-state="recording"]').waitFor()
+  await page.waitForFunction(() => document.querySelector('[data-cut-rec-preview-unavailable]')?.textContent?.includes('Waiting for the first recorded frame'))
+  assert.equal(await page.locator('[data-cut-rec-preview-phase]').textContent(), 'REC')
+  assert.deepEqual(errors, [])
+})

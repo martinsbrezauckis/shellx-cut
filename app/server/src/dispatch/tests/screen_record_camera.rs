@@ -1,3 +1,29 @@
+use std::path::Path;
+include!("screen_record_camera_timeline.rs");
+include!("screen_record_camera_live.rs");
+include!("screen_record_camera_edits.rs");
+
+fn camera_test_rgb(path: &std::path::Path, at: f64) -> Vec<u8> {
+    let mut command = std::process::Command::new("ffmpeg");
+    command.args(["-v", "error", "-threads", "1"]);
+    if at > 0.0 {
+        command.args(["-ss", &at.to_string()]);
+    }
+    let output = command
+        .arg("-i")
+        .arg(path)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout.len(), 640 * 360 * 3);
+    output.stdout
+}
+
 #[tokio::test]
 async fn screen_record_stop_validates_camera_artifact_integrity_and_containment() {
     use sha2::{Digest, Sha256};
@@ -126,7 +152,10 @@ async fn screen_record_stop_validates_camera_artifact_integrity_and_containment(
     assert_eq!(escaped.error.unwrap().code, error_codes::INVALID_ARGS);
 }
 
-async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_case() {
+async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_case(
+    separate: bool,
+    raw: bool,
+) {
     use sha2::{Digest, Sha256};
 
     let dir = tempfile::tempdir().unwrap();
@@ -155,7 +184,11 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=640x360:rate=30:duration=3",
+            if !raw {
+                "color=c=green:size=640x360:rate=30:duration=3"
+            } else {
+                "testsrc=size=640x360:rate=30:duration=3"
+            },
             "-pix_fmt",
             "yuv420p",
             "-y",
@@ -176,7 +209,11 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=320x240:rate=30:duration=1",
+            if !raw {
+                "color=c=red:size=320x240:rate=30:duration=1"
+            } else {
+                "testsrc2=size=320x240:rate=30:duration=1"
+            },
             "-pix_fmt",
             "yuv420p",
             "-y",
@@ -209,7 +246,26 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         .unwrap(),
     )
     .unwrap();
-    let plan = record_core::EditPlan::empty(640, 360, 3_000, 30.0);
+    let mut plan = record_core::EditPlan::empty(640, 360, 3_000, 30.0);
+    if !raw {
+        plan.webcam = Some(record_core::WebcamOverlay {
+            source: camera.display().to_string(),
+            shape: record_core::WebcamShape::Circle,
+            anchor: record_core::Anchor::BottomRight,
+            margin: 0.05,
+            size: 0.3,
+            camera_clock: None,
+            timeline: vec![record_core::WebcamKeyframe {
+                t_ms: 1000,
+                visible: None,
+                x: Some(0.1),
+                y: Some(0.2),
+                size: None,
+                shape: None,
+            }],
+        });
+        std::fs::write(cap_dir.join("events.json"), b"[]").unwrap();
+    }
     let plan_path = cap_dir.join("plan.json");
     std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
 
@@ -247,13 +303,11 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         opened.error
     );
 
-    let polished = dispatch(
-        &state,
-        "screen_record.polish",
-        json!({"source": source.display().to_string(), "plan": plan_path.display().to_string(), "raw": true}),
-        test_actor(),
-    )
-    .await;
+    let mut polish_args = json!({"source": source.display().to_string(), "plan": plan_path.display().to_string(), "raw": raw});
+    if !separate {
+        polish_args["camera"] = json!("baked");
+    }
+    let polished = dispatch(&state, "screen_record.polish", polish_args, test_actor()).await;
     assert!(polished.ok, "{:?}", polished.error);
     let result = polished.result.unwrap();
     assert_eq!(result["camera_artifact_id"], "camera_03");
@@ -262,7 +316,7 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         .expect("camera placement must return its durable identity")
         .to_string();
     assert!(
-        camera_track_id.starts_with("v_camera_"),
+        camera_track_id.starts_with(if separate { "Camera" } else { "v_camera_" }),
         "camera track identity is private, deterministic server ownership"
     );
     assert_eq!(result["camera_asset_id"], pre_restart_camera_asset_id);
@@ -278,8 +332,8 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         .expect("camera must be a separate editable video track");
     assert_eq!(camera_track.kind, cut_core::TrackKind::Video);
     assert!(
-        !camera_track.visible,
-        "foundation camera track stays hidden until the real visible-track workflow exists"
+        camera_track.visible == separate,
+        "separate camera must be visible; raw/baked compatibility stays hidden"
     );
     let camera_clip = camera_track
         .clips
@@ -289,6 +343,29 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
             _ => None,
         })
         .expect("camera track must contain the inserted artifact clip");
+    if separate {
+        assert_eq!(
+            serde_json::to_value(&project.recordings[0]).unwrap()["camera_asset"],
+            result["camera_asset_id"]
+        );
+        let transform = camera_clip.transform.as_ref().unwrap();
+        assert_eq!(transform.shape, cut_core::types::OverlayShape::Circle);
+        assert!((transform.scale - 0.16875).abs() < 1e-6);
+        assert!((transform.x - 0.803125).abs() < 1e-6);
+        assert!((transform.y - 0.65).abs() < 1e-6);
+        assert_eq!(transform.ring.as_ref().unwrap().colour, "#ffffffe6");
+        assert_eq!(camera_clip.keyframes.len(), 2);
+        assert_eq!(
+            camera_clip.keyframes[0].interp,
+            cut_core::types::KfInterp::Hold
+        );
+        assert_eq!(camera_clip.keyframes[0].points[1].t_ms, 500);
+        assert_eq!(camera_clip.keyframes[0].points[1].value, 0.1);
+        assert_eq!(
+            project.recordings[0].camera_clip.as_deref(),
+            Some(camera_clip_id)
+        );
+    }
     assert_eq!(camera_clip.src_in_ms, 0);
     assert_eq!(camera_clip.src_out_ms, 1_000);
     let placement_ms = camera_track
@@ -303,7 +380,212 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         placement_ms, 500,
         "camera clip must retain CaptureClock offset"
     );
+    if separate {
+        let baked = result["baked"].as_str().unwrap();
+        let rgb = camera_test_rgb(Path::new(baked), 0.75);
+        let center = (288 * 640 + 568) * 3;
+        assert!(
+            rgb[center + 1] > 80 && rgb[center] < 30,
+            "screen bake must show green screen, not red camera"
+        );
+        let jpeg = cut_media::render::extract_frame(
+            project,
+            &cut_core::edl_from_project(project),
+            &project_dir,
+            750,
+            None,
+        )
+        .unwrap();
+        let frame_path = project_dir.join("separate-exact.jpg");
+        std::fs::write(&frame_path, &jpeg).unwrap();
+        let rgb = camera_test_rgb(&frame_path, 0.0);
+        assert!(
+            rgb[center] > 180 && rgb[center + 1] < 40,
+            "exact-frame camera bubble must be red"
+        );
+        let corner = (236 * 640 + 516) * 3;
+        assert!(
+            rgb[corner + 1] > 80 && rgb[corner] < 40,
+            "circle corner must show screen"
+        );
+        if let Ok(path) = std::env::var("CAMERA_PROOF_IMAGE") {
+            std::fs::write(path, jpeg).unwrap();
+        }
+        let moved = cut_media::render::extract_frame(
+            project,
+            &cut_core::edl_from_project(project),
+            &project_dir,
+            1250,
+            None,
+        )
+        .unwrap();
+        let moved_path = project_dir.join("separate-moved.jpg");
+        std::fs::write(&moved_path, moved).unwrap();
+        let rgb = camera_test_rgb(&moved_path, 0.0);
+        let moved_center = (126 * 640 + 118) * 3;
+        assert!(
+            rgb[moved_center] > 180 && rgb[moved_center + 1] < 40,
+            "hold position keys move the composed bubble"
+        );
+        assert!(
+            rgb[center + 1] > 80 && rgb[center] < 40,
+            "hold keys leave the old position clear"
+        );
+    }
+    if !separate && !raw {
+        let rgb = camera_test_rgb(Path::new(result["baked"].as_str().unwrap()), 0.75);
+        let center = (288 * 640 + 568) * 3;
+        assert!(
+            rgb[center] > 180 && rgb[center + 1] < 40,
+            "baked mode keeps the camera bubble in the screen bake"
+        );
+    }
     drop(guard);
+    if !separate && !raw {
+        camera_assert_baked_compatibility(&state, camera_clip_id).await;
+    }
+    if separate {
+        let edited = dispatch(
+            &state,
+            "edit.transform",
+            json!({"clip":camera_clip_id,"x":0.2,"y":0.1,"scale":0.2,"opacity":1}),
+            test_actor(),
+        )
+        .await;
+        assert!(edited.ok, "{:?}", edited.error);
+        let reset = dispatch(
+            &state,
+            "screen_record.camera_reset",
+            json!({"clip":camera_clip_id}),
+            test_actor(),
+        )
+        .await;
+        assert!(reset.ok, "{:?}", reset.error);
+        assert_eq!(reset.result.unwrap()["transform"]["shape"], "circle");
+        let undo = dispatch(&state, "project.undo", json!({}), test_actor()).await;
+        assert!(undo.ok, "{:?}", undo.error);
+        {
+            let guard = state.project.read().await;
+            let p = &guard.as_ref().unwrap().project;
+            let (t, i) = p.find_clip(camera_clip_id).unwrap();
+            let cut_core::Clip::Media(m) = &p.track(t).unwrap().clips[i] else {
+                panic!()
+            };
+            assert_eq!(m.transform.as_ref().unwrap().x, 0.2);
+        }
+        let redo = dispatch(&state, "project.redo", json!({}), test_actor()).await;
+        assert!(redo.ok, "{:?}", redo.error);
+        let split = dispatch(
+            &state,
+            "edit.split",
+            json!({"track":camera_track_id,"at_ms":1000}),
+            test_actor(),
+        )
+        .await;
+        assert!(split.ok, "{:?}", split.error);
+        let second = {
+            let guard = state.project.read().await;
+            guard
+                .as_ref()
+                .unwrap()
+                .project
+                .track(&camera_track_id)
+                .unwrap()
+                .clips
+                .iter()
+                .find_map(|c| match c {
+                    cut_core::Clip::Media(m) if m.src_in_ms == 500 => Some(m.id.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let state_reply = dispatch(&state, "project.state", json!({}), test_actor())
+            .await
+            .result
+            .unwrap();
+        let camera_annotation = state_reply["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|t| t["clips"].as_array().unwrap())
+            .find(|c| c["id"] == second)
+            .unwrap()["recording"]
+            .clone();
+        assert_eq!(camera_annotation["camera"], true);
+        let edited = dispatch(
+            &state,
+            "edit.transform",
+            json!({"clip":second,"x":0.4,"y":0.4,"scale":0.2}),
+            test_actor(),
+        )
+        .await;
+        assert!(edited.ok, "{:?}", edited.error);
+        let reset = dispatch(
+            &state,
+            "screen_record.camera_reset",
+            json!({"clip":second}),
+            test_actor(),
+        )
+        .await;
+        assert!(reset.ok, "{:?}", reset.error);
+        let reset = reset.result.unwrap();
+        assert_eq!(reset["transform"]["x"], 0.1);
+        assert_eq!(reset["transform"]["y"], 0.2);
+        let undo = dispatch(&state, "project.undo", json!({}), test_actor()).await;
+        assert!(undo.ok);
+        {
+            let guard = state.project.read().await;
+            let p = &guard.as_ref().unwrap().project;
+            let (t, i) = p.find_clip(&second).unwrap();
+            let cut_core::Clip::Media(m) = &p.track(t).unwrap().clips[i] else {
+                panic!()
+            };
+            assert_eq!(m.transform.as_ref().unwrap().x, 0.4);
+        }
+        let screen = result["clip_id"].as_str().unwrap();
+        let changed = dispatch(
+            &state,
+            "screen_record.zoom_add",
+            json!({"clip":screen,"at_ms":500,"duration_ms":2000}),
+            test_actor(),
+        )
+        .await;
+        assert!(changed.ok, "{:?}", changed.error);
+        let refresh = dispatch(
+            &state,
+            "screen_record.take_refresh",
+            json!({"clip":screen}),
+            test_actor(),
+        )
+        .await;
+        assert!(refresh.ok, "{:?}", refresh.error);
+        let id = refresh.result.unwrap()["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut done = None;
+        for _ in 0..600 {
+            let job = state.jobs.get(&id).unwrap();
+            if matches!(
+                job.state,
+                crate::jobs::JobState::Done | crate::jobs::JobState::Failed
+            ) {
+                done = Some(job);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let job = done.expect("refresh completes");
+        assert_eq!(job.state, crate::jobs::JobState::Done, "{:?}", job.error);
+        let guard = state.project.read().await;
+        let p = &guard.as_ref().unwrap().project;
+        let rgb = camera_test_rgb(Path::new(&p.assets[&p.recordings[0].asset].path), 0.75);
+        let center = (288 * 640 + 568) * 3;
+        assert!(
+            rgb[center + 1] > 80 && rgb[center] < 30,
+            "refresh must not bake the camera back into the screen"
+        );
+    }
 
     // A restart can happen after every individual lowered op (import, track
     // creation, visibility, or insert). Once all have committed, retrying the
@@ -329,7 +611,7 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
     let retried = dispatch(
         &reopened,
         "screen_record.polish",
-        json!({"source": source.display().to_string(), "plan": plan_path.display().to_string(), "raw": true}),
+        json!({"source": source.display().to_string(), "plan": plan_path.display().to_string(), "raw": raw, "camera": if separate { "separate" } else { "baked" }}),
         test_actor(),
     )
     .await;
@@ -339,6 +621,11 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         retried.error
     );
     let retried = retried.result.unwrap();
+    assert_eq!(
+        retried["baked"], result["baked"],
+        "same inputs keep the bake name"
+    );
+    assert_eq!(retried["cached"], true, "unchanged bake is reused");
     assert_eq!(retried["camera_track_id"], camera_track_id);
     assert_eq!(retried["camera_asset_id"], first_camera_asset_id);
     assert_eq!(retried["camera_clip_id"], first_camera_clip_id);
@@ -521,6 +808,46 @@ async fn close_camera_test_project_after_jobs_drain(state: &AppState, phase: &st
 }
 
 #[test]
+fn screen_record_baked_camera_preserves_legacy_bubble() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(
+                    screen_record_polish_places_camera_artifact_on_its_own_offset_track_case(
+                        false, false,
+                    ),
+                );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn screen_record_separate_camera_visible_look_and_offset() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(
+                    screen_record_polish_places_camera_artifact_on_its_own_offset_track_case(
+                        true, false,
+                    ),
+                );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn screen_record_polish_places_camera_artifact_on_its_own_offset_track() {
     // Windows test-harness threads have a smaller stack than the large async
     // camera-polish fixture needs. Keep the larger stack scoped to this test;
@@ -534,7 +861,9 @@ fn screen_record_polish_places_camera_artifact_on_its_own_offset_track() {
                 .build()
                 .unwrap()
                 .block_on(
-                    screen_record_polish_places_camera_artifact_on_its_own_offset_track_case(),
+                    screen_record_polish_places_camera_artifact_on_its_own_offset_track_case(
+                        false, true,
+                    ),
                 );
         })
         .expect("camera polish test thread must start");

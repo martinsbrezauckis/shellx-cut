@@ -38,7 +38,7 @@ const DRAFT_H: u32 = crate::proxy::PROXY_HEIGHT;
 
 /// Cache file prefix of an exact draft piece. Changing the piece recipe
 /// changes the prefix, so no older piece is ever reused.
-const PIECE_PREFIX: &str = "draft2_";
+const PIECE_PREFIX: &str = "draft4_";
 
 /// The draft size of a project frame: scaled into DRAFT_W x DRAFT_H (never up),
 /// even-sized for yuv420.
@@ -210,6 +210,7 @@ pub fn render_draft(
     cache_dir: &Path,
     preset: &RenderPreset,
 ) -> Result<PreviewResult, CutError> {
+    super::keyframe_limit::require_bounded_keyframes(project, edl)?;
     let measured = super::source_facts::measured_for_reverse(project, project_dir); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
     let (gw, gh) = draft_geometry(project.settings.width, project.settings.height);

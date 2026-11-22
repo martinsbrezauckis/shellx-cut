@@ -137,4 +137,13 @@ for (const source of [stockPanel, readme, publicFeatures, manual]) {
   assert.doesNotMatch(source, /only when you search/, 'network-provider copy must not falsely promise search-only contact')
 }
 
+for (const [name, source] of Object.entries({ surfaceContract, publicFeatures, manual,
+  skill: readFileSync(resolve(repoRoot, 'skill/shellx-cut/SKILL.md'), 'utf8'),
+  reference: readFileSync(resolve(repoRoot, 'skill/shellx-cut/reference.md'), 'utf8'),
+})) {
+  for (const phrase of ['Zoom card', 'Update video', 'Camera track', 'Camera section', 'Back to as recorded', 'separate camera track']) {
+    assert.ok(source.includes(phrase), `${name} must explain ${phrase}`)
+  }
+}
+
 console.log('PASS public feature-surface contract')

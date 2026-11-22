@@ -57,7 +57,27 @@ fn build_prepared(
     name: String,
     b5_receipt_sha256: Option<String>,
 ) -> Result<PreparedPackage, CutError> {
-    let referenced = referenced_asset_ids(&source.project)?;
+    build_prepared_with_recordings(
+        source,
+        destination,
+        target,
+        name,
+        b5_receipt_sha256,
+        add_recording_files,
+    )
+}
+
+fn build_prepared_with_recordings(
+    source: PackageSourceSnapshot,
+    destination: PathBuf,
+    target: PathBuf,
+    name: String,
+    b5_receipt_sha256: Option<String>,
+    add_recordings: impl FnOnce(&PackageSourceSnapshot, &mut Vec<PackageSourceFile>) -> Vec<RecordingNotCarried>,
+) -> Result<PreparedPackage, CutError> {
+    let mut recording_files = Vec::new();
+    let recordings_not_carried = add_recordings(&source, &mut recording_files);
+    let referenced = referenced_asset_ids(&source.project, &recordings_not_carried)?;
     let mut raw = Vec::with_capacity(referenced.len());
     for asset_id in referenced {
         let asset = source.project.assets.get(&asset_id).ok_or_else(|| {
@@ -77,32 +97,44 @@ fn build_prepared(
             .entry(sha256.clone())
             .or_insert_with(|| safe_extension(path));
     }
-    let files = raw
+    // A camera file is both a recording input and a project asset. Use its
+    // single media member for both entries, including the rewritten plans.
+    let recording_media_by_source = recording_files
+        .iter()
+        .filter(|file| file.package_path.starts_with("media/sha256/"))
+        .map(|file| (&file.source, &file.package_path))
+        .collect::<BTreeMap<_, _>>();
+    let mut files = raw
         .into_iter()
         .map(
             |(asset_id, source_path, stamp, bytes, sha256)| PackageSourceFile {
                 asset_id,
+                package_path: recording_media_by_source
+                    .get(&source_path)
+                    .map(|path| (*path).to_string())
+                    .unwrap_or_else(|| format!(
+                        "media/sha256/{}.{}",
+                        sha256,
+                        extension_by_hash
+                            .get(&sha256)
+                            .expect("every exact hash has a selected extension")
+                    )),
                 source: source_path,
                 stamp,
                 bytes,
-                package_path: format!(
-                    "media/sha256/{}.{}",
-                    sha256,
-                    extension_by_hash
-                        .get(&sha256)
-                        .expect("every exact hash has a selected extension")
-                ),
                 sha256,
+                rewritten: None,
             },
         )
         .collect::<Vec<_>>();
+    files.extend(recording_files);
     let mut first_by_path = BTreeMap::<String, &PackageSourceFile>::new();
     for file in &files {
         first_by_path
             .entry(file.package_path.clone())
             .or_insert(file);
     }
-    let total_source_bytes = files.iter().map(|file| file.bytes).sum();
+    let total_source_bytes = files.iter().map(|file| file.stamp.len).sum();
     let total_package_bytes = first_by_path.values().map(|file| file.bytes).sum();
     let assets = files
         .iter()
@@ -130,6 +162,7 @@ fn build_prepared(
         target_status: package_target_status(&target)?,
         b5_receipt_sha256,
         assets,
+        recordings_not_carried,
         total_source_bytes,
         total_package_bytes,
         source_file_count: files.len(),
@@ -152,8 +185,20 @@ fn build_prepared(
     })
 }
 
-fn referenced_asset_ids(project: &Project) -> Result<BTreeSet<String>, CutError> {
+fn referenced_asset_ids(
+    project: &Project,
+    omitted: &[RecordingNotCarried],
+) -> Result<BTreeSet<String>, CutError> {
     let mut result = BTreeSet::new();
+    for take in &project.recordings {
+        if omitted.iter().any(|entry| entry.take == take.id) {
+            continue;
+        }
+        result.insert(take.asset.clone());
+        if let Some(camera) = &take.camera_asset {
+            result.insert(camera.clone());
+        }
+    }
     for track in project.all_sequence_tracks() {
         for clip in &track.clips {
             if let Clip::Media(media) = clip {
@@ -257,7 +302,11 @@ fn verify_source(
     }
     let (bytes, sha256) = stream_sha256(&mut input, cancel)?;
     let after = file_stamp(&input.metadata()?);
-    if before != after || bytes != file.bytes || sha256 != file.sha256 {
+    let expected_hash = file
+        .rewritten
+        .as_ref()
+        .map_or(file.sha256.as_str(), |(hash, _)| hash.as_str());
+    if before != after || bytes != file.stamp.len || sha256 != expected_hash {
         return Err(source_changed(&file.source));
     }
     Ok(())

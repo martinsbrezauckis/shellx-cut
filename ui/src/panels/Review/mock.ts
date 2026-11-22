@@ -12,11 +12,13 @@
 import type { OpRecord, Project, RenderReceipt, Transcript } from '../../lib/client'
 import { MANUAL_READ_ONLY_VERBS } from '../../manual/readOnlyVerbs.generated'
 import { handleCacheLifecycleMock } from './cacheLifecycleMock'
+import { createCameraMock } from './cameraMock'
 import { createMockRecordingLifecycle } from './recordingMockLifecycle'
 
-const MOCK_PARAMS = typeof location !== 'undefined'
-  ? new URLSearchParams(location.search)
-  : new URLSearchParams()
+function mockParams(): URLSearchParams {
+  return new URLSearchParams(typeof location !== 'undefined' ? location.search : '')
+}
+const MOCK_PARAMS = mockParams()
 const MOCK_ON = MOCK_PARAMS.has('mock')
 // The embedded manual is a documentation surface, never a simulation of a
 // mutating Cut session. Keep its read allowance generated from schema/verbs.
@@ -227,7 +229,7 @@ const PROJECT: Project = {
     m1: { path: 'assets/music-bed.mp3', hash: 'sha256:5150bedbed', probe: { kind: 'audio', duration_ms: 60000 } },
   },
   tracks: [
-    { id: 'v1', kind: 'video', clips: [{ id: 'c1', asset: 'a1', src_in_ms: 0, src_out_ms: 58000 }] },
+    { id: 'v1', kind: 'video', clips: [{ id: 'c1', asset: 'a1', src_in_ms: 0, src_out_ms: 58000, ...(mockParams().has('recordingZoom') ? { recording: { take: 'mock-take', stale: mockParams().get('recordingZoom') === 'stale', zoom_count: 3, camera_clip: null } } : {}) }] },
     // overlay video track (v2 — composites above v1): an intro image card,
     // then a PiP'd clip carrying edit.transform geometry
     {
@@ -260,6 +262,8 @@ const PROJECT: Project = {
     { id: 'cp2', name: 'before-silence-pass', at_op: 'op_000003', ts: iso(-1500) },
   ],
 }
+
+const cameraMock = createCameraMock(PROJECT, MOCK_PARAMS.has('recordingCamera'), MOCK_PARAMS.has('splitCamera'), MOCK_PARAMS.has('ordinaryCamera'), MOCK_PARAMS.has('keyedCamera'))
 
 function mockChapters() {
   switch (MOCK_CHAPTER_SCENARIO) {
@@ -522,6 +526,11 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
   }
   const cacheLifecycle = handleCacheLifecycleMock(name, args)
   if (cacheLifecycle) return cacheLifecycle
+  const camera = cameraMock(name, args)
+  if (camera) {
+    applyOp(op({ actor: human, verb: name, args }))
+    return { ok: true, result: camera }
+  }
   const recording = recordingMock.handle(name, args)
   if (recording.handled) return recording.value
   switch (name) {

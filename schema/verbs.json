@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.118",
+    "version": "0.6.119",
     "status": "published",
-    "published_version": "0.6.118"
+    "published_version": "0.6.119"
   },
   "mutation_controls": {
     "request_id": {
@@ -745,7 +745,7 @@
           }
         }
       },
-      "result": "{schema:'shellx-cut/cache-rebuild/1',status:'estimated'|'queued'|'already_queued'|'not_needed',job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets},estimate:{basis:'source_hash_match_and_current_import_metadata',assets,verified_source_bytes,proxy_outputs,filmstrip_outputs,proxy_duration_ms}}. estimate_only:true verifies work without creating a job; otherwise poll jobs.status. jobs.cancel preserves any unfinished ledger reservation for a later rebuild request. A pending reservation whose current source is unavailable or changed returns a conflict with the restore/relink/remove repair path. No source or cache filesystem paths are returned.",
+      "result": "{schema:'shellx-cut/cache-rebuild/1',status:'estimated'|'queued'|'already_queued'|'not_needed',job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets},skipped_assets:[{asset_id,kind?,reason,action}],estimate:{basis:'source_hash_match_and_current_import_metadata',assets,verified_source_bytes,proxy_outputs,filmstrip_outputs,proxy_duration_ms}}. skipped_assets names each selected asset that was not scheduled, with its reason and next action; reason is already_current, source_changed, source_unavailable, unowned_output, legacy_output, or unsupported_asset, and kind identifies a refused proxy or filmstrip. already_current means the previews already match the source: that asset is up to date and counted in counts.fresh_assets, it was not skipped, so a client that lists skipped assets leaves those entries out. counts.unowned_outputs and counts.legacy_outputs count outputs (a proxy and a filmstrip of one asset make two), the other reason counts count assets; the number of assets needing attention is the number of distinct asset_id values in skipped_assets entries whose reason is not already_current. The list is bounded by the selected assets and two outputs per asset. estimate_only:true verifies work without creating a job; otherwise poll jobs.status. jobs.cancel preserves any unfinished ledger reservation for a later rebuild request. A pending reservation whose current source is unavailable or changed returns a conflict with the restore/relink/remove repair path. No source or cache filesystem paths are returned.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -5211,6 +5211,42 @@
             "default": 1,
             "description": "Clip alpha — 1 = fully opaque; overlays blend over lower layers, while the base blends against black; 0 = invisible"
           },
+          "shape": {
+            "type": "string",
+            "enum": [
+              "rect",
+              "circle",
+              "rounded"
+            ],
+            "default": "rect",
+            "description": "Overlay shape. Circle/rounded are square, centre cover-cropped bubbles: x/y is top-left and scale is width/frame width. Rect preserves full conformed-frame geometry."
+          },
+          "radius": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.5,
+            "description": "Rounded only: corner radius/bubble width (default 0.18)."
+          },
+          "ring": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "width",
+              "colour"
+            ],
+            "properties": {
+              "width": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 0.25
+              },
+              "colour": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+              }
+            },
+            "description": "Circle/rounded only: inset ring, width/bubble width (minimum 2 output pixels), hex RGB/RGBA colour. Recorder look: width 0.02, colour #ffffffe6."
+          },
           "rationale": {
             "type": "string"
           },
@@ -5222,7 +5258,7 @@
           }
         }
       },
-      "result": "{clip, transform, old_transform}; one op appended",
+      "result": "{clip, transform, old_transform, shape}; one op appended",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -7804,7 +7840,7 @@
     {
       "name": "edit.keyframe",
       "domain": "edit",
-      "description": "Animate ONE parameter of a media clip over time with keyframes (the primitive every pro editor builds animation on). SET semantics: points REPLACES that param's keyframe track; an empty/omitted points list CLEARS it. A keyframed parameter OVERRIDES its static counterpart. param: 'opacity' (video alpha 0..1 — animated fade in/out; the base blends against black and overlays blend over lower layers), 'volume' (linear gain multiplier, 1=unity — audio swells/manual ducking; AUDIO-track clips), 'pos_x'/'pos_y' (overlay PiP position as a fraction of frame width/height — animated PiP motion / slide-in/out; VIDEO-track overlays; NOT clamped, so values <0 or >1 slide the overlay off-screen), or 'scale' (VIDEO-clip animated ZOOM — multiplier 1=native, clamped [1,10]; the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan; mutually exclusive with edit.animate on a clip). interp may be 'linear'/'hold' OR any ease_* Penner curve (quad/cubic/expo/back/elastic/bounce × in/out/in_out) — eased motion reads professional, not mechanical. points = control points {t_ms (clip-local), value}; the renderer interpolates between them (linear, stepped for interp:'hold', or eased), clamping to the first/last value outside the range. Times are clip-local ms (0 = clip start). Rendered as an ffmpeg time-expression (opacity → a per-frame alpha/luma expression; volume → `volume='…':eval=frame`; pos_x/pos_y → an `overlay=x:y` time-expression onto a per-segment transparent canvas — the static `pad` placement is kept byte-identical for un-animated overlays; scale → a `zoompan` z-expression); CPU-only, so a keyframed clip renders on the software path. Media clips only.",
+      "description": "Animate ONE parameter of a media clip over time with keyframes (the primitive every pro editor builds animation on). SET semantics: points REPLACES that param's keyframe track; an empty/omitted points list CLEARS it. A keyframed parameter OVERRIDES its static counterpart. param: 'opacity' (video alpha 0..1 — animated fade in/out; the base blends against black and overlays blend over lower layers), 'volume' (linear gain multiplier, 1=unity — audio swells/manual ducking; AUDIO-track clips), 'pos_x'/'pos_y' (overlay PiP position as a fraction of frame width/height — animated PiP motion / slide-in/out; VIDEO-track overlays; NOT clamped, so values <0 or >1 slide the overlay off-screen), or 'scale' (VIDEO-clip animated ZOOM — multiplier 1=native, clamped [1,10]; the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan; mutually exclusive with edit.animate on a clip). interp may be 'linear'/'hold' OR any ease_* Penner curve (quad/cubic/expo/back/elastic/bounce × in/out/in_out) — eased motion reads professional, not mechanical. points = control points {t_ms (clip-local), value}; the renderer interpolates between them (linear, stepped for interp:'hold', or eased), clamping to the first/last value outside the range. Times are clip-local ms (0 = clip start). Rendered as an ffmpeg time-expression (opacity → a per-frame alpha/luma expression; volume → `volume='…':eval=frame`; pos_x/pos_y → an `overlay=x:y` time-expression onto a per-segment transparent canvas — the static `pad` placement is kept byte-identical for un-animated overlays; scale → a `zoompan` z-expression); CPU-only, so a keyframed clip renders on the software path. Exception: on circle/rounded overlays, scale multiplies the static bubble diameter (positive values below 1 shrink it), including its mask; it does not zoom the interior image. Media clips only.",
       "args": {
         "type": "object",
         "required": [
@@ -12470,13 +12506,17 @@
             "maximum": -5,
             "description": "Optional target integrated loudness in LUFS. Omitted = no normalization (byte-identical replay). When set, the lufs check also measures against this target, and single-pass ffmpeg loudnorm brings the mixed audio to this target (TP -1.5 dBTP before encoding, LRA 11); the encoded output must still meet -1 dBTP. Standard targets: -16 (long-form), -14 (social), -23 (EBU R128)."
           },
+          "allow_stale_recordings": {
+            "type": "boolean",
+            "description": "Explicitly export the old baked video despite pending recording zoom edits. Default false: Update video first with screen_record.take_refresh."
+          },
           "dry_run": {
             "type": "boolean",
             "description": "When true, return the render PLAN (output geometry, realized duration, per-track manifest, the checks that will run) WITHOUT encoding — verify before a slow render. No job/op/file. The plan also carries `resources`: memory {estimate_mb, parts_mb {decode, encode, held_frames, overlays}, windows (a segmented render: its window count; the parts are its largest window's), encoder_threads, automatic_encoder_threads, adapted_encoder_threads, note, available_mb, limit_mb, total_mb, swap_mb, fits} and disk {estimate_mb, free_mb, volume, fits}, plus `refused` (the error a real render would get) and warnings[] memory_short / disk_short with the numbers and the way out. A real render runs the same check first: libx264 keeps its automatic thread count when the estimate fits the free memory (or SHELLX_CUT_RENDER_MEMORY_MB), else it uses the largest of 32/24/16/12/8/6/4 threads that fits (adapted_encoder_threads) and `note`, the job's progress message and the receipt's encode.memory_note say so; it is refused with out_of_memory when the estimate exceeds memory and swap together or with not_enough_space when even half the typical file does not fit, and otherwise starts with the same warnings on the envelope; its job result carries the same resources object. Sources larger than DCI 4K decode with 8 threads."
           }
         }
       },
-      "result": "{job_id, render_id} — receipt arrives via receipt_ready / verify.checks. A render that runs out of memory fails with code out_of_memory (the system stopped ffmpeg, or an allocation failed) and one whose output drive fills up fails with not_enough_space; both errors say what happened and what to do (free memory or space, keep the hardware encoder on, HEVC instead of H.264 at 8K, a lower resolution). A render whose ffmpeg writes no new output and uses under 2% of one processor core for 120 s (SHELLX_CUT_RENDER_STALL_SEC) is ended with code render_stalled: the message names the part of the timeline and the clip (clip_id, at_ms), the cause says whether it was held at its memory limit, the suggested_action what to change. A long reversed clip is rendered in windows whose reversed part fits the window memory budget.",
+      "result": "{job_id, render_id} — receipt arrives via receipt_ready / verify.checks. A render that runs out of memory fails with code out_of_memory (the system stopped ffmpeg, or an allocation failed) and one whose output drive fills up fails with not_enough_space; both errors say what happened and what to do (free memory or space, keep the hardware encoder on, HEVC instead of H.264 at 8K, a lower resolution). A render whose ffmpeg writes no new output and uses under 2% of one processor core for 120 s (SHELLX_CUT_RENDER_STALL_SEC) is ended with code render_stalled: the message names the part of the timeline and the clip (clip_id, at_ms), the cause says whether it was held at its memory limit, the suggested_action what to change. A long reversed clip is rendered in windows whose reversed part fits the window memory budget. Refuses stale recording zooms with Update video first (screen_record.take_refresh), unless allow_stale_recordings:true explicitly requests the old baked picture.",
       "result_schema": {
         "type": "object",
         "properties": {
@@ -15961,7 +16001,7 @@
     {
       "name": "screen_record.polish",
       "domain": "screen_record",
-      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) reuse an existing timeline clip for the imported asset if one exists, including a clip placed automatically by the first import; otherwise ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) and edit.insert at `at_ms` (default 0, no ripple). When the source capture directory contains a validated CameraArtifact@1, polish additionally imports its contained camera media onto a separate hidden identity-bound v_camera_<digest> video track at the screen clip's start plus first_frame_offset_ms, with an explicit source range limited to the measured camera duration. It is editable but hidden to prevent duplicating the legacy baked webcam bubble until B7 adds the real visible-track/preview workflow. A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project. The bake runs as a screen_record_polish job: jobs.list, jobs.status, the status bar and the quit question show it with frame progress (\"Polishing the recording: frame N of M\"), a project change asks before cancelling it, and the job ends when the clip is placed, before the verb answers. The clip belongs to the project that was open when polish was called: if another project is open when it is ready (a change confirmed with cancel_running_jobs), nothing is added to any project, the recording is offered again in its own project (screen_record.pending), and the reply says so (placed:false, waiting_in_project, message); a forced change during the bake stops it with job_cancelled naming the project the recording stays in. Frames are composed on several cores at once and the editable clip is encoded at the faster x264 polish preset (veryfast); a 62 s 4K bake took about 2 minutes before.",
+      "description": "Bake and place a recording. Camera defaults to separate; baked keeps legacy pixels. See DEBUG_API.md.",
       "args": {
         "type": "object",
         "required": [
@@ -15980,23 +16020,31 @@
           },
           "track": {
             "type": "string",
-            "description": "Target video track id when inserting a new clip (default \"v1\"; created if absent). An existing clip for the imported asset is reused without moving it."
+            "description": "Insertion track (default v1)."
           },
           "at_ms": {
             "type": "integer",
             "minimum": 0,
-            "description": "Timeline position when inserting a new baked clip (default 0). An existing clip for the imported asset is reused without moving it."
+            "description": "Insertion time (default 0)."
           },
           "rationale": {
             "type": "string"
           },
+          "camera": {
+            "type": "string",
+            "enum": [
+              "separate",
+              "baked"
+            ],
+            "description": "Separate bubble or baked pixels."
+          },
           "raw": {
             "type": "boolean",
-            "description": "When true, SKIP the slow zoom/cursor/frame re-render: stream-COPY the captured video and mux the mic (near-instant) so 'stop → editable clip' is fast. The EditPlan is still required (cache-keying) but is NOT applied; run polish again without raw for the auto-zoom/cursor pass. Default false (full polish)."
+            "description": "Stream-copy without polish (default false). Camera mode is ignored."
           }
         }
       },
-      "result": "{placed, job_id, clip_id, asset_id, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable v_camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. job_id = the screen_record_polish job that baked and placed it (finished when the verb answers). placed:false (clip_id null, waiting_in_project {name, path}, message) when the recording's project was no longer open: nothing was added, and the recording waits in its own project. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
+      "result": "{placed, job_id, clip_id, asset_id, camera_look?, camera_note?, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — camera_note warns when a recorded shape change cannot be keyed (separate keeps its first shape). baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. job_id = the screen_record_polish job that baked and placed it (finished when the verb answers). placed:false (clip_id null, waiting_in_project {name, path}, message) when the recording's project was no longer open: nothing was added, and the recording waits in its own project. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -19280,6 +19328,479 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.camera_reset",
+      "domain": "screen_record",
+      "description": "Restore this camera slice's recorded look and rebased keys.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, transform, keyframes}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_camera_reset",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.zoom_list",
+      "domain": "screen_record",
+      "description": "List take zooms in recording/timeline time, stale state and missing-video recovery. Old clips have no take.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, take, source:{w,h}, duration_ms, segments:[{id,start_ms,end_ms,scale,cx,cy,ramp_in_ms,ramp_out_ms,origin,timeline:{start_ms,end_ms}|null}], stale, applied_plan, pending_plan, missing_video, missing_video_reason, next_action} — missing_video is true when the current baked file is absent; reason and next_action are strings then (Update video rebuilds it), otherwise null.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_zoom_list",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.zoom_add",
+      "domain": "screen_record",
+      "description": "Add a manual zoom: exactly one of recording at_ms or absolute timeline_ms. Maps trim/speed/ramp/reverse; outside/frozen positions refuse with next action. Defaults: 2000ms, 2x, pointer, ramps 550/500ms. One op; Update video before export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "at_ms"
+            ]
+          },
+          {
+            "required": [
+              "timeline_ms"
+            ]
+          }
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "timeline_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "scale": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "cx": {
+            "type": "number"
+          },
+          "cy": {
+            "type": "number"
+          }
+        }
+      },
+      "result": "{segment, stale}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_zoom_add",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.zoom_update",
+      "domain": "screen_record",
+      "description": "Edit a zoom in recording ms; pins manual in one op. target:pointer overrides cx/cy with the last pointer sample at start (center fallback), normalized/clamped at scale. Update video before export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "pointer"
+            ]
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "scale": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "cx": {
+            "type": "number"
+          },
+          "cy": {
+            "type": "number"
+          },
+          "ramp_in_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ramp_out_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "result": "{segment, stale}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_zoom_update",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.zoom_remove",
+      "domain": "screen_record",
+      "description": "Remove recording zoom ids (id or ids). Appends one resolved-list op; Update video first before export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "result": "{removed, stale}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_zoom_remove",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.zoom_auto",
+      "domain": "screen_record",
+      "description": "Redo automatic recording zooms from the events journal. keep_manual defaults true; automatic segments overlapping manual segments are discarded. config accepts the screen_record.autoedit engine configuration. Stores the concrete list in one op so replay never reads events. Update video first before export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "keep_manual": {
+            "type": "boolean"
+          },
+          "config": {
+            "type": "object"
+          }
+        }
+      },
+      "result": "{segments, stale}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_zoom_auto",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.take_link",
+      "domain": "screen_record",
+      "description": "Internal polish provenance commit. Register one new recording take with concrete source, events, immutable plan and clip ids. Does not render or insert media.",
+      "args": {
+        "type": "object",
+        "required": [
+          "recording"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "recording": {
+            "type": "object",
+            "description": "Resolved recording provenance written by polish."
+          }
+        }
+      },
+      "result": "{take} — durable recording provenance; legacy polished clips remain ordinary media.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_take_link",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.zoom_set",
+      "domain": "screen_record",
+      "description": "Replace take zooms in one undoable op; empty disables zoom. Split clips share edits. Stale until take_refresh: Update video before export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "segments"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "start_ms",
+                "end_ms",
+                "scale",
+                "cx",
+                "cy",
+                "ramp_in_ms",
+                "ramp_out_ms",
+                "origin"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "start_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "scale": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "cx": {
+                  "type": "number"
+                },
+                "cy": {
+                  "type": "number"
+                },
+                "ramp_in_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "ramp_out_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "manual"
+                  ]
+                }
+              }
+            }
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, segments, stale} — segments are recording-time milliseconds; Update video first to apply stale edits to playback or export.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_zoom_set",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.take_refresh",
+      "domain": "screen_record",
+      "description": "Queue Update video; poll jobs.status. Swaps every take clip preserving edits. Refuses duration mismatch over one frame or concurrent edits; keeps two bakes. Rebuilds missing/pruned files and repairs assets. Duration reference: stored probe, old file, then plan/source.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id, clip, asset, baked, cached, applied_plan} — final asset and applied_plan are reported on job completion. A failed bake leaves the take stale and clips unchanged; Update video first before export.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_take_refresh",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "render",
         "ui_exposure": "human",
         "agent_chat": "edit",
         "risk": "reversible",

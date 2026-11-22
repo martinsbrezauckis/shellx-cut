@@ -4,8 +4,11 @@
 //! download or copy that stopped, with the index at the front) still reports
 //! its full length, so it imports, places and renders as if it were whole, and
 //! the export ends early. The editing proxy decodes the whole source anyway;
-//! its own stream lengths are the decodable length. Comparing them with what
-//! the source claims costs one ffprobe of the small proxy.
+//! its stream lengths reveal early stops. A proxy can coalesce OR duplicate VFR
+//! timestamps, so significant count mismatches need source-decode confirmation.
+//! Matching-count proxies and duration failures stay cheap.
+
+mod confirmation;
 
 use crate::probe::StreamExtent;
 use serde_json::{json, Value};
@@ -37,12 +40,59 @@ fn claimed(probe: &Value, kind: &str) -> Option<u64> {
         .unwrap_or(None)
 }
 
-/// Compare the source probe (`asset.probe`) with the measured streams of its
-/// proxy. Returns the record stored as `asset.probe.decode_check`:
+/// Cheap proxy comparison first; only a significant count mismatch triggers bounded
+/// source decoding. Proxy stream durations still expose a decode that stopped early.
+pub fn check_source(
+    source_probe: &Value,
+    source: &std::path::Path,
+    proxy: &std::path::Path,
+) -> Result<Value, cut_core::CutError> {
+    let streams = crate::probe::stream_extents(proxy)?;
+    Ok(confirmation::check(source_probe, &streams, |timeout| {
+        crate::ffmpeg::ffprobe_decode_counts(source, timeout)
+    }))
+}
+
+fn check_with_source_counts(
+    source_probe: &Value,
+    proxy_streams: &[StreamExtent],
+    counts: &Value,
+) -> Value {
+    let mut probe = source_probe.clone();
+    let mut streams = proxy_streams.to_vec();
+    if let Some(video) = probe["raw"]["streams"].as_array_mut().and_then(|s| {
+        s.iter_mut().find(|s| {
+            s["codec_type"] == "video"
+                && s["disposition"]["attached_pic"].as_i64().unwrap_or(0) == 0
+        })
+    }) {
+        let counted = counts["streams"]
+            .as_array()
+            .and_then(|s| s.iter().find(|s| s["index"] == video["index"]));
+        if let Some(counted) = counted {
+            // For containers without a declared count, count source packets,
+            // never duration * nominal (or average) frame rate.
+            video["nb_read_packets"] = counted["nb_read_packets"].clone();
+        }
+        if let Some(decoded) = streams.iter_mut().find(|s| s.kind == "video") {
+            decoded.frames = Some(
+                counted
+                    .and_then(|s| s["nb_read_frames"].as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+            );
+        }
+    }
+    decode_check(&probe, &streams)
+}
+
+/// Compare declared source facts with supplied stream facts. Proxy frame-gap
+/// warnings are provisional until `check_source` confirms source decoding.
+/// Returns `asset.probe.decode_check`:
 /// `{checked_by:"proxy", claimed_picture_ms, decodable_picture_ms,
 /// claimed_sound_ms?, decodable_sound_ms?, warning?}`. `warning` is set only
-/// when the picture or the sound decodes noticeably shorter than claimed; it is
-/// a sentence a person reads.
+/// when the picture or the sound decodes noticeably shorter than claimed, or
+/// decoded source pictures are missing; it is a sentence a person reads.
 pub fn decode_check(source_probe: &Value, proxy_streams: &[StreamExtent]) -> Value {
     let fps = source_probe.get("fps").and_then(Value::as_f64);
     let tol = tolerance_ms(fps);
@@ -92,8 +142,8 @@ pub fn decode_check(source_probe: &Value, proxy_streams: &[StreamExtent]) -> Val
         )),
         (false, false) => None,
     };
-    // Damage INSIDE the file: the proxy reaches the end, but frames are
-    // missing (zeroed or corrupt data in the middle). The frame count shows it.
+    // Damage INSIDE the file: decoding reaches the end, but source pictures
+    // are missing (zeroed or corrupt data in the middle).
     let claimed_frames =
         crate::probe::stream_extents_from_raw(source_probe.get("raw").unwrap_or(&Value::Null))
             .into_iter()
@@ -222,6 +272,35 @@ mod tests {
         // One frame short is rounding, not damage.
         proxy[0].frames = Some(779);
         assert!(decode_check(&src, &proxy).get("warning").is_none());
+    }
+
+    #[test]
+    fn vfr_counts_are_measured_before_proxy_timestamp_conversion() {
+        let mut src = source(39_288, "39.288", "39.288");
+        src["fps"] = json!(104.0004);
+        src["raw"]["streams"][0]["nb_frames"] = json!("4086");
+        let mut proxy = proxy(Some(39_288), Some(39_288));
+        proxy[0].frames = Some(1180);
+        let counts = json!({"streams": [{"index": 0, "nb_read_frames": "4086",
+            "nb_read_packets": "4086"}]});
+        let check = check_with_source_counts(&src, &proxy, &counts);
+        assert!(check.get("warning").is_none(), "{check}");
+        assert_eq!(check["decodable_frames"], 4086);
+        // A duplicated-frame proxy must not hide real missing pictures either.
+        proxy[0].frames = Some(4086);
+        let counts = json!({"streams": [{"index": 0, "nb_read_frames": "1180",
+            "nb_read_packets": "4086"}]});
+        let check = check_with_source_counts(&src, &proxy, &counts);
+        assert_eq!(check["code"], "decode_gap", "{check}");
+        // No declared count: use source packets, not either rate * duration.
+        src["raw"]["streams"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("nb_frames");
+        assert_eq!(
+            check_with_source_counts(&src, &proxy, &counts)["code"],
+            "decode_gap"
+        );
     }
 
     #[test]

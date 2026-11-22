@@ -78,7 +78,10 @@ export default function RenderQueueModal({ onClose, onPreflight, owner }: Render
   const [awaitingWarning, setAwaitingWarning] = useState(false)
   const formLocked = checking || awaitingWarning
 
-  useEffect(() => () => { cancelled.current = true }, [])
+  useEffect(() => {
+    cancelled.current = false
+    return () => { cancelled.current = true }
+  }, [])
 
   const releasePreflight = useCallback(() => {
     submitting.current = false

@@ -585,6 +585,15 @@ fn route_verb<'a>(
         | DispatchTarget::ScreenRecordStudioEvent
         | DispatchTarget::ScreenRecordAutoedit
         | DispatchTarget::ScreenRecordPolish
+        | DispatchTarget::ScreenRecordCameraReset
+        | DispatchTarget::ScreenRecordTakeLink
+        | DispatchTarget::ScreenRecordZoomList
+        | DispatchTarget::ScreenRecordZoomSet
+        | DispatchTarget::ScreenRecordZoomAdd
+        | DispatchTarget::ScreenRecordZoomUpdate
+        | DispatchTarget::ScreenRecordZoomRemove
+        | DispatchTarget::ScreenRecordZoomAuto
+        | DispatchTarget::ScreenRecordTakeRefresh
         | DispatchTarget::ScreenRecordExport
         | DispatchTarget::ScreenRecordCopyRaw) => {
             Box::pin(
@@ -945,6 +954,7 @@ fn shape_core_result(verb: &str, op: &OpRecord, include_legacy_inverse: bool) ->
             "clip": d0["clip"],
             "old_transform": d0["old_transform"],
             "transform": d0["new_transform"],
+            "shape": d0["shape"],
         }),
         // detail: {clip, old_crop, new_crop} (edit::crop). Schema (verbs.json):
         // {clip, old_crop, crop}.

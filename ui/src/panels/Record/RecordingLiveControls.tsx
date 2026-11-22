@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { RecordingPauseCapability, RecordingPauseState } from './recordingPause'
+import { recordingStandsStill, type RecordingPauseCapability, type RecordingPauseState } from './recordingPause'
 import { RecordingPauseControl } from './RecordingPauseControl'
 
 interface RecordingLiveControlsProps {
@@ -45,14 +45,16 @@ export function RecordingLiveControls({
     pauseState === 'recording' || pauseState === 'paused' || pauseState === 'pausing' || pauseState === 'resuming'
   )
   const pauseReason = pauseMessage
+  // A paused take says so in words and with a pause mark, not the red recording dot; its timer stands still.
+  const paused = recordingStandsStill(pauseState)
   return (
     <section className="rec-live-controls" data-cut-rec-live-controls aria-label="Live recording controls">
       <div className="rec-live-controls__transport">
-        <div className="rec-live-controls__state" data-cut-rec-hud>
-          <span className="rec__hud-dot" aria-hidden="true" />
+        <div className={`rec-live-controls__state${paused ? ' rec-live-controls__state--paused' : ''}`} data-cut-rec-hud>
+          <span className={paused ? 'rec__hud-pause' : 'rec__hud-dot'} aria-hidden="true" />
           <span>
             <strong data-cut-rec-elapsed>{elapsed}</strong>
-            <small>Recording · {sceneName}</small>
+            <small>{paused ? 'Paused' : 'Recording'} · {sceneName}</small>
           </span>
         </div>
         <div className="rec-live-controls__actions" role="group" aria-label="Recording actions">

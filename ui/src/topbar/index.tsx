@@ -14,6 +14,7 @@
 // Callers: App.tsx. Deps: lib/client (verbs), lib/events (jobs), topbar.css.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { exportRefusalMessage, RECORDING_EXPORT_REFUSED } from './exportRefusal'
 import { callVerb, type PregateReport, type Project, type StoryboardResult } from '../lib/client'
 import { envHealthLevel, isFfmpegMissing, type DoctorReport } from '../lib/doctor'
 import type { WorkspaceMode } from '../layout/useLayout'
@@ -180,6 +181,15 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
   const [directorOpen, setDirectorOpen] = useState(false)
   // Batch-delivery (render.queue) surface — opened from the Export menu.
   const [queueOpen, setQueueOpen] = useState(false)
+  useEffect(() => {
+    const closeQueue = () => {
+      setQueueOpen(false)
+      setDirectorOpen(false)
+      setRenderOptsOpen(false)
+    }
+    document.addEventListener(RECORDING_EXPORT_REFUSED, closeQueue)
+    return () => document.removeEventListener(RECORDING_EXPORT_REFUSED, closeQueue)
+  }, [])
   const [otioPreview, setOtioPreview] = useState<OtioImportPreview | null>(null)
   const [otioBusy, setOtioBusy] = useState(false)
   const [otioError, setOtioError] = useState<string | null>(null)
@@ -454,7 +464,9 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
         } else {
           // The engine's message names the fix (e.g. "run captions.generate
           // first") — far more useful than the bare error code.
-          flash(`export failed: ${r.error?.message ?? r.error?.code ?? 'unknown'}`)
+          const message = exportRefusalMessage(r.error)
+          flash(message)
+          // callVerb publishes the shared persistent delivery refusal notice.
         }
       } catch (error) {
         if (attempt === exportAttempt.current && projectKey === currentProjectKey.current) {

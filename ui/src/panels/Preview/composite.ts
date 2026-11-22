@@ -22,6 +22,8 @@ import type { CSSProperties } from 'react'
 import { scopeMediaUrl } from '../../lib/mediaScope'
 import { sourceUrl, type CaptionStyle, type ClipGrade, type ClipTransform, type Project } from '../../lib/client'
 import { layoutTrack, type LaidItem } from '../Timeline/layout'
+import { isTakeCamera } from '../Inspector/cameraSectionModel'
+import { effectiveTransform } from './effectiveTransform'
 
 /**
  * Max simultaneous overlay <video> elements decoded at once. Each is a 960×540
@@ -51,7 +53,10 @@ export interface OverlayLayer {
   reverse: boolean
   freezeAtMs?: number
   /** Normalized geometry + opacity (defaults to full-frame opaque). */
-  transform: Required<ClipTransform>
+  transform: (ClipTransform & { opacity: number })
+  /** Base Size/position for converting a drag back to edit.transform. */
+  storedTransform?: ClipTransform & { opacity: number }
+  keyedCamera?: boolean
   /** Approximate grade for the CSS filter, when the clip is graded. */
   grade?: ClipGrade | null
   /** Still image (probe kind=image) — rendered from source, no seek/loop sync. */
@@ -113,8 +118,9 @@ export function videoTrackIds(project: Project | null): string[] {
 }
 
 /** Fill a (possibly-partial / missing) transform to a full opaque identity. */
-function fullTransform(t: ClipTransform | null | undefined): Required<ClipTransform> {
+function fullTransform(t: ClipTransform | null | undefined): (ClipTransform & { opacity: number }) {
   return {
+    ...t,
     x: t?.x ?? 0,
     y: t?.y ?? 0,
     scale: t?.scale ?? 1,
@@ -133,7 +139,7 @@ function overlayTracks(project: Project | null, primaryTrackId: string | null) {
 }
 
 /** One overlay layer for a laid clip, or null when its asset is unknown. */
-function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAssets: Set<string>): OverlayLayer | null {
+function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAssets: Set<string>, atMs = it.startMs): OverlayLayer | null {
   const asset = it.asset ? project.assets[it.asset] : undefined
   if (!it.asset || !asset) return null
   // Prefer the proxy; fall back to streaming the source (also when the
@@ -141,6 +147,9 @@ function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAsse
   const proxied = asset.proxy ? scopeMediaUrl(asset.proxy) : ''
   const src = proxied || sourceUrl(it.asset)
   const kind: 'proxy' | 'source' = proxied ? 'proxy' : 'source'
+  const clip = project.tracks.find(t => t.id === trackId)?.clips.find(c => 'id' in c && c.id === it.id)
+  const keys = clip && 'asset' in clip ? clip.keyframes ?? [] : []
+  const stored = fullTransform(it.transform)
   return {
     clipId: it.id,
     trackId,
@@ -154,7 +163,10 @@ function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAsse
     speed: it.speed && it.speed > 0 ? it.speed : 1,
     reverse: !!it.reverse,
     freezeAtMs: it.freezeAtMs,
-    transform: fullTransform(it.transform),
+    transform: effectiveTransform(stored, keys, atMs - it.startMs),
+    storedTransform: stored,
+    keyedCamera: !!clip && 'asset' in clip && isTakeCamera(clip, project.recordings)
+      && keys.some(k => k.param === 'pos_x' || k.param === 'pos_y' || k.param === 'scale'),
     grade: it.grade ?? null,
     isImage: imageAssets.has(it.asset),
   }
@@ -214,7 +226,7 @@ export function resolveOverlays(
     for (const it of layoutTrack(track, imageAssets)) {
       if (it.kind !== 'video' || !it.asset) continue
       if (atMs < it.startMs || atMs >= it.startMs + it.durMs) continue
-      const layer = overlayLayer(project, track.id, it, imageAssets)
+      const layer = overlayLayer(project, track.id, it, imageAssets, atMs)
       if (!layer) continue
       out.push(layer)
       break // one clip per track covers a given playhead position
@@ -313,13 +325,23 @@ export function gradeFilter(grade: ClipGrade | null | undefined): string {
  * stage carries the project aspect, so normalized maps 1:1: left=x, top=y,
  * width=scale, height=scale (the overlay is the conformed full frame scaled —
  * same aspect as the stage). opacity from the transform. */
-export function overlayBoxStyle(t: Required<ClipTransform>): CSSProperties {
+export function overlayBoxStyle(t: (ClipTransform & { opacity: number })): CSSProperties {
   return {
     left: `${(t.x * 100).toFixed(4)}%`,
     top: `${(t.y * 100).toFixed(4)}%`,
     width: `${(t.scale * 100).toFixed(4)}%`,
     height: `${(t.scale * 100).toFixed(4)}%`,
     opacity: t.opacity,
+    ...(t.shape && t.shape !== 'rect' ? {
+      height: 'auto',
+      aspectRatio: '1',
+      objectFit: 'cover',
+      borderRadius: t.shape === 'circle' ? '50%' : `${(t.radius ?? 0.18) * 100}%`,
+      ...(t.ring ? {
+        outline: `max(2px, ${t.ring.width * t.scale * 100}cqw) solid ${t.ring.colour}`,
+        outlineOffset: `calc(-1 * max(2px, ${t.ring.width * t.scale * 100}cqw))`,
+      } : {}),
+    } : {}),
   }
 }
 

@@ -266,7 +266,7 @@ pub(super) fn parse_autoedit_config(
     Ok(cfg)
 }
 
-fn validate_autoedit_config(cfg: &record_engine::EngineConfig) -> Result<(), CutError> {
+pub(super) fn validate_autoedit_config(cfg: &record_engine::EngineConfig) -> Result<(), CutError> {
     let invalid = |field: &str, cause: String| {
         CutError::new(
             error_codes::INVALID_ARGS,
@@ -345,21 +345,14 @@ pub(super) fn load_plan(plan_path: &Path) -> Result<record_core::EditPlan, CutEr
     })
 }
 
-/// `screen_record.autoedit`: read the EventTrack JSON at `track_path`, run the
-/// auto-edit engine (EventTrack → EditPlan), write the plan JSON to `out_plan`.
-/// Returns a one-line human summary. Pure compute — no desktop, no ffmpeg.
-pub fn autoedit(
-    track_path: &Path,
-    out_plan: &Path,
-    cfg: &record_engine::EngineConfig,
-) -> Result<String, CutError> {
+pub(super) fn load_events(track_path: &Path) -> Result<record_core::EventTrack, CutError> {
     let bytes = read_bounded_json(
         track_path,
         "EventTrack",
         MAX_EVENT_TRACK_JSON_BYTES,
         "run screen_record.stop to write events.json first",
     )?;
-    let events: record_core::EventTrack = serde_json::from_slice(&bytes).map_err(|e| {
+    serde_json::from_slice(&bytes).map_err(|e| {
         CutError::new(
             error_codes::INVALID_ARGS,
             format!(
@@ -368,7 +361,18 @@ pub fn autoedit(
             ),
             "the events file is not a valid Cut recorder EventTrack",
         )
-    })?;
+    })
+}
+
+/// `screen_record.autoedit`: read the EventTrack JSON at `track_path`, run the
+/// auto-edit engine (EventTrack → EditPlan), write the plan JSON to `out_plan`.
+/// Returns a one-line human summary. Pure compute — no desktop, no ffmpeg.
+pub fn autoedit(
+    track_path: &Path,
+    out_plan: &Path,
+    cfg: &record_engine::EngineConfig,
+) -> Result<String, CutError> {
+    let events = load_events(track_path)?;
     let plan = record_engine::autoedit(&events, cfg);
     let json = serde_json::to_vec_pretty(&plan).map_err(|e| {
         CutError::new(

@@ -446,7 +446,7 @@
     {
       "name": "screen_record.polish",
       "domain": "screen_record",
-      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) reuse an existing timeline clip for the imported asset if one exists, including a clip placed automatically by the first import; otherwise ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) and edit.insert at `at_ms` (default 0, no ripple). When the source capture directory contains a validated CameraArtifact@1, polish additionally imports its contained camera media onto a separate hidden identity-bound v_camera_<digest> video track at the screen clip's start plus first_frame_offset_ms, with an explicit source range limited to the measured camera duration. It is editable but hidden to prevent duplicating the legacy baked webcam bubble until B7 adds the real visible-track/preview workflow. A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project. The bake runs as a screen_record_polish job: jobs.list, jobs.status, the status bar and the quit question show it with frame progress (\"Polishing the recording: frame N of M\"), a project change asks before cancelling it, and the job ends when the clip is placed, before the verb answers. The clip belongs to the project that was open when polish was called: if another project is open when it is ready (a change confirmed with cancel_running_jobs), nothing is added to any project, the recording is offered again in its own project (screen_record.pending), and the reply says so (placed:false, waiting_in_project, message); a forced change during the bake stops it with job_cancelled naming the project the recording stays in. Frames are composed on several cores at once and the editable clip is encoded at the faster x264 polish preset (veryfast); a 62 s 4K bake took about 2 minutes before.",
+      "description": "Bake and place a recording. Camera defaults to separate; baked keeps legacy pixels. See DEBUG_API.md.",
       "args": {
         "type": "object",
         "required": [
@@ -465,23 +465,24 @@
           },
           "track": {
             "type": "string",
-            "description": "Target video track id when inserting a new clip (default \"v1\"; created if absent). An existing clip for the imported asset is reused without moving it."
+            "description": "Insertion track (default v1)."
           },
           "at_ms": {
             "type": "integer",
             "minimum": 0,
-            "description": "Timeline position when inserting a new baked clip (default 0). An existing clip for the imported asset is reused without moving it."
+            "description": "Insertion time (default 0)."
           },
           "rationale": {
             "type": "string"
           },
+          "camera": {"type":"string","enum":["separate","baked"],"description":"Separate bubble or baked pixels."},
           "raw": {
             "type": "boolean",
-            "description": "When true, SKIP the slow zoom/cursor/frame re-render: stream-COPY the captured video and mux the mic (near-instant) so 'stop → editable clip' is fast. The EditPlan is still required (cache-keying) but is NOT applied; run polish again without raw for the auto-zoom/cursor pass. Default false (full polish)."
+            "description": "Stream-copy without polish (default false). Camera mode is ignored."
           }
         }
       },
-      "result": "{placed, job_id, clip_id, asset_id, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable v_camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. job_id = the screen_record_polish job that baked and placed it (finished when the verb answers). placed:false (clip_id null, waiting_in_project {name, path}, message) when the recording's project was no longer open: nothing was added, and the recording waits in its own project. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
+      "result": "{placed, job_id, clip_id, asset_id, camera_look?, camera_note?, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — camera_note warns when a recorded shape change cannot be keyed (separate keeps its first shape). baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. job_id = the screen_record_polish job that baked and placed it (finished when the verb answers). placed:false (clip_id null, waiting_in_project {name, path}, message) when the recording's project was no longer open: nothing was added, and the recording waits in its own project. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {

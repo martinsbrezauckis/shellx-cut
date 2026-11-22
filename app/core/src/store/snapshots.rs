@@ -90,7 +90,7 @@ pub(super) fn rebuild(
         None => (Project::new("", ProjectSettings::default()), 0),
     };
     for index in snapshot_prefix..prefix_len {
-        apply_record(&mut project, &ops[index], &ops[..index])?;
+        super::legacy_keyframes::apply_saved_record(&mut project, &ops[index], &ops[..index])?;
         project.sync_active_sequence();
     }
     validate_replayed_asset_ids(&project)?;

@@ -38,13 +38,33 @@ pub fn make_filmstrip(
     asset_id: &str,
     duration_ms: u64,
 ) -> Result<PathBuf, CutError> {
+    make_filmstrip_for(proxy, out_dir, asset_id, duration_ms, None)
+}
+
+/// Reuse a base strip only when this engine made it for this source identity.
+pub fn make_filmstrip_bound(
+    proxy: &Path,
+    out_dir: &Path,
+    asset_id: &str,
+    duration_ms: u64,
+    binding: &str,
+) -> Result<PathBuf, CutError> {
+    make_filmstrip_for(proxy, out_dir, asset_id, duration_ms, Some(binding))
+}
+
+fn make_filmstrip_for(
+    proxy: &Path,
+    out_dir: &Path,
+    asset_id: &str,
+    duration_ms: u64,
+    binding: Option<&str>,
+) -> Result<PathBuf, CutError> {
     let out = out_dir.join(format!("{asset_id}.jpg"));
     require_live_output_dir(out_dir)?;
     if crate::render::plain_internal_file_exists(&out)? {
         // Reused only when this engine made it (a received project can carry a
         // complete image at this name showing anything).
-        if crate::image_cache::existing_image_cache_is_complete(&out)
-            && crate::cache_trust::trusted(&out)
+        if crate::image_cache::existing_image_cache_is_complete(&out) && trusted_for(&out, binding)
         {
             return Ok(out);
         }
@@ -73,7 +93,7 @@ pub fn make_filmstrip(
         out.display().to_string(),
     ];
     crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
-    crate::cache_trust::remember(&out);
+    remember_for(&out, binding);
     Ok(out)
 }
 
@@ -111,6 +131,44 @@ pub fn make_window_thumbs(
     count: u32,
     h: u32,
 ) -> Result<PathBuf, CutError> {
+    make_window_thumbs_for(proxy, out_dir, asset_id, start_ms, end_ms, count, h, None)
+}
+
+/// Reuse a window tile only when this engine made it for this source identity.
+#[allow(clippy::too_many_arguments)]
+pub fn make_window_thumbs_bound(
+    proxy: &Path,
+    out_dir: &Path,
+    asset_id: &str,
+    start_ms: u64,
+    end_ms: u64,
+    count: u32,
+    h: u32,
+    binding: &str,
+) -> Result<PathBuf, CutError> {
+    make_window_thumbs_for(
+        proxy,
+        out_dir,
+        asset_id,
+        start_ms,
+        end_ms,
+        count,
+        h,
+        Some(binding),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_window_thumbs_for(
+    proxy: &Path,
+    out_dir: &Path,
+    asset_id: &str,
+    start_ms: u64,
+    end_ms: u64,
+    count: u32,
+    h: u32,
+    binding: Option<&str>,
+) -> Result<PathBuf, CutError> {
     let count = count.clamp(MIN_FRAMES, MAX_FRAMES);
     let h = h.clamp(24, 240);
     let out = out_dir.join(window_thumb_name(asset_id, start_ms, end_ms, count, h));
@@ -118,8 +176,7 @@ pub fn make_window_thumbs(
     if crate::render::plain_internal_file_exists(&out)? {
         // Reused only when this engine made it (a received project can carry a
         // complete image at this name showing anything).
-        if crate::image_cache::existing_image_cache_is_complete(&out)
-            && crate::cache_trust::trusted(&out)
+        if crate::image_cache::existing_image_cache_is_complete(&out) && trusted_for(&out, binding)
         {
             return Ok(out);
         }
@@ -153,7 +210,7 @@ pub fn make_window_thumbs(
         out.display().to_string(),
     ];
     crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
-    crate::cache_trust::remember(&out);
+    remember_for(&out, binding);
     Ok(out)
 }
 
@@ -163,13 +220,31 @@ pub fn make_window_thumbs(
 /// photo icon ("don't see images in the timeline"). Stored in the same field +
 /// dir as the video filmstrip. Idempotent.
 pub fn make_image_thumb(src: &Path, out_dir: &Path, asset_id: &str) -> Result<PathBuf, CutError> {
+    make_image_thumb_for(src, out_dir, asset_id, None)
+}
+
+/// Reuse an image thumbnail only when this engine made it for this source identity.
+pub fn make_image_thumb_bound(
+    src: &Path,
+    out_dir: &Path,
+    asset_id: &str,
+    binding: &str,
+) -> Result<PathBuf, CutError> {
+    make_image_thumb_for(src, out_dir, asset_id, Some(binding))
+}
+
+fn make_image_thumb_for(
+    src: &Path,
+    out_dir: &Path,
+    asset_id: &str,
+    binding: Option<&str>,
+) -> Result<PathBuf, CutError> {
     let out = out_dir.join(format!("{asset_id}.jpg"));
     require_live_output_dir(out_dir)?;
     if crate::render::plain_internal_file_exists(&out)? {
         // Reused only when this engine made it (a received project can carry a
         // complete image at this name showing anything).
-        if crate::image_cache::existing_image_cache_is_complete(&out)
-            && crate::cache_trust::trusted(&out)
+        if crate::image_cache::existing_image_cache_is_complete(&out) && trusted_for(&out, binding)
         {
             return Ok(out);
         }
@@ -189,8 +264,22 @@ pub fn make_image_thumb(src: &Path, out_dir: &Path, asset_id: &str) -> Result<Pa
         out.display().to_string(),
     ];
     crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
-    crate::cache_trust::remember(&out);
+    remember_for(&out, binding);
     Ok(out)
+}
+
+fn trusted_for(out: &Path, binding: Option<&str>) -> bool {
+    match binding {
+        Some(binding) => crate::cache_trust::trusted_bound(out, binding),
+        None => crate::cache_trust::trusted(out),
+    }
+}
+
+fn remember_for(out: &Path, binding: Option<&str>) {
+    match binding {
+        Some(binding) => crate::cache_trust::remember_bound(out, binding),
+        None => crate::cache_trust::remember(out),
+    }
 }
 
 fn require_live_output_dir(dir: &Path) -> Result<(), CutError> {
@@ -244,6 +333,82 @@ mod tests {
         assert!(sent(
             make_filmstrip(&missing_source, &dir, "a3", 1000),
             &bytes
+        ));
+    }
+
+    #[test]
+    fn bound_thumbnail_rejects_old_or_planted_content_before_reuse() {
+        let root = crate::atomic_output::private_test_tempdir();
+        let dir = root.path().join("filmstrip");
+        let source = root.path().join("missing.png");
+        let (path, planted_bytes) = planted(&dir, "a1.jpg");
+        // A received file may look complete but cannot establish engine origin.
+        assert!(make_image_thumb_bound(&source, &dir, "a1", "image\na1\nsource-v1").is_err());
+        assert!(!crate::cache_trust::trusted_bound(
+            &path,
+            "image\na1\nsource-v1"
+        ));
+        assert_ne!(
+            std::fs::read(&path).ok().as_deref(),
+            Some(planted_bytes.as_slice())
+        );
+
+        // A formerly engine-owned file for another source also cannot be
+        // relabeled merely because its name is the same.
+        let (path, old_bytes) = planted(&dir, "a1.jpg");
+        crate::cache_trust::remember_bound(&path, "image\na1\nsource-v1");
+        assert_eq!(
+            make_image_thumb_bound(&source, &dir, "a1", "image\na1\nsource-v1").unwrap(),
+            path
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), old_bytes);
+        assert!(make_image_thumb_bound(&source, &dir, "a1", "image\na1\nsource-v2").is_err());
+        assert!(!crate::cache_trust::trusted_bound(
+            &path,
+            "image\na1\nsource-v2"
+        ));
+    }
+
+    #[test]
+    fn bound_filmstrip_and_window_tile_refuse_another_source() {
+        let root = crate::atomic_output::private_test_tempdir();
+        let dir = root.path().join("filmstrip");
+        let proxy = root.path().join("missing.mp4");
+        let (strip, old_strip) = planted(&dir, "a1.jpg");
+        crate::cache_trust::remember_bound(&strip, "strip\na1\nsource-v1");
+        assert_eq!(
+            make_filmstrip_bound(&proxy, &dir, "a1", 1_000, "strip\na1\nsource-v1").unwrap(),
+            strip
+        );
+        assert_eq!(std::fs::read(&strip).unwrap(), old_strip);
+        assert!(make_filmstrip_bound(&proxy, &dir, "a1", 1_000, "strip\na1\nsource-v2").is_err());
+        assert!(!crate::cache_trust::trusted_bound(
+            &strip,
+            "strip\na1\nsource-v2"
+        ));
+
+        let (tile, old_tile) = planted(&dir, &window_thumb_name("a1", 0, 500, 12, 80));
+        crate::cache_trust::remember_bound(&tile, "window\na1\nsource-v1");
+        assert_eq!(
+            make_window_thumbs_bound(&proxy, &dir, "a1", 0, 500, 12, 80, "window\na1\nsource-v1")
+                .unwrap(),
+            tile
+        );
+        assert_eq!(std::fs::read(&tile).unwrap(), old_tile);
+        assert!(make_window_thumbs_bound(
+            &proxy,
+            &dir,
+            "a1",
+            0,
+            500,
+            12,
+            80,
+            "window\na1\nsource-v2"
+        )
+        .is_err());
+        assert!(!crate::cache_trust::trusted_bound(
+            &tile,
+            "window\na1\nsource-v2"
         ));
     }
 

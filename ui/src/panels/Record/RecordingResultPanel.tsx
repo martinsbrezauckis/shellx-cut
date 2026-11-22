@@ -102,7 +102,7 @@ export function RecordingResultPanel({
                       disabled={exportRunning} onClick={() => onFormat(format)}>{format.toUpperCase()}</button>
                   ))}
                 </div>
-                <button type="button" className="rec__export-btn" data-cut-action="record-export" disabled={exportRunning} onClick={onExport}>Export {exportFormat.toUpperCase()}…</button>
+                <button type="button" className="rec__export-btn" data-cut-action="record-export" disabled={exportRunning} onClick={onExport}>Export as recorded</button>
                 {exportCancelable && <button type="button" className="rec__export-btn" data-cut-action="record-export-cancel" onClick={onCancelExport}>Cancel export</button>}
               </>
             )}
@@ -115,6 +115,7 @@ export function RecordingResultPanel({
             {onOpenOutputSettings && <button type="button" className="rec__export-btn" data-cut-action="record-output-settings" onClick={onOpenOutputSettings}>Export folder settings</button>}
           </div>
           {rawCopyNote && <p className="rec__export-note" data-cut-rec-copy-note role="status">{rawCopyNote}</p>}
+          {!raw && <p className="rec__export-note">Edits you make later in Edit are not in this file. Export from Edit to include them.</p>}
           {exportNote && <p className="rec__export-note" data-cut-rec-export-note role="status">{exportNote}</p>}
         </div>
       )}

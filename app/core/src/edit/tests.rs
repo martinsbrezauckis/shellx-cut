@@ -1015,6 +1015,7 @@ fn transform_sets_clears_and_survives_split() {
         y,
         scale,
         opacity: 1.0,
+        ..crate::types::ClipTransform::identity()
     };
     // Validation: scale (0,1], x/y [0,1], video media clips only.
     assert_eq!(
@@ -1069,6 +1070,7 @@ fn transform_sets_clears_and_survives_split() {
         y,
         scale,
         opacity,
+        ..crate::types::ClipTransform::identity()
     };
     assert_eq!(
         transform(&mut p, "c1", to(0.0, 0.0, 1.0, 1.5))
@@ -4119,6 +4121,7 @@ mod replace_tests {
             y: 0.2,
             scale: 0.5,
             opacity: 0.9,
+            ..ClipTransform::identity()
         });
         src.grade = Some(ClipGrade {
             contrast: 1.2,

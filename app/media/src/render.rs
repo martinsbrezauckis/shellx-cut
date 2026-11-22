@@ -81,6 +81,7 @@ mod input_paths;
 mod matte;
 pub mod odd_size;
 mod options;
+mod overlay_shape;
 mod published;
 mod ramp_timing;
 pub mod resources;
@@ -497,36 +498,14 @@ fn base_region_transform_block(
     format!("[{in_label}]null{vtransform}{vopacity}[{out_label}];")
 }
 
-/// Place a prepared overlay stream on the full-frame transparent canvas when
-/// `edit.keyframe pos_x/pos_y` needs a time expression. `input_chain` ends at a
-/// yuva frame and deliberately has no output label: ordinary media and a fully
-/// composed matte replacement both take this same placement path. Opacity and
-/// fade therefore apply to the completed overlay exactly once.
-#[allow(clippy::too_many_arguments)]
-fn animated_overlay_canvas_block(
-    input_chain: &str,
-    small: &str,
-    canvas: &str,
-    output: &str,
-    w: u32,
-    h: u32,
-    fps: &str,
-    dur_ms: u64,
-    vopacity: &str,
-    ow: u32,
-    oh: u32,
-    static_opacity: &str,
-    xexpr: &str,
-    yexpr: &str,
-    vfade: &str,
-) -> String {
-    format!(
-        "{input_chain}{vopacity},scale={ow}:{oh},setsar=1{static_opacity}[{small}];\n\
-         color=c=black@0.0:s={w}x{h}:r={fps}:d={},format=yuva420p[{canvas}];\n\
-         [{canvas}][{small}]overlay=x='{xexpr}':y='{yexpr}':eof_action=pass{vfade}[{output}];",
-        secs(dur_ms),
-    )
-}
+mod clip_identity;
+mod keyframe_expr;
+mod keyframe_limit;
+mod keyframe_window;
+mod mask_union;
+use keyframe_expr::kf_expr;
+mod overlay_canvas;
+use overlay_canvas::animated_overlay_canvas_block;
 
 /// ffmpeg filter snippet (comma-PREFIXED, appended to a clip's chain) for a
 /// clip's visual EFFECTS (edit.effect), in order. `overlay` = is this an overlay
@@ -815,10 +794,7 @@ fn tracked_alpha_geq(m: &cut_core::ClipMask, w: u32, h: u32) -> String {
         ));
     }
     // luma = 255 if in ANY region → nested binary max (single region = no wrapper).
-    let lum = inds
-        .into_iter()
-        .reduce(|a, b| format!("max({a},{b})"))
-        .unwrap_or_else(|| "0".to_string());
+    let lum = mask_union::indicators(inds);
     let mut chain = format!("geq=lum='{lum}':cb=128:cr=128");
     let feather_px = m.feather * hf;
     if feather_px > 0.1 {
@@ -1254,10 +1230,9 @@ fn kf_points(
     param: cut_core::KfParam,
 ) -> Option<(Vec<(f64, f64)>, cut_core::KfInterp)> {
     keyframes.iter().find(|k| k.param == param).map(|k| {
-        let pts: Vec<(f64, f64)> = k
-            .points
-            .iter()
-            .map(|p| (p.t_ms as f64 / 1000.0, p.value))
+        let pts: Vec<(f64, f64)> = cut_core::keyframe_window::points(k)
+            .into_iter()
+            .map(|(t, value)| (t as f64 / 1000.0, value))
             .collect();
         (pts, k.interp)
     })
@@ -1338,63 +1313,6 @@ fn ease_frac_expr(interp: cut_core::KfInterp, frac: &str) -> String {
         ),
     };
     format!("(st(0,clip(({frac}),0,1))*0+{body})")
-}
-
-/// Compile keyframe control points into a piecewise ffmpeg time-EXPRESSION in the
-/// time variable `var` (`t` for eq/volume/scale, `T` for geq), seconds (or `on`
-/// frame-index for zoompan). LINEAR lerps between adjacent points; `hold` steps;
-/// `ease_*` reshapes the inter-keyframe fraction through a Penner curve (see
-/// [`ease_frac_expr`]); all CLAMP to the first/last value outside the point range.
-/// Built inner-to-outer as nested `if(lt(var,t),…,…)`. Plain commas inside the
-/// expression parse fine when the whole thing is wrapped in the filter arg's single
-/// quotes (proven). LINEAR/HOLD emit the EXACT pre-easing string (byte-identical
-/// replay for every project predating the easing channel).
-fn kf_expr(points: &[(f64, f64)], var: &str, interp: cut_core::KfInterp) -> String {
-    let hold = matches!(interp, cut_core::KfInterp::Hold);
-    let linear = matches!(interp, cut_core::KfInterp::Linear);
-    match points.len() {
-        0 => "0".to_string(),
-        1 => fnum(points[0].1),
-        n => {
-            // var >= last t → the last value (the innermost else).
-            let mut expr = fnum(points[n - 1].1);
-            for i in (0..n - 1).rev() {
-                let (t0, v0) = points[i];
-                let (t1, v1) = points[i + 1];
-                let seg = if hold || (t1 - t0).abs() < 1e-9 {
-                    fnum(v0)
-                } else if linear {
-                    // v0 + (v1-v0)*(var-t0)/(t1-t0) — the EXACT legacy string.
-                    format!(
-                        "({}+({})*({}-{})/{})",
-                        fnum(v0),
-                        fnum(v1 - v0),
-                        var,
-                        fnum(t0),
-                        fnum(t1 - t0)
-                    )
-                } else {
-                    // v0 + (v1-v0)*ease( (var-t0)/(t1-t0) )
-                    let frac = format!("(({}-{})/{})", var, fnum(t0), fnum(t1 - t0));
-                    format!(
-                        "({}+({})*{})",
-                        fnum(v0),
-                        fnum(v1 - v0),
-                        ease_frac_expr(interp, &frac)
-                    )
-                };
-                expr = format!("if(lt({},{}),{},{})", var, fnum(t1), seg, expr);
-            }
-            // Clamp before the first point to v0.
-            format!(
-                "if(lt({},{}),{},{})",
-                var,
-                fnum(points[0].0),
-                fnum(points[0].1),
-                expr
-            )
-        }
-    }
 }
 
 /// The animated-ZOOM filter for a scale-keyframed clip (edit.keyframe param=scale),
@@ -1795,6 +1713,7 @@ fn build_graph(
     opts: RenderOptions,
     preview_height: Option<u32>,
 ) -> Result<Graph, CutError> {
+    keyframe_limit::require_bounded_keyframes(project, edl)?;
     let s = &project.settings;
     // Output geometry: project settings by default, or the largest source
     // (match_source). fps/audio_rate always come from project settings. The
@@ -1873,7 +1792,9 @@ fn build_graph(
                         // removed before they reach the rendered frame.
                         let vcrop = crop_filter(seg.crop.as_ref());
                         let asset_meta = project.assets.get(asset);
+                        // Raw probe dimensions cannot elide scaling of a selected proxy.
                         let conform = asset_meta
+                            .filter(|_| !inputs[input_idx[asset.as_str()]].proxy)
                             .map(|a| conform_filter_for_asset(a, seg.crop.as_ref(), w, h, opts.fit))
                             .unwrap_or_else(|| conform_filter(w, h, opts.fit));
                         let vfps = asset_meta
@@ -2288,41 +2209,32 @@ fn build_graph(
                     _ => None,
                 })
                 .unwrap_or_else(cut_core::ClipTransform::identity);
-            // Even-rounded pixel geometry (yuv420 chroma alignment): sizes
-            // floor at 2px and cap at the frame; positions clamp so the
-            // overlay stays fully inside (pad refuses out-of-bounds).
-            let (ow, oh) = (
-                even_size_px(f64::from(w) * t.scale, w),
-                even_size_px(f64::from(h) * t.scale, h),
-            );
-            let (ox, oy) = (
-                even_pos_px(f64::from(w) * t.x, w.saturating_sub(ow)),
-                even_pos_px(f64::from(h) * t.y, h.saturating_sub(oh)),
-            );
+            let (ow, oh, ox, oy) = overlay_shape::geometry(&t, w, h);
+            let shaped_scale = if t.shape.is_rect() {
+                None
+            } else {
+                overlay_canvas::shaped_scale_expr(
+                    &seg.keyframes,
+                    ow,
+                    w,
+                    h,
+                    keyframe_window::offset(seg, s.fps),
+                )?
+            };
+            let shape_filter =
+                overlay_shape::mask_filter(&t, ow, &format!("sh{ti}_{}", olabels.len()));
             // Keyframed OPACITY (edit.keyframe param=opacity): a `geq` alpha
             // expression on the yuva frame, injected after format=yuva420p (before
             // the PiP scale/pad). When present it OVERRIDES the static opacity.
-            let vopac = opacity_kf_filter(&seg.keyframes);
+            let vopac = keyframe_window::opacity(seg, s.fps);
             let place = if t.is_identity() {
                 String::new() // full-frame, fully opaque: no extra stage
             } else {
-                // setsar=1 RIGHT AFTER the transform scale (non-exact-scale guard):
-                // even-rounding ow/oh drifts the aspect ratio a sub-pixel,
-                // and ffmpeg's scale compensates by setting a non-1:1 SAR
-                // to preserve DAR (e.g. scale:0.62 → 1190x668 → SAR
-                // 5344:5355). The conform stage's setsar=1 sits BEFORE this
-                // suffix, so the drift survived to concat, which refuses
-                // mixed-SAR inputs ("SAR 5344:5355 do not match SAR 1:1")
-                // — one odd PiP scale bricked every render of the project.
-                // Forcing square pixels here costs at most a sub-pixel of
-                // geometric distortion (invisible), never a failed render.
-                let mut s =
-                    format!(",scale={ow}:{oh},setsar=1,pad={w}:{h}:{ox}:{oy}:color=black@0.0");
-                // Overlay OPACITY (edit.transform.opacity): scale the alpha plane
-                // (the stream is yuva420p) so the overlay blends over the base —
-                // 1.0 = opaque (no filter), <1 = ghost/blend. colorchannelmixer
-                // aa multiplies alpha; the transparent pad border stays 0. SKIPPED
-                // when opacity is KEYFRAMED (the geq above is the animated source).
+                // Reset SAR after even-rounded scaling: otherwise concat rejects
+                // mixed SARs (e.g. scale 0.62 gives 5344:5355).
+                let mut s = overlay_shape::place_filter(&t, w, h, &shape_filter);
+                // Multiply alpha after masking/padding; keyframed opacity overrides
+                // static opacity. Transparent pixels stay transparent.
                 if t.opacity < 1.0 && vopac.is_empty() {
                     let o = (t.opacity.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
                     s.push_str(&format!(",colorchannelmixer=aa={o}"));
@@ -2346,9 +2258,16 @@ fn build_graph(
             // `place` transform then scales/positions the conformed full-frame
             // overlay (PiP). yuva420p keeps the alpha plane for compositing.
             let asset_meta = project.assets.get(asset);
-            let conform = asset_meta
-                .map(|a| conform_filter_for_asset(a, seg.crop.as_ref(), w, h, opts.fit))
-                .unwrap_or_else(|| conform_filter(w, h, opts.fit));
+            let conform = if t.shape.is_rect() {
+                asset_meta
+                    .filter(|_| !inputs[input_idx[asset.as_str()]].proxy)
+                    .map(|a| conform_filter_for_asset(a, seg.crop.as_ref(), w, h, opts.fit))
+                    .unwrap_or_else(|| conform_filter(w, h, opts.fit))
+            } else {
+                format!(
+                    "scale={ow}:{oh}:force_original_aspect_ratio=increase,crop={ow}:{oh},setsar=1"
+                )
+            };
             // Speed/freeze (edit.speed/edit.freeze) apply to overlays too.
             let (trim_in, trim_out, vsetpts, vfreeze) = freeze_chain(
                 seg.freeze.as_ref(),
@@ -2373,8 +2292,14 @@ fn build_graph(
             // Ken Burns pan/zoom (edit.animate) applies to overlays too, after conform;
             // a SCALE keyframe takes the same slot (the eased multi-point form).
             let seg_dur_ms = seg.timeline_out_ms - seg.timeline_in_ms;
-            let vanim = scale_kf_zoompan(&seg.keyframes, w, h, s.fps, seg_dur_ms)
-                .unwrap_or_else(|| animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur_ms));
+            // Shaped Scale multiplies bubble size, not the interior crop.
+            let vanim = if shaped_scale.is_some() {
+                String::new()
+            } else {
+                keyframe_window::scale(seg, w, h, s.fps, seg_dur_ms).unwrap_or_else(|| {
+                    animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur_ms)
+                })
+            };
             // Color grade (edit.grade) applies to overlay clips too, after conform.
             let vgrade = grade_stack_filter(seg.grade.as_ref(), &seg.grade_stack);
             // Color management (project.color + edit.color_space) on overlays too —
@@ -2414,8 +2339,8 @@ fn build_graph(
             // so it still concats into the continuous overlay track — the OOM-avoidance
             // the static path relies on is PRESERVED. Static overlays are untouched:
             // they keep the exact `pad` graph (byte-identical replay).
-            let posx = kf_points(&seg.keyframes, cut_core::KfParam::PosX);
-            let posy = kf_points(&seg.keyframes, cut_core::KfParam::PosY);
+            let posx = keyframe_window::points(seg, cut_core::KfParam::PosX, s.fps);
+            let posy = keyframe_window::points(seg, cut_core::KfParam::PosY, s.fps);
             // edit.matte: SET the overlay's alpha plane from the baked straight-alpha
             // (RVM) instead of the clip's own opaque alpha. `remove` preserves the
             // established lower-track reveal. `replace` composites that subject over
@@ -2499,10 +2424,11 @@ fn build_graph(
                         &vopac,
                         ow,
                         oh,
-                        &opac,
+                        &format!("{shape_filter}{opac}"),
                         &xexpr,
                         &yexpr,
                         &vfade,
+                        None,
                     ));
                     f.push('\n');
                 } else {
@@ -2523,7 +2449,7 @@ fn build_graph(
                     idx = input_idx[asset.as_str()],
                 )
                 .unwrap();
-            } else if posx.is_some() || posy.is_some() {
+            } else if posx.is_some() || posy.is_some() || shaped_scale.is_some() {
                 // overlay x/y in pixels: an animated `frame_dim * fraction` when that
                 // axis is keyframed, else the static ox/oy. `t` is segment-local (the
                 // canvas and the PTS-reset clip both start at 0). Values are NOT
@@ -2551,6 +2477,18 @@ fn build_graph(
                      {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p",
                     idx = input_idx[asset.as_str()],
                 );
+                // Mask at stable dimensions before resizing the complete RGBA
+                // bubble: geq caches its configured input width and height.
+                let input_chain = if shaped_scale.is_some() {
+                    format!("{input_chain}{vopac}{shape_filter}")
+                } else {
+                    input_chain
+                };
+                let placed_mask = if shaped_scale.is_some() {
+                    ""
+                } else {
+                    &shape_filter
+                };
                 f.push_str(&animated_overlay_canvas_block(
                     &input_chain,
                     &small,
@@ -2560,13 +2498,14 @@ fn build_graph(
                     h,
                     &fps,
                     seg_dur_ms,
-                    &vopac,
+                    if shaped_scale.is_some() { "" } else { &vopac },
                     ow,
                     oh,
-                    &opac,
+                    &format!("{placed_mask}{opac}"),
                     &xexpr,
                     &yexpr,
                     &vfade,
+                    shaped_scale.as_deref(),
                 ));
                 f.push('\n');
             } else {
@@ -3576,6 +3515,7 @@ pub fn render_final(
     opts: RenderOptions,
     on_progress: Option<ProgressFn>,
 ) -> Result<RenderOutput, CutError> {
+    keyframe_limit::require_bounded_keyframes(project, edl)?;
     let measured = source_facts::measured_for_reverse(project, fence.project_dir()); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
     tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
@@ -3822,6 +3762,7 @@ fn window_segment_key(
 ) -> String {
     let mut h = Sha256::new();
     h.update(serde_json::to_vec(wedl).unwrap_or_default());
+    clip_identity::update(&mut h, project, wedl);
     h.update(format!("{gw}x{gh}@{fps}").as_bytes());
     h.update(format!("{:?}", preset.video_args).as_bytes());
     // Referenced assets by content hash (a re-imported / changed source busts it).
@@ -3996,6 +3937,7 @@ pub fn render_segmented(
     opts: RenderOptions,
     on_progress: Option<ProgressFn>,
 ) -> Result<RenderOutput, CutError> {
+    keyframe_limit::require_bounded_keyframes(project, edl)?;
     let cb: ProgressFn = on_progress.unwrap_or_else(|| Box::new(|_| {}));
     let project_dir = fence.project_dir();
     let dur = edl.duration_ms;
@@ -4405,6 +4347,7 @@ pub fn render_preview(
     duration_ms: u64,
     out_dir: &Path,
 ) -> Result<PathBuf, CutError> {
+    keyframe_limit::require_bounded_keyframes(project, edl)?;
     let measured = source_facts::measured_for_reverse(project, project_dir); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
     tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
@@ -4790,6 +4733,7 @@ pub fn render_range(
     opts: RenderOptions,
     on_progress: Option<ProgressFn>,
 ) -> Result<RenderOutput, CutError> {
+    keyframe_limit::require_bounded_keyframes(project, edl)?;
     let measured = source_facts::measured_for_reverse(project, fence.project_dir()); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
     tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
@@ -4907,6 +4851,7 @@ pub fn extract_frame(
     at_ms: u64,
     preview_height: Option<u32>,
 ) -> Result<Vec<u8>, CutError> {
+    keyframe_limit::require_bounded_keyframes(project, edl)?;
     let measured = source_facts::measured_for_reverse(project, project_dir); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
     tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly

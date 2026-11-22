@@ -4,6 +4,15 @@ import { callVerb, type ScreenRecordSystemAudioProbeResult } from '../../lib/cli
 interface Props {
   disabled: boolean
   onRunningChange: (running: boolean) => void
+  /** The engine's operating system from the environment report ('macos', 'windows', 'linux'); null until it is known. */
+  hostOs?: string | null
+}
+
+/** The hint before a test. Only macOS asks for Audio Capture permission, so the sentence about it is shown there alone. */
+export function systemAudioProbeHint(hostOs: string | null | undefined): string {
+  return hostOs === 'macos'
+    ? 'Play a short sound, then test. macOS may ask for Audio Capture permission.'
+    : 'Play a short sound, then test.'
 }
 
 type ProbeState =
@@ -12,7 +21,7 @@ type ProbeState =
   | { kind: 'done'; result: ScreenRecordSystemAudioProbeResult }
   | { kind: 'error'; detail: string }
 
-export function SystemAudioProbeControl({ disabled, onRunningChange }: Props) {
+export function SystemAudioProbeControl({ disabled, onRunningChange, hostOs = null }: Props) {
   const [state, setState] = useState<ProbeState>({ kind: 'idle' })
 
   const run = async () => {
@@ -44,7 +53,7 @@ export function SystemAudioProbeControl({ disabled, onRunningChange }: Props) {
         : state.result.detail
       : state.kind === 'error'
         ? state.detail
-        : 'Play a short sound, then test. macOS may ask for Audio Capture permission.'
+        : systemAudioProbeHint(hostOs)
 
   const statusKind = state.kind === 'done' && state.result.live && state.result.signal_detected
     ? 'ready'

@@ -8,7 +8,7 @@ import { chromium } from 'playwright'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 
-test('finishing recording status stays bounded beside reachable toolbar controls', async t => {
+test('every exit status of the recording top bar is shown whole beside reachable toolbar controls, in both themes', async t => {
   const cacheDir = mkdtempSync(join(tmpdir(), 'cut-recording-topbar-'))
   t.after(() => rmSync(cacheDir, { recursive: true, force: true }))
   const server = await createServer({
@@ -36,43 +36,71 @@ test('finishing recording status stays bounded beside reachable toolbar controls
   await page.route('**/api/verb/**', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: { sequences: [] } }),
   }))
-  await page.goto(new URL('/__recording_topbar__', server.resolvedUrls.local[0]).href)
-  const reason = page.locator('[data-cut-record-back-reason]')
-  await reason.waitFor()
-  const fullReason = 'Finishing the recording. Stay in Recording Studio until it completes.'
-  assert.equal(await reason.textContent(), fullReason)
-  assert.equal(await reason.getAttribute('title'), fullReason, 'full message remains available when visually truncated')
-  assert.equal(await page.locator('[data-cut-record-back-edit]').isDisabled(), true, 'capture exit guard remains enforced')
-  for (const width of [1984, 1600, 1280, 1100]) {
-    await page.setViewportSize({ width, height: 900 })
-    const geometry = await page.evaluate(() => {
-      const status = document.querySelector('[data-cut-record-back-reason]')
-      const rect = status.getBoundingClientRect()
-      const style = getComputedStyle(status)
-      const controls = [...document.querySelectorAll('[data-cut-settings-btn], [data-cut-manual-link], [data-cut-theme-toggle]')]
-      return {
-        rect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
-        overflow: style.overflowX, ellipsis: style.textOverflow, truncated: status.scrollWidth > status.clientWidth,
-        controls: controls.map(control => {
-          const r = control.getBoundingClientRect()
-          const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
-          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, hit: control.contains(hit) }
-        }),
-      }
-    })
-    assert.equal(geometry.overflow, 'hidden', `${width}: overflowing status cannot paint over controls`)
-    assert.equal(geometry.ellipsis, 'ellipsis')
-    assert.equal(geometry.truncated, true, `${width}: long finishing message is visibly bounded`)
-    assert.equal(geometry.controls.length, 3)
-    for (const control of geometry.controls) {
-      assert.ok(geometry.rect.right <= control.left, `${width}: status and control have separate horizontal slots`)
-      assert.ok(control.right <= width, `${width}: toolbar control remains in viewport`)
-      assert.equal(control.hit, true, `${width}: toolbar button wins its own hit test`)
-    }
-    if (process.env.CUT_TOPBAR_SCREENSHOT_DIR) {
-      await page.locator('[data-cut-recording-chrome]').screenshot({ path: join(process.env.CUT_TOPBAR_SCREENSHOT_DIR, `recording-topbar-${width}.png`) })
-    }
+  const phases = {
+    countdown: 'Cancel the countdown before returning to Edit.',
+    starting: 'Starting the recording. Stay on the Record page.',
+    recording: 'Stop the recording before returning to Edit.',
+    finalizing: 'Finishing the recording. Stay on the Record page.',
+    recovery: 'Check this recording before returning to Edit.',
   }
+  // RECORDING_EXIT_REASON_MAX_CHARS in recordingWorkspaceAdmission.ts; the bar is only sized for this much text.
+  const maxChars = 52
+  const reason = page.locator('[data-cut-record-back-reason]')
+  const url = phase => new URL(`/__recording_topbar__?phase=${phase}`, server.resolvedUrls.local[0]).href
+  const setTheme = theme => page.evaluate(name => {
+    // Dark is the :root default with no attribute (lib/themePref.ts).
+    if (name === 'light') document.documentElement.setAttribute('data-theme', 'light')
+    else document.documentElement.removeAttribute('data-theme')
+  }, theme)
+  // 1280x800 is the window the owner saw the status cut off in; 1100 is the narrowest supported window.
+  for (const [phase, expected] of Object.entries(phases)) {
+    await page.goto(url(phase))
+    await reason.waitFor()
+    assert.equal(await reason.textContent(), expected)
+    assert.equal(await reason.getAttribute('title'), expected, 'full message stays available as the tooltip')
+    assert.ok(expected.length <= maxChars, `${phase}: ${expected.length} characters is over the ${maxChars} the bar is sized for`)
+    assert.equal(await page.locator('[data-cut-record-back-edit]').isDisabled(), true, 'capture exit guard remains enforced')
+    const colors = {}
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme)
+      for (const [width, height] of [[1984, 900], [1600, 900], [1280, 800], [1100, 800]]) {
+        await page.setViewportSize({ width, height })
+        const geometry = await page.evaluate(() => {
+          const status = document.querySelector('[data-cut-record-back-reason]')
+          const rect = status.getBoundingClientRect()
+          const style = getComputedStyle(status)
+          const controls = [...document.querySelectorAll('[data-cut-settings-btn], [data-cut-manual-link], [data-cut-theme-toggle]')]
+          return {
+            rect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
+            overflow: style.overflowX, color: style.color, scrollWidth: status.scrollWidth, clientWidth: status.clientWidth,
+            controls: controls.map(control => {
+              const r = control.getBoundingClientRect()
+              const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
+              return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, hit: control.contains(hit) }
+            }),
+          }
+        })
+        const where = `${phase} ${theme} ${width}x${height}`
+        colors[theme] = geometry.color
+        assert.ok(geometry.scrollWidth <= geometry.clientWidth, `${where}: status is cut off (${geometry.scrollWidth} > ${geometry.clientWidth})`)
+        assert.equal(geometry.overflow, 'hidden', `${where}: a longer status still cannot paint over the controls`)
+        assert.equal(geometry.controls.length, 3)
+        for (const control of geometry.controls) {
+          assert.ok(geometry.rect.right <= control.left, `${where}: status and control have separate horizontal slots`)
+          assert.ok(control.right <= width, `${where}: toolbar control remains in viewport`)
+          assert.equal(control.hit, true, `${where}: toolbar button wins its own hit test`)
+        }
+        if (process.env.CUT_TOPBAR_SCREENSHOT_DIR && (phase === 'finalizing' || phase === 'starting') && height === 800) {
+          await page.screenshot({ path: join(process.env.CUT_TOPBAR_SCREENSHOT_DIR, `recording-topbar-${phase}-${theme}-${width}x${height}.png`), clip: { x: 0, y: 0, width, height: 56 } })
+        }
+      }
+    }
+    assert.notEqual(colors.dark, colors.light, `${phase}: both themes were really applied`)
+  }
+  await page.goto(url('finalizing'))
+  await reason.waitFor()
+  await setTheme('dark')
+  await page.setViewportSize({ width: 1280, height: 800 })
   await page.locator('[data-cut-settings-btn]').click()
   await page.locator('[data-cut-manual-link]').click()
   assert.equal(await page.locator('body').getAttribute('data-settings-opened'), 'true')

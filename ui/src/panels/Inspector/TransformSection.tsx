@@ -7,11 +7,12 @@ export interface TransformSectionProps {
   clipId: string
   stored: ClipTransform | null | undefined
   isOverlay: boolean
+  hideShape?: boolean
 }
 
-export default function TransformSection({ clipId, stored, isOverlay }: TransformSectionProps) {
-  const { transform, commitField, resetAll, busy } = useClipTransform(clipId, stored)
-  const isIdentity = transform.x === 0 && transform.y === 0 && transform.scale === 1 && transform.opacity === 1
+export default function TransformSection({ clipId, stored, isOverlay, hideShape = false }: TransformSectionProps) {
+  const { transform, commitField, commitShape, resetAll, busy } = useClipTransform(clipId, stored)
+  const isIdentity = transform.x === 0 && transform.y === 0 && transform.scale === 1 && transform.opacity === 1 && (!transform.shape || transform.shape === 'rect')
 
   return (
     <InspectorSection
@@ -23,6 +24,16 @@ export default function TransformSection({ clipId, stored, isOverlay }: Transfor
       onToggleBypass={() => { if (!isIdentity) void resetAll() }}
       onReset={() => void resetAll()}
     >
+      {isOverlay && !hideShape && (
+        <label>Shape
+          <select data-cut-action="transform-shape" aria-label="Shape" value={transform.shape ?? 'rect'} disabled={busy}
+            onChange={(e) => void commitShape(e.target.value as 'rect' | 'circle' | 'rounded')}>
+            <option value="rect">Rectangle</option>
+            <option value="circle">Circle</option>
+            <option value="rounded">Rounded</option>
+          </select>
+        </label>
+      )}
       <PropertyRow
         label="Position X" propKey="transform-x"
         value={transform.x} min={0} max={1} step={0.01} default={0}

@@ -372,7 +372,17 @@ pub struct ClipTransform {
     /// field load unchanged (a missing opacity = fully opaque).
     #[serde(default = "default_opacity")]
     pub opacity: f64,
+    /// Non-rect overlays are square, centre cover-cropped from the source.
+    #[serde(default, skip_serializing_if = "OverlayShape::is_rect")]
+    pub shape: OverlayShape,
+    /// Rounded corner radius as a fraction of the bubble width (default 0.18).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring: Option<OverlayRing>,
 }
+
+pub use crate::overlay_shape::{OverlayRing, OverlayShape};
 
 /// Default overlay opacity (fully opaque) — for the serde default + old projects.
 pub fn default_opacity() -> f64 {
@@ -387,12 +397,21 @@ impl ClipTransform {
             y: 0.0,
             scale: 1.0,
             opacity: 1.0,
+            shape: OverlayShape::Rect,
+            radius: None,
+            ring: None,
         }
     }
 
     /// True when this transform changes nothing (geometry AND opacity).
     pub fn is_identity(&self) -> bool {
-        self.x == 0.0 && self.y == 0.0 && self.scale == 1.0 && self.opacity == 1.0
+        self.x == 0.0
+            && self.y == 0.0
+            && self.scale == 1.0
+            && self.opacity == 1.0
+            && self.shape.is_rect()
+            && self.radius.is_none()
+            && self.ring.is_none()
     }
 }
 
@@ -2190,6 +2209,9 @@ pub fn speed_ramp_segments(src_in: u64, src_out: u64, ramp: &SpeedRamp) -> Vec<R
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
     pub param: KfParam,
+    /// Original eased segment before a cut; absent on uncut/legacy tracks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_in: Option<crate::keyframe_window::LeadIn>,
     /// Control points; the renderer linearly interpolates between them (or steps,
     /// for `interp = "hold"`), clamping to the first/last value outside the range.
     pub points: Vec<KfPoint>,
@@ -3045,6 +3067,9 @@ impl Sequence {
 pub struct Project {
     /// Schema tag, always PROJECT_SCHEMA for now.
     pub schema: String,
+    /// Editable recording provenance. Legacy projects serialize unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recordings: Vec<crate::recording::RecordingTake>,
     /// Project display name (also the .cutproj dir stem).
     #[serde(default)]
     pub name: String,
@@ -3130,6 +3155,7 @@ impl Project {
     pub fn new(name: &str, settings: ProjectSettings) -> Self {
         Self {
             schema: PROJECT_SCHEMA.to_string(),
+            recordings: vec![],
             name: name.to_string(),
             settings,
             assets: BTreeMap::new(),

@@ -26,6 +26,8 @@ import SpeedSection from './SpeedSection'
 import TitleEditSection from './TitleEditSection'
 import TrackLockGate from './TrackLockGate'
 import TransformSection from './TransformSection'
+import CameraSection from './CameraSection'
+import { isTakeCamera } from './cameraSectionModel'
 import VolumeSection from './VolumeSection'
 import VideoInspectorTools from './VideoInspectorTools'
 import {
@@ -319,7 +321,12 @@ export default function Inspector({ project, projectSession, projectRevision, se
                 {/* Continuous Transform section, gated to
                     VIDEO clips here (only rendered in the trackKind === 'video'
                     branch — never for audio/caption). Seeds from sel.clip.transform. */}
-                <TransformSection clipId={sel.clip.id} stored={sel.clip.transform} isOverlay={isOverlayVideo} />
+                {isTakeCamera(sel.clip, project?.recordings) && (
+                  <CameraSection key={sel.clip.id} clip={sel.clip.id} stored={sel.clip.transform}
+                    width={project!.settings.width} height={project!.settings.height} />
+                )}
+                <TransformSection clipId={sel.clip.id} stored={sel.clip.transform} isOverlay={isOverlayVideo}
+                  hideShape={isTakeCamera(sel.clip, project?.recordings)} />
                 {/* Cropping (source-px X/Y/W/H -> edit.crop) and speed/retime
                     (factor → edit.speed, Reverse → edit.reverse, Freeze →
                     edit.freeze). VIDEO clips only — same branch as Transform. */}
@@ -333,6 +340,8 @@ export default function Inspector({ project, projectSession, projectRevision, se
                   srcDurMs={sel.clip.src_out_ms - sel.clip.src_in_ms}
                 />
                 <VideoInspectorTools
+                  projectRevision={projectRevision}
+                  playheadMs={playheadMs}
                   project={project}
                   selection={sel}
                   doctor={doctor}

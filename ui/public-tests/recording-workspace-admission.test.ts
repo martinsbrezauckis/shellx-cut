@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
+  RECORDING_EXIT_REASON_MAX_CHARS,
   recordingWorkspaceAdmission,
   recordingWorkspaceTransitionAllowed,
 } from '../src/panels/Record/recordingWorkspaceAdmission'
@@ -15,6 +16,17 @@ for (const phase of ['countdown', 'starting', 'recording', 'finalizing', 'recove
   assert.equal(recordingWorkspaceTransitionAllowed('record', 'library', admission), false,
     `${phase} cannot unmount Record for Library`)
 }
+
+// The top bar shows the reason in one line: every reason fits the limit it is sized for, and the
+// two that name a stay-here rule say both what is happening and where to stay.
+for (const phase of ['countdown', 'starting', 'recording', 'finalizing', 'recovery'] as const) {
+  const reason = recordingWorkspaceAdmission(phase).reason ?? ''
+  assert.ok(reason.length <= RECORDING_EXIT_REASON_MAX_CHARS,
+    `${phase}: ${reason.length} characters is over the ${RECORDING_EXIT_REASON_MAX_CHARS} the top bar is sized for`)
+}
+assert.equal(RECORDING_EXIT_REASON_MAX_CHARS, 52)
+assert.equal(recordingWorkspaceAdmission('finalizing').reason, 'Finishing the recording. Stay on the Record page.')
+assert.equal(recordingWorkspaceAdmission('starting').reason, 'Starting the recording. Stay on the Record page.')
 
 const idle = recordingWorkspaceAdmission('idle')
 assert.equal(recordingWorkspaceTransitionAllowed('record', 'edit', idle), true,

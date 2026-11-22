@@ -3,6 +3,13 @@ fn copy_source(
     part: &Path,
     cancel: &crate::jobs::JobCancellation,
 ) -> Result<(), CutError> {
+    if let Some((_, bytes)) = &file.rewritten {
+        verify_source(file, Some(cancel))?;
+        let mut output = OpenOptions::new().write(true).create_new(true).open(part)?;
+        output.write_all(bytes)?;
+        output.sync_all()?;
+        return Ok(());
+    }
     let mut input = open_plain_regular(&file.source)?;
     let before = file_stamp(&input.metadata()?);
     if before != file.stamp {
@@ -131,7 +138,9 @@ fn source_changed(path: &Path) -> CutError {
         "Used media changed while making the project copy",
         path.display().to_string(),
     )
-    .with_suggested_action("Preview the project copy again with project.package_plan; no copy was saved")
+    .with_suggested_action(
+        "Preview the project copy again with project.package_plan; no copy was saved",
+    )
 }
 
 fn cancelled() -> CutError {

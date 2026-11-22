@@ -693,6 +693,7 @@ fn shape_display_color(merged: &Value) -> Option<String> {
 
 pub(super) fn full_project_state(store: &ProjectStore, sync: Value) -> Result<Value, CutError> {
     let mut v = serde_json::to_value(&store.project)?;
+    crate::screen_record::take_edit::annotate(&store.project, &mut v);
     // Annotate title overlay clips with their CURRENT editable text so the
     // Inspector can seed the in-place title editor (title.update). The op-log is
     // only read when the project actually HAS a non-empty title overlay track —

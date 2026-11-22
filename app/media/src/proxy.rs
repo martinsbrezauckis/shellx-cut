@@ -124,25 +124,75 @@ pub fn make_proxy_with_progress_and_tone_map(
     on_progress: &dyn Fn(f32),
     tone_map: &str,
 ) -> Result<PathBuf, CutError> {
+    make_proxy_with_progress_for(
+        src,
+        proxies_dir,
+        asset_id,
+        total_ms,
+        on_progress,
+        tone_map,
+        None,
+    )
+}
+
+/// Reuse a proxy only when the engine recorded it for this source identity.
+#[allow(clippy::too_many_arguments)]
+pub fn make_proxy_with_progress_and_tone_map_bound(
+    src: &Path,
+    proxies_dir: &Path,
+    asset_id: &str,
+    total_ms: u64,
+    on_progress: &dyn Fn(f32),
+    tone_map: &str,
+    binding: &str,
+) -> Result<PathBuf, CutError> {
+    make_proxy_with_progress_for(
+        src,
+        proxies_dir,
+        asset_id,
+        total_ms,
+        on_progress,
+        tone_map,
+        Some(binding),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_proxy_with_progress_for(
+    src: &Path,
+    proxies_dir: &Path,
+    asset_id: &str,
+    total_ms: u64,
+    on_progress: &dyn Fn(f32),
+    tone_map: &str,
+    binding: Option<&str>,
+) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
     require_live_output_dir(proxies_dir)?;
-    if crate::render::plain_internal_file_exists(&out)? && reusable_proxy(&out) {
+    if crate::render::plain_internal_file_exists(&out)? && reusable_proxy_for(&out, binding) {
         on_progress(1.0);
         return Ok(out);
     }
-    make_proxy_with(src, proxies_dir, asset_id, tone_map, |args, out| {
-        if total_ms > 0 {
-            crate::ffmpeg::run_ffmpeg_with_progress_validated_atomic_output(
-                args,
-                out,
-                total_ms,
-                on_progress,
-                validate_proxy_output,
-            )
-        } else {
-            crate::ffmpeg::run_ffmpeg_validated_atomic_output(args, out, validate_proxy_output)
-        }
-    })
+    make_proxy_with_binding(
+        src,
+        proxies_dir,
+        asset_id,
+        tone_map,
+        binding,
+        |args, out| {
+            if total_ms > 0 {
+                crate::ffmpeg::run_ffmpeg_with_progress_validated_atomic_output(
+                    args,
+                    out,
+                    total_ms,
+                    on_progress,
+                    validate_proxy_output,
+                )
+            } else {
+                crate::ffmpeg::run_ffmpeg_validated_atomic_output(args, out, validate_proxy_output)
+            }
+        },
+    )
 }
 
 /// The proxy cache is only reusable when it is a complete, regular 960×540
@@ -179,8 +229,12 @@ fn validate_proxy_output(path: &Path) -> Result<(), CutError> {
 /// in a received project, even a valid 960x540 video, is made again instead:
 /// reusing it would record it as this engine's own and the preview would show
 /// it (item 171).
-fn reusable_proxy(out: &Path) -> bool {
-    validate_proxy_output(out).is_ok() && crate::cache_trust::trusted(out)
+fn reusable_proxy_for(out: &Path, binding: Option<&str>) -> bool {
+    validate_proxy_output(out).is_ok()
+        && match binding {
+            Some(binding) => crate::cache_trust::trusted_bound(out, binding),
+            None => crate::cache_trust::trusted(out),
+        }
 }
 
 fn make_proxy_with(
@@ -190,10 +244,21 @@ fn make_proxy_with(
     tone_map: &str,
     encode: impl FnOnce(&[String], &Path) -> Result<(), CutError>,
 ) -> Result<PathBuf, CutError> {
+    make_proxy_with_binding(src, proxies_dir, asset_id, tone_map, None, encode)
+}
+
+fn make_proxy_with_binding(
+    src: &Path,
+    proxies_dir: &Path,
+    asset_id: &str,
+    tone_map: &str,
+    binding: Option<&str>,
+    encode: impl FnOnce(&[String], &Path) -> Result<(), CutError>,
+) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
     require_live_output_dir(proxies_dir)?;
     let existing = crate::render::plain_internal_file_exists(&out)?;
-    if existing && reusable_proxy(&out) {
+    if existing && reusable_proxy_for(&out, binding) {
         return Ok(out);
     }
     if existing {
@@ -204,7 +269,10 @@ fn make_proxy_with(
     }
     encode(&proxy_ffmpeg_args(src, &out, tone_map), &out)?;
     // This engine made it: a later call (and a later open) may reuse it.
-    crate::cache_trust::remember(&out);
+    match binding {
+        Some(binding) => crate::cache_trust::remember_bound(&out, binding),
+        None => crate::cache_trust::remember(&out),
+    }
     Ok(out)
 }
 
@@ -341,6 +409,70 @@ mod tests {
         })
         .unwrap();
         assert_eq!(std::fs::read(&out).unwrap(), planted);
+    }
+
+    #[test]
+    fn bound_proxy_reuses_only_the_recorded_source_and_never_relabels_failed_output() {
+        let root = crate::atomic_output::private_test_tempdir();
+        let proxies = root.path().join("proxies");
+        private_proxy_dir(&proxies);
+        let out = proxies.join("a1.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=960x540:r=12",
+                "-t",
+                "1",
+                "-c:v",
+                "libx264",
+                "-threads",
+                "1",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&out)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        assert!(validate_proxy_output(&out).is_ok());
+        let bytes = std::fs::read(&out).unwrap();
+        let first = "proxy\na1\nsource-v1";
+        let second = "proxy\na1\nsource-v2";
+        crate::cache_trust::remember_bound(&out, first);
+        let reused = make_proxy_with_progress_and_tone_map_bound(
+            Path::new("missing.mp4"),
+            &proxies,
+            "a1",
+            1_000,
+            &|_| {},
+            "",
+            first,
+        )
+        .unwrap();
+        assert_eq!(reused, out);
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+
+        let error = make_proxy_with_progress_and_tone_map_bound(
+            Path::new("missing.mp4"),
+            &proxies,
+            "a1",
+            1_000,
+            &|_| {},
+            "",
+            second,
+        )
+        .expect_err("a different source must force generation, which fails for a missing source");
+        assert!(!error.message.is_empty());
+        assert!(
+            !out.exists(),
+            "failed regeneration cannot leave a stale final proxy"
+        );
+        assert!(!crate::cache_trust::trusted_bound(&out, second));
     }
 
     #[test]

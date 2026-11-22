@@ -209,7 +209,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
           <div>
             <p className="pj-portable-eyebrow">Project copy</p>
             <h2>Take this project with you</h2>
-            <p>Collect only media used in this project. Originals and Cut&apos;s rebuildable cache stay where they are.</p>
+            <p>Collect used media and available recording editing files. Originals stay where they are.</p>
           </div>
           <button type="button" className="pj-portable-close" data-cut-action="portable-copy" data-cut-portable-close onClick={onClose} aria-label="Close portable copy">×</button>
         </header>
@@ -236,23 +236,32 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
             <section className="pj-portable-preview" data-cut-portable-preview>
               <div className="pj-portable-preview-title"><strong>Copy preview</strong><span>{plan.name}.cutproj</span></div>
               <dl>
-                <div><dt>Used media references</dt><dd data-cut-portable-source-files>{plan.source_file_count}</dd></div>
+                <div><dt>Files to carry</dt><dd data-cut-portable-source-files>{plan.source_file_count}</dd></div>
                 <div><dt>Unique files to copy</dt><dd data-cut-portable-unique-files>{plan.unique_media_count}</dd></div>
-                <div><dt>Media copy size</dt><dd data-cut-portable-size>{formatPortableBytes(plan.total_package_bytes)}</dd></div>
+                <div><dt>Copy size</dt><dd data-cut-portable-size>{formatPortableBytes(plan.total_package_bytes)}</dd></div>
                 <div><dt>Duplicates avoided</dt><dd>{duplicateReferences > 0 ? `${duplicateReferences} · ${formatPortableBytes(savedBytes)} saved` : 'None'}</dd></div>
               </dl>
               <div className="pj-portable-sources" data-cut-portable-source-list>
                 <strong>Source files included</strong>
                 {plan.assets.length === 0 ? <p>No media files are referenced by this project.</p> : (
-                  <ul>{plan.assets.map((asset) => (
-                    <li key={asset.asset}><span>{asset.asset}</span><code>{asset.source_path}</code></li>
+                  <ul>{plan.assets.map((asset, index) => (
+                    <li key={`${asset.package_path}:${index}`}><span>{asset.asset}</span><code>{asset.source_path}</code></li>
                   ))}</ul>
                 )}
               </div>
+              {plan.recordings_not_carried.length > 0 && (
+                <div className="pj-portable-omissions" data-cut-portable-recordings-not-carried role="status">
+                  <strong>Some recordings will lose editing controls in this copy</strong>
+                  <p>Their rendered clips will still play.</p>
+                  <ul>{plan.recordings_not_carried.map(({ take, reason }) => (
+                    <li key={take}>{take}: {reason}</li>
+                  ))}</ul>
+                </div>
+              )}
               <ul className="pj-portable-policy" aria-label="Copy safeguards">
-                <li>Only timeline-referenced media is included.</li>
-                <li>All referenced media is online now; an offline source refuses the copy before it begins.</li>
-                <li>Caches are excluded; original files are never changed.</li>
+                <li>Timeline media and available recording editing files are included.</li>
+                <li>Offline timeline media refuses the copy; unavailable recording editing files are listed above.</li>
+                <li>Rebuildable caches are excluded; original files are never changed.</li>
                 <li>{targetOccupied ? 'That copy name already exists in this folder.' : 'The name is free now; Cut checks it again before saving and never replaces an existing folder.'}</li>
               </ul>
             </section>
@@ -262,6 +271,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
             <section className="pj-portable-confirm" data-cut-portable-confirm>
               <strong>Ready to create this copy?</strong>
               <p>Cut will copy {plan.unique_media_count} used media file{plan.unique_media_count === 1 ? '' : 's'}, check the used media, then save the new project copy as {plan.name}.cutproj. Your open project will not change.</p>
+              {plan.recordings_not_carried.length > 0 && <p>{plan.recordings_not_carried.length} recording{plan.recordings_not_carried.length === 1 ? '' : 's'} will have rendered clips only.</p>}
               <label className="pj-portable-source-review"><input type="checkbox" data-cut-action="portable-copy" data-cut-portable-source-reviewed checked={reviewedSources} onChange={(event) => setReviewedSources(event.target.checked)} /> I reviewed the source files listed above.</label>
             </section>
           )}
@@ -279,6 +289,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
             <section className="pj-portable-success" data-cut-portable-success role="status">
               <strong>Portable copy is ready.</strong>
               <p>{plan?.name}.cutproj was published in the selected folder. The original project and media were not changed.</p>
+              {plan && plan.recordings_not_carried.length > 0 && <p>{plan.recordings_not_carried.length} recording{plan.recordings_not_carried.length === 1 ? '' : 's'} kept rendered clips without recording edit controls.</p>}
             </section>
           )}
         </div>

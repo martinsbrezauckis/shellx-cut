@@ -13,6 +13,8 @@ import './cameraControl.css'
 import './recordingSettingsTabs.css'
 
 interface StudioControlsProps {
+  cameraSeparate?: boolean
+  onCameraSeparate?: (separate: boolean) => void
   videoTimerControl: ReactNode
   captureTimingControl: ReactNode
   videoQualityControl: ReactNode
@@ -32,6 +34,8 @@ interface StudioControlsProps {
 }
 
 export function StudioControls({
+  cameraSeparate,
+  onCameraSeparate,
   videoTimerControl,
   captureTimingControl,
   videoQualityControl,
@@ -52,6 +56,8 @@ export function StudioControls({
   const pages: Record<RecordingSettingsSection, ReactNode> = {
     camera: (
       <CameraControl
+        cameraSeparate={cameraSeparate}
+        onCameraSeparate={onCameraSeparate}
         capability={cameraCapability}
         enabled={studio.camera.enabled}
         deviceId={cameraDeviceId}

@@ -99,50 +99,80 @@
 .rec__readiness[data-cut-rec-readiness-state="unknown"] { border-color: rgba(148, 163, 255, .5); }
 .rec__readiness[data-cut-rec-readiness-state="ready"] { border-color: rgba(52, 211, 153, .4); }
 .rec__readiness-details { color: var(--ink-3, #aab1bd); font: 650 var(--fs-ui-xs, 11px)/1.2 var(--sans); }
-.rec__readiness-details > summary { cursor: pointer; white-space: nowrap; }
+.rec__readiness-details > summary { cursor: pointer; white-space: nowrap; border-radius: 4px; }
+.rec__readiness-details > summary:focus-visible,
+.rec__cards:focus-visible { outline: 2px solid var(--cut-soft, #5b8def); outline-offset: 2px; }
 .rec__readiness-details[open] { z-index: 15; }
+/* The opened checks are a drop-down list anchored under the readiness card: one
+   check per line, never a grid, so a long reason wraps inside its own line.
+   It stays inside the window and scrolls inside itself when the list is taller
+   than the room under the card (the Record page clips anything that leaves it). */
 .rec__readiness-details[open] .rec__cards {
   position: absolute;
   top: calc(100% + 7px);
   right: 0;
-  width: min(410px, 80vw);
-  padding: 10px;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 48px));
+  max-height: min(70vh, calc(100vh - 250px));
+  padding: 2px 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
   border-radius: 9px;
   background: var(--surface-1, #17191d);
-  box-shadow: 0 14px 34px rgba(0,0,0,.4);
+  box-shadow: var(--shadow-dropdown, 0 14px 34px rgba(0,0,0,.4));
 }
 .rec__cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  margin-top: 8px;
+  grid-template-columns: minmax(0, 1fr);
 }
+/* Name and state share the first line; the reason takes the full width below it.
+   Every reason wraps (this also keeps the video encoder's full sentence readable
+   when it is the degraded check that blocks recording). */
 .rec__card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
-  min-width: 140px;
-  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
-}
-.rec__card[data-cut-rec-card="video_encoder"][data-cut-rec-card-status="degraded"] { grid-column: 1 / -1; grid-template-columns: 1fr; min-width: 0; }
-.rec__card[data-cut-rec-card="video_encoder"][data-cut-rec-card-status="degraded"] .rec__card-detail { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
-.rec__card--ok { border-color: rgba(52, 211, 153, 0.4); }
-.rec__card--degraded { border-color: rgba(245, 196, 81, 0.4); }
-.rec__card--unknown { border-color: rgba(148, 163, 255, 0.5); }
-.rec__card--missing { border-color: rgba(239, 68, 68, 0.35); opacity: 0.85; }
-.rec__card-name { font: 600 var(--fs-ui-sm)/1 var(--sans); color: var(--ink, #f2f3f5); text-transform: capitalize; }
-.rec__card-detail {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 3px 12px;
   min-width: 0;
-  overflow: hidden;
-  color: var(--ink-3, #aab1bd);
-  font: var(--fs-ui-xs, 11px)/1.3 var(--sans);
-  text-overflow: ellipsis;
+  padding: 9px 0;
+  border-top: 1px solid var(--hairline, rgba(255, 255, 255, 0.07));
+}
+.rec__card:first-child { border-top: 0; }
+.rec__card-name {
+  min-width: 0;
+  color: var(--ink, #f2f3f5);
+  font: 600 var(--fs-ui-sm)/1.25 var(--sans);
+  overflow-wrap: anywhere;
+}
+.rec__card-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2, #d4d8df);
+  font: 600 var(--fs-ui-xs, 11px)/1.25 var(--sans);
   white-space: nowrap;
+}
+/* The mark repeats the state word in colour; a ring (not filled) means not checked. */
+.rec__card-mark {
+  box-sizing: border-box;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.rec__card--ok .rec__card-mark { color: var(--green, #22c55e); }
+.rec__card--degraded .rec__card-mark { color: var(--amber, #d4a657); }
+.rec__card--unknown .rec__card-mark { border: 2px solid var(--ink-3, #aab1bd); background: transparent; }
+.rec__card--missing .rec__card-mark { color: var(--err, #ef4444); }
+.rec__card-detail {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--ink-3, #aab1bd);
+  font: var(--fs-ui-xs, 11px)/1.4 var(--sans);
+  overflow-wrap: anywhere;
 }
 .rec-rehearsal {
   display: grid;
@@ -431,6 +461,20 @@
   border-radius: 8px;
   background: rgba(239, 68, 68, 0.12);
   color: #ffb4a0;
+}
+/* Paused: neutral colours and a two-bar pause mark instead of the red, round recording dot; the word "Paused" says it too. */
+.rec-live-controls__state--paused {
+  border-color: var(--hairline-2, rgba(255, 255, 255, 0.18));
+  background: var(--surface-2, #131312);
+  color: var(--ink, #f5f5f4);
+}
+.rec__hud-pause {
+  box-sizing: border-box;
+  flex: none;
+  width: 10px;
+  height: 12px;
+  border-left: 3px solid currentColor;
+  border-right: 3px solid currentColor;
 }
 .rec-live-controls__state > span:last-child { display: grid; gap: 2px; }
 .rec-live-controls__state strong { font: 750 var(--fs-ui)/1 var(--sans); }
@@ -1185,6 +1229,7 @@
 [data-theme="light"] .rec-studio-controls__chips span[data-on="true"] { color: var(--green); }
 [data-theme="light"] .rec__hud,
 [data-theme="light"] .rec-live-controls__state { color: var(--danger); }
+[data-theme="light"] .rec-live-controls__state--paused { color: var(--ink); }
 [data-theme="light"] .rec__settings-state[data-cut-rec-setup-state="unknown"] { color: var(--cut-soft); }
 [data-theme="light"] .rec__settings-state,
 [data-theme="light"] .rec-studio-controls__head > span { color: var(--green); }

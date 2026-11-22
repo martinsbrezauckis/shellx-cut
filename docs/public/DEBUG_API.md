@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
+<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.118 source; v0.6.118 is the latest published release.
+This reference describes the Debug API in v0.6.119 source; v0.6.119 is the latest published release.
 
 ## Starting the server
 
@@ -216,8 +216,22 @@ scheduling request accepts at most 64 registered asset ids (or every registered
 asset only when the project has at most 64), verifies the current source hash
 before admission and publication, and writes a durable ownership reservation
 before creating an output. Every path-free result reports `status`, work units,
-queued asset/output totals, and queued/up-to-date/items-needing-attention
-counts. Existing legacy or unowned files, source changes, unavailable sources,
+queued asset/output totals, and queued, up-to-date and per-reason counts.
+`skipped_assets` names each selected asset that was not scheduled, its reason,
+any affected proxy or filmstrip kind, and a next action, including when previews
+already match the source. An entry with reason `already_current` means that
+asset is up to date (it is also counted in `counts.fresh_assets`), not skipped:
+a client that lists skipped assets leaves those entries out. At most two entries
+per selected asset are returned. `counts.unowned_outputs` and
+`counts.legacy_outputs` count outputs (a proxy and a filmstrip of one asset make
+two); the other reason counts count assets. The number of assets needing
+attention, as Settings shows it, is the number of distinct `asset_id` values in
+`skipped_assets` entries whose reason is not `already_current`. Newly generated
+outputs retain their verified source identity. An editable project ownership
+record alone cannot establish engine origin; existing outputs also need this
+engine's separate source-bound content record. A changed source must be restored
+or relinked before stale owned previews can be rebuilt.
+Existing legacy or unowned files, source changes, unavailable sources,
 and unsupported media are reported or refused; they are never adopted or
 removed. Poll the returned `cache_rebuild` job with `jobs.status` and use
 `jobs.cancel` for cooperative stop. Cancellation or a restart leaves only the
@@ -252,7 +266,7 @@ unowned path remain outside both verbs' deletion roots.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 317 schemas once at startup and applies the selected schema at the shared
+all 326 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -692,6 +706,110 @@ closes the removed span. The toolbar also exposes explicit Video track and
 Audio track controls.
 
 ## Native recording permissions
+
+### Editing a recording in Edit
+
+For new polished recordings, select the screen clip in Edit and open the Inspector
+Zoom card. Select, add or delete zooms and adjust strength, target, timing or speed.
+Redo automatic zooms keeps your own zooms. Press Update video to see the changes;
+playback keeps the previous zooms until the update finishes. Old polished clips
+and Raw MP4s do not gain editable recording zooms.
+
+A separate camera track is on by default. Select the Camera track clip for the
+Inspector Camera section: corners/centre, size, Circle / Rounded / Rectangle,
+ring, and Back to as recorded. Drag the bubble on the preview; split at both ends
+and delete a piece to hide it for a stretch. Before recording, turn off Edit the
+camera later (own track) on the Record page to bake the bubble in instead.
+
+#### Zoom verbs and recovery
+
+Use `screen_record.zoom_list{clip}` for the recording's zooms. A segment is
+`{id,start_ms,end_ms,scale,cx,cy,ramp_in_ms,ramp_out_ms,origin:"auto"|"manual"}`.
+Times are recording-clock milliseconds; scale is 1–8, targets are clamped in-frame,
+and segments cannot overlap. Each segment includes a server-mapped
+`timeline:{start_ms,end_ms}|null` through trim, constant speed, speed ramp and
+reverse. Do not copy that mapping into clients.
+
+| Verb | Arguments | Result |
+|---|---|---|
+| `screen_record.zoom_list` | `{clip}` | `{clip,take,source:{w,h},duration_ms,segments:[segment & {timeline:{start_ms,end_ms}|null}],stale,applied_plan,pending_plan,missing_video,missing_video_reason,next_action}` |
+| `screen_record.zoom_set` | `{clip,segments,rationale?}` | `{clip,segments,stale}`; empty disables zoom |
+| `screen_record.zoom_add` | `{clip,at_ms? or timeline_ms?,duration_ms?=2000,scale?=2,cx?,cy?}` | `{segment,stale}`; target defaults to pointer |
+| `screen_record.zoom_update` | `{clip,id,target?:"pointer",start_ms?,end_ms?,scale?,cx?,cy?,ramp_in_ms?,ramp_out_ms?}` | `{segment,stale}`; pins manual |
+| `screen_record.zoom_remove` | `{clip,id? or ids?}` | `{removed,stale}` |
+| `screen_record.zoom_auto` | `{clip,keep_manual?=true,config?}` | `{segments,stale}`; autoedit config, keeps manual segments |
+| `screen_record.take_refresh` | `{clip}` | `{job_id,clip,asset,baked,cached,applied_plan}`; initial asset may be null, poll jobs.status |
+| `screen_record.take_link` | Internal only | Polish provenance op; direct calls refuse |
+
+For zoom_add send EXACTLY ONE of recording `at_ms` or absolute project
+`timeline_ms`. The server maps the selected clip's timeline placement; positions
+outside the clip refuse (move inside or use at_ms), and frozen stretches refuse
+(unfreeze or use at_ms). Returned segment times remain recording-clock ms.
+The default add is a two-second, 2× pointer-target zoom.
+
+`screen_record.zoom_update{clip,id,target:"pointer"}` resets cx/cy to the last
+recorded pointer sample at start_ms (centre fallback), normalized and clamped at
+the chosen scale. It overrides explicit cx/cy and pins the segment as manual.
+Editing any automatic zoom pins it as Mine; automatic redo keeps manual zooms by
+default and accepts the same config as autoedit. Empty zoom_set disables zoom.
+Each write is one concrete/resolved-list undoable op, returning stale and
+segments, segment or removed (zoom_set also returns clip); replay needs no events
+file. Undo/redo restore zooms and stale state.
+
+The zoom_list result includes missing_video:boolean, missing_video_reason:string|null,
+and next_action:string|null. The project.state per-clip recording annotation
+also includes these fields alongside take, stale, zoom_count and camera_clip.
+Missing video is independent of stale (pending/applied plan mismatch). A missing
+bake has an explanatory reason and next_action
+`"Update video rebuilds it (screen_record.take_refresh)."`; a present bake has
+false/null/null. In the Zoom card: **Video file missing. Update video rebuilds it.**
+This includes Undo to an older render whose file was deleted by hand or with the cache.
+
+Update video calls `screen_record.take_refresh{clip}`; poll jobs.status for the
+final asset (initially it may be null). It bakes first, refuses a duration mismatch
+over one frame, then swaps the source behind EVERY split/trimmed take clip without
+resetting trim, timing, speed/ramp/freeze/reverse, effects, transform or fades.
+For a missing old file the duration reference is its stored probe; otherwise the
+old file is probed if present, then recording plan/source duration is the fallback.
+A cached target also repairs a missing current asset reference. Earlier renders
+stay in the project's recording cache until the cache is cleared. An unchanged
+take reuses the original plan bytes and cache filename.
+
+`render.final` refuses stale takes with **Update video first** unless the caller
+explicitly passes `allow_stale_recordings:true` to export the old baked picture.
+`edit.auto_zoom` refuses recording clips: “this recording has its own zooms: use
+screen_record.zoom_*”. `screen_record.take_link` is internal to polish and refuses
+direct calls.
+
+#### Camera verbs
+
+`screen_record.polish{source,plan,camera?:"separate"|"baked"}` defaults to separate
+when a validated camera artifact exists: a bubble-free screen and visible Camera
+overlay on the recorded clock, starting at the measured first-frame offset. It
+preserves recorded square-bubble shape, ring, size, position and hold position
+keys, which appear in exact paused frames. camera:"baked" preserves the old baked
+bubble and hidden compatibility track; raw:true and Raw MP4 mode are unchanged.
+Edits to a retained baked-mode camera do not change the bubble baked into video.
+
+Identify a camera clip by `clip.recording?.camera === true`, with the original
+`project.state.recordings[].camera_clip` id as fallback. The take also carries
+camera_asset. Use `edit.transform{clip,x,y,scale,opacity,shape,radius?,ring?}`,
+including unchanged transform fields, to change its look. x/y are top-left frame
+fractions, scale is width/frame width; shape is circle, rounded or rect. The
+optional ring is {width,colour}, for example {width:0.02,colour:"#ffffffe6"}.
+`screen_record.camera_reset{clip}` returns {clip,transform,keyframes} and restores
+the recorded look and placement in one undoable op, leaving trim, timing and speed
+alone. Each camera change/reset supports project.undo. Update video keeps a
+separate screen bubble-free. Make a copy carries each take's source, events,
+plans, camera and audio inputs, and counts their bytes in the copy plan.
+If a take's named files are missing or cannot be admitted, the copy keeps its
+rendered clips and lists the take under `recordings_not_carried` in the plan
+and completed job result.
+
+**Recorded camera timeline.** Separate polish retains hold opacity (visible=1/hidden=0), diameter and position keys. A shaped overlay's Scale key multiplies its static transform.scale diameter; unlike rectangular/base zoompan, a multiplier below one shrinks the bubble and its mask. Position is recomputed with each recorded size and clamped as in the recorder. Shape changes cannot be keyed: separate mode keeps the first delivered shape and returns a short `camera_note`; baked mode still renders the recorded shape changes. No note is needed when shape is unchanged.
+
+**Camera slices and reset.** A take has an editable separate camera exactly when it has `camera_look`. Take provenance stores optional `camera_asset` (omitted for older records). Only for a separate take does every timeline clip playing that asset get `recording:{take,camera:true}` in project.state; screen clips retain their existing annotation without camera. `camera_clip` and `camera_asset` without `camera_look` are baked compatibility provenance, not editable-camera marks. `screen_record.camera_reset{clip}` refuses those clips with "this recording's camera is part of the video". For separate takes it accepts split/trimmed camera slices and camera clips moved to another video track, restores the recorded look at that slice's source in-point, and rebases hold keys to its local timeline (constant speed included). It remains one undoable operation and does not change placement or trim.
+
 
 ### Crash-resilient recordings
 
@@ -1456,7 +1574,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, every verb as a tool (317), and that the
+read-only check proves protocol negotiation, ping, every verb as a tool (326), and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use
@@ -1509,7 +1627,8 @@ starts import/proxy/enrichment work, and bulk recovery makes no Ctrl-Z promise.
 `project.package_plan {destination, name, b5_receipt?}` is the required dry
 run. It walks every sequence, hashes only referenced source media with complete
 SHA-256, and returns a destination-bound `plan_hash`, byte/file totals, dedupe
-plan, and package-relative member names. Offline media, symlinks/reparse points,
+plan, package-relative member names, and any `recordings_not_carried` with
+plain-word reasons. Offline timeline media, symlinks/reparse points,
 unsafe destinations, and Motion-linked provenance refuse. It never searches for
 or relinks media. If the current project revision is B5's grouped relink, its
 exact immutable receipt is required; do not reuse that receipt after any later

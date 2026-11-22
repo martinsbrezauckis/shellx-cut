@@ -80,9 +80,22 @@ struct ScheduleCounts {
     unowned_outputs: u64,
     legacy_outputs: u64,
     unsupported_assets: u64,
+    skipped_assets: Vec<Value>,
 }
 
 impl ScheduleCounts {
+    fn skip(&mut self, asset_id: &str, kind: Option<CacheKind>, reason: &str, action: &str) {
+        let mut entry = json!({
+            "asset_id": asset_id,
+            "reason": reason,
+            "action": action,
+        });
+        if let Some(kind) = kind {
+            entry["kind"] = json!(kind.directory());
+        }
+        self.skipped_assets.push(entry);
+    }
+
     fn public(&self) -> Value {
         json!({
             "fresh_assets": self.fresh_assets,
@@ -143,6 +156,7 @@ where
             "scheduled_assets": active.assets.len(),
             "scheduled_outputs": active.scheduled_outputs,
             "counts": active.counts,
+            "skipped_assets": active.skipped_assets,
             "estimate": active.estimate,
         })));
     }
@@ -183,6 +197,7 @@ where
             "scheduled_assets": active.assets.len(),
             "scheduled_outputs": active.scheduled_outputs,
             "counts": active.counts,
+            "skipped_assets": active.skipped_assets,
             "estimate": active.estimate,
         })));
     }
@@ -195,20 +210,44 @@ where
         let Some(check) = source_checks.get(&asset.asset_id).copied() else {
             pending_source_recovery(&project_dir, &asset.asset_id, "unavailable")?;
             counts.source_unavailable = counts.source_unavailable.saturating_add(1);
+            counts.skip(
+                &asset.asset_id,
+                None,
+                "source_unavailable",
+                "Restore or relink this source, then retry the cache rebuild.",
+            );
             continue;
         };
         if !check.readable {
             pending_source_recovery(&project_dir, &asset.asset_id, "unavailable")?;
             counts.source_unavailable = counts.source_unavailable.saturating_add(1);
+            counts.skip(
+                &asset.asset_id,
+                None,
+                "source_unavailable",
+                "Restore or relink this source, then retry the cache rebuild.",
+            );
             continue;
         }
         if !check.matches {
             pending_source_recovery(&project_dir, &asset.asset_id, "changed")?;
             counts.source_changed = counts.source_changed.saturating_add(1);
+            counts.skip(
+                &asset.asset_id,
+                None,
+                "source_changed",
+                "Relink this source to update its identity, then retry the cache rebuild.",
+            );
             continue;
         }
         let Some(required) = required_outputs(&asset) else {
             counts.unsupported_assets = counts.unsupported_assets.saturating_add(1);
+            counts.skip(
+                &asset.asset_id,
+                None,
+                "unsupported_asset",
+                "Use a video or image asset with a verified source.",
+            );
             continue;
         };
         let mut outputs = Vec::new();
@@ -227,10 +266,12 @@ where
                 }
                 RebuildOutputState::ReadyLegacy => {
                     counts.legacy_outputs = counts.legacy_outputs.saturating_add(1);
+                    counts.skip(&asset.asset_id, Some(kind), "legacy_output", "The older cache output stays in place; remove or replace the asset through the normal project workflow before retrying.");
                     blocked = true;
                 }
                 RebuildOutputState::UnownedPresent => {
                     counts.unowned_outputs = counts.unowned_outputs.saturating_add(1);
+                    counts.skip(&asset.asset_id, Some(kind), "unowned_output", "The unknown cache output stays in place; inspect the project and resolve that output before retrying.");
                     blocked = true;
                 }
             }
@@ -240,6 +281,12 @@ where
         }
         if outputs.is_empty() {
             counts.fresh_assets = counts.fresh_assets.saturating_add(1);
+            counts.skip(
+                &asset.asset_id,
+                None,
+                "already_current",
+                "The previews already match this source; no action is needed.",
+            );
             continue;
         }
         plans.push(RebuildAssetPlan {
@@ -266,6 +313,7 @@ where
             "scheduled_assets": plans.len(),
             "scheduled_outputs": output_count,
             "counts": counts.public(),
+            "skipped_assets": counts.skipped_assets,
             "estimate": estimate,
         })));
     }
@@ -276,6 +324,7 @@ where
             "scheduled_assets": 0,
             "scheduled_outputs": 0,
             "counts": counts.public(),
+            "skipped_assets": counts.skipped_assets,
             "estimate": estimate,
         })));
     }
@@ -307,6 +356,7 @@ where
         assets: active_assets,
         scheduled_outputs: output_count,
         counts: counts.public(),
+        skipped_assets: json!(counts.skipped_assets),
         estimate: estimate.clone(),
     });
     let worker_state = state.clone();
@@ -322,6 +372,7 @@ where
         "scheduled_assets": active_count,
         "scheduled_outputs": output_count,
         "counts": counts.public(),
+        "skipped_assets": counts.skipped_assets,
         "estimate": estimate,
     })))
 }
@@ -338,7 +389,7 @@ fn pending_source_recovery(
         error_codes::CONFLICT,
         "cache rebuild requires pending source recovery",
         format!(
-            "a pending rebuild reservation cannot be retired while its source is {state}; restore the exact source, relink it, or remove the asset before retrying"
+            "asset '{asset}' has a pending rebuild reservation that cannot be retired while its source is {state}; restore the exact source, relink it, or remove the asset before retrying"
         ),
     )
     .with_suggested_action(

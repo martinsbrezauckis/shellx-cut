@@ -5,7 +5,7 @@
 // compatibility re-exports.
 
 import type {
-  BrandKit, CheckResult, CutError,
+  BrandKit, CheckResult, ClipTransform, CutError, Keyframe,
   JobRecord,
   OpRecord,
   Project,
@@ -23,6 +23,39 @@ import type {
   MediaIntelligenceStatusResult,
 } from './mediaIntelligenceModel'
 export type * from './mediaIntelligenceModel'
+
+export interface RecordingZoomSegment {
+  id: string
+  start_ms: number
+  end_ms: number
+  scale: number
+  cx: number
+  cy: number
+  ramp_in_ms: number
+  ramp_out_ms: number
+  origin: 'auto' | 'manual'
+}
+export interface RecordingZoomListResult {
+  clip: string
+  take: string
+  source: { w: number; h: number }
+  duration_ms: number
+  segments: (RecordingZoomSegment & { timeline: { start_ms: number; end_ms: number } | null })[]
+  stale: boolean
+  applied_plan: string
+  pending_plan: string
+  missing_video: boolean
+  missing_video_reason: string | null
+  next_action: string | null
+}
+export interface RecordingTakeRefreshResult {
+  job_id: string
+  clip: string
+  asset: string | null
+  baked: string
+  cached: boolean
+  applied_plan: string
+}
 
 /** ui.state result. Keep the relay's path-safe fields typed for UI-internal
  * satisfied-state checks without importing the app layer back into lib/. */
@@ -171,6 +204,7 @@ export interface PortablePackagePlan {
   target_status: 'available' | 'occupied'
   b5_receipt_sha256?: string | null
   assets: Array<{ asset: string; source_path: string; bytes: number; sha256: string; package_path: string }>
+  recordings_not_carried: Array<{ take: string; reason: string }>
   total_source_bytes: number
   total_package_bytes: number
   source_file_count: number
@@ -1219,6 +1253,16 @@ export interface ProjectCacheRebuildCounts {
   unsupported_assets: number
 }
 
+/** An exact selected asset and the reason its cache was not scheduled.
+ * `already_current` is not a skip: the asset's previews match its source, so it
+ * is up to date and counted in `counts.fresh_assets`. */
+export interface ProjectCacheRebuildSkip {
+  asset_id: string
+  kind?: 'proxies' | 'filmstrip'
+  reason: 'source_changed' | 'source_unavailable' | 'unowned_output' | 'legacy_output' | 'unsupported_asset' | 'already_current'
+  action: string
+}
+
 /** Measured rebuild work units from a source-hash-verified admission pass.
  * This deliberately omits a wall-clock promise: runtime depends on media,
  * codec, hardware, and any later source-identity refusal. */
@@ -1239,6 +1283,7 @@ export interface ProjectCacheRebuildResult {
   scheduled_assets: number
   scheduled_outputs: number
   counts: ProjectCacheRebuildCounts
+  skipped_assets: ProjectCacheRebuildSkip[]
   estimate: ProjectCacheRebuildEstimate
 }
 
@@ -1753,6 +1798,14 @@ export interface VerbResults {
   'screen_record.rehearsal_discard': ScreenRecordRehearsalDiscardResult
   'screen_record.recovery_status': ScreenRecordRecoveryStatusResult
   'screen_record.status': ScreenRecordStatusResult
+  'screen_record.zoom_list': RecordingZoomListResult
+  'screen_record.zoom_set': { clip: string; segments: RecordingZoomSegment[]; stale: boolean }
+  'screen_record.zoom_add': { segment: RecordingZoomSegment; stale: boolean }
+  'screen_record.zoom_update': { segment: RecordingZoomSegment; stale: boolean }
+  'screen_record.zoom_remove': { removed: string[]; stale: boolean }
+  'screen_record.zoom_auto': { segments: RecordingZoomSegment[]; stale: boolean }
+  'screen_record.take_refresh': RecordingTakeRefreshResult
+  'screen_record.camera_reset': { clip: string; transform: ClipTransform; keyframes: Keyframe[] }
   'media.relink': {
     asset: string
     path: string

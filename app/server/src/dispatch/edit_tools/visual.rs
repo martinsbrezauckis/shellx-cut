@@ -1114,6 +1114,17 @@ pub(in crate::dispatch) async fn edit_auto_zoom(
         rationale: Option<String>,
     }
     let a: Args = parse_args(args.clone())?;
+    {
+        let guard = state.project.read().await;
+        let store = guard.as_ref().ok_or_else(no_project)?;
+        if cut_core::recording::take_for_clip(&store.project, &a.clip).is_some() {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "this recording has its own zooms: use screen_record.zoom_*",
+                "auto_zoom would zoom an already zoomed picture",
+            ));
+        }
+    }
     let intensity = a
         .intensity
         .unwrap_or(AUTO_ZOOM_DEFAULT_INTENSITY)

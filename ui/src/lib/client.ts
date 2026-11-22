@@ -7,6 +7,7 @@
 // Callers: every panel + App.tsx. Dependencies: fetch only.
 
 import { API_BASE } from './clientUrls'
+import { deliveryFeedbackSession, isHumanDeliveryVerb, reportExportRefusal } from '../topbar/exportRefusal'
 
 export { API_BASE, sourceUrl, exportUrl, frameUrl } from './clientUrls'
 export { getWaveform, getWindowThumbs } from './clientMedia'
@@ -16,6 +17,8 @@ import type {
   BrandKit,
   CaptionStyle,
   ClipEffect,
+  ClipTransform,
+  Keyframe,
   CutError,
   KfInterp,
   KfParam,
@@ -25,7 +28,8 @@ import type {
   ProjectSettings,
 } from './clientModel'
 import { UI_OPEN_SURFACE_IDS } from '../app/uiSurfaceRegistry'
-import type { VerbResults } from './clientResults'
+import type { VerbResults, RecordingZoomSegment } from './clientResults'
+export type { RecordingZoomSegment, RecordingZoomListResult, RecordingTakeRefreshResult } from './clientResults'
 import type { ChatTimelineTarget } from './chatTimelineTarget'
 import type {
   InspectMediaArgs,
@@ -534,7 +538,7 @@ export interface VerbArgs {
   'edit.gain': { clip?: string; track?: string; db: number; rationale?: string }
   // Video-layer geometry + opacity, normalized 0..1; base transforms use a black
   // canvas, overlays composite over lower tracks; identity (0,0,1,1) clears.
-  'edit.transform': { clip: string; x?: number; y?: number; scale?: number; opacity?: number; rationale?: string }
+  'edit.transform': { clip: string; x?: number; y?: number; scale?: number; opacity?: number; shape?: 'rect' | 'circle' | 'rounded'; radius?: number | null; ring?: { width: number; colour: string } | null; rationale?: string }
   // Move a track to a new stacking index (z-order); index clamps to [0, count-1].
   // index is relative to tracks of the same kind, never project.tracks absolute.
   'edit.reorder_track': { track: string; index: number; rationale?: string }
@@ -796,8 +800,23 @@ export interface VerbArgs {
   'voiceover.stop': { owner_session_id: string; owner_capability: string }
   'voiceover.cancel': { owner_session_id: string; owner_capability: string }
   'voiceover.observe_playhead': { owner_session_id: string; owner_capability: string; request_id: string; request_fingerprint: string; bridge_epoch: number; playhead_ms: number }
+  'screen_record.camera_reset': { clip: string }
+  'screen_record.take_link': { recording: {
+    id: string; capture_folder: string; source: string; events: string
+    pending_plan: string; applied_plan: string; clip_ids: string[]; asset: string
+    camera_artifact?: unknown | null; camera_clip?: string | null; camera_asset?: string | null
+    camera_look?: { transform: ClipTransform; keyframes: Keyframe[] } | null
+    segments: RecordingZoomSegment[]
+  } }
+  'screen_record.zoom_list': { clip: string }
+  'screen_record.zoom_set': { clip: string; segments: RecordingZoomSegment[]; rationale?: string }
+  'screen_record.zoom_add': { clip: string; at_ms?: number; timeline_ms?: number; duration_ms?: number; scale?: number; cx?: number; cy?: number }
+  'screen_record.zoom_update': { clip: string; id: string; target?: 'pointer' } & Partial<Omit<RecordingZoomSegment, 'id' | 'origin'>>
+  'screen_record.zoom_remove': { clip: string; id?: string; ids?: string[] }
+  'screen_record.zoom_auto': { clip: string; keep_manual?: boolean; config?: Record<string, unknown> }
+  'screen_record.take_refresh': { clip: string }
   'screen_record.autoedit': { track: string; config?: Record<string, unknown>; webcam?: string; studio_events?: string }
-  'screen_record.polish': { source: string; plan: string; track?: string; at_ms?: number; rationale?: string; raw?: boolean }
+  'screen_record.polish': { source: string; plan: string; track?: string; at_ms?: number; rationale?: string; raw?: boolean; camera?: 'separate' | 'baked' }
   'screen_record.export': { source: string; plan: string; path?: string; format?: 'mp4' | 'gif'; gif_fps?: number; gif_width?: number; expected_origin_path_sha256?: string }
   'assets.generate': {
     prompt: string
@@ -842,7 +861,7 @@ export interface VerbArgs {
   // pro .mov, av1 highest-quality mp4. hardware = encoder tier: 'auto' uses the
   // GPU encoder (NVENC/QSV/AMF/VideoToolbox) when present (much faster, probe-
   // verified with safe software fallback), 'off' forces byte-deterministic software.
-  'render.final': { path?: string; preset?: 'draft' | 'standard' | 'high'; format?: 'h264' | 'hevc' | 'vp9' | 'prores' | 'av1'; hardware?: 'auto' | 'off'; bitrate?: string; rate_control?: 'vbr' | 'cbr'; audio_bitrate?: string; target_size_mb?: number; profile?: 'talking_head' | 'silent_screen_demo'; fit?: 'contain' | 'cover'; resolution?: 'project' | 'match_source'; aspect?: string; width?: number; height?: number; normalize_loudness?: number; dry_run?: boolean; rationale?: string }
+  'render.final': { path?: string; preset?: 'draft' | 'standard' | 'high'; format?: 'h264' | 'hevc' | 'vp9' | 'prores' | 'av1'; hardware?: 'auto' | 'off'; bitrate?: string; rate_control?: 'vbr' | 'cbr'; audio_bitrate?: string; target_size_mb?: number; profile?: 'talking_head' | 'silent_screen_demo'; fit?: 'contain' | 'cover'; resolution?: 'project' | 'match_source'; aspect?: string; width?: number; height?: number; normalize_loudness?: number; allow_stale_recordings?: boolean; dry_run?: boolean; rationale?: string }
   // SUBJECT-AWARE auto-reframe (perception contract): render the edit → subject instrument →
   // moving-crop post-pass to `aspect`. The HONEST alt to render.final{aspect,fit:cover}
   // (a naive static centre-crop). Returns {reframe_id, job_id}; receipt in the job result.
@@ -1149,6 +1168,9 @@ export async function callVerb<N extends VerbName>(
   args: ControlledVerbArgs<N>,
   signal?: AbortSignal,
 ): Promise<VerbResult<VerbResultPayload<N>>> {
+  const owner = deliveryFeedbackSession()
+  const notifyDelivery = isHumanDeliveryVerb(name) && !('dry_run' in args && args.dry_run)
+    && !('scratch' in args && args.scratch)
   const res = await fetch(`${API_BASE}/api/verb/${name}`, {
     method: 'POST',
     // x-cut-actor: this client is the human's working surface — ops from UI
@@ -1157,12 +1179,20 @@ export async function callVerb<N extends VerbName>(
     headers: { 'content-type': 'application/json', 'x-cut-actor': uiActorHeader() },
     body: JSON.stringify(args ?? {}),
     signal,
+  }).catch((error: unknown) => {
+    if (!signal?.aborted && notifyDelivery && owner === deliveryFeedbackSession()) {
+      reportExportRefusal({ code: 'transport_error', message: error instanceof Error ? error.message : 'Server unreachable.' }, name)
+    }
+    throw error
   })
   const result = (await res.json()) as VerbResult<VerbResultPayload<N>>
   // An export refused at an odd project size, from whichever surface: the
   // odd-size notice shows the engine's sentence with its one fix button.
   if (!result.ok && result.error?.code === 'odd_project_size' && typeof document !== 'undefined') {
     document.dispatchEvent(new CustomEvent('cut:odd-project-size', { detail: result.error }))
+  }
+  if (!result.ok && result.error?.code !== 'odd_project_size' && notifyDelivery && owner === deliveryFeedbackSession()) {
+    reportExportRefusal(result.error, name)
   }
   return result
 }

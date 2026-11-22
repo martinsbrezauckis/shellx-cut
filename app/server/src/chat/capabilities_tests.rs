@@ -33,9 +33,9 @@ fn schema_classifies_every_registry_verb_and_requires_review_for_new_safe_capabi
     // The contained broker fails closed for newly registered verbs: a change
     // to this reviewed safe-capability budget requires an explicit policy
     // decision, while new schema verbs classified as deny need no stale count
-    // update. The current 308-verb registry therefore remains 103 safe / 205
-    // denied without making the growth of the denied surface a magic number.
-    assert_eq!(allowed, 103, "reviewed safe capability budget");
+    // update. Recording zoom reads and six reversible recording edits extend
+    // the reviewed budget by seven; all remain project-local with no network.
+    assert_eq!(allowed, 111, "reviewed safe capability budget");
     assert_eq!(allowed + denied, registry.verbs.len());
     assert_eq!(denied, registry.verbs.len() - allowed);
 }
@@ -147,6 +147,13 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
             "project.ops",
             "project.sequence_index",
             "project.state",
+            "screen_record.take_refresh",
+            "screen_record.zoom_add",
+            "screen_record.zoom_auto",
+            "screen_record.zoom_list",
+            "screen_record.zoom_remove",
+            "screen_record.zoom_set",
+            "screen_record.zoom_update",
         ],
         "the Agent Chat allow-list is audited for every direct engine interaction",
     );

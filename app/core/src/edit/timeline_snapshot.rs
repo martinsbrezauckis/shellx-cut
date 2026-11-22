@@ -1,7 +1,48 @@
 //! Validate imported/replayed timeline snapshots before mutating project state.
 
 use crate::error::{codes, CutError};
-use crate::types::{Clip, Track};
+use crate::types::{Clip, Marker, Project, Track};
+
+pub(crate) fn apply_set_timeline(
+    project: &mut Project,
+    args: &serde_json::Value,
+) -> Result<(), CutError> {
+    #[derive(serde::Deserialize)]
+    struct Snapshot {
+        tracks: Vec<Track>,
+        markers: Vec<Marker>,
+        #[serde(default)]
+        caption_styles: Option<std::collections::BTreeMap<String, crate::types::CaptionStyle>>,
+        #[serde(default)]
+        adjustments: Option<Vec<crate::types::Adjustment>>,
+        #[serde(default)]
+        nests: Option<Vec<crate::types::Nest>>,
+        #[serde(default)]
+        recordings: Option<Vec<crate::recording::RecordingTake>>,
+        #[serde(default)]
+        transcript_ignores: Option<Vec<crate::types::TranscriptIgnore>>,
+    }
+    let s: Snapshot = serde_json::from_value(args.clone())?;
+    validate_tracks(&s.tracks)?;
+    project.tracks = s.tracks;
+    project.markers = s.markers;
+    if let Some(styles) = s.caption_styles {
+        project.caption_styles = styles;
+    }
+    if let Some(adjustments) = s.adjustments {
+        project.adjustments = adjustments;
+    }
+    if let Some(nests) = s.nests {
+        project.nests = nests;
+    }
+    if let Some(recordings) = s.recordings {
+        project.recordings = recordings;
+    }
+    if let Some(transcript_ignores) = s.transcript_ignores {
+        project.transcript_ignores = transcript_ignores;
+    }
+    Ok(())
+}
 
 pub(super) fn validate_tracks(tracks: &[Track]) -> Result<(), CutError> {
     for track in tracks {

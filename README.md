@@ -10,9 +10,9 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
-> **STATUS — v0.6.118 published; v0.6.118 is the latest published release.**
-> The public contract is 317 verbs across 34
+<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
+> **STATUS — v0.6.119 published; v0.6.119 is the latest published release.**
+> The public contract is 326 verbs across 34
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -61,7 +61,7 @@ PNG, JPEG, WebP, and TIFF, subject to your installed FFmpeg's codec support.
 Imported HLS and concat playlists are rejected because they can reference
 other files. Cut's internally generated render segment lists remain supported.
 
-> **Installing:** v0.6.118 is the current published installer/package from the
+> **Installing:** v0.6.119 is the current published installer/package from the
 > GitHub release. Users already on 0.6.107 can use the
 > in-app update when it is offered. Versions older than 0.6.107 must install
 > 0.6.107 manually before using the in-app update.
@@ -210,7 +210,7 @@ Cut. See
 [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
 for the supported deployment and residual risk.
 
-## Verb API (317 verbs, 34 domains — `schema/verbs.json` is the contract)
+## Verb API (326 verbs, 34 domains — `schema/verbs.json` is the contract)
 
 Envelope: `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}`.
 Every mutating verb takes optional `rationale`. Long tasks return `{job_id}`.
@@ -219,7 +219,7 @@ Every verb also advertises shared optional `request_id` and
 reject stale revisions atomically, and return the original durable response for
 an identical lost-response retry; changed payloads conflict.
 Representative verbs per domain below — `skill/shellx-cut/reference.md` is the
-full 317-verb table.
+full 326-verb table.
 
 Color management uses `project.color` and `edit.color_space` for the explicit
 Rec.709, Rec.2020, sRGB, and scene-linear spaces. It is a lightweight

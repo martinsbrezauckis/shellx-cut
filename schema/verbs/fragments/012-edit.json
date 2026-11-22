@@ -423,6 +423,7 @@
             "default": 1,
             "description": "Clip alpha — 1 = fully opaque; overlays blend over lower layers, while the base blends against black; 0 = invisible"
           },
+          "shape": {"type": "string", "enum": ["rect", "circle", "rounded"], "default": "rect", "description": "Overlay shape. Circle/rounded are square, centre cover-cropped bubbles: x/y is top-left and scale is width/frame width. Rect preserves full conformed-frame geometry."}, "radius": {"type": "number", "minimum": 0, "maximum": 0.5, "description": "Rounded only: corner radius/bubble width (default 0.18)."}, "ring": {"type": "object", "additionalProperties": false, "required": ["width", "colour"], "properties": {"width": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.25}, "colour": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"}}, "description": "Circle/rounded only: inset ring, width/bubble width (minimum 2 output pixels), hex RGB/RGBA colour. Recorder look: width 0.02, colour #ffffffe6."},
           "rationale": {
             "type": "string"
           },
@@ -434,7 +435,7 @@
           }
         }
       },
-      "result": "{clip, transform, old_transform}; one op appended",
+      "result": "{clip, transform, old_transform, shape}; one op appended",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {

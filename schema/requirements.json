@@ -1195,6 +1195,15 @@
       "name": "Recording results and recovery",
       "verbs": [
         "screen_record.autoedit",
+        "screen_record.zoom_list",
+        "screen_record.zoom_set",
+        "screen_record.zoom_add",
+        "screen_record.zoom_update",
+        "screen_record.zoom_remove",
+        "screen_record.zoom_auto",
+        "screen_record.take_refresh",
+        "screen_record.take_link",
+        "screen_record.camera_reset",
         "screen_record.polish",
         "screen_record.export",
         "screen_record.copy_raw",
@@ -1207,6 +1216,10 @@
       ],
       "requires": [],
       "verb_extra": {
+        "screen_record.take_refresh": [
+          "ffmpeg",
+          "ffprobe"
+        ],
         "screen_record.polish": [
           "ffmpeg",
           "ffprobe"

@@ -13,6 +13,15 @@ let cancelledJob: string | null = null
 let rebuildStatusReads = 0
 let retryAdmitted = false
 
+/** The engine lists an up-to-date asset (the one counted in fresh_assets) with
+ * the reason already_current next to the assets it really skipped. */
+function mockSkippedAssets() {
+  return [
+    ...(mockLargeBatch ? [] : [{ asset_id: 'a1', reason: 'already_current', action: 'The previews already match this source; no action is needed.' }]),
+    { asset_id: 'a2', reason: 'source_changed', action: 'Relink this source, then retry the cache rebuild.' },
+  ]
+}
+
 /** Deterministic UI-only fixture for the native action sweep. */
 export function handleCacheLifecycleMock(
   name: string,
@@ -69,6 +78,7 @@ export function handleCacheLifecycleMock(
               legacy_outputs: 0,
               unsupported_assets: 0,
             },
+            skipped_assets: mockSkippedAssets(),
             estimate,
           },
         }
@@ -92,6 +102,7 @@ export function handleCacheLifecycleMock(
             legacy_outputs: 0,
             unsupported_assets: 0,
           },
+          skipped_assets: mockSkippedAssets(),
           estimate,
         },
       }

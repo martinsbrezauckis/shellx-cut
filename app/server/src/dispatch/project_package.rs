@@ -79,6 +79,9 @@ struct PackageSourceFile {
     bytes: u64,
     sha256: String,
     package_path: String,
+    // JSON paths are rebased for portability; still verify the original bytes
+    // and stamp before writing the planned replacement.
+    rewritten: Option<(String, Vec<u8>)>,
 }
 
 #[derive(Clone)]
@@ -102,6 +105,7 @@ struct PackagePlan {
     target_status: &'static str,
     b5_receipt_sha256: Option<String>,
     assets: Vec<PackagePlanAsset>,
+    recordings_not_carried: Vec<RecordingNotCarried>,
     total_source_bytes: u64,
     total_package_bytes: u64,
     source_file_count: usize,
@@ -314,6 +318,7 @@ pub(super) async fn project_package_create(
             "file_count": result.file_count,
             "bytes": result.bytes,
             "warnings": result.warnings,
+            "recordings_not_carried": result.recordings_not_carried,
         });
         if payload["warnings"].as_array().is_some_and(|warnings| warnings.is_empty()) {
             task_state.jobs.finish(&task_id, payload);
@@ -336,6 +341,7 @@ pub(super) async fn project_package_create(
 }
 
 include!("project_package/plan.rs");
+include!("project_package/recordings.rs");
 include!("project_package/b5_evidence.rs");
 include!("project_package/source_io.rs");
 include!("project_package/publish.rs");

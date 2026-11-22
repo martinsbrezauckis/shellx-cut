@@ -11,6 +11,8 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
+mod decode_counts;
+pub use decode_counts::ffprobe_decode_counts;
 pub mod escape;
 mod graph_file;
 #[cfg(test)]

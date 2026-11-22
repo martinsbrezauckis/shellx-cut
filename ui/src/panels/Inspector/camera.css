@@ -1,0 +1,5 @@
+.insp__camera-stack { display: grid; gap: 8px; }
+.insp__camera-positions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.insp__camera-centre { grid-column: 1 / -1; justify-self: center; }
+.insp__camera-segments { display: flex; gap: 4px; }
+.insp__camera-segments .insp__btn { flex: 1; }

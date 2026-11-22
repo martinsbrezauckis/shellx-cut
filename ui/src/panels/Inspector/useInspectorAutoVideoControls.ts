@@ -6,6 +6,7 @@ import { ADJ_LOOKS } from './model'
 export interface InspectorAutoVideoSelection {
   clip: {
     id: string
+    recording?: { take: string }
   }
   trackId: string
 }
@@ -78,7 +79,7 @@ export function useInspectorAutoVideoControls({ project, sel }: InspectorAutoVid
   }
 
   const autoZoom = async () => {
-    if (!sel || autoBusy) return
+    if (!sel || autoBusy || sel.clip.recording) return
     setAutoBusy('zoom')
     setAutoNote(null)
     const r = await callVerb('edit.auto_zoom', {

@@ -1,6 +1,8 @@
 fn projected_project(
     source: &Project,
+    source_dir: &Path,
     files: &[PackageSourceFile],
+    omitted: &[RecordingNotCarried],
     name: &str,
 ) -> Result<Project, CutError> {
     let by_asset = files
@@ -24,6 +26,7 @@ fn projected_project(
         asset.proxy = None;
         asset.filmstrip = None;
     }
+    rebase_recordings(&mut project, source_dir, files, omitted)?;
     Ok(project)
 }
 fn package_manifest(
@@ -212,9 +215,16 @@ fn hash_path(path: &Path) -> Result<(u64, String), CutError> {
 }
 
 fn is_manifest_member_path(value: &str) -> bool {
+    if value.is_empty() || value.contains('\\') || value.contains(':') {
+        return false;
+    }
     let path = Path::new(value);
-    path.components()
-        .all(|component| matches!(component, Component::Normal(_)))
+    value
+        .split('/')
+        .all(|part| !part.is_empty() && part != "." && part != "..")
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), CutError> {

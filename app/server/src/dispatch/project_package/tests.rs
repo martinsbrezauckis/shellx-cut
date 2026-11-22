@@ -10,6 +10,293 @@ mod tests {
     };
     use std::time::Duration;
 
+    #[tokio::test]
+    async fn package_carries_named_files_windows_take_id_and_copy_of_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let project_dir = root.path().join("source.cutproj");
+        assert!(
+            dispatch(
+                &state,
+                "project.create",
+                json!({"name":"source","dir":project_dir}),
+                actor()
+            )
+            .await
+            .ok
+        );
+        let capture = project_dir.join("cache/screen_record/cap-copy");
+        let take_id = format!(
+            "take-{:x}",
+            Sha256::digest(b"cache\\screen_record\\cap-copy")
+        );
+        fs::create_dir_all(capture.join("camera")).unwrap();
+        for (name, bytes) in [
+            ("source.mp4", "screen"),
+            ("events.json", "[]"),
+            ("camera/camera.mp4", "camera"),
+            ("mic.wav", "mic"),
+        ] {
+            fs::write(capture.join(name), bytes).unwrap();
+        }
+        fs::write(capture.join("private-notes.txt"), b"do not share").unwrap();
+        let plan_path =
+            project_dir.join(format!("cache/screen_record/plan-{}.json", "a".repeat(64)));
+        let mut edit_plan = record_core::EditPlan::empty(640, 360, 1000, 30.0);
+        edit_plan.webcam = Some(record_core::WebcamOverlay {
+            source: capture.join("camera/camera.mp4").display().to_string(),
+            shape: record_core::WebcamShape::Circle,
+            anchor: record_core::Anchor::BottomRight,
+            margin: 0.05,
+            size: 0.3,
+            camera_clock: None,
+            timeline: vec![],
+        });
+        fs::write(&plan_path, serde_json::to_vec(&edit_plan).unwrap()).unwrap();
+        let applied_plan =
+            project_dir.join(format!("cache/screen_record/plan-{}.json", "b".repeat(64)));
+        fs::write(&applied_plan, serde_json::to_vec(&edit_plan).unwrap()).unwrap();
+        let baked = project_dir.join("baked.mp4");
+        fs::write(&baked, b"baked").unwrap();
+        {
+            let mut guard = state.project.write().await;
+            let store = guard.as_mut().unwrap();
+            store
+                .record_import(
+                    Some("a1".into()),
+                    Asset {
+                        path: baked.display().to_string(),
+                        hash: format!("sha256:{:x}", Sha256::digest(b"baked")),
+                        probe: None,
+                        transcript: None,
+                        perception: None,
+                        proxy: None,
+                        filmstrip: None,
+                    },
+                    actor(),
+                    None,
+                )
+                .unwrap();
+            store.apply("edit.insert", json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,1000],"ripple":false}), actor(), None).unwrap();
+            store.apply("screen_record.take_link", json!({"recording":{"id":take_id,"capture_folder":capture,"source":capture.join("source.mp4"),"events":capture.join("events.json"),"pending_plan":plan_path,"applied_plan":applied_plan,"clip_ids":[],"asset":"a1","camera_artifact":{"video":"camera/camera.mp4"},"segments":[]}}), actor(), None).unwrap();
+        }
+        let dest = root.path().join("copies");
+        fs::create_dir(&dest).unwrap();
+        // A missing named input drops this take, while its rendered clip stays.
+        let event_path = capture.join("events.json");
+        fs::remove_file(&event_path).unwrap();
+        let missing = prepare(&state, dest.display().to_string(), "missing".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(missing.plan.recordings_not_carried.len(), 1);
+        fs::create_dir(&event_path).unwrap();
+        let omitted = prepare(&state, dest.display().to_string(), "omitted".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(omitted.plan.recordings_not_carried.len(), 1);
+        assert_eq!(omitted.plan.recordings_not_carried[0].take, take_id);
+        assert!(omitted.plan.recordings_not_carried[0]
+            .reason
+            .contains("events"));
+        let omitted_job = dispatch(
+            &state,
+            "project.package_create",
+            json!({
+                "destination":dest,"name":"omitted","plan_hash":hash_json(&omitted.plan).unwrap()
+            }),
+            actor(),
+        )
+        .await;
+        assert!(omitted_job.ok, "{:?}", omitted_job.error);
+        let omitted_job = wait_for_job(
+            &state,
+            omitted_job.result.unwrap()["job_id"].as_str().unwrap(),
+        )
+        .await;
+        assert_eq!(
+            omitted_job.state,
+            crate::jobs::JobState::Done,
+            "{:?}",
+            omitted_job.error
+        );
+        assert_eq!(
+            omitted_job.result.as_ref().unwrap()["recordings_not_carried"][0]["take"],
+            take_id
+        );
+        let ordinary_copy = ProjectStore::open(&dest.join("omitted.cutproj")).unwrap();
+        assert!(ordinary_copy.project.recordings.is_empty());
+        assert!(!ordinary_copy.project.tracks[0].clips.is_empty());
+        drop(ordinary_copy);
+        fs::remove_dir(&event_path).unwrap();
+        fs::write(&event_path, b"[]").unwrap();
+        let prepared = prepare(&state, dest.display().to_string(), "copy".into(), None)
+            .await
+            .unwrap();
+        let mut unsafe_plan = prepared.clone();
+        unsafe_plan.files[0].package_path = "../../../escaped.txt".into();
+        let escaped = root.path().join("escaped.txt");
+        assert!(publish_package(
+            unsafe_plan,
+            &crate::jobs::JobCancellation::test_active(),
+            |_, _| {},
+            |_, _| Ok(()),
+        )
+        .is_err());
+        assert!(!escaped.exists());
+        assert!(
+            prepared.plan.total_source_bytes
+                >= 5 + 6 + 2 + 6 + 3 + fs::metadata(&plan_path).unwrap().len(),
+            "copy plan must count recording files"
+        );
+        let created = dispatch(&state, "project.package_create", json!({"destination":dest,"name":"copy","plan_hash":hash_json(&prepared.plan).unwrap()}), actor()).await;
+        assert!(created.ok, "{:?}", created.error);
+        let job = wait_for_job(&state, created.result.unwrap()["job_id"].as_str().unwrap()).await;
+        assert_eq!(job.state, crate::jobs::JobState::Done, "{:?}", job.error);
+        let copied_dir = dest.join("copy.cutproj");
+        let copy = ProjectStore::open(&copied_dir).unwrap();
+        let take = &copy.project.recordings[0];
+        assert_ne!(take.pending_plan, take.applied_plan);
+        assert!(copied_dir.join(&take.applied_plan).is_file());
+        assert_eq!(fs::read(copied_dir.join(&take.source)).unwrap(), b"screen");
+        assert_eq!(fs::read(copied_dir.join(&take.events)).unwrap(), b"[]");
+        assert_eq!(
+            fs::read(
+                copied_dir
+                    .join(&take.capture_folder)
+                    .join("camera/camera.mp4")
+            )
+            .unwrap(),
+            b"camera"
+        );
+        assert_eq!(
+            fs::read(copied_dir.join(&take.capture_folder).join("mic.wav")).unwrap(),
+            b"mic"
+        );
+        assert!(!copied_dir
+            .join(&take.capture_folder)
+            .join("private-notes.txt")
+            .exists());
+        let plan = crate::screen_record::plan_inputs::load(
+            &copied_dir,
+            &copy.project,
+            &copied_dir.join(&take.pending_plan),
+        )
+        .unwrap();
+        // Compare resolved paths: on Windows the loaded plan carries the verbatim (\\?\) form.
+        let camera_in_copy = Path::new(&plan.webcam.unwrap().source)
+            .canonicalize()
+            .unwrap();
+        assert!(camera_in_copy.starts_with(copied_dir.canonicalize().unwrap()));
+        assert!(!serde_json::to_string(&copy.project)
+            .unwrap()
+            .contains(project_dir.to_str().unwrap()));
+        drop(copy);
+        let copied_state = AppState::new();
+        let opened = dispatch(
+            &copied_state,
+            "project.open",
+            json!({"path":copied_dir}),
+            actor(),
+        )
+        .await;
+        assert!(opened.ok, "{:?}", opened.error);
+        let again_dest = root.path().join("copies-again");
+        fs::create_dir(&again_dest).unwrap();
+        let again = prepare(
+            &copied_state,
+            again_dest.display().to_string(),
+            "copy-again".into(),
+            None,
+        )
+        .await
+        .unwrap();
+        let created_again = dispatch(
+            &copied_state,
+            "project.package_create",
+            json!({"destination":again_dest,"name":"copy-again","plan_hash":hash_json(&again.plan).unwrap()}),
+            actor(),
+        )
+        .await;
+        assert!(created_again.ok, "{:?}", created_again.error);
+        let second_job = wait_for_job(
+            &copied_state,
+            created_again.result.unwrap()["job_id"].as_str().unwrap(),
+        )
+        .await;
+        assert_eq!(
+            second_job.state,
+            crate::jobs::JobState::Done,
+            "{:?}",
+            second_job.error
+        );
+
+        // Change a valid plan after its hash has been admitted. Length and
+        // modification time still match, including on Windows.
+        let original_plan = fs::read(&plan_path).unwrap();
+        let original_stamp = file_stamp(&fs::metadata(&plan_path).unwrap());
+        let mut changed_plan = original_plan.clone();
+        let width = changed_plan.windows(3).position(|bytes| bytes == b"640").unwrap();
+        changed_plan[width + 2] = b'1';
+        assert_eq!(changed_plan.len(), original_plan.len());
+        assert!(serde_json::from_slice::<record_core::EditPlan>(&changed_plan).is_ok());
+        let source = snapshot_source(&state).await.unwrap();
+        let changed_target = dest.join("changed-plan.cutproj");
+        let changed_take_id = take_id.clone();
+        let changed_plan_path = plan_path.clone();
+        let prepared = build_prepared_with_recordings(
+            source,
+            dest.clone(),
+            changed_target.clone(),
+            "changed-plan".into(),
+            None,
+            move |source, files| {
+                let take = &source.project.recordings[0];
+                let result = add_one_take_after_plan_admission(source, take, || {
+                    fs::write(&changed_plan_path, &changed_plan).unwrap();
+                    File::options()
+                        .write(true)
+                        .open(&changed_plan_path)
+                        .unwrap()
+                        .set_modified(original_stamp.modified.unwrap())
+                        .unwrap();
+                    assert_eq!(
+                        file_stamp(&fs::metadata(&changed_plan_path).unwrap()),
+                        original_stamp
+                    );
+                });
+                match result {
+                    Ok(named) => {
+                        files.extend(named);
+                        vec![]
+                    }
+                    Err(reason) => vec![RecordingNotCarried {
+                        take: take.id.clone(),
+                        reason,
+                    }],
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared.plan.recordings_not_carried.len(), 1);
+        assert_eq!(prepared.plan.recordings_not_carried[0].take, changed_take_id);
+        assert_eq!(
+            prepared.plan.recordings_not_carried[0].reason,
+            "plan changed while making the copy"
+        );
+        let result = publish_package(
+            prepared,
+            &crate::jobs::JobCancellation::test_active(),
+            |_, _| {},
+            publish_new_directory,
+        )
+        .unwrap();
+        assert_eq!(result.recordings_not_carried.len(), 1);
+        assert_eq!(result.recordings_not_carried[0].take, changed_take_id);
+        let changed_copy = ProjectStore::open(&changed_target).unwrap();
+        assert!(changed_copy.project.recordings.is_empty());
+        assert!(!changed_copy.project.tracks[0].clips.is_empty());
+    }
+
     fn actor() -> Actor {
         Actor {
             kind: cut_core::ActorKind::Agent,

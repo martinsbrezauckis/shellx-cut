@@ -45,6 +45,7 @@ import DropZone from './DropZone'
 import type { GenerateWorkspaceTab } from './panels/GenerateTemplates'
 import StatusBar from './statusbar'
 import TopBar from './topbar'
+import { useRecordingExportRefusal } from './app/useRecordingExportRefusal'
 import RecordingTopBar from './topbar/RecordingTopBar'
 import AppDrawerStack, { type AppDrawer } from './app/AppDrawerStack'
 import AppRightRail from './app/AppRightRail'
@@ -191,6 +192,12 @@ export default function App() {
   // (like toggleLeftTab) so it can reference setLayout declared just below.
   const openRightTab = (t: 'properties' | 'color' | 'audio' | 'chat') =>
     requestLayout((l) => ({ ...l, workspaceMode: 'edit', rightTab: t, railCollapsed: false }))
+  useRecordingExportRefusal(project, projectSession, (clipId) => {
+    closeDrawer()
+    setEnvOpen(false)
+    setSelectedClipIds([clipId])
+    openRightTab('properties')
+  })
   // A topbar launcher TOGGLES its drawer — clicking the active one closes it:
   // "second click closes it"). Distinct drawers replace each other (one slot).
   const toggleDrawer = (d: AppDrawer) => {

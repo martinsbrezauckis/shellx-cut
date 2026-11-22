@@ -24,7 +24,7 @@ export function OverlayVideo({
   layer: OverlayLayerData
   playheadMs: number
   rate: number
-  override?: Required<ClipTransform> | null
+  override?: (ClipTransform & { opacity: number }) | null
   /** The clip starts shortly: load it, park it paused on its first frame and
    * keep it invisible, so it only has to play when it appears. */
   preroll?: boolean

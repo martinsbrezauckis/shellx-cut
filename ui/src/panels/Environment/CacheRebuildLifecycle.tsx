@@ -1,10 +1,10 @@
-import type {
-  ProjectCacheRebuildCounts,
-  ProjectCacheRebuildResult,
-} from '../../lib/clientResults'
+import type { ProjectCacheRebuildResult } from '../../lib/clientResults'
 import {
+  attentionAssetCount,
   rebuildCostSummary,
+  rebuildSkips,
   rebuildSummary,
+  type RebuildSkippedAsset,
 } from './cacheLifecyclePresentation'
 
 interface CacheRebuildLifecycleProps {
@@ -23,23 +23,14 @@ interface CacheRebuildLifecycleProps {
   onRebuild: () => Promise<void>
 }
 
-function refusedCount(counts: ProjectCacheRebuildCounts): number {
-  return counts.source_changed
-    + counts.source_unavailable
-    + counts.unowned_outputs
-    + counts.legacy_outputs
-    + counts.unsupported_assets
-}
-
-function attentionReasons(counts: ProjectCacheRebuildCounts): string[] {
-  const plural = (count: number, singular: string, pluralValue = `${singular}s`) => `${count} ${count === 1 ? singular : pluralValue}`
-  return [
-    counts.source_changed > 0 ? `${plural(counts.source_changed, 'source')} changed` : null,
-    counts.source_unavailable > 0 ? `${plural(counts.source_unavailable, 'source')} unavailable` : null,
-    counts.unowned_outputs > 0 ? `${plural(counts.unowned_outputs, 'existing cache entry')} not owned by Cut` : null,
-    counts.legacy_outputs > 0 ? `${plural(counts.legacy_outputs, 'existing cache entry')} uses an older Cut format` : null,
-    counts.unsupported_assets > 0 ? `${plural(counts.unsupported_assets, 'media item')} is not supported for cache rebuild` : null,
-  ].filter((reason): reason is string => reason !== null)
+function skipReason(item: RebuildSkippedAsset): string {
+  switch (item.reason) {
+    case 'source_changed': return 'source changed'
+    case 'source_unavailable': return 'source unavailable'
+    case 'unowned_output': return 'cache output is not verified as Cut’s own'
+    case 'legacy_output': return 'cache output has an older ownership record'
+    case 'unsupported_asset': return 'media type is not supported for cache rebuild'
+  }
 }
 
 export default function CacheRebuildLifecycle({
@@ -57,6 +48,8 @@ export default function CacheRebuildLifecycle({
   onEstimate,
   onRebuild,
 }: CacheRebuildLifecycleProps) {
+  const skips = result ? rebuildSkips(result) : []
+  const attentionCount = result ? attentionAssetCount(result) : 0
   const disabled = !sessionCurrent || !hasProject || !hasCompleteInventory || !hasBatch || loading || estimateLoading || activeJobLabel !== null
   const unavailable = !sessionCurrent
     ? null
@@ -106,16 +99,20 @@ export default function CacheRebuildLifecycle({
           data-cut-cache-rebuild-state={result.status}
           data-cut-cache-rebuild-queued={result.scheduled_assets}
           data-cut-cache-rebuild-up-to-date={result.counts.fresh_assets}
-          data-cut-cache-rebuild-attention-count={refusedCount(result.counts)}
+          data-cut-cache-rebuild-attention-count={attentionCount}
           aria-live="polite"
         >
           <p>{rebuildSummary(result, remainingAssets)}</p>
           <p data-cut-cache-rebuild-cost>{rebuildCostSummary(result.estimate)}. Source identity was verified for this estimate; Cut checks it again before publishing output.</p>
-          {refusedCount(result.counts) > 0 && (
+          {skips.length > 0 && (
             <details className="settings-cache-lifecycle-attention" data-cut-cache-rebuild-attention>
-              <summary data-cut-cache-rebuild-attention-toggle>{refusedCount(result.counts)} item{refusedCount(result.counts) === 1 ? ' needs' : 's need'} attention</summary>
+              <summary data-cut-cache-rebuild-attention-toggle>{attentionCount} skipped item{attentionCount === 1 ? '' : 's'}</summary>
               <ul>
-                {attentionReasons(result.counts).map((reason) => <li key={reason}>{reason}</li>)}
+                {skips.map((item, index) => (
+                  <li key={`${item.asset_id}-${item.kind ?? 'source'}-${item.reason}-${index}`} data-cut-cache-rebuild-skipped-asset={item.asset_id}>
+                    {item.asset_id}{item.kind ? ` ${item.kind}` : ''}: {skipReason(item)}. {item.action}
+                  </li>
+                ))}
               </ul>
             </details>
           )}

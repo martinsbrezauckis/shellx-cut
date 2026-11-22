@@ -18,6 +18,38 @@ pub(super) async fn dispatch(
     actor: Actor,
 ) -> VerbResult {
     match target {
+        DispatchTarget::ScreenRecordCameraReset => {
+            crate::screen_record::camera_look::reset(state, args, actor)
+                .await
+                .into()
+        }
+        DispatchTarget::ScreenRecordTakeLink => Err(crate::screen_record::take_edit::bad(
+            "take_link is internal to polish",
+        ))
+        .into(),
+        DispatchTarget::ScreenRecordTakeRefresh => {
+            crate::screen_record::take_refresh_job::start(state, args, actor)
+                .await
+                .into()
+        }
+        DispatchTarget::ScreenRecordZoomList
+        | DispatchTarget::ScreenRecordZoomSet
+        | DispatchTarget::ScreenRecordZoomAdd
+        | DispatchTarget::ScreenRecordZoomUpdate
+        | DispatchTarget::ScreenRecordZoomRemove
+        | DispatchTarget::ScreenRecordZoomAuto => {
+            let verb = match target {
+                DispatchTarget::ScreenRecordZoomList => "screen_record.zoom_list",
+                DispatchTarget::ScreenRecordZoomSet => "screen_record.zoom_set",
+                DispatchTarget::ScreenRecordZoomAdd => "screen_record.zoom_add",
+                DispatchTarget::ScreenRecordZoomUpdate => "screen_record.zoom_update",
+                DispatchTarget::ScreenRecordZoomRemove => "screen_record.zoom_remove",
+                _ => "screen_record.zoom_auto",
+            };
+            crate::screen_record::take_edit::handle(state, verb, args, actor)
+                .await
+                .into()
+        }
         DispatchTarget::ScreenRecordDoctor => doctor(args).await,
         DispatchTarget::ScreenRecordMicrophoneSelection => microphone_selection(args).await,
         DispatchTarget::ScreenRecordSystemAudioProbe => system_audio_probe(args).await,

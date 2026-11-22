@@ -23,11 +23,18 @@ export const RECORDING_WORKSPACE_ADMISSION_IDLE: RecordingWorkspaceAdmission = {
   reason: null,
 }
 
+/**
+ * The Recording Studio top bar shows the reason in one line beside its buttons.
+ * Keep every reason within this many characters so that line is never cut off;
+ * the full text is also the element's tooltip.
+ */
+export const RECORDING_EXIT_REASON_MAX_CHARS = 52
+
 const EXIT_REASONS: Record<Exclude<RecordingWorkspaceAdmissionPhase, 'idle'>, string> = {
   countdown: 'Cancel the countdown before returning to Edit.',
-  starting: 'Waiting for the recorder to confirm start. Stay in Recording Studio.',
+  starting: 'Starting the recording. Stay on the Record page.',
   recording: 'Stop the recording before returning to Edit.',
-  finalizing: 'Finishing the recording. Stay in Recording Studio until it completes.',
+  finalizing: 'Finishing the recording. Stay on the Record page.',
   recovery: 'Check this recording before returning to Edit.',
 }
 

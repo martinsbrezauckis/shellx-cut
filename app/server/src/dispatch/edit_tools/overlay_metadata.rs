@@ -250,7 +250,7 @@ pub(in crate::dispatch) fn validate_split_metadata_projection(
                 }
             }
         } else {
-            cut_core::apply_record(&mut topology, op, &ops[..index]).map_err(|error| {
+            cut_core::apply_saved_record(&mut topology, op, &ops[..index]).map_err(|error| {
                 overlay_metadata_error(
                     "overlay metadata cannot be replayed",
                     format!("operation '{}' is invalid during replay: {error}", op.op_id),

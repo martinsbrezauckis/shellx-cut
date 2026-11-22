@@ -41,6 +41,24 @@ Each verb's `ui_exposure` value uses one of these supported categories:
   should be checked against the implemented view before publication; a mock
   frame, configured shortcut, or source test alone is not installed proof.
 
+## Editing a recording
+
+For new polished recordings, select the screen clip in Edit and use the Inspector
+Zoom card to select, add or delete zooms and change strength, target, timing or
+speed. Redo automatic zooms keeps your own zooms. Update video applies the changes
+to the picture; playback keeps the previous zooms until the update finishes.
+Old recordings stay as they are.
+
+A separate camera track is on by default for new polished recordings. Select the
+Camera track clip for the Inspector Camera section: corner and centre presets,
+size, Circle / Rounded / Rectangle, ring, and Back to as recorded. Move it on the
+preview; split at both ends and delete a piece to hide it for a stretch. Camera
+edits and reset support Undo. Before recording, turn off Edit the camera later (own
+track) on the Record page to bake the bubble in instead.
+Agents use `screen_record.zoom_list`, the `screen_record.zoom_*` edits and
+`screen_record.take_refresh` for zooms; `edit.transform` and
+`screen_record.camera_reset{clip}` change the camera.
+
 The live verb registry remains the source of truth for callable behavior:
 `GET /api/verbs` from a running Cut server, or `schema/verbs.json` from the
 matching source or installed agent-doc bundle.

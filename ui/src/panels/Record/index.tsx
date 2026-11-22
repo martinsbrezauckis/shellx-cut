@@ -34,6 +34,8 @@ import { RecordingCountdownOverlay } from './RecordingCountdownOverlay'
 import { RecordingRehearsal } from './RecordingRehearsal'
 import { RecordingReadinessSummary } from './RecordingReadinessSummary'
 import { RecordingLiveControls } from './RecordingLiveControls'
+import { useRecordedElapsed } from './useRecordedElapsed'
+import { recordingStandsStill } from './recordingPause'
 import { RecordingAudioMeters } from './RecordingAudioMeters'
 import { RecordingCaptureSafetyStatus } from './RecordingCaptureSafetyStatus'
 import { RecordingSourceSetup } from './RecordingSourceSetup'
@@ -102,6 +104,8 @@ export interface RecordProps {
   onOpenEdit?: () => void
   /** Synchronous admission for a workspace exit that would unmount Record. */
   onWorkspaceAdmissionChange?: (admission: RecordingWorkspaceAdmission) => void
+  /** The engine's operating system from the environment report; null until that report has loaded. */
+  hostOs?: string | null
 }
 const UNKNOWN_START_ADMISSION = 'The recorder returned an incomplete start response, so ShellX Cut cannot confirm or control the capture. Recorder diagnostics can inspect the state, but cannot clear this lock. Restart ShellX Cut before another recording.'
 type Phase = 'idle' | 'recording' | 'finalizing' | 'done' | 'error'
@@ -128,7 +132,7 @@ function recordingMarkerAcknowledged(value: unknown, expectedLabel: string): boo
     && event.logical_ts >= 0
 }
 
-export default function Record({ project, onClipAdded, onOpenOutputSettings, onOpenEdit, onWorkspaceAdmissionChange }: RecordProps) {
+export default function Record({ project, onClipAdded, onOpenOutputSettings, onOpenEdit, onWorkspaceAdmissionChange, hostOs = null }: RecordProps) {
   const projectKey = project ? project.project_identity?.origin_path_sha256 || `name:${project.name}` : null
   const session = useAppRecordingSession()
   const draftViewRef = useRef<RecordingDraftView | null>(session.draftView)
@@ -159,6 +163,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   const [windowCaptureSupported, setWindowCaptureSupported] = useState<boolean | null>(null)
   const [windowTargetId, setWindowTargetId] = useState<string | null>(draftView?.windowTargetId ?? null)
   const [cameraCapability, setCameraCapability] = useState<CameraCapability>(NO_CAMERA_CAPABILITY)
+  const [cameraSeparate, setCameraSeparate] = useState(draftView?.cameraSeparate ?? (session.draft ?? session.preset)?.cameraSeparate ?? true)
   const [cameraDeviceId, setCameraDeviceId] = useState<string | null>(draftView?.cameraDeviceId ?? null)
   const selectedWindowMissing = sourceKind === 'window'
     && windowTargetId !== null
@@ -275,10 +280,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   const [finalizeSec, setFinalizeSec] = useState(0)
   const [phase, setPhase] = useState<Phase>('idle')
   const [sceneCaptureId, setSceneCaptureId] = useState<string | null>(null)
-  // `remaining` is the cap countdown (only meaningful when capMs != null);
-  // `elapsed` is the wall-clock since start (the open-ended clock).
-  const [remaining, setRemaining] = useState(0)
-  const [elapsed, setElapsed] = useState(0)
   const [note, setNote] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const startAdmission = useRecordingStartAdmission()
@@ -362,17 +363,15 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       ? active.phase : 'idle'
     onWorkspaceAdmissionChange?.(recordingWorkspaceAdmission(admissionPhase))
   }, [session.state, delivery.ownsResult, markSceneCaptureStarted, onWorkspaceAdmissionChange, recordingPause.acknowledgeStart, recordingPause.clearCapture, setQualityResolution, clearQualityResolution])
-  useEffect(() => {
-    if (session.state.phase !== 'recording' || !session.state.startedAt) return
-    const update = () => {
-      const elapsedMs = Date.now() - session.state.startedAt!
-      setElapsed(Math.floor(elapsedMs / 1000))
-      setRemaining(capMs === null ? 0 : Math.max(0, Math.ceil((capMs - elapsedMs) / 1000)))
-    }
-    update()
-    const timer = window.setInterval(update, 250)
-    return () => window.clearInterval(timer)
-  }, [session.state.phase, session.state.startedAt, capMs])
+  // `elapsed` is the recorded time of the take and stands still while it is paused;
+  // `remaining` is the cap countdown (only meaningful when capMs != null).
+  const { elapsed, remaining } = useRecordedElapsed({
+    recording: session.state.phase === 'recording',
+    startedAt: session.state.startedAt,
+    pauseState: recordingPause.state,
+    pauseBoundary: recordingPause.boundary,
+    capMs,
+  })
   useEffect(() => {
     if (session.state.phase !== 'finalizing') { setFinalizeSec(0); return }
     const started = Date.now()
@@ -684,6 +683,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       startCountdownSeconds: session.countdownSeconds,
       audio, systemAudio, keys: !rawCapture && !recordingPause.enabled && keys,
       raw: rawCapture,
+      cameraSeparate,
       ...(qualityRequest && !recordingPause.enabled ? { quality: qualityRequest } : {}),
       ...(studio.camera.enabled && cameraDeviceId && !rawCapture && !recordingPause.enabled ? { cameraId: cameraDeviceId } : {}),
       ...(sceneStartConfig && !recordingPause.enabled ? { scenes: sceneStartConfig } : {}),
@@ -695,7 +695,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
           : {}),
       },
     })
-  }, [sourceKind, windowCaptureSupported, monitorIdx, monitors, cards, startAllowed, monitorTargetId, selectedMonitorCurrent, windowTargetId, fps, capMs, audio, systemAudio, keys, rawCapture, recordingPause.enabled, qualityRequest, studio, cameraDeviceId, sceneStartConfig, session.countdownSeconds])
+  }, [sourceKind, windowCaptureSupported, monitorIdx, monitors, cards, startAllowed, monitorTargetId, selectedMonitorCurrent, windowTargetId, fps, capMs, audio, systemAudio, keys, rawCapture, recordingPause.enabled, qualityRequest, studio, cameraDeviceId, cameraSeparate, sceneStartConfig, session.countdownSeconds])
 
   const preflightStartError = useCallback(() => {
     if (startAdmissionUnknown) return UNKNOWN_START_ADMISSION
@@ -733,7 +733,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     session.setDraft(preflightStartError() ? null : buildPreset(), {
       sourceKind, monitorIdx, monitorTargetId, windowTargetId, fps, customFps,
       durationMs: capMs, audio, systemAudio, keys, raw: rawCapture,
-      cameraDeviceId, studio, cameraLayoutCustomized: cameraLayoutCustomizedRef.current,
+      cameraSeparate, cameraDeviceId, studio, cameraLayoutCustomized: cameraLayoutCustomizedRef.current,
       sceneId: selectedScene?.id ?? null, pauseEnabled: recordingPause.enabled,
       outputSize, qualityProfile: profile,
     })
@@ -954,7 +954,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             {rawCapture ? 'Choose what to capture, check sound, then start a raw take.' : 'Choose what to capture, check sound, then start.'}
           </p>
         </div>
-        <RecordingReadinessSummary videoEncoder={videoEncoder} cards={cards} ready={ready} startAllowed={startAllowed} screenCheck={screenCheck} onCheck={() => { void refreshCaptureSetup() }} />
+        <RecordingReadinessSummary videoEncoder={videoEncoder} cards={cards} ready={ready} startAllowed={startAllowed} screenCheck={screenCheck} hostOs={hostOs} onCheck={() => { void refreshCaptureSetup() }} />
       </header>
       {doctorReadError && <p className="rec__source-note" data-cut-rec-doctor-error role="status">
         Could not check capture setup. Refresh sources to try again.
@@ -1007,6 +1007,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               studio={studio}
               phase={displayPhase}
               activeCaptureId={phase === 'recording' ? session.state.captureId : null}
+              paused={recordingStandsStill(recordingPause.state)}
               elapsed={studioElapsed}
               sceneName={recordingLayoutLabel}
               sceneState={sceneStatus.state}
@@ -1055,6 +1056,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             )}
             </div>
             <StudioControls
+              cameraSeparate={cameraSeparate}
+              onCameraSeparate={setCameraSeparate}
               videoTimerControl={videoTimerControl}
               captureTimingControl={captureTimingControl}
               videoQualityControl={videoQualityControl}
@@ -1110,7 +1113,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             <label className="rec__toggle rec__toggle--system" data-cut-rec-system-audio-toggle title="Capture the desktop/app sound (e.g. a game) onto its OWN audio track, separate from the mic">
               <input type="checkbox" data-cut-rec-system-audio-toggle-input checked={systemAudio} disabled={busy} onChange={(e) => setSystemAudio(e.target.checked)} /> Capture system / desktop audio (game sound)
             </label>
-            <SystemAudioProbeControl disabled={busy} onRunningChange={setAudioProbeRunning} />
+            <SystemAudioProbeControl disabled={busy} onRunningChange={setAudioProbeRunning} hostOs={hostOs} />
             {/* MODE: AUTO-EDIT (record → polished clip on the timeline) vs RAW CAPTURE
                 (save the recording exactly as captured — no autoedit, no polish). The
                 same source/length/fps/mic/system-audio options apply to BOTH modes. */}

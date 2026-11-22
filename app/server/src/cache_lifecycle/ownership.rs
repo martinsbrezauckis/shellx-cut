@@ -398,11 +398,27 @@ pub(super) fn rebuild_output_state(
             "a rebuildable cache output ownership record does not match its asset",
         ));
     }
+    if entry.is_pending() && exists && !cut_media::cache_trust::trusted(&path) {
+        return Ok(RebuildOutputState::UnownedPresent);
+    }
     if entry.is_pending() && entry.source_hash.as_deref() == Some(source_hash) {
         return Ok(RebuildOutputState::Pending);
     }
-    if entry.is_ready() && entry.source_hash.as_deref() == Some(source_hash) && exists {
-        return Ok(RebuildOutputState::ReadyVerified);
+    if exists && !entry.is_ready() && !entry.is_pending() {
+        return Ok(RebuildOutputState::UnownedPresent);
+    }
+    if entry.is_ready() && exists {
+        if let Some(recorded_hash) = entry.source_hash.as_deref() {
+            if !cut_media::cache_trust::trusted_bound(
+                &path,
+                &super::production::output_binding(kind, asset, recorded_hash),
+            ) {
+                return Ok(RebuildOutputState::UnownedPresent);
+            }
+            if recorded_hash == source_hash {
+                return Ok(RebuildOutputState::ReadyVerified);
+            }
+        }
     }
     if entry.is_ready() && entry.source_hash.is_none() && exists {
         return Ok(RebuildOutputState::ReadyLegacy);
@@ -623,12 +639,32 @@ pub(super) fn identity(
 
 /// Record a generated output before asset metadata begins referring to it.
 /// The caller holds `AppState::cache_lifecycle_lease` in shared mode.
+#[cfg(test)]
 pub(crate) fn record_generated(
     project_dir: &Path,
     kind: CacheKind,
     asset: &str,
     filename: &OsStr,
 ) -> Result<(), CutError> {
+    record_generated_with_hash(project_dir, kind, asset, filename, None)
+}
+
+pub(super) fn record_generated_with_hash(
+    project_dir: &Path,
+    kind: CacheKind,
+    asset: &str,
+    filename: &OsStr,
+    source_hash: Option<&str>,
+) -> Result<(), CutError> {
+    // Producers share the lifecycle read lease. Serialize each complete ledger
+    // read/modify/write so concurrent image and video imports retain both records.
+    static RECORD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _record = RECORD_LOCK.lock().map_err(|_| {
+        cache_error(
+            "cache ownership cannot be recorded",
+            "a cache writer failed",
+        )
+    })?;
     if !valid_cache_name_for_asset(kind, asset, filename) {
         return Err(cache_error(
             "cache ownership cannot be recorded",
@@ -661,7 +697,7 @@ pub(crate) fn record_generated(
             asset: asset.into(),
             name: filename.to_string_lossy().into_owned(),
             state: "ready".into(),
-            source_hash: existing.and_then(|entry| entry.source_hash),
+            source_hash: source_hash.map(str::to_owned),
             output_retired: true,
         },
     );
@@ -740,3 +776,7 @@ pub(crate) fn remove_owned_output(
         Err(error) => Ok(OwnedRemoval::UnlinkedLedgerPending(error)),
     }
 }
+
+#[cfg(test)]
+#[path = "production_tests.rs"]
+mod production_tests;

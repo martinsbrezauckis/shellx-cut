@@ -93,6 +93,10 @@ async fn second_reservation_failure_retains_first_retirement_and_durable_partial
     ] {
         reserve_rebuild_output(&project_dir, kind, "a1", old_hash).unwrap();
         std::fs::write(path, bytes).unwrap();
+        cut_media::cache_trust::remember_bound(
+            path,
+            &super::super::production::output_binding(kind, "a1", old_hash),
+        );
         complete_rebuild_output(&project_dir, kind, "a1", old_hash).unwrap();
     }
     let before_filmstrip = std::fs::read(&filmstrip).unwrap();
@@ -216,6 +220,10 @@ fn missing_and_stale_outputs_become_durable_pending_reservations() {
     );
 
     std::fs::write(&proxy, b"completed proxy bytes").unwrap();
+    cut_media::cache_trust::remember_bound(
+        &proxy,
+        &super::super::production::output_binding(CacheKind::Proxies, "a1", source_v1),
+    );
     complete_rebuild_output(&project_dir, CacheKind::Proxies, "a1", source_v1).unwrap();
     assert_eq!(
         rebuild_output_state(&project_dir, CacheKind::Proxies, "a1", source_v1).unwrap(),
@@ -246,12 +254,17 @@ async fn active_rebuild_request_deduplicates_without_rescanning_or_spawning() {
         scheduled_outputs: 1,
         counts: json!({
             "fresh_assets": 0,
-            "source_changed": 0,
+            "source_changed": 1,
             "source_unavailable": 0,
             "unowned_outputs": 0,
             "legacy_outputs": 0,
             "unsupported_assets": 0,
         }),
+        skipped_assets: json!([{
+            "asset_id": "a2",
+            "reason": "source_changed",
+            "action": "Relink this source, then retry the cache rebuild."
+        }]),
         estimate: json!({
             "basis": "source_hash_match_and_current_import_metadata",
             "assets": 1,
@@ -272,6 +285,8 @@ async fn active_rebuild_request_deduplicates_without_rescanning_or_spawning() {
     assert_eq!(result["scheduled_assets"], 1);
     assert_eq!(result["scheduled_outputs"], 1);
     assert_eq!(result["counts"]["fresh_assets"], 0);
+    assert_eq!(result["skipped_assets"][0]["asset_id"], "a2");
+    assert_eq!(result["skipped_assets"][0]["reason"], "source_changed");
     assert_eq!(result["estimate"]["verified_source_bytes"], 9);
 }
 
@@ -339,6 +354,12 @@ async fn source_revision_change_is_reported_without_reserving_or_starting_a_work
         .unwrap();
     assert_eq!(result["status"], "not_needed");
     assert_eq!(result["counts"]["source_changed"], 1);
+    assert_eq!(result["skipped_assets"][0]["asset_id"], "a1");
+    assert_eq!(result["skipped_assets"][0]["reason"], "source_changed");
+    assert!(result["skipped_assets"][0]["action"]
+        .as_str()
+        .unwrap()
+        .contains("Relink"));
     let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
     assert!(
         !project_dir
@@ -346,6 +367,44 @@ async fn source_revision_change_is_reported_without_reserving_or_starting_a_work
             .exists(),
         "a changed source never receives a cache reservation"
     );
+}
+
+#[tokio::test]
+async fn unknown_and_old_style_cache_outputs_name_the_asset_without_being_adopted() {
+    let (_root, state, _source, _hash) = state_with_image_asset().await;
+    let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    let output = project_dir.join("filmstrip/a1.jpg");
+    std::fs::write(&output, b"existing output").unwrap();
+
+    let unowned = start_rebuild(&state, json!({"asset_ids": ["a1"], "estimate_only": true}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(unowned["scheduled_assets"], 0);
+    assert_eq!(unowned["counts"]["unowned_outputs"], 1);
+    assert_eq!(unowned["skipped_assets"][0]["asset_id"], "a1");
+    assert_eq!(unowned["skipped_assets"][0]["kind"], "filmstrip");
+    assert_eq!(unowned["skipped_assets"][0]["reason"], "unowned_output");
+    assert_eq!(std::fs::read(&output).unwrap(), b"existing output");
+
+    super::super::ownership::record_generated(
+        &project_dir,
+        CacheKind::Thumbnails,
+        "a1",
+        std::ffi::OsStr::new("a1.jpg"),
+    )
+    .unwrap();
+    let legacy = start_rebuild(&state, json!({"asset_ids": ["a1"]}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(legacy["status"], "not_needed");
+    assert_eq!(legacy["counts"]["legacy_outputs"], 1);
+    assert_eq!(legacy["skipped_assets"][0]["asset_id"], "a1");
+    assert_eq!(legacy["skipped_assets"][0]["reason"], "legacy_output");
+    assert_eq!(std::fs::read(&output).unwrap(), b"existing output");
 }
 
 #[tokio::test]

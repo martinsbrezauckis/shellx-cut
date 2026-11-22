@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: published; version=0.6.118; published=0.6.118 -->
+<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,36 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
+## v0.6.119 published
+
+v0.6.119 remains the latest published release.
+
+- Screen recordings: the zooms can be edited after recording. Select the recording in Edit and open Zoom in the Inspector: change a zoom's strength, target and timing, add or delete zooms, or redo the automatic ones, then press Update video.
+- Screen recordings with a camera: the camera is on its own Camera track. Move it, resize it, change its shape, cut it or hide it for a stretch, or put it back as it was recorded. A switch on the Record page keeps the camera drawn into the video as before.
+- Overlay clips can be a circle or a rounded square, with an optional ring.
+- "Make a copy" of a project carries the original recordings, so their zooms stay editable in the copy.
+- Record page: a paused recording says so in plain words and its timer stands still; the list of technical checks shows one check per line and closes when you click outside it.
+- Rebuilding missing previews: one number says how many items need attention, and each skipped item says why.
+- For agents: commands to list and edit a recording's zooms and to reset its camera.
+- Many smaller fixes.
+
+## Editing new polished recordings
+
+- Select a new recording's screen clip in Edit and open the Inspector Zoom card.
+  Select, add or delete zooms; adjust strength, target, timing and speed. Redo
+  automatic zooms keeps your own zooms. Press Update video to apply changes to the
+  picture; playback keeps the previous zooms until it finishes. Old recordings
+  and Raw MP4 files stay as they are.
+- A separate camera track is on by default. Select the Camera track clip for the
+  Inspector Camera section: four corners and centre, size, Circle / Rounded /
+  Rectangle, ring, and Back to as recorded. Drag the bubble on the preview, or
+  split at both ends and delete a piece to hide it for a stretch. Camera changes
+  support Undo. Before recording, turn off Edit the camera later (own track) on the
+  Record page to bake the bubble in instead.
+
 ## v0.6.118 published
 
-v0.6.118 remains the latest published release.
+This section records the published v0.6.118 release.
 
 - Clearer wording across the app and the manual, following the terms of the leading video editors.
 - Light theme: every label is readable, and keyboard focus is visible.
@@ -765,7 +792,11 @@ establish a tested editing workflow for the current release.
   the UI receives source bytes, required outputs, and proxy duration as work
   units without a job or reservation. Scheduling verifies again, reserves exact
   output ownership before work, reports queued/up-to-date/items-needing-attention
-  counts, and keeps unfinished reservations resumable after cancellation/restart.
+  counts with each skipped asset's reason and next action (an asset whose previews
+  already match its source is reported as up to date, not as skipped), and keeps
+  unfinished reservations resumable after cancellation/restart. Freshly generated previews
+  retain their verified source identity. Existing files without matching
+  engine-origin evidence stay in place and are reported for attention.
   A separate cleanup control first asks the server for a read-only durable-ownership
   `project.cache_preview`, then requires in-panel confirmation before starting
   a cancellable `project.cache_purge` job. That job has an exclusive lease and
@@ -1048,9 +1079,9 @@ establish a tested editing workflow for the current release.
   a busy device, or no-frame delivery without substituting another camera. The
   finalized camera remains a separate take bound to the screen capture clock,
   with position, size, visibility, and shape retained as replayable Studio events.
-  The camera layout is set for the recording. Polish retains the camera source
-  on a hidden track and bakes its bubble into the polished clip; changing the
-  retained take does not change that bubble.
+  New polished recordings put the camera on a visible Camera track by default;
+  its layout can be edited in the Camera section after recording. The Record
+  page switch can bake the bubble in instead. Old recordings are unchanged.
 - Camera settings show four explicit corners, Circle or Rounded rectangle,
   size, and a separate **Reset camera layout** action. A chosen transform
   survives internal scene changes until Reset. The on-video timer offers Off,
@@ -1109,8 +1140,8 @@ establish a tested editing workflow for the current release.
   recoverable cached artifacts.
 - Raw stream discovery reports screen, camera, mic, system audio, and Studio
   metadata. A finalized camera take carries an integrity-checked `CameraArtifact`
-  and shared-clock range. Auto-edit retains the source on a hidden camera track;
-  the polished clip contains the baked camera bubble.
+  and shared-clock range. New polished recordings normally use a visible Camera
+  track; turning off Edit the camera later (own track) bakes the bubble in instead.
 - Crash-resilient recordings write independently finalized, verified checkpoint
   segments. Restart recovery can salvage a playable `recovered.mp4` prefix with a
   receipt and explicit lost-tail bounds; it never promotes an open encoder MP4,

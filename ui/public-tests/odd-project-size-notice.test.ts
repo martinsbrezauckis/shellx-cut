@@ -62,10 +62,12 @@ assert.equal(r.ok, false)
 assert.equal(seen.length, 1)
 assert.equal(seen[0].type, ODD_PROJECT_SIZE_EVENT)
 assert.equal((seen[0].detail as { code: string }).code, ODD_PROJECT_SIZE)
-// Other refusals do not.
+// Other refusals get general persistent feedback, not another odd-size notice.
 g.fetch = async () => ({ json: async () => ({ ok: false, error: { code: 'invalid_args', message: 'x', cause: 'y' } }) })
 await callVerb('render.final', {})
-assert.equal(seen.length, 1)
+assert.equal(seen.filter(event => event.type === ODD_PROJECT_SIZE_EVENT).length, 1)
+assert.equal(seen.at(-1)?.type, 'cut:user-action-feedback')
+assert.equal((seen.at(-1)?.detail as { message: string }).message, 'export failed: x')
 
 // The Render button's preflight stops at a refused plan: no quality dialog,
 // no "Export anyway", the action is not started, the sentence is shown.

@@ -7,8 +7,7 @@
 //!   live:   ProjectStore::apply(verb, args, actor, rationale)
 //!             → apply_edit_verb on a CLONE (transactional: errors can't
 //!               half-mutate), append OpRecord, save cache
-//!   replay: rebuild_from_log → apply_record per op (uses recorded args
-//!             AND effects — checkpoint/import payloads live in effects)
+//!   replay: rebuild_from_log → apply_saved_record using recorded args and effects
 //!
 //! UNDO model — recompute-by-replay, replacing per-op snapshots.
 //! Mutating ops carry NO inverse (the old full-timeline snapshot per op was
@@ -59,6 +58,10 @@ mod commit_state;
 mod format_fit_tests;
 mod group;
 mod history;
+mod legacy_keyframes;
+use crate::recording::apply_saved as replay_recording;
+use legacy_keyframes::apply_saved_edit_verb_pinned as replay_edit;
+pub use legacy_keyframes::apply_saved_record;
 mod name_policy;
 mod open_health;
 #[cfg(test)]
@@ -635,7 +638,10 @@ impl ProjectStore {
         rationale: Option<String>,
     ) -> Result<OpRecord, CutError> {
         let mut next = self.project.clone(); // transactional: swap only on success
-        let effects = if verb == "edit.restore" {
+        let effects = if crate::recording::is_op(verb) {
+            crate::recording::apply(&mut next, verb, &args)?;
+            vec![]
+        } else if verb == "edit.restore" {
             #[derive(serde::Deserialize)]
             struct A {
                 op_id: String,
@@ -2831,12 +2837,14 @@ impl ProjectStore {
         next.caption_styles = rebuilt.caption_styles.clone();
         next.adjustments = rebuilt.adjustments.clone();
         next.nests = rebuilt.nests.clone();
+        next.recordings = rebuilt.recordings.clone();
         let new_snapshot = json!({
             "tracks": rebuilt.tracks,
             "markers": rebuilt.markers,
             "caption_styles": rebuilt.caption_styles,
             "adjustments": rebuilt.adjustments,
             "nests": rebuilt.nests,
+            "recordings": rebuilt.recordings,
         });
         let rec = OpRecord {
             op_id: self.log.next_id()?,
@@ -2913,6 +2921,7 @@ pub fn timeline_snapshot(project: &Project) -> InverseOp {
             "caption_styles": project.caption_styles,
             "adjustments": project.adjustments,
             "nests": project.nests,
+            "recordings": project.recordings,
             "transcript_ignores": project.transcript_ignores,
         }),
     }
@@ -3386,6 +3395,10 @@ pub fn apply_edit_verb_pinned(
                 scale: f64,
                 #[serde(default = "crate::types::default_opacity")]
                 opacity: f64,
+                #[serde(default)]
+                shape: crate::types::OverlayShape,
+                radius: Option<f64>,
+                ring: Option<crate::types::OverlayRing>,
             }
             fn default_scale() -> f64 {
                 1.0
@@ -3399,6 +3412,9 @@ pub fn apply_edit_verb_pinned(
                     y: a.y,
                     scale: a.scale,
                     opacity: a.opacity,
+                    shape: a.shape,
+                    radius: a.radius,
+                    ring: a.ring,
                 },
             )
         }
@@ -3947,7 +3963,7 @@ pub fn apply_edit_verb_pinned(
             } else {
                 None
             };
-            edit::add_mask(project, &a.clip, mask)
+            crate::redaction_limit::add_mask(project, &a.clip, mask)
         }
         "edit.eq" => {
             // The dispatch layer resolves any `preset` into explicit high_pass/
@@ -4189,6 +4205,7 @@ pub fn apply_record(
     prior: &[OpRecord],
 ) -> Result<(), CutError> {
     match op.verb.as_str() {
+        verb if crate::recording::is_op(verb) => replay_recording(project, verb, &op.args),
         "project.create" => {
             let name = op
                 .args
@@ -4579,7 +4596,7 @@ pub fn apply_record(
             )?;
             let mut pinned = crate::rebase::PinnedIds::from_effects(&op.effects);
             for step in lowered {
-                apply_edit_verb_pinned(project, &step.verb, &step.args, Some(&mut pinned))?;
+                replay_edit(project, &step.verb, &step.args, Some(&mut pinned))?;
             }
             Ok(())
         }
@@ -4612,7 +4629,7 @@ pub fn apply_record(
                     .ok_or_else(|| replay_corrupt(op, "Motion refresh lowering is missing"))?,
             )?;
             for step in lowered {
-                apply_edit_verb(project, &step.verb, &step.args)?;
+                replay_edit(project, &step.verb, &step.args, None)?;
             }
             Ok(())
         }
@@ -4825,7 +4842,7 @@ pub fn apply_record(
             // independent (rebase id-stability; in the no-skip case the pinned
             // id equals the positional one, so this is byte-identical).
             let mut pinned = crate::rebase::PinnedIds::from_effects(&op.effects);
-            apply_edit_verb_pinned(project, v, &op.args, Some(&mut pinned))?;
+            replay_edit(project, v, &op.args, Some(&mut pinned))?;
             Ok(())
         }
         _ => {
@@ -4842,7 +4859,7 @@ pub fn apply_record(
                 // turn (the multi-allocation case the marker queue exists for).
                 let mut pinned = crate::rebase::PinnedIds::from_effects(&op.effects);
                 for s in steps {
-                    apply_edit_verb_pinned(project, &s.verb, &s.args, Some(&mut pinned))?;
+                    replay_edit(project, &s.verb, &s.args, Some(&mut pinned))?;
                 }
                 return Ok(());
             }
@@ -4928,13 +4945,12 @@ fn reconcile_derived_assets(project: &mut Project, dir: &Path) {
     }
 }
 
-/// Rebuild the materialized Project by replaying the full op log (timeline/op-log contract:
-/// "project.json is rebuilt from the log on demand"). Pure + deterministic:
+/// Rebuild the materialized Project by replaying the full operation log. Pure + deterministic:
 /// same log ⇒ identical Project (tested in tests/roundtrip.rs — the gate).
 pub fn rebuild_from_log(ops: &[OpRecord]) -> Result<Project, CutError> {
     let mut project = Project::new("", ProjectSettings::default());
     for (i, op) in ops.iter().enumerate() {
-        apply_record(&mut project, op, &ops[..i])?;
+        apply_saved_record(&mut project, op, &ops[..i])?;
         project.sync_active_sequence();
     }
     crate::frame_size::fit_project_formats(&mut project);
@@ -4979,9 +4995,9 @@ pub fn rebuild_skipping(ops: &[OpRecord], skip_idx: usize) -> Result<Project, Cu
                 .filter(|(j, _)| *j != skip_idx)
                 .map(|(_, o)| o.clone())
                 .collect();
-            apply_record(&mut project, op, &prior)?;
+            apply_saved_record(&mut project, op, &prior)?;
         } else {
-            apply_record(&mut project, op, &[])?;
+            apply_saved_record(&mut project, op, &[])?;
         }
         project.sync_active_sequence();
     }
@@ -5387,6 +5403,10 @@ mod undo_redo_tests {
         assert_eq!(reopened_clips[0].id(), Some("c1"));
         assert_eq!(reopened_clips[1].id(), Some("c2"));
         assert_eq!(reopened.project.checkpoints.len(), 1);
+    }
+
+    mod recording_tests {
+        include!("store_recording_tests.rs");
     }
 
     #[test]

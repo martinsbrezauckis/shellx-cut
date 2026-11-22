@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Project, VerbArgs } from '../lib/client'
 import { callVerb } from '../lib/client'
+import { reportExportRefusal } from './exportRefusal'
 import { withAuthorizedOutputPath } from '../lib/exportDestination'
 import { renderQueueTerminalError, type RenderQueueTerminalResult } from '../lib/renderQueueTerminal'
 
@@ -102,6 +103,10 @@ export function useRenderQueueOwner(project: Project | null, projectSession: num
             const error = record.state === 'failed'
               ? record.error?.message ?? record.error?.code ?? 'A queued delivery failed.'
               : renderQueueTerminalError(result ?? undefined)
+            if (error) {
+              const refusal = record.error ?? result?.jobs?.find((item) => item.error)?.error
+              reportExportRefusal({ code: refusal?.code ?? 'render_failed', message: refusal?.message ?? error }, 'render.queue')
+            }
             setState(previous => previous.admitted === admitted
               ? { ...previous, phase: error ? 'error' : 'done', error,
                 progress: progress ?? previous.progress, result: result ?? previous.result } : previous)

@@ -156,6 +156,7 @@ export default function AppWorkspace({
                 onOpenOutputSettings={onOpenOutputSettings}
                 onOpenEdit={() => setLayout((current) => ({ ...current, workspaceMode: 'edit' }))}
                 onWorkspaceAdmissionChange={onRecordWorkspaceAdmission}
+                hostOs={doctor?.os ?? null}
               />
             </Suspense>
           </div>

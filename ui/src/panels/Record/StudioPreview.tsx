@@ -1,7 +1,7 @@
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { studioBackgroundPreset, type StudioState } from './studioTypes'
 import type { RecordingSourcePreviewPresentation } from './recordingNativeSourcePreview'
-import type { RecordingLiveFramePresentation } from './recordingLiveFramePresentation'
+import { recordingLivePreviewWords, type RecordingLiveFramePresentation } from './recordingLiveFramePresentation'
 import { useRecordingLiveFrame } from './useRecordingLiveFrame'
 import { RecordingCompositionMenu, type RecordingCompositionActions, type RecordingCompositionMenuState } from './RecordingCompositionMenu'
 import './recordingSourcePreview.css'
@@ -18,10 +18,12 @@ interface StudioPreviewProps {
   onSourcePreviewStart?: () => void
   activeCaptureId?: string | null
   livePresentation?: RecordingLiveFramePresentation | null
+  /** The live take is paused: the preview says so instead of waiting for a frame. */
+  paused?: boolean
   actions?: RecordingCompositionActions
 }
 
-export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, sourcePreviewCanStart = false, onSourcePreviewStart, activeCaptureId, livePresentation, actions }: StudioPreviewProps) {
+export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, sourcePreviewCanStart = false, onSourcePreviewStart, activeCaptureId, livePresentation, paused = false, actions }: StudioPreviewProps) {
   const [menu, setMenu] = useState<RecordingCompositionMenuState | null>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
@@ -55,13 +57,12 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
   const frameUrl = showLive ? live?.state === 'ready' ? live.frameUrl : null : showSource ? sourcePreview.frameUrl : null
   const showSourcePreviewAction = showSource && !frameUrl
     && !['starting', 'ready', 'paused'].includes(sourcePreview.state)
-  const sourceLabel = showLive ? frameUrl ? 'Recording source · live'
-    : live?.state === 'connecting' || live?.state === 'awaiting_source' || live?.state === 'awaiting_frame'
-      ? 'Waiting for recording preview' : 'Recording preview unavailable'
+  const liveWords = recordingLivePreviewWords({ presentation: live, hasCapture: liveCaptureId !== null, hasFrame: frameUrl !== null, paused: showLive && paused })
+  const sourceLabel = showLive ? liveWords.label
     : frameUrl ? offlineFixture ? 'Offline fixture · not captured' : 'Selected source · before recording'
       : sourcePreview.state === 'idle' || sourcePreview.state === 'stopped' ? 'Source preview is off' : 'No source frame'
   const unavailableDetail = showLive
-    ? liveCaptureId ? live?.detail ?? 'Waiting for frames from this recording.' : 'Waiting for a confirmed recording capture.'
+    ? liveWords.detail
     : showSource ? sourcePreview.state === 'idle' || sourcePreview.state === 'stopped'
       ? 'Click Preview source to see real pixels from the selected display or window.' : sourcePreview.detail
       : phase === 'starting' ? 'Waiting for recording to start.'
@@ -71,8 +72,8 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
     <div className="rec-studio-preview__frame">
       <div className="rec-studio-preview__chrome">
         <div className="rec-studio-preview__heading">
-          <span>{showLive ? 'Recording source · live' : '2 · Selected source'}</span>
-          <small>{showLive ? 'Live source pixels from this capture' : 'Preview starts only when you ask'}</small>
+          <span>{showLive ? liveWords.heading : '2 · Selected source'}</span>
+          <small>{showLive ? liveWords.headingNote : 'Preview starts only when you ask'}</small>
         </div>
       </div>
       <div
@@ -145,7 +146,7 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
         )}
         <div className="rec-studio-preview__status" data-cut-rec-preview-status role="status" aria-live="polite">
           <span data-cut-rec-preview-phase={phase}>
-            {phase === 'recording' ? 'REC' : phase === 'countdown' || phase === 'starting' ? 'Starting'
+            {phase === 'recording' ? paused ? 'Paused' : 'REC' : phase === 'countdown' || phase === 'starting' ? 'Starting'
               : phase === 'finalizing' ? 'Finishing' : phase === 'error' ? 'Needs attention' : phase === 'done' ? 'Recorded' : 'Ready'}
           </span>
           <span data-cut-rec-scene-preview={sceneState}>{sceneName}</span>

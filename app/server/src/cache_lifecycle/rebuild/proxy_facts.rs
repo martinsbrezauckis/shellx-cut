@@ -40,9 +40,12 @@ pub(super) fn tone_map_for(
 }
 
 /// The decode-check record for a rebuilt proxy of a video source.
-pub(super) fn decode_check_for(probe: &Value, proxy: &Path) -> Result<Value, cut_core::CutError> {
-    let streams = cut_media::probe::stream_extents(proxy)?;
-    Ok(cut_media::decode_check::decode_check(probe, &streams))
+pub(super) fn decode_check_for(
+    probe: &Value,
+    source: &Path,
+    proxy: &Path,
+) -> Result<Value, cut_core::CutError> {
+    cut_media::decode_check::check_source(probe, source, proxy)
 }
 
 /// Keep `receipts/<id>.probe.json` (the copy a log rebuild restores the probe

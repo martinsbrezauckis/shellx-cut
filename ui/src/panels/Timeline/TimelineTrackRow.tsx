@@ -18,6 +18,8 @@ import {
   TrackOrderControls,
   TrackVisibilityButton,
 } from './TrackControls'
+import { trackPresentation } from './trackControlsModel'
+import type { CameraTake } from '../Inspector/cameraSectionModel'
 import { VoiceoverTrackControl } from './VoiceoverTrackControl'
 
 type ClipGestureMode = 'move' | 'trim-l' | 'trim-r'
@@ -33,6 +35,7 @@ interface TimelineTrackGhost {
 interface TimelineTrackRowProps {
   track: Track
   tracks: Track[]
+  recordings?: CameraTake[]
   items: LaidItem[]
   groupStart: boolean
   isDrop: boolean
@@ -63,6 +66,7 @@ interface TimelineTrackRowProps {
 const TimelineTrackRow = memo(function TimelineTrackRow({
   track,
   tracks,
+  recordings,
   items,
   groupStart,
   isDrop,
@@ -90,6 +94,7 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
 }: TimelineTrackRowProps) {
   const { offlineAssetIds, relinkAsset, relinkingAssetId } = useOfflineMedia()
   const dropCls = isDrop ? (dropInvalid ? ' tl-track--drop-bad' : ' tl-track--drop-ok') : ''
+  const presentation = trackPresentation(track, recordings)
   const visible = track.visible !== false
   const locked = !!track.locked
   const selectedAudioItem = track.kind === 'audio'
@@ -126,15 +131,15 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
         data-cut-action="track-ctx"
         tabIndex={0}
         role="group"
-        aria-label={`${track.id} track menu`}
+        aria-label={`${presentation.label} track menu`}
         aria-keyshortcuts="Shift+F10 ContextMenu"
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={openKeyboardMenu}
       >
         <span className="tl-track-meta">
-          <span className="tl-kind-icon"><KindIcon kind={track.kind} /></span>
-          <span className="tl-track-name" title={track.id}>{track.id}</span>
-          {track.kind === 'video' && track.id !== baseVideoId && (
+          <span className="tl-kind-icon">{presentation.camera ? <Icon name="webcam" size={14} /> : <KindIcon kind={track.kind} />}</span>
+          <span className="tl-track-name" title={presentation.label}>{presentation.label}</span>
+          {track.kind === 'video' && track.id !== baseVideoId && !presentation.camera && (
             <span className="tl-overlay-tag" data-cut-overlay-track={track.id}>overlay</span>
           )}
           {track.kind === 'audio' && <TrackLockButton trackId={track.id} locked={locked} />}

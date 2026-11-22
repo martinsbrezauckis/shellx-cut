@@ -1,0 +1,15 @@
+.insp__zoom-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.insp__zoom-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; padding: 3px; }
+.insp__zoom-option { text-align: left; flex: none; }
+.insp__zoom-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.insp__zoom-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+.insp__zoom-field > .insp__label { grid-column: 1 / -1; margin: 0; }
+.insp__zoom-field > .insp__select { grid-column: 1 / -1; }
+.insp__zoom-range { width: 100%; margin: 0; accent-color: var(--cut); }
+.insp__zoom-field output { color: var(--ink-2); font: var(--fs-ui-sm)/1.3 var(--mono); }
+.insp__zoom-segments { display: flex; }
+.insp__zoom-segments > .insp__btn { flex: 1; border-radius: 0; }
+.insp__zoom-segments > .insp__btn + .insp__btn { margin-left: -1px; }
+.insp__zoom-segments > .insp__btn:first-child { border-radius: 7px 0 0 7px; }
+.insp__zoom-segments > .insp__btn:last-child { border-radius: 0 7px 7px 0; }
+.insp__zoom-fields :is(button, input):focus-visible { outline: 2px solid var(--cut); outline-offset: 2px; }

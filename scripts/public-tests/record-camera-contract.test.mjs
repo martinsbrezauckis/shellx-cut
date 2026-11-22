@@ -81,7 +81,14 @@ test('Recorder presents a selectable camera and preserves a separate editable ta
     'data-cut-rec-camera-device',
     'data-cut-rec-camera-state',
   ]) assert.match(control, new RegExp(selector))
-  assert.match(control, /separate, editable camera take/)
+  assert.match(control, /Include a camera take/)
+  assert.match(control, /Edit the camera later \(own track\)/)
+  assert.match(control, /The camera gets its own Camera track in Edit; you can move, resize, cut or hide it\./)
+  assert.match(control, /The camera is drawn into the video as recorded\./)
+  assert.match(control, /data-cut-rec-camera-separate/)
+  const preset = read('ui/src/app/recordingPreset.ts')
+  assert.match(preset, /recordingPolishArgs/)
+  assert.match(preset, /preset\.cameraId && !preset\.raw && !preset\.pause[\s\S]*camera: preset\.cameraSeparate === false \? 'baked' as const : 'separate' as const/)
   assert.doesNotMatch(control, /type="text"/)
   assert.match(panel, /studio\.camera\.enabled && cameraDeviceId && !rawCapture && !recordingPause\.enabled \? \{ cameraId: cameraDeviceId \} : \{\}/)
   assert.match(panel, /session\.requestStart\(preset\)/)

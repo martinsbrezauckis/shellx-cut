@@ -5714,6 +5714,168 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "agent_chat": "edit",
     "risk": "reversible",
     "facets": []
+  },
+  "screen_record.camera_reset": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_camera_reset",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.zoom_list": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_zoom_list",
+    "project_state": "required",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "inspect",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.zoom_add": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_zoom_add",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.zoom_update": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_zoom_update",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.zoom_remove": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_zoom_remove",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.zoom_auto": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_zoom_auto",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.take_link": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_take_link",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "internal",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.zoom_set": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_zoom_set",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "agent_only",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.take_refresh": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_take_refresh",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "render",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
   }
 }
 export const VERB_NAMES = Object.freeze(Object.keys(VERB_BEHAVIOR))

@@ -1585,6 +1585,7 @@ export default function Timeline(props: TimelineProps) {
                 key={track.id}
                 track={track}
                 tracks={project?.tracks ?? []}
+                recordings={project?.recordings}
                 items={items}
                 groupStart={groupStart}
                 isDrop={isDrop}

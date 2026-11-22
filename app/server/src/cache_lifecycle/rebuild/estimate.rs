@@ -29,6 +29,9 @@ struct SourceSnapshot {
 impl SourceCheck {
     pub(crate) fn verify(source: &Path, expected_hash: &str) -> Self {
         let before = source_snapshot(source);
+        if before.is_none() {
+            return Self::from_observations(None, None, None, expected_hash);
+        }
         let actual = cut_core::hash_file(source).ok();
         let after = source_snapshot(source);
         Self::from_observations(before, actual.as_deref(), after, expected_hash)
@@ -57,6 +60,9 @@ impl SourceCheck {
 
 fn source_snapshot(source: &Path) -> Option<SourceSnapshot> {
     let metadata = std::fs::metadata(source).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
     Some(SourceSnapshot {
         bytes: metadata.len(),
         modified: metadata.modified().ok()?,
@@ -84,6 +90,41 @@ mod tests {
             bytes,
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_source_is_rejected_without_opening_a_pipe() {
+        use std::os::unix::ffi::OsStrExt;
+        const CHILD: &str = "SHELLX_CUT_SOURCE_PIPE_CHECK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "cache_lifecycle::rebuild::estimate::tests::special_source_is_rejected_without_opening_a_pipe", "--nocapture"])
+                .env(CHILD, root.path()).spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "special source admission failed");
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("source identity opened a pipe instead of refusing it");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        let root = std::path::PathBuf::from(std::env::var_os(CHILD).unwrap());
+        let path = root.join("source.pipe");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is a live NUL-terminated byte string in this test's private directory.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let check = SourceCheck::verify(&path, "sha256:expected");
+        assert!(!check.readable);
+        assert!(!check.matches);
+        assert_eq!(check.bytes, None);
     }
 
     #[test]

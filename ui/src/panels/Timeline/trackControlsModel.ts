@@ -1,3 +1,16 @@
+import { isTakeCamera, type CameraTake } from '../Inspector/cameraSectionModel'
+
+export function trackPresentation(
+  track: { id: string; name?: string; clips: readonly object[] },
+  takes?: readonly CameraTake[],
+): { label: string; camera: boolean } {
+  // Only separate-camera tracks use Camera_<digest>. Baked compatibility tracks
+  // keep v_camera_<digest>; isTakeCamera's id fallback requires a recorded look.
+  const camera = /^Camera_[0-9a-f]{32}$/.test(track.id)
+    || track.clips.some((clip) => 'id' in clip && typeof clip.id === 'string' && isTakeCamera({ ...clip, id: clip.id }, takes))
+  return { label: track.name || (camera ? 'Camera' : track.id), camera }
+}
+
 export type TrackOrderDirection = 'back' | 'forward'
 
 export interface TrackOrderTrack {

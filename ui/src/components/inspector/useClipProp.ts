@@ -28,7 +28,7 @@ import { callVerb, type ClipCrop, type ClipTransform } from '../../lib/client'
 /** The identity transform — what a cleared transform reads as, and what each row's
  *  reset returns to. Mirrors cut-core defaults (0,0,1,1). opacity defaults to 1
  *  (full-frame, opaque); a missing stored opacity is treated as 1. */
-export const TRANSFORM_IDENTITY: Required<ClipTransform> = { x: 0, y: 0, scale: 1, opacity: 1 }
+export const TRANSFORM_IDENTITY: (ClipTransform & { opacity: number }) = { x: 0, y: 0, scale: 1, opacity: 1 }
 
 /** The four transform fields a row can drive. */
 export type TransformField = 'x' | 'y' | 'scale' | 'opacity'
@@ -37,11 +37,12 @@ export type TransformField = 'x' | 'y' | 'scale' | 'opacity'
 export interface ClipTransformState {
   /** The current committed transform vector (seeded from the clip, updated on each
    *  commit). Always fully populated (opacity coerced to 1 when absent). */
-  transform: Required<ClipTransform>
+  transform: (ClipTransform & { opacity: number })
   /** Commit ONE field → fires edit.transform with the merged vector + refreshes the
    *  composed preview. The other three fields ride along at their current values so
    *  the SET verb doesn't reset them. Returns the promise so callers can chain. */
   commitField: (field: TransformField, value: number) => Promise<void>
+  commitShape: (shape: NonNullable<ClipTransform['shape']>) => Promise<void>
   /** Reset the WHOLE section to identity (0,0,1,1) → clears the clip's transform. */
   resetAll: () => Promise<void>
   /** True while a transform verb is in flight (lets the section disable rows). */
@@ -66,10 +67,11 @@ export function useClipTransform(
 ): ClipTransformState {
   // Seed the vector from the clip (or identity). Coerce a missing opacity to 1 so
   // the Opacity row always shows a concrete value.
-  const seed = useMemo<Required<ClipTransform>>(
+  const seed = useMemo<(ClipTransform & { opacity: number })>(
     () =>
       stored
         ? {
+            ...stored,
             x: stored.x ?? TRANSFORM_IDENTITY.x,
             y: stored.y ?? TRANSFORM_IDENTITY.y,
             scale: stored.scale ?? TRANSFORM_IDENTITY.scale,
@@ -79,7 +81,7 @@ export function useClipTransform(
     [stored],
   )
 
-  const [transform, setTransform] = useState<Required<ClipTransform>>(seed)
+  const [transform, setTransform] = useState<(ClipTransform & { opacity: number })>(seed)
   const [busy, setBusy] = useState(false)
 
   // Re-seed when the selection or the stored vector changes (a new clip, or a
@@ -93,7 +95,7 @@ export function useClipTransform(
    *  On failure we keep the optimistic local vector (the next snapshot corrects
    *  it); the row just won't show a composed frame. */
   const fire = useCallback(
-    async (next: Required<ClipTransform>, rationale: string) => {
+    async (next: (ClipTransform & { opacity: number }), rationale: string) => {
       if (!clipId) return
       setBusy(true)
       try {
@@ -103,6 +105,9 @@ export function useClipTransform(
           y: next.y,
           scale: next.scale,
           opacity: next.opacity,
+          shape: next.shape,
+          radius: next.radius,
+          ring: next.ring,
           rationale,
         })
         if (r.ok) {
@@ -133,7 +138,13 @@ export function useClipTransform(
     await fire(next, 'inspector: reset transform')
   }, [fire])
 
-  return { transform, commitField, resetAll, busy }
+  const commitShape = useCallback(async (shape: NonNullable<ClipTransform['shape']>) => {
+    const next = { ...transform, shape, radius: shape === 'rounded' ? transform.radius : undefined, ring: shape === 'rect' ? undefined : transform.ring }
+    setTransform(next)
+    await fire(next, `inspector: shape ${shape}`)
+  }, [transform, fire])
+
+  return { transform, commitField, commitShape, resetAll, busy }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -626,6 +626,7 @@ fn scale_keyframe_zooms_in_over_time() {
         freeze: None,
         animation: None,
         keyframes: vec![Keyframe {
+            lead_in: None,
             param: KfParam::Scale,
             points: vec![
                 KfPoint {
@@ -1057,7 +1058,12 @@ fn draft_preview_renders_timeline_with_still_card() {
 /// exact pixel sampling for compositing proofs.
 fn frame_rgb(path: &Path, t_s: f64, w: u32, h: u32) -> Vec<u8> {
     let out = std::process::Command::new("ffmpeg")
-        .args(["-hide_banner", "-nostdin", "-ss", &format!("{t_s}")])
+        .args(["-hide_banner", "-nostdin"])
+        .args(if t_s > 0.0 {
+            vec!["-ss".into(), t_s.to_string()]
+        } else {
+            vec![]
+        })
         .arg("-i")
         .arg(path)
         .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
@@ -1368,6 +1374,7 @@ fn grade_window_with_base_transform_renders() {
             y: 0.1,
             scale: 0.8,
             opacity: 1.0,
+            ..cut_core::ClipTransform::identity()
         }),
         crop: None,
         fade: None,
@@ -1934,6 +1941,7 @@ fn render_composites_overlay_track_with_transform() {
                 y: 0.5,
                 scale: 0.5,
                 opacity: 1.0,
+                ..cut_core::ClipTransform::identity()
             }),
             crop: None,
             fade: None,
@@ -1998,6 +2006,96 @@ fn render_composites_overlay_track_with_transform() {
         g > 100 && r < 100,
         "after the overlay clip: green again ({r},{g},_)"
     );
+    // Preserve the unshaped output for the base-commit byte comparison.
+    if let Ok(dest) = std::env::var("CUT_SHAPE_EVIDENCE") {
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::copy(&out.path, Path::new(&dest).join("rect.mp4")).unwrap();
+    }
+    let cover = dir.path().join("cover.png");
+    cut_media::ffmpeg::run_ffmpeg(&[
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "color=c=blue:s=320x120,drawbox=x=100:y=0:w=120:h=120:color=red:t=fill".into(),
+        "-frames:v".into(),
+        "1".into(),
+        cover.display().to_string(),
+    ])
+    .unwrap();
+    p.assets.get_mut("pip").unwrap().path = cover.display().to_string();
+    for (shape, radius) in [
+        ("circle", None),
+        ("rounded", None),
+        ("rounded", Some(0.0)),
+        ("rounded", Some(0.02)),
+    ] {
+        if let Clip::Media(c) = &mut p.track_mut("v2").unwrap().clips[0] {
+            c.transform = Some(
+                serde_json::from_value(serde_json::json!({
+                    "x":0.2,"y":0.2,"scale":0.4,"opacity":1.0,"shape":shape,"radius":radius,
+                    "ring":{"width":0.04,"colour":"#ffffff"}
+                }))
+                .unwrap(),
+            );
+        }
+        let shaped = render_final(
+            &p,
+            &edl_from_project(&p),
+            &fence,
+            Path::new(&format!("{shape}.mp4")),
+            &RenderPreset::default(),
+            RenderOptions::default(),
+            None,
+        )
+        .unwrap();
+        let exact = dir.path().join(format!("{shape}-frame.jpg"));
+        std::fs::write(
+            &exact,
+            cut_media::render::extract_frame(&p, &edl_from_project(&p), dir.path(), 500, None)
+                .unwrap(),
+        )
+        .unwrap();
+        for (path, at) in [(&shaped.path, 0.5), (&exact, 0.0)] {
+            let rgb = frame_rgb(path, at, 320, 240);
+            for (x, y) in if radius.is_none() {
+                vec![(65, 49), (190, 49), (65, 174), (190, 174)]
+            } else {
+                vec![]
+            } {
+                let (r, g, _) = px(&rgb, 320, x, y);
+                assert!(
+                    g > 100 && r < 60,
+                    "{shape} corner ({x},{y}) must reveal green background, got {r},{g}"
+                );
+            }
+            let (r, g, _) = px(&rgb, 320, 90, 112);
+            assert!(
+                r > 180 && g < 80,
+                "{shape} must centre cover-crop out blue source edges"
+            );
+            let (r, g, _) = px(&rgb, 320, 128, 112);
+            assert!(r > 180 && g < 80, "{shape} centre must retain red overlay");
+            let (r, g, b) = px(&rgb, 320, 128, 50);
+            assert!(
+                r > 180 && g > 180 && b > 180,
+                "{shape} ring must be white, got {r},{g},{b}"
+            );
+        }
+        if let Some(dest) = std::env::var("CUT_SHAPE_EVIDENCE")
+            .ok()
+            .filter(|_| radius.is_none())
+        {
+            let png = Path::new(&dest).join(format!("{shape}-exact.png"));
+            cut_media::ffmpeg::run_ffmpeg(&[
+                "-i".into(),
+                exact.display().to_string(),
+                "-frames:v".into(),
+                "1".into(),
+                png.display().to_string(),
+            ])
+            .unwrap();
+        }
+    }
 }
 
 /// Layer-order contract: later video tracks cover earlier tracks,
@@ -2151,6 +2249,7 @@ fn render_layer_order_visibility_and_base_opacity() {
             y: 0.0,
             scale: 0.5,
             opacity: 1.0,
+            ..cut_core::ClipTransform::identity()
         });
     }
     let frame = render_frame(&p, "layers-hidden-base.mp4", 0.5);
@@ -2173,6 +2272,7 @@ fn render_layer_order_visibility_and_base_opacity() {
             y: 0.25,
             scale: 0.5,
             opacity: 0.5,
+            ..cut_core::ClipTransform::identity()
         });
     }
     let frame = render_frame(&p, "layers-base-opacity.mp4", 0.5);
@@ -2190,6 +2290,7 @@ fn render_layer_order_visibility_and_base_opacity() {
     if let Clip::Media(clip) = &mut p.track_mut("v1").unwrap().clips[0] {
         clip.transform.as_mut().unwrap().opacity = 1.0;
         clip.keyframes = vec![Keyframe {
+            lead_in: None,
             param: KfParam::Opacity,
             points: vec![
                 KfPoint {
@@ -3071,6 +3172,7 @@ fn render_keyframe_opacity_fades_overlay() {
     // overlay = green on v2, full-frame, opacity keyframed 1 → 0.
     let mut ov = mk("c2", "a2");
     ov.keyframes = vec![Keyframe {
+        lead_in: None,
         param: KfParam::Opacity,
         points: vec![
             KfPoint {
@@ -3219,8 +3321,10 @@ fn render_keyframe_position_slides_overlay() {
         y: 0.0,
         scale: 0.25,
         opacity: 1.0,
+        ..cut_core::ClipTransform::identity()
     });
     ov.keyframes = vec![Keyframe {
+        lead_in: None,
         param: KfParam::PosX,
         points: vec![
             KfPoint {
@@ -3779,6 +3883,7 @@ fn effects_render_end_to_end() {
                 y: 0.5,
                 scale: 0.4,
                 opacity: 1.0,
+                ..cut_core::ClipTransform::identity()
             }),
         )],
         gain_db: 0.0,
@@ -3996,6 +4101,7 @@ fn render_survives_non_exact_transform_scale() {
                 y: 0.5,
                 scale: 0.62,
                 opacity: 1.0,
+                ..cut_core::ClipTransform::identity()
             }),
             crop: None,
             fade: None,
@@ -4799,6 +4905,7 @@ fn render_blend_mode_multiplies_only_in_overlay_region() {
                 y: 0.0,
                 scale: 0.5,
                 opacity: 1.0,
+                ..cut_core::ClipTransform::identity()
             }),
         ))],
         gain_db: 0.0,
@@ -5008,6 +5115,7 @@ fn render_matte_replace_applies_overlay_opacity_and_fade_once() {
         y: 0.0,
         scale: 1.0,
         opacity: 0.5,
+        ..cut_core::ClipTransform::identity()
     });
     clip.fade = Some(cut_core::ClipFade {
         in_ms: 1000,
@@ -5080,8 +5188,10 @@ fn render_matte_replace_keeps_animated_overlay_position() {
         y: 0.0,
         scale: 0.25,
         opacity: 1.0,
+        ..cut_core::ClipTransform::identity()
     });
     clip.keyframes = vec![Keyframe {
+        lead_in: None,
         param: KfParam::PosX,
         points: vec![
             KfPoint {
@@ -5721,6 +5831,7 @@ fn composite_6s_project(asset: &Path) -> Project {
                     y: 0.5,
                     scale: 0.4,
                     opacity: 1.0,
+                    ..cut_core::ClipTransform::identity()
                 }),
             ),
         ],
@@ -6052,6 +6163,7 @@ fn gpu_overlay_pip_falls_back_to_software() {
                 y: 0.5,
                 scale: 0.4,
                 opacity: 0.6,
+                ..cut_core::ClipTransform::identity()
             }),
             crop: None,
             fade: None,

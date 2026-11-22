@@ -515,6 +515,7 @@ pub(super) async fn screen_record_polish(
         // mux the mic) for a fast "stop → editable clip". The plan is still required
         // (kept for cache-keying + a later real polish) but is NOT applied on this path.
         raw: Option<bool>,
+        camera: Option<String>,
     }
     let a: Args = parse_args(args)?;
     let (project, _edl, dir, _at) = snapshot(state).await?;
@@ -535,7 +536,6 @@ pub(super) async fn screen_record_polish(
         "EditPlan",
         "run screen_record.autoedit first and pass the returned plan path",
     )?;
-    let plan_tag = crate::screen_record::plan_cache_tag(&plan_path)?;
     // The capture records the MIC to a SEPARATE `mic.wav` beside the
     // video `source.mp4` (WGC/ScreenCaptureKit capture video only). The bake MUST mux
     // it back in, or the polished clip is silent — which is exactly what shipped
@@ -578,13 +578,19 @@ pub(super) async fn screen_record_polish(
     // raw:true → fast stream-copy (no re-render). Separate cache tag so a raw
     // bake is never served where a polished one was asked for, and vice-versa.
     let raw = a.raw.unwrap_or(false);
-    let admitted_plan = if raw {
-        None
-    } else {
-        Some(crate::screen_record::plan_inputs::load(
-            &dir, &project, &plan_path,
-        )?)
-    };
+    let (admitted_plan, plan_path, camera_look, separate, camera_note) =
+        crate::screen_record::camera_look::prepare(
+            &dir,
+            &project,
+            &cache,
+            plan_path,
+            raw,
+            a.camera.as_deref(),
+            camera_artifact
+                .as_ref()
+                .map(|c| (&c.artifact, c.video_path.as_path())),
+        )?;
+    let plan_tag = crate::screen_record::plan_cache_tag(&plan_path)?;
     let av_tag = match (raw, audio.is_some()) {
         (true, true) => "raw_av",
         (true, false) => "raw_v",
@@ -740,8 +746,30 @@ pub(super) async fn screen_record_polish(
         camera_artifact
             .as_ref()
             .map(|camera| (camera.video_path.as_path(), &camera.artifact)),
+        separate,
+        camera_look.as_ref(),
     )
     .await?;
+
+    // Persist editable zoom provenance for NEW polished recordings only.
+    if !raw {
+        crate::screen_record::take_edit::link_polished(
+            state,
+            &dir,
+            &source,
+            &plan_path,
+            &asset_id,
+            camera_placement.clip_id.clone(),
+            camera_placement.asset_id.clone(),
+            camera_artifact
+                .as_ref()
+                .map(|camera| serde_json::to_value(&camera.artifact))
+                .transpose()?,
+            camera_look.clone(),
+            actor.clone(),
+        )
+        .await?;
+    }
 
     // Place the recording's DESKTOP/SYSTEM audio (captured to <capture>/system.wav by
     // screen_record.start{system_audio:true}) on its OWN audio track, so the game/app sound
@@ -945,6 +973,8 @@ pub(super) async fn screen_record_polish(
         "job_id": polish.job_id,
         "clip_id": clip_id,
         "asset_id": asset_id,
+        "camera_look": camera_look,
+        "camera_note": camera_note,
         "camera_artifact_id": camera_artifact.as_ref().map(|camera| &camera.artifact.artifact_id),
         "camera_asset_id": camera_placement.asset_id,
         "camera_clip_id": camera_placement.clip_id,

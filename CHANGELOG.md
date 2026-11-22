@@ -1,5 +1,15 @@
 This changelog records release notes for ShellX Cut. For older versions, see the [GitHub releases page](https://github.com/martinsbrezauckis/shellx-cut/releases).
 
+## 0.6.119 - 2026-11-22
+- Screen recordings: the zooms can be edited after recording. Select the recording in Edit and open Zoom in the Inspector: change a zoom's strength, target and timing, add or delete zooms, or redo the automatic ones, then press Update video.
+- Screen recordings with a camera: the camera is on its own Camera track. Move it, resize it, change its shape, cut it or hide it for a stretch, or put it back as it was recorded. A switch on the Record page keeps the camera drawn into the video as before.
+- Overlay clips can be a circle or a rounded square, with an optional ring.
+- "Make a copy" of a project carries the original recordings, so their zooms stay editable in the copy.
+- Record page: a paused recording says so in plain words and its timer stands still; the list of technical checks shows one check per line and closes when you click outside it.
+- Rebuilding missing previews: one number says how many items need attention, and each skipped item says why.
+- For agents: commands to list and edit a recording's zooms and to reset its camera.
+- Many smaller fixes.
+
 ## 0.6.118 - 2026-11-21
 - Clearer wording across the app and the manual, following the terms of the leading video editors.
 - Light theme: every label is readable, and keyboard focus is visible.

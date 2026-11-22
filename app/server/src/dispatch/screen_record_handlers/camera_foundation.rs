@@ -38,13 +38,19 @@ pub(super) async fn place_camera_artifact(
     screen_clip_id: Option<&str>,
     screen_asset_id: &str,
     camera: Option<(&Path, &record_core::CameraArtifact)>,
+    separate: bool,
+    look: Option<&cut_core::recording::CameraLook>,
 ) -> Result<CameraPlacement, CutError> {
     let Some((video_path, artifact)) = camera else {
         return Ok(CameraPlacement::default());
     };
 
     let (video_path, byte_length) = verify_camera_source(video_path, artifact)?;
-    let track_id = camera_track_id(artifact);
+    let track_id = if separate {
+        camera_track_id(artifact).replacen("v_camera_", "Camera_", 1)
+    } else {
+        camera_track_id(artifact)
+    };
     match durable_camera_owner(state, &track_id, &video_path, artifact).await? {
         CameraOwner::Existing(placement) => Ok(placement),
         CameraOwner::Pending {
@@ -80,7 +86,7 @@ pub(super) async fn place_camera_artifact(
                 });
             };
 
-            ensure_camera_track(state, actor, &track_id).await?;
+            ensure_camera_track(state, actor, &track_id, separate).await?;
             let inserted = Box::pin(dispatch(
                 state,
                 "edit.insert",
@@ -113,6 +119,26 @@ pub(super) async fn place_camera_artifact(
                     )
                 })?;
 
+            if let Some(look) = look {
+                let mut transform = serde_json::to_value(&look.transform)?;
+                transform["clip"] = json!(clip_id);
+                let result =
+                    Box::pin(dispatch(state, "edit.transform", transform, actor.clone())).await;
+                if let Some(error) = screen_record_polish_subverb_error("camera look", &result) {
+                    return Err(error);
+                }
+                for keyframe in &look.keyframes {
+                    let mut args = serde_json::to_value(keyframe)?;
+                    args["clip"] = json!(clip_id);
+                    let result =
+                        Box::pin(dispatch(state, "edit.keyframe", args, actor.clone())).await;
+                    if let Some(error) =
+                        screen_record_polish_subverb_error("camera position keys", &result)
+                    {
+                        return Err(error);
+                    }
+                }
+            }
             Ok(CameraPlacement {
                 asset_id: Some(asset_id),
                 clip_id: Some(clip_id),
@@ -327,6 +353,22 @@ async fn durable_camera_owner(
             _ => None,
         })
         .collect::<Vec<_>>();
+    if let Some((clip_id, asset_id)) = matching.first() {
+        if matching.len() > 1
+            && matching.iter().all(|(_, asset)| asset == asset_id)
+            && store
+                .project
+                .recordings
+                .iter()
+                .any(|take| take.camera_asset.as_ref() == Some(asset_id))
+        {
+            return Ok(CameraOwner::Existing(CameraPlacement {
+                asset_id: Some(asset_id.clone()),
+                clip_id: Some(clip_id.clone()),
+                track_id: Some(track_id.into()),
+            }));
+        }
+    }
     match matching.as_slice() {
         [(clip_id, asset_id)] => Ok(CameraOwner::Existing(CameraPlacement {
             asset_id: Some(asset_id.clone()),
@@ -422,6 +464,7 @@ async fn ensure_camera_track(
     state: &AppState,
     actor: &Actor,
     track_id: &str,
+    separate: bool,
 ) -> Result<(), CutError> {
     let visible = {
         let guard = state.project.read().await;
@@ -450,21 +493,20 @@ async fn ensure_camera_track(
             return Err(error);
         }
     }
-    if visible == Some(false) {
+    if visible == Some(separate) {
         return Ok(());
     }
 
-    // Existing polish still owns the legacy bubble render. Keep this raw
-    // artifact editable but hidden until B7 supplies its visible workflow. An
-    // interrupted first attempt may have persisted add_track but not this
-    // visibility op, so an empty recovered owner needs the same correction.
+    // Separate mode composites the visible bubble in the timeline. Baked/raw
+    // modes keep the compatibility track hidden. Recover an interrupted track
+    // creation with the same visibility policy.
     let hidden = Box::pin(dispatch(
         state,
         "edit.track_visible",
         json!({
             "track": track_id,
-            "on": false,
-            "rationale": "auto: screen_record.polish camera artifact compatibility track",
+            "on": separate,
+            "rationale": "auto: screen_record.polish camera track visibility",
         }),
         actor.clone(),
     ))

@@ -20,6 +20,7 @@ export interface RecordingPreset {
   raw: boolean
   quality?: { output_size: 'source' | '1080p' | '720p'; profile: 'standard' | 'high' }
   cameraId?: string
+  cameraSeparate?: boolean
   scenes?: unknown
   pause?: { mode: 'enabled' }
   studio?: RecordingStudioPreset
@@ -42,6 +43,14 @@ export function normalizeRecordingPresetForStart(preset: RecordingPreset): Recor
   }
 }
 
+export function recordingPolishArgs(source: string, plan: string, preset: RecordingPreset) {
+  return {
+    source, plan, raw: false,
+    ...(preset.cameraId && !preset.raw && !preset.pause
+      ? { camera: preset.cameraSeparate === false ? 'baked' as const : 'separate' as const } : {}),
+  }
+}
+
 const KEY = 'shellx-cut.recording-preset.v1'
 
 export function parseRecordingPreset(value: unknown): RecordingPreset | null {
@@ -60,6 +69,7 @@ export function parseRecordingPreset(value: unknown): RecordingPreset | null {
   if (typeof p.audio !== 'boolean' || typeof p.systemAudio !== 'boolean' || typeof p.keys !== 'boolean' || typeof p.raw !== 'boolean') return null
   if (p.quality && (!['source', '1080p', '720p'].includes(p.quality.output_size) || !['standard', 'high'].includes(p.quality.profile))) return null
   if (p.cameraId !== undefined && (typeof p.cameraId !== 'string' || !p.cameraId.trim())) return null
+  if (p.cameraSeparate !== undefined && typeof p.cameraSeparate !== 'boolean') return null
   if (p.pause && p.pause.mode !== 'enabled') return null
   if (p.studio) {
     if (!['gradient', 'solid', 'blur_screen', 'none'].includes(p.studio.background)) return null
@@ -84,6 +94,7 @@ export function parseRecordingPreset(value: unknown): RecordingPreset | null {
     raw: p.raw,
     ...(p.quality ? { quality: p.quality } : {}),
     ...(p.cameraId ? { cameraId: p.cameraId } : {}),
+    ...(p.cameraSeparate !== undefined ? { cameraSeparate: p.cameraSeparate } : {}),
     ...(p.scenes ? { scenes: p.scenes } : {}),
     ...(p.pause ? { pause: p.pause } : {}),
     ...(p.studio ? { studio: p.studio } : {}),

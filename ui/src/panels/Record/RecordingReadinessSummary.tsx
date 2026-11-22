@@ -1,3 +1,5 @@
+import { useCallback, useRef, type KeyboardEvent } from 'react'
+import { useDismissOnOutside } from './useDismissOnOutside'
 import { recordCardLabel, recordingInputUnavailable, type RecordCard } from './recordingUiModel'
 import { RECORDING_FRAME_RATE_MIN } from './recordingFrameRate'
 import type { ScreenCheck } from './recordDoctorRead'
@@ -11,6 +13,8 @@ interface RecordingReadinessSummaryProps {
   readonly screenCheck?: ScreenCheck | null
   /** Run the full check, including the short screen capture, on request. */
   readonly onCheck?: () => void
+  /** The engine's operating system from the environment report ('macos', 'windows', 'linux'); null until it is known. */
+  readonly hostOs?: string | null
 }
 
 function cardStatus(card: RecordCard): 'ok' | 'degraded' | 'unknown' | 'missing' {
@@ -20,7 +24,27 @@ function cardStatus(card: RecordCard): 'ok' | 'degraded' | 'unknown' | 'missing'
   return 'missing'
 }
 
-function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, ready: boolean | null, startAllowed: boolean | null, screenCheck: ScreenCheck | null | undefined): { label: string; detail: string; state: string } {
+/** The state as a word, so the small colour mark beside it is never the only signal. */
+const CARD_STATE_WORDS: Record<ReturnType<typeof cardStatus>, string> = {
+  ok: 'OK',
+  degraded: 'Needs attention',
+  unknown: 'Not checked',
+  missing: 'Unavailable',
+}
+
+function closeChecksOnEscape(event: KeyboardEvent<HTMLDetailsElement>) {
+  if (event.key !== 'Escape' || !event.currentTarget.open) return
+  event.currentTarget.open = false
+  event.currentTarget.querySelector('summary')?.focus()
+}
+
+/** What a screen capture that has not been checked yet says. Only macOS may ask for screen access at the check, so that clause is shown there alone. */
+export function screenNotCheckedDetail(hostOs: string | null | undefined): string {
+  const start = 'ShellX Cut checks it when you start recording. Check now to see the result first'
+  return hostOs === 'macos' ? `${start}; macOS may ask for screen access.` : `${start}.`
+}
+
+function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, ready: boolean | null, startAllowed: boolean | null, screenCheck: ScreenCheck | null | undefined, hostOs: string | null | undefined): { label: string; detail: string; state: string } {
   if (screenCheck === 'permission_needed') {
     return {
       label: 'Screen recording permission needed',
@@ -31,7 +55,7 @@ function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, r
   if (screenCheck === 'not_checked' && startAllowed === true) {
     return {
       label: 'Screen capture not checked yet',
-      detail: 'ShellX Cut checks it when you start recording. Check now to see the result first; macOS may ask for screen access.',
+      detail: screenNotCheckedDetail(hostOs),
       state: 'pending',
     }
   }
@@ -82,11 +106,16 @@ function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, r
 }
 
 /** Compact outcome first; individual Doctor facts stay available without occupying setup flow. */
-export function RecordingReadinessSummary({ cards, videoEncoder, ready, startAllowed, screenCheck, onCheck }: RecordingReadinessSummaryProps) {
+export function RecordingReadinessSummary({ cards, videoEncoder, ready, startAllowed, screenCheck, onCheck, hostOs = null }: RecordingReadinessSummaryProps) {
   const inputUnavailable = recordingInputUnavailable(cards)
-  const summary = readinessSummary(cards, videoEncoder, ready, startAllowed, screenCheck)
+  const summary = readinessSummary(cards, videoEncoder, ready, startAllowed, screenCheck, hostOs)
   const encoderBlocked = startAllowed === false && cards.some(card => card.name === 'video_encoder' && card.status === 'degraded')
   const offerCheck = onCheck && (screenCheck === 'not_checked' || screenCheck === 'permission_needed')
+  // The list is a native <details>: a click or focus move outside it closes it, as every other drop-down does.
+  const detailsRef = useRef<HTMLDetailsElement>(null)
+  const checksOpen = useCallback(() => detailsRef.current?.open === true, [])
+  const closeChecks = useCallback(() => { if (detailsRef.current) detailsRef.current.open = false }, [])
+  useDismissOnOutside(detailsRef, checksOpen, closeChecks)
   return (
     <section className="rec__readiness" data-cut-rec-cards data-cut-rec-encoder-blocked={encoderBlocked || undefined} data-cut-rec-readiness data-cut-rec-readiness-state={summary.state} data-cut-rec-screen-check={screenCheck ?? undefined}>
       <div className="rec__readiness-summary">
@@ -106,15 +135,19 @@ export function RecordingReadinessSummary({ cards, videoEncoder, ready, startAll
           {' '}{inputUnavailable}
         </p>
       )}
-      <details className="rec__readiness-details" data-cut-rec-readiness-details>
+      <details ref={detailsRef} className="rec__readiness-details" data-cut-rec-readiness-details onKeyDown={closeChecksOnEscape}>
         <summary data-cut-action="record-readiness-details-toggle">{cards.length} technical checks</summary>
-        <div className="rec__cards">
-          {cards.map((card) => (
-            <div key={card.name} className={`rec__card rec__card--${cardStatus(card)}`} data-cut-rec-card={card.name} data-cut-rec-card-status={cardStatus(card)}>
-              <span className="rec__card-name">{recordCardLabel(card.name)}</span>
-              <span className="rec__card-detail">{card.detail}</span>
-            </div>
-          ))}
+        <div className="rec__cards" role="list">
+          {cards.map((card) => {
+            const status = cardStatus(card)
+            return (
+              <div key={card.name} className={`rec__card rec__card--${status}`} data-cut-rec-card={card.name} data-cut-rec-card-status={status} role="listitem">
+                <span className="rec__card-name">{recordCardLabel(card.name)}</span>
+                <span className="rec__card-state"><span className="rec__card-mark" aria-hidden="true" />{CARD_STATE_WORDS[status]}</span>
+                <span className="rec__card-detail">{card.detail}</span>
+              </div>
+            )
+          })}
         </div>
       </details>
     </section>

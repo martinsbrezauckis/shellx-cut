@@ -6,6 +6,8 @@ import type { DoctorReport } from '../../lib/doctor'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import EffectChainControls, { type EffectOption } from './EffectChainControls'
 import VideoColorSection from './VideoColorSection'
+import RecordingZoomSection from './RecordingZoomSection'
+import { layoutTrack } from '../Timeline/layout'
 import {
   BLEND_MODES,
   REDACT_CENTRE_POINTS,
@@ -35,6 +37,8 @@ type ColorControls = ReturnType<typeof useInspectorColorControls>
 
 interface VideoInspectorToolsProps {
   project: Project | null
+  projectRevision?: string | null
+  playheadMs?: number
   selection: InspectorMediaSelection
   doctor: DoctorReport | null
   isOverlayVideo: boolean
@@ -58,6 +62,8 @@ function openVideoSetup() {
 
 export default function VideoInspectorTools({
   project,
+  projectRevision,
+  playheadMs = 0,
   selection,
   doctor,
   isOverlayVideo,
@@ -125,9 +131,13 @@ export default function VideoInspectorTools({
   const privacy = videoPrivacySummary(clip)
   const stabilization = stabilizationReadiness(doctor)
   const stabilizationApplied = Boolean(clip.stabilize)
+  const track = project?.tracks.find(t => t.id === selection.trackId)
+  const span = track && layoutTrack(track).find(item => item.id === clip.id)
+  const timelineAtPlayhead = span && playheadMs >= span.startMs && playheadMs < span.startMs + span.durMs ? playheadMs : null
 
   return (
     <>
+      {clip.recording && !clip.recording.camera && <RecordingZoomSection key={clip.id} clip={clip.id} revision={projectRevision} timelineAtPlayhead={timelineAtPlayhead} />}
       <InspectorSection
         title="Stabilization & auto zoom"
         sectionKey="video-motion"
@@ -167,7 +177,7 @@ export default function VideoInspectorTools({
             </div>
           )}
 
-          <div className="insp__group-title insp__group-title--sub">Automatic punch-ins</div>
+          {!clip.recording && <><div className="insp__group-title insp__group-title--sub">Automatic punch-ins</div>
           <div className="insp__row" data-cut-inspector-autozoom>
             <select
               className="insp__select"
@@ -189,7 +199,7 @@ export default function VideoInspectorTools({
             >
               {auto.autoBusy === 'zoom' ? 'Adding zooms…' : 'Add auto zoom'}
             </button>
-          </div>
+          </div></>}
         </div>
       </InspectorSection>
 

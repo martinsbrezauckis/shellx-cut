@@ -100,6 +100,7 @@ fn package_tree_is_expected(root: &Path) -> bool {
                         .unwrap_or(false)
             }
             Some("media") => is_plain_dir(&metadata) && media_tree_is_expected(&entry.path()),
+            Some("cache") => is_plain_dir(&metadata) && cache_tree_is_expected(&entry.path()),
             _ => false,
         };
         if !accepted {
@@ -109,11 +110,34 @@ fn package_tree_is_expected(root: &Path) -> bool {
     true
 }
 
+fn cache_tree_is_expected(root: &Path) -> bool {
+    let Ok(mut entries) = fs::read_dir(root) else {
+        return false;
+    };
+    let Some(Ok(entry)) = entries.next() else {
+        return false;
+    };
+    entries.next().is_none()
+        && entry.file_name() == "screen_record"
+        && fs::symlink_metadata(entry.path()).is_ok_and(|metadata| is_plain_dir(&metadata))
+        && recording_tree_is_plain(&entry.path())
+}
+
 fn media_tree_is_expected(root: &Path) -> bool {
+    let recordings = root.join("recordings");
+    if recordings.exists() && !recording_tree_is_plain(&recordings) {
+        return false;
+    }
     let Ok(entries) = fs::read_dir(root) else {
         return false;
     };
-    let entries = entries.collect::<Result<Vec<_>, _>>();
+    let entries = entries
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .map_or(true, |e| e.file_name() != "recordings")
+        })
+        .collect::<Result<Vec<_>, _>>();
     let Ok(entries) = entries else {
         return false;
     };

@@ -40,10 +40,10 @@ async function verifySchemaReferenceParity(): Promise<void> {
   const schemaNames = schema.verbs.map((verb) => verb.name)
   const referenceNames = [...reference.matchAll(/^\| `([^`]+)`/gm)].map((match) => match[1])
 
-  assert.equal(schemaNames.length, 317, 'the public verb schema remains the deliberate 317-verb contract')
-  assert.equal(new Set(schemaNames).size, 317, 'schema verb names remain unique')
-  assert.equal(referenceNames.length, 317, 'the full agent reference remains a 317-verb table')
-  assert.equal(new Set(referenceNames).size, 317, 'agent-reference verb names remain unique')
+  assert.equal(schemaNames.length, 326, 'the public verb schema remains the deliberate 326-verb contract')
+  assert.equal(new Set(schemaNames).size, 326, 'schema verb names remain unique')
+  assert.equal(referenceNames.length, 326, 'the full agent reference remains a 326-verb table')
+  assert.equal(new Set(referenceNames).size, 326, 'agent-reference verb names remain unique')
   assert.deepEqual([...referenceNames].sort(), [...schemaNames].sort(), 'schema and full agent reference retain exact verb parity')
 }
 

@@ -55,6 +55,7 @@ export const MANUAL_READ_ONLY_VERBS = new Set<string>([
   "screen_record.recovery_status",
   "screen_record.status",
   "screen_record.system_audio_probe",
+  "screen_record.zoom_list",
   "system.doctor",
   "system.mcp_test",
   "system.motion_status",

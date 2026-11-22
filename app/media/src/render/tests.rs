@@ -2,6 +2,133 @@ use super::input_paths::strip_verbatim_prefix;
 use super::*;
 use cut_core::{ColorConfig, ColorSpace, EdlSegment};
 
+fn redaction_limit_mask(regions: usize, points: usize) -> cut_core::ClipMask {
+    use cut_core::{types::MaskRegion, ClipMask, MaskEffect, MaskShape, MaskTrackPoint};
+    let motion = (0..points)
+        .map(|i| MaskTrackPoint {
+            t_ms: (i as u64) * 120,
+            cx: 0.5,
+            cy: 0.5,
+        })
+        .collect::<Vec<_>>();
+    ClipMask {
+        shape: MaskShape::Rect,
+        points: vec![[0.1, 0.1], [0.2, 0.2]],
+        feather: 0.0,
+        invert: false,
+        effect: MaskEffect::Blur,
+        strength: None,
+        range_ms: None,
+        track: (points > 0).then_some(motion.clone()),
+        regions: (1..regions)
+            .map(|_| MaskRegion {
+                shape: MaskShape::Rect,
+                points: vec![[0.1, 0.1], [0.2, 0.2]],
+                track: (points > 0).then_some(motion.clone()),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn saved_over_cap_redaction_loads_but_render_refuses_before_assembly() {
+    use cut_core::{Clip, ProjectSettings};
+    for (mask, count, cap) in [
+        (redaction_limit_mask(257, 0), "257", "256"),
+        (redaction_limit_mask(1, 200_001), "200001", "200000"),
+    ] {
+        let mut project = Project::new("saved", ProjectSettings::default());
+        let mut clip = cut_core::edit::make_media_clip("saved-clip", "asset", 0, 3000);
+        clip.mask = Some(mask);
+        project.tracks[0].clips.push(Clip::Media(clip));
+        let json = serde_json::to_vec(&project).unwrap();
+        let loaded: Project = serde_json::from_slice(&json).expect("saved project still loads");
+        assert_eq!(serde_json::to_vec(&loaded).unwrap(), json);
+        let edl = cut_core::edl_from_project(&loaded);
+        let error = build_graph(
+            &loaded,
+            &edl,
+            std::path::Path::new("/nonexistent-redaction-input"),
+            false,
+            false,
+            true,
+            RenderOptions::default(),
+            None,
+        )
+        .err()
+        .expect("oversize saved redaction must stop before graph work");
+        let message = error.to_string();
+        assert!(message.contains("saved-clip"), "{message}");
+        assert!(message.contains(count), "{message}");
+        assert!(message.contains(cap), "{message}");
+    }
+}
+
+#[test]
+fn eight_tracked_regions_300_points_keep_exact_legacy_ffmpeg_text() {
+    let mask = redaction_limit_mask(8, 300);
+    let indicators = std::iter::once((mask.shape, &mask.points, mask.track.as_deref()))
+        .chain(
+            mask.regions
+                .iter()
+                .map(|region| (region.shape, &region.points, region.track.as_deref())),
+        )
+        .map(|(shape, points, track)| region_indicator(shape, points, track, 32.0, 32.0))
+        .collect::<Vec<_>>();
+    let legacy = indicators
+        .into_iter()
+        .reduce(|a, b| format!("max({a},{b})"))
+        .unwrap();
+    let expected = format!("geq=lum='{legacy}':cb=128:cr=128,format=gray");
+    let actual = tracked_alpha_geq(&mask, 32, 32);
+    assert_eq!(actual, expected);
+
+    // The exact graph reaches FFmpeg. Its parser outcome is unchanged by this fix.
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("redaction.graph");
+    std::fs::write(&script, format!("[0:v]{actual}[out]")).unwrap();
+    let output = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=32x32:d=0.04",
+            "-filter_complex_script",
+        ])
+        .arg(&script)
+        .args(["-map", "[out]", "-frames:v", "1", "-f", "null", "-"])
+        .output()
+        .expect("FFmpeg must start with the accepted legacy graph");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!(
+        "eight-region FFmpeg exit: {:?}; text bytes: {}; stderr prefix: {}",
+        output.status.code(),
+        actual.len(),
+        stderr.chars().take(160).collect::<String>()
+    );
+}
+
+/// The largest admitted redaction stays one linear pass: its expression is a
+/// few tens of megabytes (36 MB measured), never a multiple that grows with
+/// the number of regions times the number of points.
+#[test]
+fn cap_case_expression_stays_linear() {
+    use std::time::Instant;
+    let mut mask = redaction_limit_mask(256, 0);
+    mask.track = redaction_limit_mask(1, 200_000).track;
+    let start = Instant::now();
+    let text = tracked_alpha_geq(&mask, 1920, 1080);
+    eprintln!(
+        "cap case: {} bytes in {} ms",
+        text.len(),
+        start.elapsed().as_millis()
+    );
+    assert!(text.len() < 64 * 1024 * 1024, "{} bytes", text.len());
+}
+
 /// The GPU gate as a yes/no (the gate itself names why it says no).
 fn timeline_is_gpu_friendly(project: &Project, edl: &Edl, opts: &RenderOptions) -> bool {
     gpu_gate_refusal(project, edl, opts).is_none()
@@ -437,6 +564,76 @@ fn kf_expr_builds_piecewise() {
     assert!(h.contains("if(lt(T,1),0.2,0.8)"), "hold steps to v0: {h}");
 }
 
+#[test]
+fn saved_project_with_long_track_passes_render_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new("older", cut_core::ProjectSettings::default());
+    let mut clip = cut_core::edit::make_media_clip("old-clip", "absent-asset", 0, 1_000);
+    clip.keyframes = vec![cut_core::Keyframe {
+        lead_in: None,
+        param: cut_core::KfParam::Opacity,
+        points: (0..=cut_core::keyframe_limit::MAX_KEYFRAME_POINTS)
+            .map(|t_ms| cut_core::KfPoint {
+                t_ms: t_ms as u64,
+                value: 0.5,
+            })
+            .collect(),
+        interp: cut_core::KfInterp::Hold,
+    }];
+    project
+        .track_mut("v1")
+        .unwrap()
+        .clips
+        .push(cut_core::Clip::Media(clip));
+    let saved = dir.path().join("project.json");
+    std::fs::write(&saved, serde_json::to_vec(&project).unwrap()).unwrap();
+    let loaded: Project = serde_json::from_slice(&std::fs::read(&saved).unwrap()).unwrap();
+    let edl = cut_core::edl_from_project(&loaded);
+    keyframe_limit::require_bounded_keyframes(&loaded, &edl).unwrap();
+}
+
+#[test]
+fn saved_project_over_absolute_keyframe_total_refuses_before_graph_assembly() {
+    let mut project = Project::new("older", cut_core::ProjectSettings::default());
+    let mut clip = cut_core::edit::make_media_clip("old-clip", "absent-asset", 0, 1_000);
+    clip.keyframes = vec![cut_core::Keyframe {
+        lead_in: None,
+        param: cut_core::KfParam::Opacity,
+        points: vec![
+            cut_core::KfPoint {
+                t_ms: 0,
+                value: 0.5
+            };
+            cut_core::keyframe_limit::MAX_KEYFRAME_TOTAL_POINTS + 1
+        ],
+        interp: cut_core::KfInterp::Hold,
+    }];
+    project
+        .track_mut("v1")
+        .unwrap()
+        .clips
+        .push(cut_core::Clip::Media(clip));
+    let bytes = serde_json::to_vec(&project).unwrap();
+    let loaded: Project = serde_json::from_slice(&bytes).unwrap();
+    let edl = cut_core::edl_from_project(&loaded);
+    let error = build_graph(
+        &loaded,
+        &edl,
+        std::path::Path::new("/nonexistent-keyframe-input"),
+        false,
+        false,
+        true,
+        RenderOptions::default(),
+        None,
+    )
+    .err()
+    .expect("saved over-cap keyframes stop before graph assembly");
+    let message = error.to_string();
+    assert!(message.contains("old-clip"), "{message}");
+    assert!(message.contains("200001"), "{message}");
+    assert!(message.contains("200000"), "{message}");
+}
+
 /// An eased ramp wraps the inter-keyframe fraction in the Penner expression
 /// (st(0,…) stores it once; the body reads ld(0)). ease_in_out_cubic must NOT
 /// be the bare linear lerp — that is the whole point of the channel.
@@ -470,6 +667,7 @@ fn kf_expr_eased_wraps_fraction() {
 fn scale_kf_zoompan_emits_clamped_zoompan() {
     use cut_core::{Keyframe, KfInterp, KfParam, KfPoint};
     let kfs = vec![Keyframe {
+        lead_in: None,
         param: KfParam::Scale,
         points: vec![
             KfPoint {
@@ -502,6 +700,7 @@ fn scale_kf_zoompan_emits_clamped_zoompan() {
 fn volume_kf_filter_clamps_easing_overshoot() {
     use cut_core::{Keyframe, KfInterp, KfParam, KfPoint};
     let kfs = vec![Keyframe {
+        lead_in: None,
         param: KfParam::Volume,
         points: vec![
             KfPoint {
@@ -526,6 +725,7 @@ fn volume_keyframe_keeps_independent_track_gain_after_clip_curve() {
     let mut segment = xfade_window_segment(0, 0);
     segment.track_gain_db = -3.0;
     segment.keyframes = vec![Keyframe {
+        lead_in: None,
         param: KfParam::Volume,
         points: vec![KfPoint {
             t_ms: 0,
@@ -824,6 +1024,7 @@ fn gpu_friendly_predicate_is_conservative() {
             y: 0.25,
             scale: 0.5,
             opacity: 0.5,
+            ..ClipTransform::identity()
         });
     }
     assert!(
@@ -916,6 +1117,7 @@ fn gpu_friendly_predicate_is_conservative() {
                 y: 0.5,
                 scale: 0.4,
                 opacity: 0.5, // opacity<1 is fine: the overlay alpha path handles it
+                ..ClipTransform::identity()
             }),
             crop: None,
             fade: None,
@@ -1471,6 +1673,7 @@ fn region_composite_base_transform_has_explicit_filter_head() {
         y: 0.0,
         scale: 1.0,
         opacity: 1.0,
+        ..cut_core::ClipTransform::identity()
     };
     let vtransform = base_transform_filter(&transform, 1280, 720);
     assert!(
@@ -2142,6 +2345,7 @@ fn hidden_base_video_preserves_overlay_layer_over_black() {
                 y: 0.25,
                 scale: 0.5,
                 opacity: 1.0,
+                ..ClipTransform::identity()
             }),
         )],
         gain_db: 0.0,
@@ -2732,6 +2936,7 @@ fn overlay_opacity_emits_alpha_filter() {
             y: 0.5,
             scale: 0.5,
             opacity,
+            ..cut_core::ClipTransform::identity()
         })
     };
     p.tracks.push(Track {

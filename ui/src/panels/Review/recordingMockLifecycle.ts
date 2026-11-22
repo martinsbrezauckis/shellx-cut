@@ -1,3 +1,4 @@
+import { createZoomMock } from './recordingZoomMock'
 type VerbArgs = Record<string, unknown>
 
 interface MockCapture {
@@ -73,6 +74,7 @@ export function createMockRecordingLifecycle({
   startMode,
   jobs,
 }: MockRecordingLifecycleOptions): MockRecordingLifecycle {
+  const zoom = createZoomMock(jobs)
   const captures = new Map<string, MockCapture>()
   let sequence = 0
   let rehearsalHandle: string | null = null
@@ -101,6 +103,8 @@ export function createMockRecordingLifecycle({
   })
 
   const handle = (name: string, args: VerbArgs): { handled: boolean; value?: unknown } => {
+    const zoomResult = zoom(name, args)
+    if (zoomResult) return {handled:true,value:zoomResult}
     switch (name) {
       case 'screen_record.doctor':
         return {

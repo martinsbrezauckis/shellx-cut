@@ -92,7 +92,7 @@ async fn execute_rebuild_inner(
         if !source_matches(&plan.asset).await? {
             abandon_generated_outputs(project_dir, plan)?;
             return Err(RebuildWorkerError::Failed(cache_error(
-                "cache rebuild refused a changed source",
+                format!("cache rebuild refused a changed source for {}", plan.asset.asset_id),
                 "the source identity no longer matches the imported asset; relink the asset before rebuilding its cache",
             )));
         }
@@ -129,7 +129,10 @@ async fn execute_rebuild_inner(
         if !source_matches(&plan.asset).await? {
             abandon_generated_outputs(project_dir, plan)?;
             return Err(RebuildWorkerError::Failed(cache_error(
-                "cache rebuild discarded output from a changed source",
+                format!(
+                    "cache rebuild discarded output from a changed source for {}",
+                    plan.asset.asset_id
+                ),
                 "the source changed during rebuilding, so no derived cache was published",
             )));
         }
@@ -164,6 +167,7 @@ async fn rebuild_output(
     process_control: &cut_media::ffmpeg::OwnedProcessControl,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Value>, RebuildWorkerError> {
+    let binding = super::super::production::output_binding(kind, &asset.asset_id, &asset.hash);
     match kind {
         CacheKind::Proxies => {
             // Same as the import's proxy: an HDR source previews tone-mapped.
@@ -192,8 +196,8 @@ async fn rebuild_output(
                             Some("rebuilding editing proxy".into()),
                         );
                     };
-                    cut_media::make_proxy_with_progress_and_tone_map(
-                        &source, &proxies, &asset_id, total, &progress, &tone_map,
+                    cut_media::make_proxy_with_progress_and_tone_map_bound(
+                        &source, &proxies, &asset_id, total, &progress, &tone_map, &binding,
                     )
                 })
             })
@@ -204,8 +208,12 @@ async fn rebuild_output(
                 let proxy = project_dir
                     .join("proxies")
                     .join(format!("{}.mp4", asset.asset_id));
+                let source = asset.source.clone();
+                let control = process_control.clone();
                 match run_blocking("cache.rebuild decode check", move || {
-                    super::proxy_facts::decode_check_for(&probe, &proxy)
+                    cut_media::ffmpeg::with_render_process_control(&control, || {
+                        super::proxy_facts::decode_check_for(&probe, &source, &proxy)
+                    })
                 })
                 .await
                 {
@@ -240,7 +248,9 @@ async fn rebuild_output(
             let control = process_control.clone();
             run_blocking_cancellable("cache.rebuild filmstrip", move |_| {
                 cut_media::ffmpeg::with_render_process_control(&control, || {
-                    cut_media::filmstrip::make_filmstrip(&proxy, &filmstrip, &asset_id, duration)
+                    cut_media::filmstrip::make_filmstrip_bound(
+                        &proxy, &filmstrip, &asset_id, duration, &binding,
+                    )
                 })
             })
             .await?;
@@ -257,7 +267,9 @@ async fn rebuild_output(
             let control = process_control.clone();
             run_blocking_cancellable("cache.rebuild image thumbnail", move |_| {
                 cut_media::ffmpeg::with_render_process_control(&control, || {
-                    cut_media::filmstrip::make_image_thumb(&source, &filmstrip, &asset_id)
+                    cut_media::filmstrip::make_image_thumb_bound(
+                        &source, &filmstrip, &asset_id, &binding,
+                    )
                 })
             })
             .await?;
@@ -275,6 +287,9 @@ async fn rebuild_output(
 fn abandon_generated_outputs(project_dir: &Path, plan: &RebuildAssetPlan) -> Result<(), CutError> {
     for (kind, action) in &plan.outputs {
         if *action == OutputAction::Generate {
+            cut_media::cache_trust::forget(
+                &project_dir.join(relative_output(*kind, &plan.asset.asset_id)?),
+            );
             abandon_rebuild_output(project_dir, *kind, &plan.asset.asset_id, &plan.asset.hash)?;
         }
     }
@@ -320,16 +335,22 @@ async fn apply_backfill(
     }
     for (kind, _) in &plan.outputs {
         let relative = relative_output(*kind, &plan.asset.asset_id)?;
+        if !cut_media::cache_trust::trusted_bound(
+            &store.dir.join(&relative),
+            &super::super::production::output_binding(
+                *kind,
+                &plan.asset.asset_id,
+                &plan.asset.hash,
+            ),
+        ) {
+            return Err(cache_error(
+                "cache rebuild cannot publish metadata",
+                "the output has no matching engine-origin record",
+            )
+            .into());
+        }
         match kind {
-            CacheKind::Proxies => {
-                // Only a proxy this engine made, for this asset's source, is
-                // used by a later preview.
-                cut_media::cache_trust::remember_bound(
-                    &store.dir.join(&relative),
-                    &crate::dispatch::proxy_binding(&plan.asset.asset_id, &plan.asset.hash),
-                );
-                asset.proxy = Some(relative)
-            }
+            CacheKind::Proxies => asset.proxy = Some(relative),
             CacheKind::Thumbnails => asset.filmstrip = Some(relative),
         }
     }

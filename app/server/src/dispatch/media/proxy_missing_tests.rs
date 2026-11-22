@@ -41,14 +41,35 @@ async fn a_removed_tool_fails_the_proxy_job_and_refreshes_setup() {
     std::fs::remove_file(tmp.path().join("ffmpeg")).unwrap();
     let src = tmp.path().join("source.mp4");
     std::fs::write(&src, b"input exists; the removed encoder cannot open it").unwrap();
-    let proxies = tmp.path().join("proxies");
-    std::fs::create_dir(&proxies).unwrap();
+    let hash = cut_core::hash_file(&src).unwrap();
+    let mut store =
+        cut_core::ProjectStore::create(&tmp.path().join("proxy.cutproj"), "proxy", None).unwrap();
+    store
+        .record_import(
+            Some("a1".into()),
+            cut_core::Asset {
+                path: src.to_string_lossy().into_owned(),
+                hash: hash.clone(),
+                probe: Some(serde_json::json!({"kind":"video","duration_ms":1000})),
+                transcript: None,
+                perception: None,
+                proxy: None,
+                filmstrip: None,
+            },
+            cut_core::Actor::system(),
+            None,
+        )
+        .unwrap();
+    let dir = store.dir.clone();
+    let proxies = dir.join("proxies");
+    *state.project.write().await = Some(store);
     let job_id = spawn_proxy_chain(
         state.clone(),
         "a1".into(),
         src,
+        hash,
         proxies.clone(),
-        tmp.path().to_owned(),
+        dir,
         "video".into(),
         Some(1000),
     );

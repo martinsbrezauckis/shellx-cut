@@ -1014,10 +1014,13 @@
   border: 1px solid transparent;
 }
 .tb-recording-back-reason {
-  /* Keep long lifecycle messages inside their flex slot at every width. */
-  flex: 0 1 260px;
+  /* The status keeps its own width (the brand's project name is the slot that
+     yields, as for every other group), so a lifecycle reason of up to 52
+     characters is shown whole. The cap and the ellipsis only guard against a
+     longer text painting over the buttons; the full text is the title. */
+  flex: 0 0 auto;
   min-width: 0;
-  max-width: 260px;
+  max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1039,9 +1042,6 @@
     flex: 1 1 auto;
     flex-basis: auto;
     height: auto;
-  }
-  .tb--recording .tb-recording-back-reason {
-    flex-basis: 190px;
   }
   .tb--recording .tb-nav-label { display: none; }
 }

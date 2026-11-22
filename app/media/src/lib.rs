@@ -53,7 +53,10 @@ pub use captions::{captions_to_ass, captions_to_ass_for_edl, captions_to_ass_kar
 pub use paths::{PathFence, OVERWRITABLE_SUFFIXES};
 pub use preview::{render_preview_incremental, PreviewResult};
 pub use probe::{probe, probe_source, MediaProbe};
-pub use proxy::{make_proxy, make_proxy_with_progress, make_proxy_with_progress_and_tone_map};
+pub use proxy::{
+    make_proxy, make_proxy_with_progress, make_proxy_with_progress_and_tone_map,
+    make_proxy_with_progress_and_tone_map_bound,
+};
 pub use render::{
     extract_frame, extract_scrub_frame, plan_scrub_frame, render_final, render_preview, Fit,
     ProgressFn, RenderOptions, RenderOutput, RenderPreset, Resolution, ScrubPlan,

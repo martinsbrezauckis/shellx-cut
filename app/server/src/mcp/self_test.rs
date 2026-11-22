@@ -7,6 +7,10 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
+// The four replies share this capture budget; tools/list retains its separate
+// client budget below. Leave room for the doctor's full structured/text reply.
+const MAX_SELF_TEST_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+
 /// Exercise the exact current executable's MCP stdio proxy against this served
 /// engine. Matching the doctor report's bound address proves that the child
 /// reached this state holder rather than opening an independent runtime.
@@ -55,10 +59,21 @@ pub(crate) async fn run(state: &AppState) -> Result<VerbResult, CutError> {
         .arg("mcp")
         .env("CUTD_PROXY_ADDR", &addr)
         .env("CUTD_PROXY_ACTOR", "agent:settings:mcp-self-test");
+    run_with_command(state, &addr, &executable, &mut command, input.as_bytes()).await
+}
+
+async fn run_with_command(
+    state: &AppState,
+    addr: &str,
+    executable: &std::path::Path,
+    command: &mut tokio::process::Command,
+    input: &[u8],
+) -> Result<VerbResult, CutError> {
     let output = crate::jobs::run_owned(
-        &mut command,
-        Some(input.as_bytes()),
-        &crate::jobs::ProcessControl::for_operation(Duration::from_secs(12)),
+        command,
+        Some(input),
+        &crate::jobs::ProcessControl::for_operation(Duration::from_secs(12))
+            .with_output_cap(MAX_SELF_TEST_OUTPUT_BYTES),
     )
     .await
     .map_err(|error| match error.termination() {
@@ -72,6 +87,13 @@ pub(crate) async fn run(state: &AppState) -> Result<VerbResult, CutError> {
         return Err(test_error(
             "the installed MCP process exited with an error",
             &bounded_stderr(&output.stderr),
+        ));
+    }
+
+    if output.stdout_truncated {
+        return Err(test_error(
+            "the installed MCP process returned too much output",
+            &format!("self-test replies exceed the {MAX_SELF_TEST_OUTPUT_BYTES}-byte limit"),
         ));
     }
 
@@ -210,17 +232,5 @@ fn test_error(message: &str, cause: &str) -> CutError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn self_test_refuses_a_surface_without_a_served_engine() {
-        let error = run(&AppState::new()).await.unwrap_err();
-        assert_eq!(error.code, error_codes::JOB_FAILED);
-        assert!(error.message.contains("running Cut app"));
-        assert!(error
-            .suggested_action
-            .unwrap_or_default()
-            .contains("Agent control"));
-    }
-}
+#[path = "self_test_tests.rs"]
+mod tests;

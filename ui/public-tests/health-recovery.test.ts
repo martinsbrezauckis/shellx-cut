@@ -518,11 +518,22 @@ assert.ok(cacheSurface.includes('void onComplete()'), 'a terminal cache job reme
 assert.ok(!cacheContractSurface.includes('window.confirm'), 'cache deletion uses a visible in-panel confirmation step')
 assert.ok(cacheContractSurface.includes('Rebuild missing cache'), 'the existing editing-cache surface offers one non-destructive rebuild action')
 assert.ok(cacheContractSurface.includes('Original media stays unchanged.'), 'cache rebuild explicitly preserves source media')
-assert.ok(cacheContractSurface.includes('scheduled_assets') && cacheContractSurface.includes('fresh_assets') && cacheContractSurface.includes('attentionReasons'), 'cache rebuild reports queued/up-to-date state and discloses only human attention reasons without a filesystem inventory')
+assert.ok(
+  cacheContractSurface.includes('scheduled_assets')
+    && cacheContractSurface.includes('fresh_assets')
+    && cachePresentation.includes('skipped_assets')
+    && cacheRebuildSurface.includes('rebuildSkips(result)')
+    && cacheContractSurface.includes('data-cut-cache-rebuild-skipped-asset')
+    && cacheRebuildSurface.includes('skipReason(item)')
+    && cacheRebuildSurface.includes('{item.action}'),
+  'cache rebuild reports queued/up-to-date state and names each skipped asset with its human reason and next action, without a filesystem inventory',
+)
 assert.ok(cacheRebuildSurface.includes('disabled={disabled}'), 'the rebuild action disables while scheduling or another cache job is active')
 assert.ok(cacheSurface.includes('data-cut-cache-job-kind') && cacheSurface.includes("kind: 'rebuild'"), 'rebuild work uses the existing cancellable jobs status path')
 assert.match(cachePresentation, /result\.status === 'already_queued'[\s\S]*already queued/, 'an already-queued rebuild has a distinct, count-bearing UI summary')
-assert.match(cacheRebuildSurface, /item\{[^\n]+\? ' needs' : 's need'\} attention/, 'novice-facing attention copy keeps singular and plural grammar correct')
+assert.match(cachePresentation, /item\$\{attentionCount === 1 \? ' needs' : 's need'\} attention/, 'novice-facing attention copy keeps singular and plural grammar correct')
+assert.match(cacheRebuildSurface, /skipped item\{attentionCount === 1 \? '' : 's'\}/, 'the skipped-items disclosure keeps singular and plural grammar correct')
+assert.ok(!cacheSurface.includes('Editing cache is already up to date.') && /response\.result\.status === 'not_needed'\) return/.test(cacheSurface), 'a rebuild that schedules nothing shows its status summary and never the success banner')
 assert.ok(!cacheContractSurface.includes('refused.'), 'novice-facing rebuild copy never exposes the internal refusal term')
 assert.ok(surface.includes('projectHealth?.complete') && surface.includes("asset.proxy === 'missing'") && surface.includes("asset.filmstrip === 'not_recorded'"), 'the complete revision-bound Health aggregate selects only missing or unrecorded cache assets')
 assert.ok(cacheSurface.includes('rebuildAssetIds?.slice(0, 64)') && cacheSurface.includes("{ asset_ids: rebuildBatch }"), 'the one-click rebuild submits a deterministic bounded batch rather than an unbounded project request')
@@ -545,6 +556,8 @@ const clientSurface = readFileSync(new URL('../src/lib/client.ts', import.meta.u
 const clientResultsSurface = readFileSync(new URL('../src/lib/clientResults.ts', import.meta.url), 'utf8')
 assert.ok(clientSurface.includes("'project.cache_rebuild': { asset_ids?: string[]; estimate_only?: boolean }"), 'typed client accepts bounded rebuild scheduling or a read-only work estimate')
 assert.match(clientResultsSurface, /interface ProjectCacheRebuildResult[\s\S]*status: 'estimated' \| 'queued' \| 'already_queued' \| 'not_needed'[\s\S]*scheduled_assets: number[\s\S]*scheduled_outputs: number[\s\S]*counts: ProjectCacheRebuildCounts[\s\S]*estimate: ProjectCacheRebuildEstimate/, 'all cache rebuild statuses carry uniform counts and a verified-work estimate')
+const skipInterface = clientResultsSurface.match(/interface ProjectCacheRebuildSkip \{([^}]*)\}/)?.[1] ?? ''
+assert.ok(/asset_id: string/.test(skipInterface) && /reason:/.test(skipInterface) && /action: string/.test(skipInterface) && !/path/i.test(skipInterface), 'a skipped rebuild item carries only asset id, optional kind, reason, and next action, never a filesystem path')
 assert.ok(cacheContractSurface.includes('estimate_only: true') && cacheContractSurface.includes('Estimate rebuild work') && cacheContractSurface.includes('data-cut-cache-rebuild-cost'), 'the editor obtains and labels a source-verified work-unit estimate before scheduling')
 assert.ok(cacheSurface.includes('purgeReconciliation') && cacheSurface.includes('data-cut-cache-reconciliation') && cacheSurface.includes('Counts reconcile exactly.'), 'terminal cleanup projects exact before/removed/after accounting instead of only asking the user to infer it from a new preview')
 assert.ok(!surface.includes('media.relink'), 'Health & Recovery cannot relink media without an owning confirmed workflow')

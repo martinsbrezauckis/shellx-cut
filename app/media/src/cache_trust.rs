@@ -110,6 +110,14 @@ pub fn remember_bound(file: &Path, binding: &str) {
     remember_record(file, Some(binding));
 }
 
+/// Discard only this output's engine-origin record after failed publication.
+/// The derived file itself is left for the caller's ownership/recovery protocol.
+pub fn forget(file: &Path) {
+    if let Some(record) = record_path(file) {
+        let _ = std::fs::remove_file(record);
+    }
+}
+
 /// True when this engine made the file for exactly `binding` and it is unchanged.
 pub fn trusted_bound(file: &Path, binding: &str) -> bool {
     recorded(file).is_some_and(|(hash, current, bound)| {
