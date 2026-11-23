@@ -1,5 +1,8 @@
 This changelog records release notes for ShellX Cut. For older versions, see the [GitHub releases page](https://github.com/martinsbrezauckis/shellx-cut/releases).
 
+## 0.6.121 - 2026-11-24
+- A picture in a project is no longer shown as offline, with editing blocked, when Cut could not check it at that moment; it is checked again.
+
 ## 0.6.120 - 2026-11-23
 - Controls that do not apply are no longer shown. The timeline toolbar follows the selected clip: no Speed for captions; no Color, Transform, Remove background or GIF for sound. The source monitor shows only the targets a source has. Pause is shown only on macOS, where it exists.
 - Dragging a clip from Assets onto the timeline overwrites at the drop position; hold Alt to insert it and push the rest to the right. A label shows which will happen.

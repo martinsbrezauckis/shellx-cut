@@ -219,7 +219,22 @@ jobs:
 
       - name: Install Windows test deps
         if: matrix.platform == 'windows-2025-vs2026'
-        run: choco install ffmpeg --no-progress -y
+        shell: bash
+        run: |
+          # The package manager can report success without installing anything
+          # when its feed is down, so each try is judged by whether ffmpeg is there.
+          for attempt in 1 2 3; do
+            choco install ffmpeg --no-progress -y || true
+            if command -v ffmpeg >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "FFmpeg install attempt $attempt left no ffmpeg; retrying in 30 seconds"
+              sleep 30
+            fi
+          done
+          echo "FFmpeg could not be installed after three attempts"
+          exit 1
 
       # Cut's render path uses ass (subtitles), vidstab (stabilisation) and zscale
       # (colour). An ffmpeg built without them does not fail honestly: tests die

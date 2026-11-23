@@ -26,6 +26,82 @@ fn edit_camera_bounds(rgb: &[u8]) -> [usize; 4] {
     }
     b
 }
+fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
+    let restored_camera = edit_camera_bounds(restored);
+    let before_camera = edit_camera_bounds(before);
+    let camera = [
+        restored_camera[0].min(before_camera[0]),
+        restored_camera[1].min(before_camera[1]),
+        restored_camera[2].max(before_camera[2]),
+        restored_camera[3].max(before_camera[3]),
+    ];
+    let mut max_channel_diff = 0_u8;
+    let mut over_4 = 0_usize;
+    let mut over_16 = 0_usize;
+    let mut bounds = [640, 360, 0, 0];
+    let mut restored_sums = [0_u64; 3];
+    let mut before_sums = [0_u64; 3];
+    let mut inside = (0_u64, 0_u64);
+    let mut outside = (0_u64, 0_u64);
+    let mut first_pixels = Vec::new();
+    let (restored_pixels, _) = restored.as_chunks::<3>();
+    let (before_pixels, _) = before.as_chunks::<3>();
+    for (pixel, (a, b)) in restored_pixels.iter().zip(before_pixels).enumerate() {
+        let x = pixel % 640;
+        let y = pixel / 640;
+        let in_camera = x >= camera[0] && x <= camera[2] && y >= camera[1] && y <= camera[3];
+        let mut differs = false;
+        for channel in 0..3 {
+            restored_sums[channel] += u64::from(a[channel]);
+            before_sums[channel] += u64::from(b[channel]);
+            let difference = a[channel].abs_diff(b[channel]);
+            max_channel_diff = max_channel_diff.max(difference);
+            if difference > 4 {
+                over_4 += 1;
+                differs = true;
+            }
+            if difference > 16 {
+                over_16 += 1;
+            }
+            let region = if in_camera { &mut inside } else { &mut outside };
+            region.0 += u64::from(difference);
+            region.1 += 1;
+        }
+        if differs {
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+            if first_pixels.len() < 8 {
+                first_pixels.push(format!("({x},{y}) {a:?} -> {b:?}"));
+            }
+        }
+    }
+    let pixels = (640 * 360) as f64;
+    let restored_mean = restored_sums.map(|sum| sum as f64 / pixels);
+    let before_mean = before_sums.map(|sum| sum as f64 / pixels);
+    let region_mean = |(sum, count): (u64, u64)| {
+        if count == 0 {
+            0.0
+        } else {
+            sum as f64 / count as f64
+        }
+    };
+    let processors = std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get);
+    let version = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.lines().next().map(str::to_owned))
+        .unwrap_or_else(|| "unavailable".to_owned());
+    format!(
+        "undo frame difference (RGB, 640x360):\nmax channel difference: {max_channel_diff}; channels >4: {over_4}; >16: {over_16}\ndiffering pixel bounds: {bounds:?}; camera bounds restored: {restored_camera:?}, before: {before_camera:?}\nmean RGB restored: {restored_mean:?}, before: {before_mean:?}\nmean absolute difference inside camera: {:.4}, outside: {:.4}\nfirst differing pixels (restored -> before): {}\nlogical processors: {processors}; ffmpeg: {version}",
+        region_mean(inside),
+        region_mean(outside),
+        first_pixels.join("; ")
+    )
+}
 async fn camera_manual_placement_case() {
     fn build(p: &mut record_core::EditPlan, c: &Path) {
         live_camera_plan(p, c, "position");
@@ -127,10 +203,14 @@ async fn camera_manual_placement_case() {
         );
         // Repeated JPEG/source decoding can round a few channels differently.
         // Require identical placement and tight pixel agreement, not byte identity.
-        assert!(restored
-            .iter()
-            .zip(&before_move)
-            .all(|(a, b)| a.abs_diff(*b) <= 4));
+        assert!(
+            restored
+                .iter()
+                .zip(&before_move)
+                .all(|(a, b)| a.abs_diff(*b) <= 4),
+            "{}",
+            edit_camera_difference(&restored, &before_move)
+        );
         let mean = restored
             .iter()
             .zip(&before_move)

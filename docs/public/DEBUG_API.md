@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: published; version=0.6.120; published=0.6.120 -->
+<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.120 source; v0.6.120 is the latest published release.
+This reference describes the Debug API in v0.6.121 source; v0.6.121 is the latest published release.
 
 ## Starting the server
 

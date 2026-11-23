@@ -114,7 +114,7 @@ where
                 .await;
                 let (verdict, cacheable) = match outcome {
                     Ok(Ok(verdict)) => (verdict, verdict.is_some()),
-                    Ok(Err(_)) => (Some(false), false),
+                    Ok(Err(_)) => (None, false),
                     Err(_) => (None, false),
                 };
                 // File replacement during decode cannot give the replacement

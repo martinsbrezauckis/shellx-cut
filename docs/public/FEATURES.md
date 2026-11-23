@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: published; version=0.6.120; published=0.6.120 -->
+<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,15 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
+## v0.6.121 published
+
+v0.6.121 remains the latest published release.
+
+- A picture in a project is no longer shown as offline, with editing blocked, when Cut could not check it at that moment; it is checked again.
+
 ## v0.6.120 published
 
-v0.6.120 remains the latest published release.
+This section records the published v0.6.120 release.
 
 - Controls that do not apply are no longer shown. The timeline toolbar follows the selected clip: no Speed for captions; no Color, Transform, Remove background or GIF for sound. The source monitor shows only the targets a source has. Pause is shown only on macOS, where it exists.
 - Dragging a clip from Assets onto the timeline overwrites at the drop position; hold Alt to insert it and push the rest to the right. A label shows which will happen.

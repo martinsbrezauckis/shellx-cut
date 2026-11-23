@@ -103,7 +103,27 @@ async fn camera_copy_refresh_case() {
     assert!(create.ok, "{:?}", create.error);
     camera_wait_job(&state, create.result.unwrap()["job_id"].as_str().unwrap()).await;
     close_camera_test_project_after_jobs_drain(&state, "before source rename").await;
-    std::fs::rename(&original, root.path().join("original-unavailable")).unwrap();
+    let unavailable = root.path().join("original-unavailable");
+    std::fs::rename(&original, &unavailable).unwrap_or_else(|error| {
+        let remaining = if cfg!(windows) {
+            match std::fs::read_dir(&original) {
+                Ok(entries) => format!(
+                    "; source folder entries: {:?}",
+                    entries
+                        .map(|entry| entry.map(|entry| entry.file_name()))
+                        .collect::<Vec<_>>()
+                ),
+                Err(list_error) => format!("; cannot list source folder: {list_error}"),
+            }
+        } else {
+            String::new()
+        };
+        panic!(
+            "rename project folder {} to {} failed: {error}{remaining}",
+            original.display(),
+            unavailable.display()
+        )
+    });
     assert!(!original.exists());
     let copy = destination.join("copy.cutproj");
     let state = AppState::new();

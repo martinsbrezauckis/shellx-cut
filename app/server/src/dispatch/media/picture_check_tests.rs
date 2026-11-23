@@ -85,6 +85,50 @@ async fn unchanged_pictures_do_not_start_another_decode_and_changed_picture_does
 }
 
 #[tokio::test]
+async fn failed_picture_check_is_not_offline_and_is_retried() {
+    let root = tempfile::tempdir().unwrap();
+    let state = project_with_pictures(root.path(), 1).await;
+    let starts = AtomicUsize::new(0);
+    for _ in 0..2 {
+        let result = media_check_with(&state, json!({}), |_, _, _| {
+            starts.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(CutError::new(
+                    error_codes::TOOL_MISSING,
+                    "picture check could not start",
+                    "try again",
+                ))
+            }
+        })
+        .await
+        .unwrap();
+        let report = result.result.unwrap();
+        assert_eq!(report["offline_count"], 0);
+        assert!(report["assets"][0].get("readable").is_none());
+    }
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn unreadable_picture_is_offline_and_its_verdict_is_remembered() {
+    let root = tempfile::tempdir().unwrap();
+    let state = project_with_pictures(root.path(), 1).await;
+    let starts = AtomicUsize::new(0);
+    for _ in 0..2 {
+        let result = media_check_with(&state, json!({}), |_, _, _| {
+            starts.fetch_add(1, Ordering::SeqCst);
+            async { Ok(Some(false)) }
+        })
+        .await
+        .unwrap();
+        let report = result.result.unwrap();
+        assert_eq!(report["offline_count"], 1);
+        assert_eq!(report["assets"][0]["readable"], false);
+    }
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn reopening_the_same_project_reuses_picture_verdicts() {
     let root = tempfile::tempdir().unwrap();
     let state = AppState::new();

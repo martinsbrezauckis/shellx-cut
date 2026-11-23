@@ -17,6 +17,7 @@ checks a still's decode before storing its probe. Existing projects
 still open. `media.check` preserves `exists` as file existence and adds
 `readable`; false also covers undecodable stills, included in `offline_count`.
 The preview uses its existing offline-source treatment for those pictures.
+When `readable` is absent, the picture is not checked yet; ask again later.
 
 | What a person calls it | What the verb is called |
 |---|---|
@@ -67,8 +68,8 @@ Example: "FFmpeg is missing. It is free software under the GNU GPL version 3
 (https://www.gnu.org/licenses/gpl-3.0.html). May I download it and accept that
 licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 
-<!-- shellx-cut-release-truth: published; version=0.6.120; published=0.6.120 -->
-> **Engine v0.6.120 published.** v0.6.120 is the latest published release.
+<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
+> **Engine v0.6.121 published.** v0.6.121 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **326 verbs across 34 domains** under the public verb contract.

@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.120",
+    "version": "0.6.121",
     "status": "published",
-    "published_version": "0.6.120"
+    "published_version": "0.6.121"
   },
   "mutation_controls": {
     "request_id": {
@@ -2670,7 +2670,7 @@
     {
       "name": "media.check",
       "domain": "media",
-      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, can a still picture be decoded, and how many timeline clips reference it. readable is false for a missing source or an undecodable still; exists continues to report file existence. offline_count includes unreadable stills. Existing projects with damaged pictures still open; the preview shows those clips as unreadable sources. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
+      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, can a still picture be decoded, and how many timeline clips reference it. readable is false for a missing source or an undecodable still; a missing readable means the picture is not checked yet and a later request will retry. exists continues to report file existence. offline_count includes unreadable stills, not pictures awaiting a check. Existing projects with damaged pictures still open; the preview shows those clips as unreadable sources. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
       "args": {
         "type": "object",
         "required": [],
@@ -2682,7 +2682,7 @@
           }
         }
       },
-      "result": "{count, offline_count, assets: [{asset, path, exists, readable: <false for missing or undecodable still>, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
+      "result": "{count, offline_count, assets: [{asset, path, exists, readable?: <false for missing or undecodable still; omitted when a picture is not checked yet>, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
