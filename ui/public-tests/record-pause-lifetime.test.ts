@@ -17,7 +17,7 @@ assert.equal(recordingTakePause({ ...engineStatus, pause: { enabled: true, state
 assert.equal(recordingTakePause({ capture_id: 'capture-a' }, 'capture-a'), null, 'missing engine facts are never guessed from a form')
 const reason = 'The native recorder cannot pause this take.'
 assert.deepEqual(recordingTakePause({ ...engineStatus, pause: { enabled: false, state: 'unavailable', reason } }, 'capture-a'),
-  { enabled: false, state: 'idle', message: reason })
+  { enabled: false, state: 'idle', message: 'The recorder cannot pause this take.' })
 
 // A paused take says the time as minutes:seconds and what to do next, in words a
 // person uses: no milliseconds and no word about the engine's journal.

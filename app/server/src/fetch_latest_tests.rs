@@ -1,5 +1,4 @@
-//! Retry, size-limit and fail-closed checksum tests for the registry route
-//! (uv: the publisher's per-asset `.sha256` read before each archive).
+//! Pinned uv archive, retry, and size-limit tests for the built-in registry.
 
 use super::*;
 
@@ -20,11 +19,7 @@ fn retry_classification_excludes_permanent_http_errors() {
         "https://example.test/a",
         ureq::Error::StatusCode(404),
     );
-    assert_eq!(
-        gone.status,
-        Some(404),
-        "the status lets a pinned download say the file is gone"
-    );
+    assert_eq!(gone.status, Some(404));
     for error in [ureq::Error::StatusCode(400), ureq::Error::StatusCode(403)] {
         assert!(
             !FetchAttemptError::network("download", "https://example.test/archive", error)
@@ -87,15 +82,6 @@ fn served_body(
 }
 
 #[test]
-fn checksum_manifest_without_length_is_bounded_after_decoding() {
-    let (url, server) = served_body(vec![b'a'; 17], None);
-    let error = http_get_string_with_limit(&url, 16).unwrap_err();
-    server.join().unwrap();
-    assert!(error.error.message.contains("checksum manifest exceeds"));
-    assert!(!error.transient);
-}
-
-#[test]
 fn archive_without_length_stops_before_writing_over_limit() {
     let (url, server) = served_body(vec![b'a'; 17], None);
     let tmp = tempfile::tempdir().unwrap();
@@ -118,22 +104,43 @@ fn false_oversized_content_length_is_rejected_before_staging() {
     assert!(!dest.exists());
 }
 
-/// The uv asset for Windows and its per-asset checksum file name.
-fn uv() -> (ToolSpec, String, String) {
-    let spec = tool_spec("uv", "windows", "x86_64").unwrap();
-    let asset = spec.asset.to_string();
-    let sum = format!("{asset}.sha256");
-    (spec, asset, sum)
+fn uv() -> ToolSpec {
+    tool_spec("uv", "windows", "x86_64").unwrap()
 }
 
 #[test]
-fn checksum_404_recovers_with_fresh_checksum_and_verified_archive() {
-    let (spec, asset, sum) = uv();
-    let archive = b"current archive".to_vec();
+fn source_pins_every_downloadable_uv_platform() {
+    let platforms = [
+        ("windows", "x86_64"),
+        ("windows", "aarch64"),
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("macos", "aarch64"),
+        ("macos", "x86_64"),
+    ];
+    for (os, arch) in platforms {
+        let spec = tool_spec("uv", os, arch).expect("supported platform needs a source pin");
+        assert_eq!(spec.base, UV_BASE);
+        assert!(spec.base.ends_with("/releases/download/0.13.9"));
+        assert_eq!(spec.sha256.len(), 64, "{os}/{arch}");
+        assert!(
+            spec.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{os}/{arch}"
+        );
+    }
+    assert!(tool_spec("uv", "freebsd", "x86_64").is_none());
+    assert!(tool_spec("uv", "linux", "riscv64").is_none());
+}
+
+#[test]
+fn archive_503_retries_and_accepts_matching_source_digest() {
+    let mut spec = uv();
+    let asset = spec.asset.to_string();
+    let archive = b"known archive".to_vec();
     let digest = hex::encode(Sha256::digest(&archive));
+    spec.sha256 = Box::leak(digest.clone().into_boxed_str());
     let (base, server) = served_attempts(vec![
-        (sum.clone(), 404, vec![]),
-        (sum, 200, format!("{digest}  {asset}\n").into_bytes()),
+        (asset.clone(), 503, vec![]),
         (asset.clone(), 200, archive.clone()),
     ]);
     let temp = tempfile::tempdir().unwrap();
@@ -154,40 +161,13 @@ fn checksum_404_recovers_with_fresh_checksum_and_verified_archive() {
 }
 
 #[test]
-fn archive_503_restarts_at_the_current_checksum() {
-    let (spec, asset, sum) = uv();
-    let archive = b"fresh archive".to_vec();
-    let digest = hex::encode(Sha256::digest(&archive));
-    let checksum = format!("{digest}  {asset}\n").into_bytes();
+fn persistent_404_preserves_status_and_never_installs() {
+    let spec = uv();
+    let asset = spec.asset.to_string();
     let (base, server) = served_attempts(vec![
-        (sum.clone(), 200, checksum.clone()),
-        (asset.clone(), 503, vec![]),
-        (sum, 200, checksum),
-        (asset.clone(), 200, archive.clone()),
-    ]);
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(&asset);
-    let (_, got) = fetch_verified_archive(
-        &spec,
-        &format!("{base}/{asset}"),
-        &path,
-        &|_, _| {},
-        &[Duration::ZERO],
-        |_| {},
-    )
-    .unwrap();
-    server.join().unwrap();
-    assert_eq!(got, digest);
-    assert_eq!(std::fs::read(path).unwrap(), archive);
-}
-
-#[test]
-fn persistent_404_preserves_the_last_status_and_never_downloads() {
-    let (spec, asset, sum) = uv();
-    let (base, server) = served_attempts(vec![
-        (sum.clone(), 404, vec![]),
-        (sum.clone(), 404, vec![]),
-        (sum.clone(), 404, vec![]),
+        (asset.clone(), 404, vec![]),
+        (asset.clone(), 404, vec![]),
+        (asset.clone(), 404, vec![]),
     ]);
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join(&asset);
@@ -202,36 +182,41 @@ fn persistent_404_preserves_the_last_status_and_never_downloads() {
     .unwrap_err();
     server.join().unwrap();
     assert!(error.cause.contains("http status: 404"));
-    assert!(error.cause.contains(&sum));
     assert!(!path.exists());
 }
 
 #[test]
-fn publisher_checksum_mismatch_fails_closed_without_retry() {
-    let (spec, asset, sum) = uv();
-    let (base, server) = served_attempts(vec![
-        (
-            sum,
-            200,
-            format!("{}  {asset}\n", "f".repeat(64)).into_bytes(),
-        ),
-        (asset.clone(), 200, b"different archive".to_vec()),
-    ]);
+fn same_host_checksum_cannot_authorize_changed_archive() {
+    let spec = uv();
+    let asset = spec.asset.to_string();
+    let changed = b"changed release archive".to_vec();
+    let matching_sibling = hex::encode(Sha256::digest(&changed));
+    let (base, server) = served_attempts(vec![(asset.clone(), 200, changed)]);
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(&asset);
     let error = fetch_verified_archive(
         &spec,
         &format!("{base}/{asset}"),
-        &path,
+        &temp.path().join(&asset),
         &|_, _| {},
-        &[Duration::ZERO],
-        |_| panic!("checksum mismatch must not retry"),
+        &[],
+        |_| {},
     )
     .unwrap_err();
     server.join().unwrap();
-    assert!(error.message.contains("sha256 mismatch"));
-    assert_ne!(
-        hex::encode(Sha256::digest(std::fs::read(path).unwrap())),
-        "f".repeat(64)
+    assert_ne!(matching_sibling, spec.sha256);
+    assert_eq!(
+        error.message,
+        "The download did not match what Cut expects. Nothing was installed. Try again later."
     );
+    assert!(error.cause.contains(spec.sha256));
+}
+
+#[test]
+fn platform_without_a_pin_is_refused_before_download() {
+    assert!(tool_spec("uv", "freebsd", "x86_64").is_none());
+    let error = no_builtin_download("uv", "freebsd", "x86_64");
+    assert_eq!(error.code, error_codes::UNSUPPORTED_PLATFORM);
+    assert!(error.message.contains("freebsd/x86_64"));
+    assert!(error.cause.contains("verified publisher build"));
+    assert!(error.suggested_action.unwrap().contains("Install Cut"));
 }

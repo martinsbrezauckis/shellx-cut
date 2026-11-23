@@ -140,8 +140,12 @@ async fn camera_copy_refresh_case() {
     assert!(!original.exists());
 }
 
+// A slow shared machine (the public macOS runner) needs more than 30 s for one
+// bake while the other tests run; the limit only stops a job that never ends.
+const CAMERA_JOB_WAIT_STEPS: usize = 6_000; // 6,000 steps of 50 ms = 5 minutes
+
 async fn camera_wait_job(state: &AppState, id: &str) {
-    for _ in 0..600 {
+    for _ in 0..CAMERA_JOB_WAIT_STEPS {
         let job = state.jobs.get(id).unwrap();
         if job.state == crate::jobs::JobState::Done {
             return;

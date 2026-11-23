@@ -564,7 +564,8 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
             .unwrap()
             .to_string();
         let mut done = None;
-        for _ in 0..600 {
+        // 5 minutes: a slow shared machine needs more than 30 s for this bake.
+        for _ in 0..6_000 {
             let job = state.jobs.get(&id).unwrap();
             if matches!(
                 job.state,

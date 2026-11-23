@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { clockAfterPauseChange, limitSecondsLeft, recordedMs, startRecordingClock, type RecordingClock } from './recordingClock'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { clockAfterPauseChange, limitSecondsLeft, recordedMs, restoreRecordingClock, type RecordingClock } from './recordingClock'
 import type { RecordingPauseBoundary, RecordingPauseState } from './recordingPause'
 
 interface RecordedElapsedInput {
+  captureId: string | null
   /** True while a take is being recorded. */
   recording: boolean
   /** Wall-clock start of the take (first frame); null before there is one. */
@@ -20,11 +21,13 @@ interface RecordedElapsedInput {
  * pause and stay ahead of the take after Resume). The seconds left follow the
  * recorder's limit, which is a wall-clock deadline that a pause does not move.
  */
-export function useRecordedElapsed({ recording, startedAt, pauseState, pauseBoundary, capMs }: RecordedElapsedInput) {
+export function useRecordedElapsed({ captureId, recording, startedAt, pauseState, pauseBoundary, capMs }: RecordedElapsedInput) {
   const [elapsed, setElapsed] = useState(0)
   const [remaining, setRemaining] = useState(0)
   const clockRef = useRef<RecordingClock | null>(null)
-  const takeRef = useRef<number | null>(null)
+  const takeRef = useRef<string | null>(null)
+  const [clockWarning, setClockWarning] = useState<string | null>(null)
+  const getRecordedMs = useCallback(() => clockRef.current ? recordedMs(clockRef.current, Date.now()) : 0, [])
   const tick = useCallback(() => {
     const clock = clockRef.current
     if (!clock) return
@@ -33,15 +36,21 @@ export function useRecordedElapsed({ recording, startedAt, pauseState, pauseBoun
     setRemaining(capMs === null || startedAt === null ? 0 : limitSecondsLeft(capMs, startedAt, now))
   }, [capMs, startedAt])
 
-  useEffect(() => {
-    if (!recording || !startedAt) { clockRef.current = null; takeRef.current = null; return }
-    if (clockRef.current === null || takeRef.current !== startedAt) {
-      clockRef.current = startRecordingClock(startedAt)
-      takeRef.current = startedAt
+  useLayoutEffect(() => {
+    if (!recording || startedAt === null || !captureId) { clockRef.current = null; takeRef.current = null; return }
+    const key = 'cut.recorded-clock'
+    if (clockRef.current === null || takeRef.current !== captureId) {
+      let saved: string | null = null
+      try { saved = sessionStorage.getItem(key) }
+      catch { setClockWarning('The recording timer cannot be kept after a reload in this window. Keep this page open until you stop.') }
+      clockRef.current = restoreRecordingClock(saved, captureId, startedAt)
+      takeRef.current = captureId
     }
     clockRef.current = clockAfterPauseChange(clockRef.current, pauseState, pauseBoundary, Date.now())
+    try { sessionStorage.setItem(key, JSON.stringify({ captureId, clock: clockRef.current })) }
+    catch { setClockWarning('The recording timer cannot be kept after a reload in this window. Keep this page open until you stop.') }
     tick()
-  }, [recording, startedAt, pauseState, pauseBoundary, tick])
+  }, [captureId, recording, startedAt, pauseState, pauseBoundary, tick])
 
   useEffect(() => {
     if (!recording || !startedAt) return
@@ -49,5 +58,5 @@ export function useRecordedElapsed({ recording, startedAt, pauseState, pauseBoun
     return () => window.clearInterval(timer)
   }, [recording, startedAt, tick])
 
-  return { elapsed, remaining }
+  return { elapsed, remaining, getRecordedMs, clockWarning }
 }

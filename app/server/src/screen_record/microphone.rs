@@ -62,6 +62,11 @@ fn public_endpoints() -> Vec<(record_capture::MicrophoneEndpointRef, PublicMicro
         .collect()
 }
 
+/// Mirrors the native endpoint-selection platforms without listing any inputs.
+pub(super) const fn choice_supported() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+}
+
 fn selection_projection(
     loaded: &preference::Loaded,
     endpoints: &[(record_capture::MicrophoneEndpointRef, PublicMicrophone)],
@@ -77,7 +82,7 @@ fn selection_projection(
         (preference::Mode::SystemDefault, None) => MicrophoneSelection {
             mode: "system_default",
             label: None,
-            status: if endpoints.is_empty() {
+            status: if !choice_supported() || endpoints.is_empty() {
                 "system_default_only"
             } else {
                 "ready"

@@ -1,9 +1,10 @@
+import { Availability, type AvailabilitySubject } from '../../lib/availability'
 import type { TimeDisplayMode, LaidItem } from './layout'
 import { formatClock, ZOOM_KEY_FACTOR } from './layout'
 import { TIME_DISPLAY_LABEL, TIME_DISPLAY_TITLE } from '../../lib/timedisplay'
 import { Icon } from '../../icons'
 import SpeedControl from './SpeedControl'
-import TimelineSaveActions from './TimelineSaveActions'
+import TimelineSaveActions, { TimelineGifAction } from './TimelineSaveActions'
 import TimelineAutomationMenu from './TimelineAutomationMenu'
 import type { Project } from '../../lib/client'
 
@@ -80,9 +81,13 @@ export default function TimelineToolbar({
   onAskAgent,
 }: TimelineToolbarProps) {
   const hasSelectedVideo = selectedMedia.some((i) => i.kind === 'video')
+  const subject: AvailabilitySubject = {
+    selectedKinds: [...selectedMedia.flatMap(item => item.kind === 'gap' ? [] : [item.contentClass === 'gap' ? item.kind : item.contentClass ?? item.kind]),
+      ...Array.from({ length: Math.max(0, selectedClipCount - selectedMedia.length) }, () => 'caption' as const)],
+  }
   const zoomLabel = `${zoom >= 1 ? zoom.toFixed(1) : zoom.toFixed(2)}\u00d7`
   return (
-    <div className="tl-toolbar" data-cut-timeline-toolbar>
+    <div className="tl-toolbar" data-cut-timeline-toolbar data-cut-action="timeline-toolbar">
       <button
         className="tl-tc-chip"
         data-cut-tc-readout
@@ -200,12 +205,16 @@ export default function TimelineToolbar({
           Lift del
         </button>
         <span className="tl-tool-sep" aria-hidden="true" />
-        <SpeedControl
-          disabled={!selectedMedia.length}
-          current={selectionSpeed}
-          onSet={onSetSpeed}
-        />
-        <span className="tl-tool-sep" aria-hidden="true" />
+        <Availability rule="editing.speed" subject={subject}>
+          <span data-cut-action="timeline-speed" style={{ display: 'contents' }}>
+          <SpeedControl
+            disabled={!selectedMedia.length}
+            current={selectionSpeed}
+            onSet={onSetSpeed}
+          />
+          </span>
+        </Availability>
+        <Availability rule="editing.picture-tools" subject={subject}>
         <button
           type="button"
           className="tl-tool"
@@ -236,9 +245,15 @@ export default function TimelineToolbar({
         >
           Remove background
         </button>
+        </Availability>
+        <Availability rule="editing.gif" subject={subject}>
+          <span data-cut-action="timeline-gif" style={{ display: 'contents' }}>
+            <TimelineGifAction canSaveGif={hasSelectedVideo} savingGif={savingGif} onSaveGif={onSaveGif} />
+          </span>
+        </Availability>
         <button
           type="button"
-          className="tl-tool"
+          className="tl-tool tl-tool--right"
           data-cut-action="timeline-ask-agent"
           disabled={!canAskAgent}
           title="Open Agent Chat with this selected timeline target"
@@ -249,12 +264,9 @@ export default function TimelineToolbar({
         </button>
         <TimelineSaveActions
           canSaveRange={selectedMedia.length > 0}
-          canSaveGif={hasSelectedVideo}
           savingRange={savingRange}
-          savingGif={savingGif}
           saveNote={saveNote}
           onSaveRange={onSaveRange}
-          onSaveGif={onSaveGif}
         />
       </div>
       {syncNote && (

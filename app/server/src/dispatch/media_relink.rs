@@ -135,6 +135,17 @@ pub(super) async fn media_relink_apply(
         .with_suggested_action("run media.relink_preview again; no assets were changed"));
     }
     let accepted = accepted_changes(&prepared.plan, &args.accept)?;
+    let pictures = accepted
+        .iter()
+        .map(|change| PathBuf::from(&change.chosen_path))
+        .collect::<Vec<_>>();
+    run_blocking("media.relink_apply.picture", move || {
+        for source in pictures {
+            cut_media::picture_decode::check_if_picture(&source)?;
+        }
+        Ok(())
+    })
+    .await?;
     let (op, post_revision, warnings) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;

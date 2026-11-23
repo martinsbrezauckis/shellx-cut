@@ -1,8 +1,9 @@
 import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { callVerb, type Project } from '../lib/client'
 import { getGenerateProxies } from '../lib/proxyPref'
-import { isTauri, pickMedia } from '../lib/tauri'
-import { publishUserActionFailure, TOOL_MISSING } from '../lib/userActionFeedback'
+import { availabilitySentence, useAvailability } from '../lib/availability'
+import { pickMedia } from '../lib/tauri'
+import { publishUserActionFailure, publishUserActionMessage, TOOL_MISSING } from '../lib/userActionFeedback'
 import type { LayoutState } from '../layout/useLayout'
 
 interface AppImportEventsArgs {
@@ -13,6 +14,7 @@ interface AppImportEventsArgs {
 
 /** Bridges every cut:open-import affordance to the same real media.import path. */
 export function useAppImportEvents({ project, onChanged, setLayout }: AppImportEventsArgs) {
+  const importAvailability = useAvailability('shell.desktop')
   const projectRef = useRef(project)
   projectRef.current = project
   const onChangedRef = useRef(onChanged)
@@ -22,7 +24,14 @@ export function useAppImportEvents({ project, onChanged, setLayout }: AppImportE
     const openAssets = () => setLayout((l) => ({ ...l, leftTab: 'assets', leftCollapsed: false }))
     const onOpenImport = async () => {
       openAssets()
-      if (!projectRef.current || !isTauri()) return
+      if (importAvailability.state === 'absent') {
+        publishUserActionMessage(availabilitySentence('shell.desktop'))
+        return
+      }
+      if (!projectRef.current) {
+        publishUserActionMessage('Create a project in Projects to begin.')
+        return
+      }
       const paths = (await pickMedia()).map((p) => p.trim()).filter(Boolean)
       if (!paths.length) return
 
@@ -47,5 +56,5 @@ export function useAppImportEvents({ project, onChanged, setLayout }: AppImportE
 
     document.addEventListener('cut:open-import', onOpenImport)
     return () => document.removeEventListener('cut:open-import', onOpenImport)
-  }, [setLayout])
+  }, [importAvailability.state, setLayout])
 }

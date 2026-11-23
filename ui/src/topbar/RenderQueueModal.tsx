@@ -16,8 +16,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type VerbArgs } from '../lib/client'
 import { outputDirectoryForPath } from '../lib/exportDestination'
+import { Availability, availabilitySentence, useAvailability } from '../lib/availability'
 import { mediaBasename } from '../lib/mediaPath'
-import { isTauri, pickRenderOutput } from '../lib/tauri'
+import { pickRenderOutput } from '../lib/tauri'
 import { Icon } from '../icons'
 import type { VideoPreflightStatus } from './videoPreflight'
 import { useBlockingOverlay } from '../components/overlay/useBlockingOverlay'
@@ -71,6 +72,7 @@ export default function RenderQueueModal({ onClose, onPreflight, owner }: Render
   const overlay = useBlockingOverlay<HTMLDivElement>(onClose)
   const { rows, phase, error: err, admitted, progress, result: queue } = owner.state
   const queueId = admitted?.id ?? null
+  const outputAvailability = useAvailability('shell.desktop')
   const [pickerNote, setPickerNote] = useState<string | null>(null)
   const cancelled = useRef(false)
   const submitting = useRef(false)
@@ -105,8 +107,8 @@ export default function RenderQueueModal({ onClose, onPreflight, owner }: Render
   const chooseOutput = async (i: number) => {
     if (submitting.current) return
     setPickerNote(null)
-    if (!isTauri()) {
-      setPickerNote('Open the desktop app to choose an output file.')
+    if (outputAvailability.state === 'absent') {
+      setPickerNote(availabilitySentence('shell.desktop'))
       return
     }
     const epoch = owner.intentEpoch()
@@ -203,13 +205,16 @@ export default function RenderQueueModal({ onClose, onPreflight, owner }: Render
                     className="rq-out"
                     data-cut-render-queue-output={i}
                   >{r.output ? mediaBasename(r.output) : 'Default exports folder'}</span>
-                  <button
-                    className="rq-pick"
-                    data-cut-render-queue-output-pick={i}
-                    title={r.output ? 'Change output file' : 'Choose output file'}
-                    aria-label={`${r.output ? 'Change' : 'Choose'} output file for delivery ${i + 1}`}
-                    onClick={() => void chooseOutput(i)}
-                  ><Icon name="save" size={14} label="Choose output file" /></button>
+                  <Availability rule="shell.desktop">
+                    <button
+                      className="rq-pick"
+                      data-cut-action="render-queue-output-pick"
+                      data-cut-render-queue-output-pick={i}
+                      title={r.output ? 'Change output file' : 'Choose output file'}
+                      aria-label={`${r.output ? 'Change' : 'Choose'} output file for delivery ${i + 1}`}
+                      onClick={() => void chooseOutput(i)}
+                    ><Icon name="save" size={14} label="Choose output file" /></button>
+                  </Availability>
                   {r.output && <button
                     className="rq-row-x"
                     data-cut-render-queue-output-clear={i}

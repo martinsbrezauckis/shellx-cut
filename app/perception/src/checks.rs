@@ -777,6 +777,9 @@ pub struct PregateRisk {
     /// Human-readable explanation carrying the NUMBERS behind the verdict
     /// (the verify.* "read facts, not vibes" rule).
     pub detail: String,
+    /// Editor steps and available commands to address this risk before export.
+    #[serde(default)]
+    pub suggested_action: String,
     /// Timeline span [start,end) the risk localizes to, when one applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range_ms: Option<[u64; 2]>,
@@ -805,6 +808,10 @@ pub struct PregateReport {
     /// uninstrumented footage is WEAKER than one over analyzed footage, and a
     /// reader must be able to tell the two apart.
     pub uninstrumented_assets: Vec<String>,
+}
+
+fn silent_output_action() -> String {
+    "Listen to the timeline; add sound (audio.add_music or edit.overwrite on a sound track), or unmute a sound track (edit.mute with on:false). Use project.state to choose the track. Export anyway if silence is intentional.".into()
 }
 
 /// pregate — the PRE-render predictive quality gate (verify.pregate). PURE +
@@ -856,6 +863,7 @@ pub fn pregate(
             risks.push(PregateRisk {
                 kind: "empty_tail".into(),
                 severity: "high".into(),
+                suggested_action: "In the timeline, trim the ending, shorten the sound (edit.trim), or add picture (edit.overwrite) over range_ms. Use project.state to choose the clips and tracks. Export anyway only if the black ending is intentional.".into(),
                 detail: format!(
                     "the timeline is {duration_ms}ms but the last video clip ends at \
                      {last_video_end}ms — the final {tail}ms render as BLACK frames \
@@ -902,6 +910,7 @@ pub fn pregate(
             risks.push(PregateRisk {
                 kind: "black_or_frozen".into(),
                 severity: "high".into(),
+                suggested_action: "Review the clip at range_ms in the timeline; trim or replace unwanted black or frozen footage (edit.trim or edit.replace). A still picture can be intentional in a screen recording; keep it if intended.".into(),
                 detail: format!(
                     "clip {} (asset {asset}) shows ~{tl_ms}ms of {kind_word} frames \
                      ({black_src}ms black + {frozen_src}ms frozen of source) — dead \
@@ -935,6 +944,7 @@ pub fn pregate(
                 risks.push(PregateRisk {
                     kind: "slideshow_risk".into(),
                     severity: "med".into(),
+                    suggested_action: "In the timeline, add cuts or movement, or shorten shots if the long holds are not intentional. Use edit.split and edit.replace to cut to different footage, or edit.trim to shorten a shot.".into(),
                     detail: format!(
                         "{shot_count} shot(s) over {duration_ms}ms = {cpm:.2} cuts/min \
                          (mean shot {mean}ms) — at or below {:.1} cuts/min the base video \
@@ -973,6 +983,7 @@ pub fn pregate(
             risks.push(PregateRisk {
                 kind: "silent_output".into(),
                 severity: "med".into(),
+                suggested_action: silent_output_action(),
                 detail: "the timeline has no audio-bearing clip — the render will be \
                          entirely silent (add a VO/music track, or this is intentional \
                          silent footage)"
@@ -1015,6 +1026,7 @@ pub fn pregate(
                     risks.push(PregateRisk {
                         kind: "silent_output".into(),
                         severity: "med".into(),
+                        suggested_action: silent_output_action(),
                         detail: format!(
                             "audio-bearing clips are ~{:.0}% silence ({silent_tl}ms of \
                              {covered_tl}ms measured) — the render is effectively silent",
@@ -1049,6 +1061,7 @@ pub fn pregate(
         risks.push(PregateRisk {
             kind: "tiny_or_zero_clips".into(),
             severity: "med".into(),
+            suggested_action: "In the timeline, delete or lengthen the named clips to at least one project frame. Use edit.ripple_delete over the unwanted clip's range, or edit.trim to lengthen it when source footage is available; project.state lists subframe_clips.".into(),
             detail: format!(
                 "{} clip(s) are shorter than one frame ({frame_ms}ms @ {:.0}fps) and \
                  won't render a visible frame: {}",
@@ -1077,6 +1090,7 @@ pub fn pregate(
             risks.push(PregateRisk {
                 kind: "uniform_border".into(),
                 severity: "low".into(),
+                suggested_action: "Select the clip in the timeline and crop it in the Inspector (edit.crop) to remove the black bands. Keep the border if it is intentional.".into(),
                 detail: format!(
                     "asset {asset} has a baked-in uniform border (letterbox/pillarbox) — \
                      edit.crop to its content bbox before render, or the output ships \
@@ -3940,6 +3954,18 @@ mod tests {
         r.risks.iter().find(|x| x.kind == kind)
     }
 
+    fn assert_risk_action(risk: &PregateRisk, expected: &[&str]) {
+        let value = serde_json::to_value(risk).unwrap();
+        let action = value["suggested_action"].as_str().unwrap_or("");
+        for text in expected {
+            assert!(
+                action.contains(text),
+                "{} action must contain {text:?}: {action:?}",
+                risk.kind
+            );
+        }
+    }
+
     /// Push a media clip onto a named track of the project.
     fn push_media(p: &mut Project, track: &str, id: &str, src_in: u64, src_out: u64) {
         p.track_mut(track)
@@ -3974,6 +4000,16 @@ mod tests {
         let t = risk(&r, "empty_tail").expect("empty_tail risk present");
         assert_eq!(t.severity, "high");
         assert_eq!(t.range_ms, Some([4000, 8000]), "tail span localized");
+        assert_risk_action(
+            t,
+            &[
+                "trim the ending",
+                "shorten the sound",
+                "add picture",
+                "edit.trim",
+                "edit.overwrite",
+            ],
+        );
     }
 
     /// A trailing GAP on the video track also extends the timeline past the last
@@ -4021,6 +4057,7 @@ mod tests {
         assert_eq!(b.severity, "high");
         assert_eq!(b.range_ms, Some([0, 5000]));
         assert!(b.detail.contains("2000ms black"), "detail: {}", b.detail);
+        assert_risk_action(b, &["trim or replace", "edit.trim", "edit.replace"]);
         // The asset WAS analyzed → provenance reflects it.
         assert_eq!(r.perception_assets, 1);
         assert!(r.uninstrumented_assets.is_empty());
@@ -4036,6 +4073,15 @@ mod tests {
         let r = pregate(&edl, 30.0, &no_reports(), PregateOpts::default());
         let s = risk(&r, "slideshow_risk").expect("slideshow risk present");
         assert_eq!(s.severity, "med");
+        assert_risk_action(
+            s,
+            &[
+                "add cuts or movement",
+                "shorten shots",
+                "edit.split",
+                "edit.trim",
+            ],
+        );
         assert!(r.pass, "a MED slideshow must NOT block the gate");
     }
 
@@ -4048,6 +4094,10 @@ mod tests {
         let r = pregate(&edl, 30.0, &no_reports(), PregateOpts::default());
         let s = risk(&r, "silent_output").expect("silent_output present");
         assert_eq!(s.severity, "med");
+        assert_risk_action(
+            s,
+            &["add sound", "unmute", "audio.add_music", "intentional"],
+        );
         assert!(r.pass);
     }
 
@@ -4085,6 +4135,10 @@ mod tests {
         let t = risk(&r, "tiny_or_zero_clips").expect("tiny risk present");
         assert_eq!(t.severity, "med");
         assert!(t.detail.contains("c2"), "names the offender: {}", t.detail);
+        assert_risk_action(
+            t,
+            &["delete or lengthen", "edit.ripple_delete", "edit.trim"],
+        );
         assert!(r.pass, "tiny clip is MED, not blocking");
     }
 
@@ -4111,6 +4165,7 @@ mod tests {
         let r = pregate(&edl, 30.0, &reports, PregateOpts::default());
         let u = risk(&r, "uniform_border").expect("uniform_border present");
         assert_eq!(u.severity, "low");
+        assert_risk_action(u, &["crop", "Inspector", "edit.crop", "intentional"]);
         assert!(r.pass, "LOW does not block the gate");
     }
 

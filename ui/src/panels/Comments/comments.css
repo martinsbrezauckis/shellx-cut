@@ -16,7 +16,8 @@
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 12px;
   padding: 10px 10px 8px 12px;
 }
 .cm__title {

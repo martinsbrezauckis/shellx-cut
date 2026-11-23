@@ -54,6 +54,15 @@ export interface DoctorReport {
   os: string
   arch: string
   app_version: string
+  /** Fixed facts, no device/permission probe. Older engines omit the field. */
+  availability?: {
+    pause?: boolean
+    camera?: boolean
+    live_timer?: boolean
+    microphone_choice?: boolean
+    source_preview?: boolean
+    managed_motion?: boolean
+  }
   addr?: string
   cards: DoctorCard[]
   /** true when the ESSENTIAL deps (ffmpeg) are ok — false surfaces the wizard. */
@@ -444,6 +453,7 @@ export type PremiumMatteAvailability = 'missing' | 'ready' | 'hardware-unavailab
 /** Present the actual Premium card without treating every unavailable rung as absent. */
 export function premiumMatteAvailability(card: Pick<DoctorCard, 'status' | 'details'> | null | undefined): PremiumMatteAvailability {
   if (!card) return 'unverified'
+  if (card.details?.installed !== true && card.details?.setup_supported === false) return 'hardware-unavailable'
   if (card.status === 'ok') return 'ready'
   if (card.status === 'missing') return 'missing'
   if (card.status === 'unknown') return 'unverified'

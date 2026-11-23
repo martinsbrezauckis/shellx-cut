@@ -6,9 +6,10 @@ const fallback: Record<Exclude<PremiumMatteAvailability, 'missing' | 'ready'>, s
   unavailable: 'Premium could not be prepared. Check the diagnostic hint, then re-check.',
 }
 
-export function PremiumTierPanel({ availability, hint, installing, error, context, onInstall, onRecheck }: {
+export function PremiumTierPanel({ availability, hint, setupBlocked = false, installing, error, context, onInstall, onRecheck }: {
   availability: PremiumMatteAvailability
   hint: string | null
+  setupBlocked?: boolean
   installing: string | null
   error: string | null
   context: 'requirements' | 'controls'
@@ -24,7 +25,7 @@ export function PremiumTierPanel({ availability, hint, installing, error, contex
       <div className="cd-result-head">Premium — MatAnyone2 (pick the subject)</div>
       {missing ? (
         <>
-          <p className="cd-note">Cleaner edges + temporal stability + click-to-pick WHICH subject. NVIDIA GPU, ~135 MB,
+          <p className="cd-note">Cleaner edges + temporal stability + click-to-pick WHICH subject. NVIDIA GPU. Models: 141 MB + 323 MB + 323 MB (about 790 MB), plus several GB for tools;
             <strong> non-commercial license (NTU S-Lab 1.0)</strong> — installing accepts it.</p>
           <button className="cd-btn" data-cut-matte-install-premium disabled={installing !== null} onClick={onInstall}>
             {installing === 'matanyone' ? 'Installing…' : 'Install Premium (accept non-commercial)'}
@@ -35,6 +36,7 @@ export function PremiumTierPanel({ availability, hint, installing, error, contex
           {availability === 'hardware-unavailable' && hint && ' Use Standard (RVM), or run Premium on a supported NVIDIA machine.'}
         </p>
       )}
+      {setupBlocked && <button className="cd-btn cd-btn--primary" data-cut-action="matte-install-premium-blocked" disabled title={hint ?? undefined}>Install Premium</button>}
       {context === 'controls' && (
         <>
           <div style={{ height: 8 }} />

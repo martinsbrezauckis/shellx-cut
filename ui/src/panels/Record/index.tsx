@@ -1,11 +1,11 @@
-import { recordingInputUnavailable } from './recordingUiModel'
+import { keystrokesUnavailableNotice, recordingInputUnavailable } from './recordingUiModel'
 import { RecordingInputHookWarning } from './RecordingInputHookWarning'
 // panels/Record — full-surface capture: Doctor → start → stop → optional polish.
 // It defaults to an open-ended F9-stoppable recording; duration choices are caps.
 // Selected monitor/window identities pass through the verb unchanged for native revalidation.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { callVerb, type Project } from '../../lib/client'
+import { callVerb, type ControlledVerbArgs, type Project } from '../../lib/client'
 import { shouldIgnoreGlobalShortcut } from '../../lib/dom'
 import { matchesFixedAction } from '../../lib/keymap'
 import {
@@ -13,10 +13,11 @@ import {
   onRecordHotkeyCapability,
   type RecordHotkeyCapability,
 } from '../../lib/tauri'
-import { runUserVerb } from '../../lib/userActionFeedback'
+import { USER_ACTION_FEEDBACK_EVENT, userActionFailureDetail } from '../../lib/userActionFeedback'
 import { StudioControls } from './StudioControls'
 import { StudioPreview } from './StudioPreview'
 import { RecordingVideoTimerControl } from './RecordingVideoTimerControl'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { RecordingPauseControl } from './RecordingPauseControl'
 import { RegionPickerOverlay } from './RegionPickerOverlay'
 import type { MonitorInfo, WindowInfo } from './RecordingSourceControl'
@@ -57,6 +58,7 @@ import { useRecordingQuality } from './useRecordingQuality'
 import {
   DUR_PRESETS,
   fmtElapsed,
+  recordingNotice,
   type RecordCard,
 } from './recordingUiModel'
 import {
@@ -117,6 +119,23 @@ type Phase = 'idle' | 'recording' | 'finalizing' | 'done' | 'error'
 // an in-page keydown FALLBACK here, covering the focused-window case and the
 // plain web/dev build (where there is no shell to register the OS-level hotkey).
 const SHORTCUT_LABEL = 'F9'
+
+/** Keep the shared failure notice and agent reason, but not its raw engine wording. */
+async function runRecordingEvent(name: 'screen_record.studio_event', args: ControlledVerbArgs<'screen_record.studio_event'>, fallback: string) {
+  try {
+    const result = await callVerb(name, args)
+    const detail = userActionFailureDetail(name, result, fallback)
+    if (detail) document.dispatchEvent(new CustomEvent(USER_ACTION_FEEDBACK_EVENT, {
+      detail: { ...detail, message: recordingNotice(detail.message, fallback), source: name, code: result.error?.code ?? null },
+    }))
+    return result
+  } catch {
+    document.dispatchEvent(new CustomEvent(USER_ACTION_FEEDBACK_EVENT, {
+      detail: { message: `Could not reach the recorder. ${fallback}`, source: name, code: 'engine_unreachable' },
+    }))
+    return null
+  }
+}
 
 /** A marker is only announced after the Studio journal echoes the accepted event. */
 function recordingMarkerAcknowledged(value: unknown, expectedLabel: string): boolean {
@@ -280,8 +299,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   const [finalizeSec, setFinalizeSec] = useState(0)
   const [phase, setPhase] = useState<Phase>('idle')
   const [sceneCaptureId, setSceneCaptureId] = useState<string | null>(null)
-  const [note, setNote] = useState('')
-  const [err, setErr] = useState<string | null>(null)
+  const cameraAvailability = useAvailability('record.camera')
+  const [note, setNoteValue] = useState('')
+  const [err, setErrValue] = useState<string | null>(null)
+  const setNote = useCallback((value: string) => setNoteValue(recordingNotice(value)), [])
+  const setErr = useCallback((value: string | null) => setErrValue(value === null ? null : recordingNotice(value)), [])
   const startAdmission = useRecordingStartAdmission()
   const startAdmissionUnknown = startAdmission === 'unknown'
   const [markerPending, setMarkerPending] = useState(false)
@@ -365,7 +387,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   }, [session.state, delivery.ownsResult, markSceneCaptureStarted, onWorkspaceAdmissionChange, recordingPause.acknowledgeStart, recordingPause.clearCapture, setQualityResolution, clearQualityResolution])
   // `elapsed` is the recorded time of the take and stands still while it is paused;
   // `remaining` is the cap countdown (only meaningful when capMs != null).
-  const { elapsed, remaining } = useRecordedElapsed({
+  const { elapsed, remaining, getRecordedMs, clockWarning } = useRecordedElapsed({
+    captureId: session.state.captureId,
     recording: session.state.phase === 'recording',
     startedAt: session.state.startedAt,
     pauseState: recordingPause.state,
@@ -420,10 +443,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     const startedAt = recordStartedAtRef.current ?? Date.now()
     if (!captureId || startedAt === null) return false
     const tMs = Math.max(0, Date.now() - startedAt)
-    const result = await runUserVerb('screen_record.studio_event', {
+    const result = await runRecordingEvent('screen_record.studio_event', {
       capture_id: captureId,
       event: { t_ms: tMs, ...payload },
-    }, 'Could not save the live recording change.')
+    }, 'Could not save the live recording change. Check the recording status and try again.')
     if (!result?.ok && captureRef.current === captureId) {
       setNote('Live Studio changes may not replay in polish.')
     }
@@ -492,26 +515,27 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       return
     }
     if (markerRequestRef.current !== 0) return
-    const at = fmtElapsed(elapsed)
+    const markerMs = getRecordedMs()
+    const at = fmtElapsed(Math.floor(markerMs / 1000))
     const label = `Marker ${at}`
     const requestId = Date.now()
     markerRequestRef.current = requestId
     setMarkerPending(true)
-    void runUserVerb('screen_record.studio_event', {
+    void runRecordingEvent('screen_record.studio_event', {
       capture_id: captureId,
       event: {
-        t_ms: Math.max(0, Date.now() - (recordStartedAtRef.current ?? Date.now())),
+        t_ms: markerMs,
         source: 'recording',
         kind: 'marker',
         label,
       },
-    }, 'Could not save the recording marker.')
+    }, 'Could not save the recording marker. Check the recording status and try again.')
       .then((response) => {
         if (markerRequestRef.current !== requestId) return
         if (response?.ok && recordingMarkerAcknowledged(response.result, label)) {
           setNote(`Marker saved at ${at}`)
         } else if (response?.ok) {
-          setNote('The recorder did not durably acknowledge the marker; no marker was confirmed here.')
+          setNote('The marker was not confirmed as saved. Try adding it again.')
         }
       })
       .finally(() => {
@@ -519,7 +543,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         markerRequestRef.current = 0
         setMarkerPending(false)
       })
-  }, [elapsed, phase])
+  }, [getRecordedMs, phase])
 
   const probe = useCallback(async (refreshSequence?: number) => {
     if (refreshSequence === undefined && (
@@ -705,7 +729,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (frameRateError) return frameRateError
     if (startAllowed === null) return 'Wait for source checks to finish.'
     if (startAllowed === false) return 'Screen capture is not ready on this machine.'
-    if (!rawCapture && !recordingPause.enabled && keys && inputUnavailable !== null) return `Show keystrokes is unavailable: ${inputUnavailable}. Turn it off to record screen and sound.`
+    if (!rawCapture && !recordingPause.enabled && keys && inputUnavailable !== null) return keystrokesUnavailableNotice(inputUnavailable)
     if (sourceKind === 'window' && !windowCaptureSupported) return 'Window capture is unavailable on this machine. Choose Display.'
     if (selectedWindowMissing) return 'The selected window is no longer available. Choose another source before recording.'
     if (sourceKind === 'window' && !windowTargetId) return 'Choose an application window before recording.'
@@ -713,7 +737,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (sourceKind === 'region') {
       return regionPickerCapability.availability === 'unavailable'
         ? regionPickerCapability.reason
-        : 'Region capture is not connected to the native recorder in this build.'
+        : 'Recording a selected area is unavailable in this version. Choose a screen or window instead.'
     }
     if (studio.camera.enabled && selectedScene.layout.kind !== 'presenter_pip') return 'Wait for the camera scene to be selected before recording.'
     if (recordingPause.enabled) {
@@ -789,6 +813,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         event.preventDefault()
         addRecordingMarker()
       } else if (matchesFixedAction(event, 'recording.cameraVisible')) {
+        if (cameraAvailability.state === 'absent') {
+          event.preventDefault()
+          setErr(availabilitySentence('record.camera'))
+          return
+        }
         if (phase !== 'idle') return
         event.preventDefault()
         if (rawCapture || !cameraCapability.supported || cameraCapability.devices.length === 0) {
@@ -798,6 +827,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         setStudioCameraEnabled(!studio.camera.enabled)
       } else if (matchesFixedAction(event, 'recording.cameraPosition')
         || matchesFixedAction(event, 'recording.cameraPositionReverse')) {
+        if (cameraAvailability.state === 'absent') {
+          event.preventDefault()
+          setErr(availabilitySentence('record.camera'))
+          return
+        }
         if (sceneControlsDisabled || !studio.camera.enabled || rawCapture) return
         event.preventDefault()
         const reverse = matchesFixedAction(event, 'recording.cameraPositionReverse')
@@ -808,7 +842,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [addRecordingMarker, cameraCapability, phase, rawCapture, sceneControlsDisabled, setStudioCameraEnabled, setStudioCameraPosition, studio.camera.enabled, studio.camera.position])
+  }, [addRecordingMarker, cameraAvailability.state, cameraCapability, phase, rawCapture, sceneControlsDisabled, setStudioCameraEnabled, setStudioCameraPosition, studio.camera.enabled, studio.camera.position])
   const pauseCameraCapability = recordingPause.enabled
     ? { ...NO_CAMERA_CAPABILITY, detail: 'Camera is unavailable while Pause & resume is enabled.' }
     : cameraCapability
@@ -874,7 +908,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       />
       {sceneRecovery.state === 'error' && (
         <div className="rec__field" data-cut-rec-scene-recovery="error" role="status">
-          <p>{sceneRecovery.message}</p>
+          <p>{recordingNotice(sceneRecovery.message)}</p>
           <button type="button" className="rec__export-btn rec__export-btn--small" data-cut-action="record-scene-recovery-refresh" onClick={() => { void refreshSceneRecovery() }}>Check recording state</button>
         </div>
       )}
@@ -893,6 +927,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         </div>
       </div>
       <RecordingCountdownControl value={countdown.seconds} disabled={busy} onValueChange={countdown.setSeconds} />
+      <Availability rule="record.pause">
       <div className="rec__field rec__field--pause">
         <span className="rec__label">Pause capture</span>
         <RecordingPauseControl
@@ -913,6 +948,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
           onControl={() => { void recordingPause.control() }}
         />
       </div>
+      </Availability>
     </>
   )
   const videoQualityControl = (
@@ -956,6 +992,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         </div>
         <RecordingReadinessSummary videoEncoder={videoEncoder} cards={cards} ready={ready} startAllowed={startAllowed} screenCheck={screenCheck} hostOs={hostOs} onCheck={() => { void refreshCaptureSetup() }} />
       </header>
+      {clockWarning && <p className="rec__source-note" role="status">{clockWarning}</p>}
       {doctorReadError && <p className="rec__source-note" data-cut-rec-doctor-error role="status">
         Could not check capture setup. Refresh sources to try again.
       </p>}
@@ -1250,7 +1287,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             // can turn a rendered rectangle into the native one-use ticket.
             setRegionPickerOpen(false)
             setSourceKind('display')
-            setErr('Region capture is not connected to the native recorder in this build.')
+            setErr('Recording a selected area is unavailable in this version. Choose a screen or window instead.')
           }}
         />
       )}

@@ -377,7 +377,7 @@ fn save_index_with_limit(
     let p = prepare_index_output_path(proj_dir, &index.asset)?;
     let mut temporary = tempfile::NamedTempFile::new_in(p.parent().expect("index parent"))?;
     temporary.write_all(&payload)?;
-    temporary.persist(&p).map_err(|error| error.error)?;
+    crate::replace_temporary::replace_temporary(temporary, &p)?;
     Ok(p)
 }
 

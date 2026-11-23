@@ -1,3 +1,5 @@
+import { Availability } from '../../lib/availability'
+
 interface TimelineEmptyStateProps {
   hasProject: boolean
   hasTracks: boolean
@@ -11,13 +13,16 @@ export default function TimelineEmptyState({ hasProject, hasTracks, onImport }: 
   if (hasTracks) return null
 
   return (
+    <Availability rule="shell.desktop" replacement={<div className="tl-empty" data-cut-import-desktop-note>Importing files needs the desktop app.</div>}>
     <button
       type="button"
       className="tl-empty tl-empty--cta"
       data-cut-import-cta
+      data-cut-action="import-cta"
       onClick={onImport}
     >
       ⬑ Import media to begin
     </button>
+    </Availability>
   )
 }

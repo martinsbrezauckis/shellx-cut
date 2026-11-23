@@ -32,7 +32,7 @@
     {
       "name": "media.relink_apply",
       "domain": "media",
-      "description": "Apply selected exact-hash rows from a fresh media.relink_preview. Requires request_id, expected_revision, and plan_hash; it rescans and fully rehashes before one all-or-nothing, project-local metadata journal op. It refuses ambiguity, metadata_review, and every other metadata-only evidence state. The exact source hash, chosen path, disposition, project identity, revisions, plan hash, and grouped operation id are returned in an immutable versioned result and request receipt for B6 portable packaging. It changes ONLY asset.path: no Library transaction, no import/proxy/enrichment job, no derived-state deletion, and no Ctrl-Z promise.",
+      "description": "Apply selected exact-hash rows from a fresh media.relink_preview. Requires request_id, expected_revision, and plan_hash; it rescans and fully rehashes before one all-or-nothing, project-local metadata journal op. It refuses ambiguity, metadata_review, and every other metadata-only evidence state. Selected still pictures must decode one non-looped frame within ten seconds before any path changes; damaged pictures are refused with unreadable_media, filename, cause and suggested_action. The exact source hash, chosen path, disposition, project identity, revisions, plan hash, and grouped operation id are returned in an immutable versioned result and request receipt for B6 portable packaging. It changes ONLY asset.path: no Library transaction, no import/proxy/enrichment job, no derived-state deletion, and no Ctrl-Z promise.",
       "args": {
         "type": "object",
         "required": ["root", "plan_hash", "accept"],
@@ -47,7 +47,7 @@
       "result": "shellx-cut/media-relink-receipt/1 immutable result: {schema,immutable,project_identity,pre_revision,post_revision,plan_hash,grouped_op_id,assets:[{asset,expected_hash,chosen,disposition:'relinked'}]} — generic shellx-cut/mutation-request/1 receipt is atomically persisted per request_id",
       "behavior": {
         "mutation_class": "asset_metadata",
-        "side_effects": { "filesystem": true, "process": false, "network": false, "ui": false },
+        "side_effects": { "filesystem": true, "process": true, "network": false, "ui": false },
         "dispatch": "media_relink_apply",
         "project_state": "required",
         "idempotency": "request_key",

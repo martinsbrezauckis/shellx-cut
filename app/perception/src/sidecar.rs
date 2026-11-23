@@ -985,6 +985,10 @@ fn spawn_sidecar_streaming_with_runtime(
                 describe_exit_status(&output.status)
             ),
             cause,
+        )
+        .with_suggested_action(
+            "Install or repair the captions tools in Settings > AI & transcription, or call \
+             system.setup_perception and wait for its job. Then retry.",
         ));
     }
     Ok(stdout)
@@ -1161,6 +1165,45 @@ pub fn load_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_analysis_keeps_cause_and_names_the_captions_repair_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("instruments.py");
+        std::fs::write(
+            &script,
+            "import sys\nprint('{\"error\":\"missing captions dependency\"}')\nsys.exit(1)\n",
+        )
+        .unwrap();
+        let runtime = SidecarRuntime {
+            python: std::path::PathBuf::from("python3"),
+            script,
+            native_context: None,
+        };
+        let error = spawn_sidecar_streaming_with_runtime(
+            &serde_json::json!({}),
+            None,
+            None,
+            &runtime,
+            &EffectiveSttSelection {
+                model: None,
+                language: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, error_codes::SIDECAR);
+        assert!(
+            error.cause.contains("missing captions dependency"),
+            "{error:?}"
+        );
+        let action = error.suggested_action.as_deref().unwrap_or_default();
+        assert!(action.contains("system.setup_perception"), "{error:?}");
+        assert!(
+            action.contains("Settings > AI & transcription"),
+            "{error:?}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

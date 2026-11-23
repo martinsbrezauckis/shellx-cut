@@ -8,6 +8,17 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import OddProjectSizeNotice from '../src/components/OddProjectSizeNotice'
 import { callVerb } from '../src/lib/client'
+import { errorText } from '../src/lib/jobFailureText'
+
+// Sentence formatting must not rewrite case-sensitive paths or command names.
+for (const [message, expected] of [
+  ['x', 'X.'], ['x.', 'X.'], ['x..', 'X.'],
+  ['clips/holiday.mov is missing', 'clips/holiday.mov is missing.'],
+  ['system.set_ffmpeg', 'system.set_ffmpeg.'],
+  ['ffmpeg_missing', 'ffmpeg_missing.'],
+]) {
+  assert.equal(errorText({ message }, 'Export did not start.'), expected)
+}
 import { runVideoPreflightAction } from '../src/topbar/videoPreflight'
 import {
   changeSizeLabel,

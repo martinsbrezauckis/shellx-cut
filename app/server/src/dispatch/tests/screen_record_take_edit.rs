@@ -1,5 +1,202 @@
 use super::*;
 
+async fn agent_camera_fixture() -> (tempfile::TempDir, AppState) {
+    let root = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"camera","dir":root.path().join("camera.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok);
+    {
+        let mut g = state.project.write().await;
+        let p = &mut g.as_mut().unwrap().project;
+        p.assets.insert(
+            "a1".into(),
+            serde_json::from_value(json!({"path":"screen.mp4","hash":"sha256:screen"})).unwrap(),
+        );
+        p.assets.insert("a2".into(), serde_json::from_value(json!({"path":"/project/capture/camera.mp4","hash":format!("sha256:{}", "a".repeat(64))})).unwrap());
+        let mut overlay = p.tracks[0].clone();
+        overlay.id = "v2".into();
+        overlay.clips.clear();
+        p.tracks.push(overlay);
+        for (id, asset) in [("c1", "a1"), ("c2", "a2"), ("c3", "a3")] {
+            let track = if id == "c2" {
+                p.tracks.last_mut().unwrap()
+            } else {
+                &mut p.tracks[0]
+            };
+            track.clips.push(
+                serde_json::from_value(
+                    json!({"id":id,"asset":asset,"src_in_ms":0,"src_out_ms":1000}),
+                )
+                .unwrap(),
+            );
+        }
+        p.recordings.push(serde_json::from_value(json!({
+            "id":"take1","capture_folder":"/project/capture","source":"screen.mp4","events":"events.json",
+            "pending_plan":"plan.json","applied_plan":"plan.json","clip_ids":["c1"],"asset":"a1","segments":[],
+            "camera_asset":"a2","camera_clip":"c2",
+            "camera_artifact":{"schema":"shellx-record/camera-artifact/1","capture_id":"capture","artifact_id":"camera","video":"camera.mp4","media":{"sha256":"a".repeat(64),"duration_ms":1000}},
+            "camera_look":{"transform":{"x":0.1,"y":0.2,"scale":0.25,"opacity":1.0,"shape":"circle"},"keyframes":[]}
+        })).unwrap());
+    }
+    (root, state)
+}
+
+#[tokio::test]
+async fn agent_reset_errors() {
+    let (_root, state) = agent_camera_fixture().await;
+    for (clip, cause, action) in [
+        ("c3", "not part of a recording", "project.state"),
+        ("c1", "screen clip", "c2"),
+    ] {
+        let reply = dispatch(
+            &state,
+            "screen_record.camera_reset",
+            json!({"clip":clip}),
+            test_actor(),
+        )
+        .await;
+        let error = reply.error.unwrap();
+        assert_eq!(error.code, cut_core::error_codes::INVALID_ARGS);
+        assert!(error.cause.contains(cause), "{error:?}");
+        assert!(error.suggested_action.unwrap().contains(action));
+    }
+}
+
+#[tokio::test]
+async fn agent_reset_mutation_envelope_and_effects() {
+    let (_root, state) = agent_camera_fixture().await;
+    let reply = dispatch(
+        &state,
+        "screen_record.camera_reset",
+        json!({"clip":"c2"}),
+        test_actor(),
+    )
+    .await;
+    assert!(reply.ok, "{:?}", reply.error);
+    assert_eq!(reply.op_ids.as_ref().unwrap().len(), 1);
+    let value = serde_json::to_value(&reply).unwrap();
+    assert!(value["project_revision"].is_string(), "{value}");
+    {
+        let g = state.project.read().await;
+        let store = g.as_ref().unwrap();
+        let ops = store.log.read_all().unwrap();
+        let effect = &ops.last().unwrap().effects[0].detail;
+        assert_eq!(effect["clip"], "c2");
+        assert_eq!(effect["new_transform"]["shape"], "circle");
+        assert!(effect.get("old_transform").is_some());
+        assert!(effect.get("old_keyframes").is_some());
+    }
+}
+
+#[tokio::test]
+async fn agent_reset_writes_effects() {
+    let (_root, state) = agent_camera_fixture().await;
+    let reply = dispatch(
+        &state,
+        "screen_record.camera_reset",
+        json!({"clip":"c2"}),
+        test_actor(),
+    )
+    .await;
+    assert!(reply.ok, "{:?}", reply.error);
+    let guard = state.project.read().await;
+    let ops = guard.as_ref().unwrap().log.read_all().unwrap();
+    assert_eq!(ops.last().unwrap().effects.len(), 1);
+}
+
+#[tokio::test]
+async fn agent_reset_no_camera() {
+    let (_root, state) = agent_camera_fixture().await;
+    {
+        let mut g = state.project.write().await;
+        let take = &mut g.as_mut().unwrap().project.recordings[0];
+        take.camera_asset = None;
+        take.camera_clip = None;
+        take.camera_look = None;
+    }
+    let reply = dispatch(
+        &state,
+        "screen_record.camera_reset",
+        json!({"clip":"c1"}),
+        test_actor(),
+    )
+    .await;
+    let error = reply.error.unwrap();
+    assert!(error.cause.contains("no camera"), "{error:?}");
+    assert!(error
+        .suggested_action
+        .unwrap()
+        .contains("screen_record.start"));
+}
+
+#[tokio::test]
+async fn agent_stale_export_hint() {
+    let (_root, state) = agent_camera_fixture().await;
+    let mut guard = state.project.write().await;
+    let project = &mut guard.as_mut().unwrap().project;
+    project.recordings[0].pending_plan = "pending.json".into();
+    let error = crate::screen_record::take_edit::guard_export(project, false).unwrap_err();
+    assert!(
+        error.cause.contains("pending recording zoom plan"),
+        "{error:?}"
+    );
+    assert!(error
+        .suggested_action
+        .unwrap()
+        .contains("screen_record.take_refresh"));
+    assert!(crate::screen_record::take_edit::guard_export(project, true).is_ok());
+}
+
+#[tokio::test]
+async fn agent_zoom_remove_missing_id_hint() {
+    let (_root, state) = agent_camera_fixture().await;
+    {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().unwrap();
+        let path = store.dir.join("plan.json");
+        let events = record_core::fixtures::generate("click-walkthrough").unwrap();
+        let plan = record_engine::autoedit(&events, &Default::default());
+        std::fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+        store.project.recordings[0].pending_plan = path.display().to_string();
+    }
+    let reply = dispatch(
+        &state,
+        "screen_record.zoom_remove",
+        json!({"clip":"c1"}),
+        test_actor(),
+    )
+    .await;
+    let error = reply.error.unwrap();
+    assert!(error.cause.contains("id"), "{error:?}");
+    assert!(error
+        .suggested_action
+        .unwrap()
+        .contains("screen_record.zoom_list"));
+}
+
+#[tokio::test]
+async fn agent_zoom_timing_names_both_alternatives() {
+    let state = AppState::new();
+    let reply = dispatch(
+        &state,
+        "screen_record.zoom_add",
+        json!({"clip":"c1"}),
+        test_actor(),
+    )
+    .await;
+    let error = reply.error.unwrap();
+    assert!(
+        error.message.contains("at_ms") && error.message.contains("timeline_ms"),
+        "{error:?}"
+    );
+}
+
 #[tokio::test]
 async fn zoom_auto_bounds_event_bytes_clicks_and_duration() {
     use std::io::Write;
@@ -234,6 +431,9 @@ async fn recording_zoom_verbs_stale_and_old_project_guard() {
     )
     .await;
     assert!(!old.ok);
+    let error = old.error.unwrap();
+    assert!(error.cause.contains("no editable recording"));
+    assert!(error.suggested_action.unwrap().contains("project.state"));
     let snapshot = dispatch(&state, "project.state", json!({}), test_actor())
         .await
         .result
@@ -243,6 +443,20 @@ async fn recording_zoom_verbs_stale_and_old_project_guard() {
         let mut guard = state.project.write().await;
         guard.as_mut().unwrap().apply("screen_record.take_link",json!({"recording":{"id":"take1","capture_folder":capture,"source":capture.join("source.mp4"),"events":capture.join("events.json"),"pending_plan":capture.join("plan.json"),"applied_plan":capture.join("plan.json"),"clip_ids":["c1"],"asset":"a1","segments":segments}}),test_actor(),None).unwrap();
     }
+    let missing_id = dispatch(
+        &state,
+        "screen_record.zoom_remove",
+        json!({"clip":"c1"}),
+        test_actor(),
+    )
+    .await
+    .error
+    .unwrap();
+    assert!(missing_id.cause.contains("id"));
+    assert!(missing_id
+        .suggested_action
+        .unwrap()
+        .contains("screen_record.zoom_list"));
     let list = dispatch(
         &state,
         "screen_record.zoom_list",
@@ -374,11 +588,13 @@ async fn recording_zoom_verbs_stale_and_old_project_guard() {
     )
     .await;
     assert!(!refused.ok);
-    assert!(refused
-        .error
+    let error = refused.error.unwrap();
+    assert!(error.message.contains("Update video first"));
+    assert!(error.cause.contains("pending recording zoom plan"));
+    assert!(error
+        .suggested_action
         .unwrap()
-        .message
-        .contains("Update video first"));
+        .contains("screen_record.take_refresh"));
     assert_eq!(
         std::fs::read(capture.join("plan.json")).unwrap(),
         original_bytes

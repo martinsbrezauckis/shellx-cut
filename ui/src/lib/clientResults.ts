@@ -1148,6 +1148,7 @@ export interface MediaCheckRow {
   asset: string
   path: string
   exists: boolean
+  readable?: boolean
   modified_ms?: number
   referenced: number
 }

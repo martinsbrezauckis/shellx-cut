@@ -32,6 +32,7 @@ interface CommonProps {
 interface EnvironmentPanelProps extends CommonProps {
   onOpenRecording?: () => void
   onOpenAssets?: () => void
+  assetPaths?: Readonly<Record<string, string>>
   hasProject?: boolean
   projectSession?: number
   initialCategory?: SettingsCategoryId
@@ -143,6 +144,7 @@ export function EnvironmentPanel({
   onClose,
   onOpenRecording = onClose,
   onOpenAssets = onClose,
+  assetPaths = {},
   hasProject = false,
   projectSession = 0,
   initialCategory = 'overview',
@@ -189,6 +191,7 @@ export function EnvironmentPanel({
             onNavigate={navigateCategory}
             onOpenRecording={onOpenRecording}
             onOpenAssets={onOpenAssets}
+            assetPaths={assetPaths}
             hasProject={hasProject}
             projectSession={projectSession}
           />

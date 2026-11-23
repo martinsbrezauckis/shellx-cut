@@ -1,3 +1,4 @@
+import { mediaBasename } from '../../lib/mediaPath'
 import type { ProjectCacheRebuildResult } from '../../lib/clientResults'
 import {
   attentionAssetCount,
@@ -8,6 +9,7 @@ import {
 } from './cacheLifecyclePresentation'
 
 interface CacheRebuildLifecycleProps {
+  assetPaths?: Readonly<Record<string, string>>
   hasProject: boolean
   sessionCurrent: boolean
   hasCompleteInventory: boolean
@@ -34,6 +36,7 @@ function skipReason(item: RebuildSkippedAsset): string {
 }
 
 export default function CacheRebuildLifecycle({
+  assetPaths = {},
   hasProject,
   sessionCurrent,
   hasCompleteInventory,
@@ -103,14 +106,14 @@ export default function CacheRebuildLifecycle({
           aria-live="polite"
         >
           <p>{rebuildSummary(result, remainingAssets)}</p>
-          <p data-cut-cache-rebuild-cost>{rebuildCostSummary(result.estimate)}. Source identity was verified for this estimate; Cut checks it again before publishing output.</p>
+          {result.estimate.assets > 0 && <p data-cut-cache-rebuild-cost>{rebuildCostSummary(result.estimate)}. Source identity was verified for this estimate; Cut checks it again before publishing output.</p>}
           {skips.length > 0 && (
             <details className="settings-cache-lifecycle-attention" data-cut-cache-rebuild-attention>
               <summary data-cut-cache-rebuild-attention-toggle>{attentionCount} skipped item{attentionCount === 1 ? '' : 's'}</summary>
               <ul>
                 {skips.map((item, index) => (
                   <li key={`${item.asset_id}-${item.kind ?? 'source'}-${item.reason}-${index}`} data-cut-cache-rebuild-skipped-asset={item.asset_id}>
-                    {item.asset_id}{item.kind ? ` ${item.kind}` : ''}: {skipReason(item)}. {item.action}
+                    {assetPaths[item.asset_id] ? mediaBasename(assetPaths[item.asset_id]) : 'Unavailable file'}: {skipReason(item)}. {item.action}
                   </li>
                 ))}
               </ul>

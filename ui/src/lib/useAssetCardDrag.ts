@@ -29,14 +29,14 @@ const INTERACTIVE_TARGET = 'button, input, select, textarea, a'
 const DRAG_THRESHOLD_PX = 5
 
 export function useAssetCardDrag<T extends AssetCardDragItem>(
-  onDrop: (item: T, clientX: number, clientY: number, alt: boolean) => void,
+  onDrop: (item: T, clientX: number, clientY: number, alt: boolean, shift: boolean) => void,
 ) {
   const active = useRef<ActiveDrag<T> | null>(null)
   const onDropRef = useRef(onDrop)
   const [ghost, setGhost] = useState<AssetCardDragGhost | null>(null)
   onDropRef.current = onDrop
 
-  const finish = useCallback((clientX: number, clientY: number, alt: boolean, drop: boolean) => {
+  const finish = useCallback((clientX: number, clientY: number, alt: boolean, drop: boolean, shift = false) => {
     const drag = active.current
     active.current = null
     setGhost(null)
@@ -49,19 +49,21 @@ export function useAssetCardDrag<T extends AssetCardDragItem>(
         // Pointer capture may already have been released by the WebView.
       }
     }
-    if (drop && drag?.dragging) onDropRef.current(drag.item, clientX, clientY, alt)
+    if (drop && drag?.dragging) onDropRef.current(drag.item, clientX, clientY, alt, shift)
   }, [])
 
-  const move = useCallback((clientX: number, clientY: number) => {
+  const lastPoint = useRef<{ clientX: number; clientY: number } | null>(null)
+  const move = useCallback((clientX: number, clientY: number, alt: boolean, shift: boolean) => {
     const drag = active.current
     if (!drag) return
     if (!drag.dragging) {
       if (Math.hypot(clientX - drag.startX, clientY - drag.startY) < DRAG_THRESHOLD_PX) return
       drag.dragging = true
     }
+    lastPoint.current = { clientX, clientY }
     setGhost({ x: clientX, y: clientY, name: drag.item.name, kind: drag.item.kind })
     document.dispatchEvent(new CustomEvent(ASSET_DRAG_MOVE, {
-      detail: { asset: drag.item.asset, kind: drag.item.kind, clientX, clientY },
+      detail: { asset: drag.item.asset, kind: drag.item.kind, clientX, clientY, alt, shift },
     }))
   }, [])
 
@@ -70,12 +72,12 @@ export function useAssetCardDrag<T extends AssetCardDragItem>(
       const drag = active.current
       if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return
       if (event.cancelable) event.preventDefault()
-      move(event.clientX, event.clientY)
+      move(event.clientX, event.clientY, event.altKey, event.shiftKey)
     }
     const onPointerUp = (event: PointerEvent) => {
       const drag = active.current
       if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return
-      finish(event.clientX, event.clientY, event.altKey, true)
+      finish(event.clientX, event.clientY, event.altKey, true, event.shiftKey)
     }
     const onPointerCancel = (event: PointerEvent) => {
       const drag = active.current
@@ -85,18 +87,27 @@ export function useAssetCardDrag<T extends AssetCardDragItem>(
     const onMouseMove = (event: MouseEvent) => {
       if (active.current?.input !== 'mouse') return
       if (event.cancelable) event.preventDefault()
-      move(event.clientX, event.clientY)
+      move(event.clientX, event.clientY, event.altKey, event.shiftKey)
     }
     const onMouseUp = (event: MouseEvent) => {
       if (active.current?.input !== 'mouse') return
-      finish(event.clientX, event.clientY, event.altKey, true)
+      finish(event.clientX, event.clientY, event.altKey, true, event.shiftKey)
     }
+    const onModifier = (event: KeyboardEvent) => {
+      if (active.current?.dragging && lastPoint.current && (event.key === 'Alt' || event.key === 'Shift')) {
+        move(lastPoint.current.clientX, lastPoint.current.clientY, event.altKey, event.shiftKey)
+      }
+    }
+    window.addEventListener('keydown', onModifier)
+    window.addEventListener('keyup', onModifier)
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
     window.addEventListener('pointercancel', onPointerCancel)
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
     return () => {
+      window.removeEventListener('keydown', onModifier)
+      window.removeEventListener('keyup', onModifier)
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('pointercancel', onPointerCancel)

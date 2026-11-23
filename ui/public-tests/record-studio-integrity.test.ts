@@ -102,8 +102,8 @@ assert.match(controls, /<RecordingSettingsTabs pages=\{pages\}/,
   'camera, background, timer, timing, and quality use one right-rail navigation')
 assert.match(studioCss, /\.rec__body\s*\{[\s\S]*?grid-template-columns:\s*minmax\(290px, 330px\) minmax\(0, 1fr\) minmax\(290px, 330px\);[\s\S]*?"settings preview controls"/,
   'Record places setup, preview, and scene controls in the approved three-column workspace')
-assert.match(studioCss, /\.rec-studio-controls\s*\{[\s\S]*?overflow:\s*visible/,
-  'scene controls do not add a nested workspace scrollbar')
+assert.match(studioCss, /\.rec-studio-controls\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/,
+  'scene settings scroll within the workspace so every camera control remains reachable')
 assert.match(record, /<RecordingReadinessSummary[\s\S]*?<div className="rec__body">[\s\S]*?<div className="rec__studio"[\s\S]*?<aside className="rec__settings"[\s\S]*?<\/div>\s*\n\s*\{\/\* Transport \/ HUD[\s\S]*?<div className="rec__transport"/,
   'the transport is a footer sibling of the body rather than a body grid row')
 assert.match(studioCss, /data-cut-record-phase="recording"[\s\S]*\.rec__settings/,

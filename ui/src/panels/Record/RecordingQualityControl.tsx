@@ -1,3 +1,4 @@
+import { recordingNotice } from './recordingUiModel'
 import type { RecordingCadence } from './recordingCadence'
 import {
   finalQualityLabel,
@@ -70,7 +71,7 @@ export function RecordingQualityControl({
           ))}
         </div>
         <p className="rec__source-note" data-cut-rec-quality-summary>
-          {unavailableReason ?? (resolution ? finalQualityLabel(resolution, cadence) : 'Final dimensions are verified after recording.')}
+          {recordingNotice(unavailableReason ?? (resolution ? finalQualityLabel(resolution, cadence) : 'Final dimensions are verified after recording.'), 'Quality settings are unavailable for this recording setup.')}
         </p>
       </div>
     </div>

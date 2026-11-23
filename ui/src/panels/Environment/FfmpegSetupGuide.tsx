@@ -5,6 +5,7 @@
 // "Check again" re-scans without restarting the app; "Choose ffmpeg…" saves a
 // build the person already has (system.set_ffmpeg validates it and its ffprobe).
 
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { useState } from 'react'
 import { callVerb } from '../../lib/client'
 import { writeClipboardText } from '../../lib/clipboard'
@@ -39,6 +40,7 @@ export default function FfmpegSetupGuide({
   copy?: (text: string) => Promise<void>
   pick?: () => Promise<string | null>
 }) {
+  const chooser = useAvailability('shell.desktop')
   const [copied, setCopied] = useState<number | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -55,6 +57,7 @@ export default function FfmpegSetupGuide({
   }
 
   const onChoose = async () => {
+    if (chooser.state === 'absent') { setNote(availabilitySentence('shell.desktop')); return }
     const path = await pick()
     if (!path) return
     setBusy(true)
@@ -106,9 +109,11 @@ export default function FfmpegSetupGuide({
         >
           Check again
         </button>
+        <Availability rule="shell.desktop">
         <button
           type="button"
           className="env-btn env-btn--sm"
+          data-cut-action="settings-video-tool-choose"
           data-cut-ffmpeg-setup-choose
           onClick={() => void onChoose()}
           disabled={busy}
@@ -116,6 +121,7 @@ export default function FfmpegSetupGuide({
         >
           Choose ffmpeg…
         </button>
+        </Availability>
       </div>
       <p className="env-ffsetup-custom" data-cut-ffmpeg-setup-custom>{guide.custom_build}</p>
       {note && <div className="env-card-err" data-cut-ffmpeg-setup-note>{note}</div>}

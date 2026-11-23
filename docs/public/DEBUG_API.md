@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
+<!-- shellx-cut-release-truth: published; version=0.6.120; published=0.6.120 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.119 source; v0.6.119 is the latest published release.
+This reference describes the Debug API in v0.6.120 source; v0.6.120 is the latest published release.
 
 ## Starting the server
 
@@ -655,6 +655,10 @@ overwrite replaces `[at_ms, at_ms + source_duration)` and leaves all later
 timeline coordinates unchanged. Choose `video_track`, `audio_track`, or both.
 Supplying both commits one linked A/V operation, undoable and replayable as one
 unit; supplying one is an intentional video-only or audio-only overwrite.
+Alternatively `create_video_track:true` or `create_audio_track:true` creates the
+matching destination inside that same atomic operation and undo step. Each flag
+is mutually exclusive with the corresponding existing-track argument. Assets
+drags use overwrite plainly, insert with Alt, and choose tracks by drop position.
 
 `at_ms` is **editorial** time: the cumulative duration of clips on each target
 track, like `edit.insert`, `edit.split`, and `edit.move`. A crossfade shortens
@@ -797,7 +801,8 @@ camera_asset. Use `edit.transform{clip,x,y,scale,opacity,shape,radius?,ring?}`,
 including unchanged transform fields, to change its look. x/y are top-left frame
 fractions, scale is width/frame width; shape is circle, rounded or rect. The
 optional ring is {width,colour}, for example {width:0.02,colour:"#ffffffe6"}.
-`screen_record.camera_reset{clip}` returns {clip,transform,keyframes} and restores
+`screen_record.camera_reset{clip}` returns {clip,transform,keyframes} in the standard
+mutation envelope with `op_ids` and `project_revision`, and restores
 the recorded look and placement in one undoable op, leaving trim, timing and speed
 alone. Each camera change/reset supports project.undo. Update video keeps a
 separate screen bubble-free. Make a copy carries each take's source, events,
@@ -807,6 +812,12 @@ rendered clips and lists the take under `recordings_not_carried` in the plan
 and completed job result.
 
 **Recorded camera timeline.** Separate polish retains hold opacity (visible=1/hidden=0), diameter and position keys. A shaped overlay's Scale key multiplies its static transform.scale diameter; unlike rectangular/base zoompan, a multiplier below one shrinks the bubble and its mask. Position is recomputed with each recorded size and clamped as in the recorder. Shape changes cannot be keyed: separate mode keeps the first delivered shape and returns a short `camera_note`; baked mode still renders the recorded shape changes. No note is needed when shape is unchanged.
+
+Reset errors retain `invalid_args` and include `cause` and `suggested_action`:
+a clip outside recordings points to `project.state`; a recording's screen clip
+names its `camera_clip` id and directs reset there; a recording without a camera
+explains that a new camera recording is needed. Reset's durable effects include
+the camera track/clip, old/new transforms, shape, and old/new keyframes.
 
 **Camera slices and reset.** A take has an editable separate camera exactly when it has `camera_look`. Take provenance stores optional `camera_asset` (omitted for older records). Only for a separate take does every timeline clip playing that asset get `recording:{take,camera:true}` in project.state; screen clips retain their existing annotation without camera. `camera_clip` and `camera_asset` without `camera_look` are baked compatibility provenance, not editable-camera marks. `screen_record.camera_reset{clip}` refuses those clips with "this recording's camera is part of the video". For separate takes it accepts split/trimmed camera slices and camera clips moved to another video track, restores the recorded look at that slice's source in-point, and rebases hold keys to its local timeline (constant speed included). It remains one undoable operation and does not change placement or trim.
 
@@ -1573,7 +1584,9 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 `get`/`list` confirms configuration but does not claim a live handshake; and
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
-(`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
+(`system.mcp_test` in Cut verb notation) through that client. The bounded test
+allows 120 seconds for the full doctor's cold tool/hardware checks and reports
+total proxy-check time as `elapsed_ms`; no doctor checks are skipped. That Cut-owned
 read-only check proves protocol negotiation, ping, every verb as a tool (326), and that the
 MCP proxy resolves to the same running Cut engine.
 

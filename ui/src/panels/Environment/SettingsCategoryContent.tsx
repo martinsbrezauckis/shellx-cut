@@ -20,6 +20,7 @@ interface SettingsCategoryContentProps {
   onRefresh: () => Promise<DoctorReport | null>
   onNavigate: (category: SettingsCategoryId) => void
   onOpenRecording: () => void
+  assetPaths: Readonly<Record<string, string>>
   hasProject: boolean
   projectSession: number
   onOpenAssets: () => void
@@ -72,6 +73,7 @@ export default function SettingsCategoryContent({
   onRefresh,
   onNavigate,
   onOpenRecording,
+  assetPaths,
   hasProject,
   projectSession,
   onOpenAssets,
@@ -80,7 +82,7 @@ export default function SettingsCategoryContent({
     case 'overview':
       return <SettingsOverview report={report} onNavigate={onNavigate} onOpenRecording={onOpenRecording} />
     case 'health-recovery':
-      return <HealthRecovery hasProject={hasProject} projectSession={projectSession} onRefreshDoctor={onRefresh} onOpenAssets={onOpenAssets} onOpenRecording={onOpenRecording} onOpenToolchain={() => onNavigate('video-performance')} />
+      return <HealthRecovery assetPaths={assetPaths} hasProject={hasProject} projectSession={projectSession} onRefreshDoctor={onRefresh} onOpenAssets={onOpenAssets} onOpenRecording={onOpenRecording} onOpenToolchain={() => onNavigate('video-performance')} />
     case 'general':
       return (
         <Section id={active} eyebrow="Basics" title="General" description="Choose where finished work goes and how the interface looks.">

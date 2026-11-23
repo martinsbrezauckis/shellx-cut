@@ -481,7 +481,7 @@ export interface VerbArgs {
   // source-duration interval and never shifts downstream timing. Choose either
   // destination or both for one atomic linked A/V edit. Source Monitor marks
   // may use source_in_ms/source_out_ms instead of src_range_ms.
-  'edit.overwrite': { asset: string; at_ms: number; video_track?: string; audio_track?: string; src_range_ms?: [number, number]; source_in_ms?: number; source_out_ms?: number; duration_ms?: number; rationale?: string; group_id?: string }
+  'edit.overwrite': { asset: string; at_ms: number; video_track?: string; audio_track?: string; create_video_track?: boolean; create_audio_track?: boolean; src_range_ms?: [number, number]; source_in_ms?: number; source_out_ms?: number; duration_ms?: number; rationale?: string; group_id?: string }
   // Duplicate a clip (NLE Ctrl+D): copy a clip + place the copy IMMEDIATELY AFTER
   // it on the same track, rippling the rest. The copy carries the SAME asset +
   // source range AND ALL per-clip attributes (effects/grade/transform/crop/fade/

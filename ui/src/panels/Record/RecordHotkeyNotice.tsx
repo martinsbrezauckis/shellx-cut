@@ -1,3 +1,4 @@
+import { recordingNotice } from './recordingUiModel'
 import type { RecordHotkeyCapability } from '../../lib/tauri'
 
 /** A global F9 that the desktop shell tried and failed to register (another
@@ -5,7 +6,7 @@ import type { RecordHotkeyCapability } from '../../lib/tauri'
  * that F9 still works while Cut is focused. */
 export function RecordHotkeyNotice({ capability }: { capability: RecordHotkeyCapability | null }) {
   if (capability?.state !== 'unavailable' || !capability.reason) return null
-  return <p className="rec__hint" role="status" data-cut-rec-hotkey-notice>{capability.reason}</p>
+  return <p className="rec__hint" role="status" data-cut-rec-hotkey-notice>{recordingNotice(capability.reason, 'Recording shortcuts are unavailable. Use the buttons on the Record page.')}</p>
 }
 
 export function recordHotkeyScopeLabel(capability: RecordHotkeyCapability | null): string {

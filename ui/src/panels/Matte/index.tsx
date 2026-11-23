@@ -245,6 +245,7 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
               </button>
               <div style={{ height: 10 }} />
               <PremiumTierPanel availability={premiumAvailability} hint={premiumCard?.hint ?? null}
+                setupBlocked={premiumCard?.details?.setup_supported === false}
                 installing={installing} error={err} context="requirements"
                 onInstall={() => void install('matanyone')} onRecheck={() => void probe(true)} />
               <div style={{ height: 10 }} />
@@ -277,13 +278,14 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
                     disabled={installing !== null}
                     title={premiumReady ? 'MatAnyone2 premium' : 'Check Premium availability'}
                     onClick={() => { if (premiumReady) setModel('matanyone'); else setShowPremiumConsent(true) }}
-                  >Premium{premiumReady ? '' : premiumAvailability === 'missing' ? ' (install)' : premiumAvailability === 'hardware-unavailable' ? ' (no GPU)' : ' (check)'}</button>
+                  >Premium{premiumReady ? '' : premiumAvailability === 'missing' ? ' (install)' : premiumAvailability === 'hardware-unavailable' ? (premiumCard?.details?.setup_supported === false ? ' (not supported)' : ' (no GPU)') : ' (check)'}</button>
                 </div>
               </div>
 
               {/* The same status panel shows consent only for confirmed missing Premium. */}
               {!premiumReady && (showPremiumConsent || model === 'matanyone') && (
                 <PremiumTierPanel availability={premiumAvailability} hint={premiumCard?.hint ?? null}
+                  setupBlocked={premiumCard?.details?.setup_supported === false}
                   installing={installing} error={err} context="controls"
                   onInstall={() => void install('matanyone')} onRecheck={() => void probe(true)} />
               )}

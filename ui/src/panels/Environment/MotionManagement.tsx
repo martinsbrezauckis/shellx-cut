@@ -1,9 +1,10 @@
 // MotionManagement.tsx — read-only ShellX Motion posture in Settings > Video.
 //
 // This surface intentionally separates a detected local runtime from a managed
-// install. Until MOTION-DIST-01 exists, lifecycle controls are disabled facts,
-// not inert promises: each names the exact prerequisite in nearby copy.
+// install. Fixed system facts hide management actions when unavailable;
+// runtime discovery, its status and read-only details remain useful.
 
+import { Availability, availabilitySentence } from '../../lib/availability'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchMotionManagementStatus,
@@ -61,6 +62,10 @@ function AdvancedDetails({ status }: { status: MotionManagementStatus }) {
   return (
     <details className="env-advanced motion-management-advanced" data-cut-motion-advanced>
       <summary className="env-advanced-summary" data-cut-motion-advanced-toggle>Advanced details</summary>
+      <p className="env-card-hint">{runtimeSummary(status)}</p>
+      <p className="motion-management-blocker" id="motion-management-blocker" data-cut-motion-blocker>
+        <strong>{status.distribution.blocker.id}</strong> — {status.distribution.blocker.message}
+      </p>
       <dl className="env-advanced-list">
         <div className="env-advanced-row"><dt>Runtime</dt><dd>{status.runtime.status}</dd></div>
         <div className="env-advanced-row"><dt>CLI</dt><dd>{cli ? `${cli.name} ${cli.version}` : 'not verified'}</dd></div>
@@ -80,7 +85,7 @@ function LifecycleControls({ status }: { status: MotionManagementStatus }) {
   const blocker = status.distribution.blocker
   const actions: MotionAction[] = ['install', 'repair', 'update', 'remove']
   return (
-    <div className="motion-management-actions" aria-label="ShellX Motion lifecycle actions">
+    <div className="motion-management-actions" data-cut-action="settings-motion-actions" aria-label="ShellX Motion lifecycle actions">
       {actions.map((action) => {
         const available = status.distribution.actions[action].available
         const label = action[0].toUpperCase() + action.slice(1)
@@ -90,6 +95,7 @@ function LifecycleControls({ status }: { status: MotionManagementStatus }) {
             type="button"
             className="env-btn env-btn--sm"
             data-cut-motion-action={action}
+            data-cut-action={`settings-motion-${action}`}
             disabled={!available}
             aria-describedby="motion-management-blocker"
             title={`${blocker.id}: ${blocker.message}`}
@@ -152,7 +158,6 @@ export default function MotionManagement() {
 
   const chip = runtimeChip(status.runtime.status)
   const cliVersion = status.runtime.cli?.version
-  const blocker = status.distribution.blocker
   const timedOut = error === MOTION_STATUS_TIMEOUT_MESSAGE
 
   return (
@@ -172,13 +177,12 @@ export default function MotionManagement() {
       </div>
 
       <div className="motion-management-detail">
-        <p className="env-card-hint" data-cut-motion-summary>{runtimeSummary(status)}</p>
+        <p className="env-card-hint" data-cut-motion-summary>{status.runtime.status === 'not-discovered' ? availabilitySentence('settings.motion-managed') : runtimeSummary(status)}</p>
         {error && <p className="motion-management-verification-error" role="alert" data-cut-motion-verification-error data-cut-motion-status-timeout={timedOut ? 'true' : undefined}>{error}</p>}
-        <p className="motion-management-blocker" id="motion-management-blocker" data-cut-motion-blocker>
-          <strong>{blocker.id}</strong> — {blocker.message}
-        </p>
-        <LifecycleControls status={status} />
         <AdvancedDetails status={status} />
+        <Availability rule="settings.motion-managed" replacement={status.runtime.status !== 'not-discovered' ? <p className="env-card-hint">{availabilitySentence('settings.motion-managed')}</p> : undefined}>
+          <LifecycleControls status={status} />
+        </Availability>
       </div>
     </section>
   )

@@ -335,7 +335,7 @@ export default function ClipContextMenu({
           onFade={(which) => fadeItem(menu.itemId, which)}
           onClose={onClose}
         />
-        {showAudioGrp && <AudioSection
+        {showAudioGrp && <AudioSection sourceHasAudio={(it.asset ? project?.assets?.[it.asset]?.probe as { has_audio?: boolean } | undefined : undefined)?.has_audio}
           hasTimelineAudio={contract.hasTimelineAudio}
           detachAudio={contract.detachAudio}
           onDetach={() => detachAudioItem(menu.itemId)}

@@ -3,9 +3,8 @@
 // the op_applied/job_progress project refresh in App) as a draggable card.
 // Two placement paths, both one verb under the zero-local-mutation contract:
 //   • DRAG a card onto the timeline → Timeline's onDrop computes the at_ms from
-//     the drop x and the track from the drop y, then dispatches edit.insert.
-//     Dropping INSIDE a clip auto-splits it (engine splice_into_track) — that
-//     is the "cut and pull the video apart, drop a clip in the middle" flow.
+//     the drop x and track from drop y: plain overwrites, Alt inserts. Linked
+//     picture and sound share one atomic placement and one undo step.
 //   • The card's "Insert" button → edit.insert at the live playhead (ripple, so
 //     downstream content shifts to keep AV sync) — the non-drag path.
 // The card carries kind/duration/dimensions from the asset's probe and shows how
@@ -23,7 +22,8 @@ import { placeLinkedAV, planAssetInsertAtPlayhead } from '../../lib/placement'
 import { ASSET_DRAG_DROP } from '../../lib/dnd'
 import { useAssetCardDrag, type AssetCardDragItem } from '../../lib/useAssetCardDrag'
 import { libraryIdFromAssetHash, mediaBasename } from '../../lib/mediaPath'
-import { confirmAction, isTauri, pickMedia } from '../../lib/tauri'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
+import { confirmAction, pickMedia } from '../../lib/tauri'
 import { getGenerateProxies, setGenerateProxies } from '../../lib/proxyPref'
 import { openCutManual } from '../../lib/manual'
 import { publishUserActionFailure, TOOL_MISSING } from '../../lib/userActionFeedback'
@@ -176,6 +176,7 @@ function AssetThumb({ assetId, kind, film }: { assetId: string; kind?: string; f
 }
 
 export default function Assets({ project, projectScope, doctor, playheadMs, onProjectChanged, sourceNavigation }: AssetsProps) {
+  const importAvailability = useAvailability('shell.desktop')
   const [busy, setBusy] = useState<string | null>(null) // assetId currently inserting
   const [note, setNote] = useState<string | null>(null)
   const [sourceMonitorId, setSourceMonitorId] = useState<string | null>(null)
@@ -206,9 +207,9 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
   }, [])
   // "Generate proxies" toggle (persisted) — off = heavy files import instantly.
   const [proxiesOn, setProxiesOn] = useState<boolean>(getGenerateProxies())
-  const dropAsset = useCallback((item: AssetCardDragItem, clientX: number, clientY: number, alt: boolean) => {
+  const dropAsset = useCallback((item: AssetCardDragItem, clientX: number, clientY: number, alt: boolean, shift: boolean) => {
     document.dispatchEvent(new CustomEvent(ASSET_DRAG_DROP, {
-      detail: { asset: item.asset, kind: item.kind, clientX, clientY, alt },
+      detail: { asset: item.asset, kind: item.kind, clientX, clientY, alt, shift },
     }))
   }, [])
   const { ghost, startPointerDrag, startMouseDrag, preventNativeDrag } = useAssetCardDrag(dropAsset)
@@ -243,7 +244,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
       name: mediaBasename(row.path),
       kind: row.probe.kind,
       durationMs: Math.max(0, row.probe.duration_ms ?? 0),
-      hasAudio: row.probe.kind === 'video' && !!row.probe.has_audio,
+      hasAudio: row.probe.kind === 'video' ? row.probe.has_audio : undefined,
       proxy: row.probe.kind === 'image' ? undefined : row.proxy,
     }
   }, [assetRows, sourceMonitorId])
@@ -525,8 +526,8 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
 
   /** Browse for media with the native OS picker (desktop). */
   const browseImport = async () => {
-    if (!isTauri()) {
-      setNote('Open the desktop app to browse for files')
+    if (importAvailability.state === 'absent') {
+      setNote(availabilitySentence('shell.desktop'))
       setTimeout(() => setNote(null), 3500)
       return
     }
@@ -626,15 +627,17 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
           />
           Proxies
         </label>
-        <button
-          className="assets__import"
-          data-cut-action="import-asset"
-          disabled={!hasProject || busy === 'import'}
-          onClick={() => void browseImport()}
-          title="Browse for a video, audio, or image; also keep it in your Library"
-        >
-          {busy === 'import' ? 'Importing…' : '+ Import'}
-        </button>
+        <Availability rule="shell.desktop">
+          <button
+            className="assets__import"
+            data-cut-action="import-asset"
+            disabled={!hasProject || busy === 'import'}
+            onClick={() => void browseImport()}
+            title="Browse for a video, audio, or image; also keep it in your Library"
+          >
+            {busy === 'import' ? 'Importing…' : '+ Import'}
+          </button>
+        </Availability>
         {/* Generated-media placement: Generate has its own Library-adjacent tab; this is a shortcut. */}
         <button
           className="assets__generate"
@@ -769,15 +772,18 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
         </div>
       )}
       {hasProject && (
+        <Availability rule="shell.desktop">
         <button
           type="button"
           className="assets__timeline-import"
           data-cut-import-otio
+          data-cut-action="import-otio"
           onClick={() => document.dispatchEvent(new CustomEvent('cut:import-otio'))}
           title="Import an OpenTimelineIO .otio file and preview it before replacing this timeline"
         >
           <Icon name="import" size={14} /> Import timeline (.otio)
         </button>
+        </Availability>
       )}
       {hasProject && assetCount > 0 && (
         <section
@@ -887,14 +893,20 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
       <div className="panel__body assets__body">
         {!hasProject && <div className="assets__empty">Open or create a project in the Projects tab to begin.</div>}
         {hasProject && assetCount === 0 && (
-          <button
-            type="button"
-            className="assets__empty assets__empty--cta"
-            data-cut-import-cta
-            onClick={() => void browseImport()}
+          <Availability
+            rule="shell.desktop"
+            replacement={<div className="assets__empty" data-cut-import-desktop-note>Importing files needs the desktop app.</div>}
           >
-            ⬑ Import media — browse for files; clips appear here, drag them onto the timeline.
-          </button>
+            <button
+              type="button"
+              className="assets__empty assets__empty--cta"
+              data-cut-import-cta
+              data-cut-action="import-cta"
+              onClick={() => void browseImport()}
+            >
+              ⬑ Import media — browse for files; clips appear here, drag them onto the timeline.
+            </button>
+          </Availability>
         )}
         {hasProject && assetCount > 0 && !hasAssets && (
           <div className="assets__empty" data-cut-asset-filter-empty>
@@ -991,7 +1003,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
                     disabled={busy === id}
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() => void insertAtPlayhead(id, probe)}
-                    title="Adds the asset on the base timeline at the playhead. Alt-drag or drop on an overlay lane to place video on top."
+                    title="Adds the asset on the base timeline at the playhead. Drag to overwrite; Alt-drag to insert. Drop on an overlay lane to place video on top."
                   >
                     {busy === id ? '…' : 'Add at playhead'}
                   </button>
@@ -1033,7 +1045,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
         )}
         {hasAssets && (
           <p className="assets__hint" data-cut-asset-hint>
-            Drag to the base track to split and insert. Alt-drag or drop on an overlay lane to place on top.
+            Drag to overwrite; Alt-drag to insert. Drop on an overlay lane to place on top.
           </p>
         )}
       </div>

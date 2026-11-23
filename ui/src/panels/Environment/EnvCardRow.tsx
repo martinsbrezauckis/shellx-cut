@@ -17,6 +17,7 @@ import {
   unavailableFeatures,
   type DoctorCard,
 } from '../../lib/doctor'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { pickFfmpeg } from '../../lib/tauri'
 import { encoderSizeRows, softwareExportHint } from './gpuHint'
 import FfmpegSetupGuide, { FfmpegDownloadConsent } from './FfmpegSetupGuide'
@@ -218,7 +219,9 @@ export default function EnvCardRow({
     onChanged()
   }
 
+  const chooser = useAvailability('shell.desktop')
   const onChangeFfmpeg = async () => {
+    if (chooser.state === 'absent') { setFfNote(availabilitySentence('shell.desktop')); return }
     const p = await pickFfmpeg()
     if (p) await setFfmpeg(p)
   }
@@ -283,14 +286,14 @@ export default function EnvCardRow({
             Install captions
           </button>
         )}
-        {!job.busy && hasMatteSetupAction(card) && (
+        {!job.busy && (hasMatteSetupAction(card) || (card.id === 'matte_premium' && card.details?.setup_supported === false)) && (
           <button
             className="env-btn env-btn--primary env-btn--sm"
             data-cut-env-setup-matte={card.id}
-            onClick={onSetupMatte}
-            title={
+            disabled={card.details?.setup_supported === false} onClick={onSetupMatte}
+            title={card.details?.setup_supported === false ? card.hint :
               card.id === 'matte_premium'
-                ? 'Install premium background removal (needs an NVIDIA GPU, ~135 MB, non-commercial license)'
+                ? 'Install premium background removal (NVIDIA GPU; models: 141 MB + 323 MB + 323 MB, plus several GB for tools; non-commercial license)'
                 : 'Install standard background removal (~14 MB, runs on your device)'
             }
           >
@@ -380,15 +383,11 @@ export default function EnvCardRow({
             ) : (
               <>
                 <span className="env-ff-label">Video tool: automatic</span>
-                <button
-                  className="env-btn env-btn--sm"
-                  data-cut-env-ffmpeg-change
-                  onClick={() => void onChangeFfmpeg()}
-                  disabled={ffBusy}
-                  title="Choose a different video-processing tool"
-                >
-                  Choose tool…
-                </button>
+                <Availability rule="shell.desktop">
+                  <button className="env-btn env-btn--sm" data-cut-action="settings-video-tool-change" data-cut-env-ffmpeg-change
+                    onClick={() => void onChangeFfmpeg()} disabled={ffBusy}
+                    title="Choose a different video-processing tool">Choose tool…</button>
+                </Availability>
               </>
             )}
           </div>
@@ -402,7 +401,7 @@ export default function EnvCardRow({
         (card.status === 'missing' || card.status === 'degraded') && (
         <div className="env-row-detail env-ff" data-cut-env-matte-consent>
           <div className="env-ff-note">
-            Cleaner edges + temporal stability + click-to-pick which subject. NVIDIA GPU, ~135 MB —
+            Cleaner edges + temporal stability + click-to-pick which subject. NVIDIA GPU. Models: 141 MB + 323 MB + 323 MB (about 790 MB), plus several GB for tools —
             <strong> non-commercial license (NTU S-Lab 1.0)</strong>; installing accepts it.
           </div>
         </div>

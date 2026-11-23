@@ -1,3 +1,4 @@
+import { recordingNotice } from './recordingUiModel'
 import type { ScreenRecordStatusResult } from '../../lib/clientResults'
 import { recordingAudioMeterPresentation, type RecordingAudioMeterPresentation } from './recordingAudioMeterPresentation'
 import './recordingAudioMeters.css'
@@ -56,7 +57,7 @@ export function RecordingAudioMeters({ meters, statusError = null }: RecordingAu
   if (!meters && !statusError) return null
   return (
     <section className="rec-audio-meters" data-cut-rec-audio-meters aria-label="Recording audio levels">
-      {statusError && <p className="rec-audio-meters__error" data-cut-rec-audio-meter-status-error role="status">{statusError}</p>}
+      {statusError && <p className="rec-audio-meters__error" data-cut-rec-audio-meter-status-error role="status">{recordingNotice(statusError, 'Sound levels could not be checked. Check the audio source and try again.')}</p>}
       {meters && <>
         <AudioMeterRow meter={recordingAudioMeterPresentation('Microphone', meters.microphone)} />
         <AudioMeterRow meter={recordingAudioMeterPresentation('System audio', meters.system_audio)} />

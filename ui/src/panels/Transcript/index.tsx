@@ -46,6 +46,7 @@ import { selectedSpeechAsset } from './speechServiceModel'
 import { useSpeechServiceActions } from './useSpeechServiceActions'
 import { useEnvironmentSetupJob } from '../Environment/useEnvironmentSetupJob'
 import { useTranscriptSources } from './useTranscriptSources'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { planTranscription } from './transcribeAgain'
 import { jobFailureText } from '../../lib/jobFailureText'
 import './transcript.css'
@@ -863,6 +864,14 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   }, [toolbar])
 
   // --- render ----------------------------------------------------------------
+  const importAvailability = useAvailability('shell.desktop')
+  const openImport = () => {
+    if (importAvailability.state === 'absent') {
+      setPassNote(availabilitySentence('shell.desktop'))
+      return
+    }
+    document.dispatchEvent(new CustomEvent('cut:open-import'))
+  }
   const hasProject = !!project
   const hasAssets = hasProject && Object.keys(project.assets).length > 0
   // Which empty state the pane shows while no asset has a transcript.
@@ -1141,14 +1150,20 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
         </div>}
         {!hasAssets && (
           hasProject ? (
-            <button
-              type="button"
-              className="tx__empty tx__empty--cta"
-              data-cut-import-cta
-              onClick={() => document.dispatchEvent(new CustomEvent('cut:open-import'))}
+            <Availability
+              rule="shell.desktop"
+              replacement={<div className="tx__empty" data-cut-import-desktop-note>Importing files needs the desktop app.</div>}
             >
-              ⬑ Import media to begin
-            </button>
+              <button
+                type="button"
+                className="tx__empty tx__empty--cta"
+                data-cut-action="import-cta"
+                data-cut-import-cta
+                onClick={openImport}
+              >
+                ⬑ Import media to begin
+              </button>
+            </Availability>
           ) : (
             <div className="tx__empty">Create a project in Projects to begin</div>
           )

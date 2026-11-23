@@ -15,6 +15,7 @@ import type { RecordingOutputSize, RecordingQualityProfile } from '../panels/Rec
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
 import { recordingPolishArgs, firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, recordingReadinessFailure, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { recordingInputHook, UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from '../panels/Record/recordingInputHook'
+import { recordingSessionNotice } from '../panels/Record/recordingUiModel'
 import { RecordingToggleGate, classifyStopFailure, isNothingRecorded, nothingRecordedText, refusalText, savingProgressText, stopArgs, withSavedNotes } from './recordingSessionModel'
 import { waitForFirstFrame } from './recordingFirstFrame'
 import { resolveRecordingStopJob } from './recordingStopJob'
@@ -146,6 +147,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
 
   const publish = useCallback((patch: Partial<RecordingSessionState>) => {
     const next = { ...stateRef.current, ...patch }
+    if (patch.message !== undefined) next.message = recordingSessionNotice(patch.message, next.phase)
     stateRef.current = next
     setState(next)
   }, [])
@@ -175,11 +177,12 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
 
   const start = useCallback(async (draft?: RecordingPreset | null) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
-    const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
+    const blocked = startGuardRef.current?.()
     if (blocked) { showSetup(blocked); return }
     let preset = draft === undefined ? (draftRef.current === undefined ? presetRef.current : draftRef.current) : draft
     if (preset) preset = normalizeRecordingPresetForStart(preset)
     if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
+    const initialProjectIdentity = projectRef.current?.project_identity
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
     try {
@@ -190,20 +193,14 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         preset = firstUseRecordingPreset(discovery.result)
         if (!preset) { showSetup(recordingReadinessFailure(discovery.result) ?? 'No current screen source is available. Open Record to check capture setup.'); return }
       }
-      const currentProject = await ensureCurrentProject()
-      if (!currentProject) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
-      // A no-project F9/Start may have created the fallback while the Record
-      // panel's source checks were still running. Re-run that product-owned
-      // guard before the immediate-start path so it cannot skip a stale source
-      // or device validation just because project admission was asynchronous.
+      // Preflight refusals create nothing. A project created after these
+      // checks stays open if native Start refuses, and the next attempt reuses it.
       const guardFailure = startGuardRef.current?.()
       if (guardFailure) { showSetup(guardFailure); return }
       publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw,
         rawPath: null, source: null, plan: null, resultCaptureId: null, resultProjectIdentity: null,
         clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null,
         rawStreams: null, inputHook: UNOBSERVED_INPUT_HOOK, cursorCorrelation: null, cadence: null, quality: null })
-      // A fallback project may take time to create. Recheck the source again
-      // immediately before Start, including on first use.
       const doctor = await callVerb('screen_record.doctor', recordingDoctorArgs({
         fps: preset.fps,
         sourceKind: preset.source.kind === 'window' ? 'window' : 'display',
@@ -214,6 +211,12 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       if (!doctor.ok) { showSetup(`Recorder checks failed: ${refusalText(doctor.error, 'unavailable')}`); return }
       const invalid = validateRecordingPreset(preset, doctor.result)
       if (invalid) { showSetup(invalid); return }
+      const projectChanged = initialProjectIdentity
+        ? !sameProjectIdentity(initialProjectIdentity, projectRef.current?.project_identity)
+        : Boolean(projectRef.current?.project_identity)
+      if (projectChanged) { showSetup('The open project changed during recording checks. Try again.'); return }
+      const currentProject = await ensureCurrentProject()
+      if (!currentProject) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
       if (!sameProjectIdentity(currentProject.project_identity, projectRef.current?.project_identity)) { showSetup('The open project changed during recording checks. Try again.'); return }
       // Save only a freshly admitted setup intent. No capture ID, output path,
       // one-use token, or project binding is persisted.
@@ -297,22 +300,13 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
 
   const requestStart = useCallback(async (draft?: RecordingPreset | null, seconds = draft?.startCountdownSeconds ?? countdownSeconds) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
-    const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
+    const blocked = startGuardRef.current?.()
     if (blocked) { showSetup(blocked); return }
     if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
     // With no saved setup, F9 uses a freshly checked primary screen. There is
     // no prior countdown preference, and Start owns project creation/admission.
     if (draft === undefined && draftRef.current === undefined && !presetRef.current) { void start(); return }
-    if (!projectRef.current?.project_identity) {
-      busyRef.current = true
-      toggleGateRef.current.setInFlight(true)
-      const ensured = await ensureCurrentProject()
-      busyRef.current = false
-      toggleGateRef.current.setInFlight(false)
-      if (!ensured) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
-    }
     const requestedProjectIdentity = projectRef.current?.project_identity
-    if (!requestedProjectIdentity) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
     if (seconds <= 0) { void start(draft); return }
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
@@ -328,16 +322,19 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         countdownRef.current = null
         busyRef.current = false
         toggleGateRef.current.setInFlight(false)
-        if (!sameProjectIdentity(requestedProjectIdentity, projectRef.current?.project_identity)) {
+        const projectChanged = requestedProjectIdentity
+          ? !sameProjectIdentity(requestedProjectIdentity, projectRef.current?.project_identity)
+          : Boolean(projectRef.current?.project_identity)
+        if (projectChanged) {
           showSetup('The open project changed during the countdown. Review the recording setup and start again.')
           return
         }
-        const blocked = startGuardRef.current?.()
-        if (blocked) { showSetup(blocked); return }
+        const blockedAtHandoff = startGuardRef.current?.()
+        if (blockedAtHandoff) { showSetup(blockedAtHandoff); return }
         void start(draft)
       })
     }, 100)
-  }, [countdownSeconds, ensureCurrentProject, publish, showSetup, start])
+  }, [countdownSeconds, publish, showSetup, start])
 
   useEffect(() => () => {
     countdownGuardRef.current.cancel()

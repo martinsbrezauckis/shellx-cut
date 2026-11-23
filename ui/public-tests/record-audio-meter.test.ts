@@ -33,7 +33,7 @@ assert.equal(stale.clipping, false, 'a stale packet cannot continue to claim cli
 
 const lost = recordingAudioMeterPresentation('System audio', meter({ state: 'device_lost', stale: true }))
 assert.equal(lost.live, false)
-assert.match(lost.detail, /stopped delivering samples/i)
+assert.match(lost.detail, /stopped sending sound/i)
 
 const unavailable = recordingAudioMeterPresentation('System audio', meter({
   state: 'unavailable', stale: true, detail: 'Core Audio transfers PCM only at Stop.',

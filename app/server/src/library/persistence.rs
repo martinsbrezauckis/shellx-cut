@@ -55,8 +55,8 @@ fn save_before_replace(
     before_replace().map_err(|error| io_err("publish library manifest", error))?;
     // tempfile uses a same-directory rename on Unix and MoveFileExW with
     // replacement on Windows. Never remove the old index before replacement.
-    file.persist(path)
-        .map_err(|error| io_err("replace library manifest", error.error))?;
+    crate::replace_temporary::replace_temporary(file, path)
+        .map_err(|error| io_err("replace library manifest", error))?;
     #[cfg(unix)]
     std::fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
@@ -105,6 +105,43 @@ mod tests {
         save_at(&path, &next).unwrap();
         assert_eq!(load_at(&path).unwrap(), next);
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn concurrent_reader_never_observes_empty_or_partial_manifest_during_save() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Barrier,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.json");
+        save_at(&path, &named_library("Before")).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(Barrier::new(2));
+        let reader = {
+            let path = path.clone();
+            let done = done.clone();
+            let started = started.clone();
+            std::thread::spawn(move || {
+                let mut reads = 0;
+                started.wait();
+                loop {
+                    let manifest = load_at(&path).unwrap();
+                    assert_eq!(manifest.items.len(), 1);
+                    assert_eq!(manifest.items[0].name, "demo.mp4");
+                    reads += 1;
+                    if done.load(Ordering::Acquire) {
+                        return reads;
+                    }
+                }
+            })
+        };
+        started.wait();
+        let result =
+            (0..600).try_for_each(|tick| save_at(&path, &named_library(&format!("Folder {tick}"))));
+        done.store(true, Ordering::Release);
+        assert!(reader.join().unwrap() > 0);
+        result.unwrap();
     }
 
     #[test]

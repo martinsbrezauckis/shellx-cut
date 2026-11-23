@@ -8,7 +8,7 @@
 // did, which masked the bug in testing). Instead the Assets tray runs a custom
 // pointer drag (with a mouse-event compatibility lane for WKWebView) and
 // broadcasts its position via these DOM CustomEvents; the Timeline listens,
-// draws the insertion indicator on move, and dispatches ONE edit.insert on
+// draws the placement preview on move, and dispatches one placement operation on
 // drop. These input events are not touched by Tauri's drag-drop layer.
 
 /** Fired on every pointermove while an asset card is being dragged. */
@@ -23,8 +23,8 @@ export interface AssetDragDetail {
   kind: string
   clientX: number
   clientY: number
-  /** Alt held at drop → place as an OVERLAY/new separate track. Normal drops
-   *  insert into the base track unless the cursor is over an existing overlay
-   *  lane. Carries the live modifier from pointerup. */
+  /** Alt inserts; plain overwrites. Track is chosen by drop position. */
   alt?: boolean
+  /** Shift bypasses snapping, as for a timeline clip drag. */
+  shift?: boolean
 }

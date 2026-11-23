@@ -6,6 +6,7 @@ import { purgeReconciliation } from './cacheLifecyclePresentation'
 import CacheRebuildLifecycle from './CacheRebuildLifecycle'
 
 interface CacheLifecycleProps {
+  assetPaths?: Readonly<Record<string, string>>
   hasProject: boolean
   projectSession: number
   /** Null until Health & Recovery has a complete revision-bound media aggregate. */
@@ -29,7 +30,7 @@ function isTerminalJob(record: JobRecord): boolean {
   return record.state === 'done' || record.state === 'failed' || record.outcome === 'cancelled' || record.outcome === 'interrupted' || record.outcome === 'superseded'
 }
 
-export default function CacheLifecycle({ hasProject, projectSession, rebuildAssetIds, onComplete }: CacheLifecycleProps) {
+export default function CacheLifecycle({ assetPaths = {}, hasProject, projectSession, rebuildAssetIds, onComplete }: CacheLifecycleProps) {
   // Promise completions can arrive after the editor switches/reopens a project.
   // Cache plans and job ids are project-scoped, so never project one session's
   // result into another session's Health & Recovery surface.
@@ -276,6 +277,7 @@ export default function CacheLifecycle({ hasProject, projectSession, rebuildAsse
   return (
     <aside className="settings-cache-lifecycle" data-cut-cache-lifecycle>
       <CacheRebuildLifecycle
+        assetPaths={assetPaths}
         hasProject={hasProject}
         sessionCurrent={stateIsCurrent}
         hasCompleteInventory={rebuildAssetIds !== null}

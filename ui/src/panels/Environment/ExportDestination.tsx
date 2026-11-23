@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { applyExportOutputDir, folderTail, refreshOutputFolder } from '../../lib/exportDestination'
 import { useOutputFolderStatus } from '../../lib/useOutputFolder'
-import { isTauri, pickFolder } from '../../lib/tauri'
+import { pickFolder } from '../../lib/tauri'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 
 export default function ExportDestination() {
   // The engine holds the destination; this panel only shows it and changes it.
+  const chooser = useAvailability('shell.desktop')
   const status = useOutputFolderStatus()
   const dir = status?.dir ?? null
   const [note, setNote] = useState('')
@@ -13,8 +15,8 @@ export default function ExportDestination() {
 
   const choose = async () => {
     setNote('')
-    if (!isTauri()) {
-      setNote('Use the desktop app to choose a folder.')
+    if (chooser.state === 'absent') {
+      setNote(availabilitySentence('shell.desktop'))
       return
     }
     const picked = await pickFolder()
@@ -51,9 +53,6 @@ export default function ExportDestination() {
         )}
       </div>
       <div className="env-export-actions">
-        <button type="button" className="env-btn env-btn--secondary" data-cut-export-default-pick onClick={() => void choose()}>
-          Choose export folder
-        </button>
         <button
           type="button"
           className="env-btn env-btn--ghost"
@@ -64,6 +63,11 @@ export default function ExportDestination() {
         >
           Clear
         </button>
+        <Availability rule="shell.desktop">
+          <button type="button" className="env-btn env-btn--secondary" data-cut-action="settings-export-folder" data-cut-export-default-pick onClick={() => void choose()}>
+            Choose export folder
+          </button>
+        </Availability>
       </div>
       {note && <div className="env-export-note" data-cut-export-default-note>{note}</div>}
     </section>

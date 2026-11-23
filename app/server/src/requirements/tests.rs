@@ -22,6 +22,7 @@ fn report(cards: Vec<Card>) -> DoctorReport {
         os: "linux".into(),
         arch: "x86_64".into(),
         app_version: "test".into(),
+        availability: None,
         addr: None,
         cards,
         essential_ok: true,

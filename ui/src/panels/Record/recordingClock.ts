@@ -10,6 +10,17 @@ export interface RecordingClock {
   readonly since: number | null
 }
 
+/** Restore only this take's clock. A different or malformed snapshot is never reused. */
+export function restoreRecordingClock(saved: string | null, captureId: string, startedAt: number): RecordingClock {
+  try {
+    const value = JSON.parse(saved ?? 'null')
+    const clock = value?.clock
+    if (value?.captureId === captureId && clock && Number.isFinite(clock.baseMs) && clock.baseMs >= 0
+      && (clock.since === null || (Number.isFinite(clock.since) && clock.since >= 0))) return clock
+  } catch { /* A corrupt snapshot cannot supply recorded time. */ }
+  return startRecordingClock(startedAt)
+}
+
 /** A take that started at `startedAt` (wall clock) and has not been paused yet. */
 export function startRecordingClock(startedAt: number): RecordingClock {
   return { baseMs: 0, since: startedAt }

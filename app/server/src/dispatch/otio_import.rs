@@ -521,7 +521,7 @@ pub(super) async fn import_otio(
             .into_iter()
             .map(|path| {
                 let hash = cut_core::hash_file(&path)?;
-                let probe = cut_media::probe(&path)?;
+                let probe = cut_media::probe_source(&path)?;
                 Ok(PreparedMedia { path, hash, probe })
             })
             .collect::<Result<Vec<_>, CutError>>()

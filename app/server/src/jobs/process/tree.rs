@@ -65,7 +65,37 @@ impl ProcessTree {
         })
     }
 
+    /// Observe exit without reaping the group leader. Its PID reserves the
+    /// process-group number until every descendant has been stopped.
+    pub(super) fn exit_ready(&self, child: &Child) -> io::Result<bool> {
+        let pid = child
+            .id()
+            .ok_or_else(|| io::Error::other("external worker has no process id"))?;
+        if i32::try_from(pid).ok() != Some(self.pgid) {
+            return Err(io::Error::other("external worker group identity drifted"));
+        }
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            // Darwin can report CLD_STOPPED despite WEXITED; only exit,
+            // signal and core-dump codes mean this leader is finished.
+            Ok(unsafe { info.si_pid() } != 0 && matches!(info.si_code, 1..=3))
+        }
+    }
+
     pub(super) fn soft_stop(&mut self) -> io::Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
         #[cfg(test)]
         if self.force_stop_failure {
             return Err(io::Error::new(
@@ -77,18 +107,22 @@ impl ProcessTree {
     }
 
     pub(super) fn hard_stop(&mut self) -> io::Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
         #[cfg(test)]
         if self.force_stop_failure {
+            self.armed = false;
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "forced tree-stop failure",
             ));
         }
-        signal_group(self.pgid, libc::SIGKILL)?;
-        // signal_group treats ESRCH as a completed group termination, so no
-        // later Drop fallback may signal a reused process-group id.
+        let result = signal_group(self.pgid, libc::SIGKILL);
+        // The caller may reap next, even when the signal fails. Never let a
+        // later reader timeout or Drop signal a possibly reused group id.
         self.armed = false;
-        Ok(())
+        result
     }
 }
 

@@ -422,15 +422,57 @@ pub(crate) async fn reset(
         .ok_or_else(|| crate::screen_record::take_edit::bad("camera clip is required"))?;
     let mut guard = state.project.write().await;
     let store = guard.as_mut().ok_or_else(crate::dispatch::no_project)?;
-    let look = cut_core::recording::camera_look_for_clip(&store.project, clip)?;
+    // Enrich refusals only; the core remains the authority on valid camera slices.
+    let look = cut_core::recording::camera_look_for_clip(&store.project, clip)
+        .map_err(|error| reset_error(&store.project, clip, error))?;
     let op = store.apply(
         "screen_record.camera_reset",
         json!({"clip":clip}),
         actor,
         None,
     )?;
-    state.events.publish(Event::OpApplied { op });
-    Ok(VerbResult::ok(
+    state.events.publish(Event::OpApplied { op: op.clone() });
+    Ok(VerbResult::ok_with_ops(
         json!({"clip":clip,"transform":look.transform,"keyframes":look.keyframes}),
+        vec![op.op_id],
     ))
+}
+
+fn reset_error(project: &cut_core::Project, clip: &str, error: CutError) -> CutError {
+    if let Some(take) = cut_core::recording::take_for_clip(project, clip) {
+        return if let Some(camera) = &take.camera_clip {
+            cut_core::CutError::new(
+                cut_core::error_codes::INVALID_ARGS,
+                format!("'{clip}' is the screen clip; use camera clip '{camera}'"),
+                "the selected clip is a screen clip, not the recording's camera clip",
+            )
+            .with_suggested_action(format!(
+                "Call screen_record.camera_reset with clip:'{camera}'."
+            ))
+        } else {
+            cut_core::CutError::new(
+                cut_core::error_codes::INVALID_ARGS,
+                "this recording has no camera to reset",
+                "the recording has no camera clip",
+            ).with_suggested_action("Use screen_record.start with a camera for a new recording; project.state lists existing recordings.")
+        };
+    }
+    let is_camera = project.find_clip(clip).is_some_and(|(track, index)| {
+        if let cut_core::Clip::Media(media) = &project.track(track).unwrap().clips[index] {
+            project.recordings.iter().any(|take| {
+                take.camera_asset.as_deref() == Some(media.asset.as_str())
+                    || take.camera_clip.as_deref() == Some(clip)
+            })
+        } else {
+            false
+        }
+    });
+    if !is_camera {
+        return cut_core::CutError::new(
+            cut_core::error_codes::INVALID_ARGS,
+            "this clip is not part of a recording",
+            "the selected clip is not part of a recording with a camera",
+        ).with_suggested_action("Call project.state and choose a recording's camera_clip id, then call screen_record.camera_reset with that id.");
+    }
+    error.with_suggested_action("Call project.state to find a recording with a separate camera clip; a camera baked into the video cannot be reset separately.")
 }

@@ -1,5 +1,6 @@
 import { useState, type Dispatch, type SetStateAction } from 'react'
 import type { Asset } from '../../lib/client'
+import { Availability, useAvailability } from '../../lib/availability'
 import { Icon } from '../../icons'
 import { assetBasename, assetMediaKind, type AssetPickMode, type ContextMenuActionState } from './ClipContextMenuModel'
 import CustomSpeedMenuEditor from './CustomSpeedMenuEditor'
@@ -235,6 +236,7 @@ export function TransitionsSection({ transition, canMedia, onTransition, onFade,
 }
 
 interface AudioSectionProps {
+  sourceHasAudio?: boolean
   hasTimelineAudio: boolean
   detachAudio: ContextMenuActionState
   onDetach: () => void | Promise<void>
@@ -247,9 +249,11 @@ interface AudioSectionProps {
 /** Linked A/V remains available from its video owner, while an audio clip
  * resolves itself as the exact audio target. The compact parent prevents the
  * media menu from listing four audio operations at first level. */
-export function AudioSection({ hasTimelineAudio, detachAudio, onDetach, onGain, onMute, onCleanVoice, onClose }: AudioSectionProps) {
+export function AudioSection({ sourceHasAudio, hasTimelineAudio, detachAudio, onDetach, onGain, onMute, onCleanVoice, onClose }: AudioSectionProps) {
   const [open, setOpen] = useState(false)
-  if (!hasTimelineAudio && detachAudio.visibility !== 'visible') return null
+  const subject = { streams: { audio: sourceHasAudio } }
+  const detachAvailability = useAvailability('editing.detach-audio', subject)
+  if (!hasTimelineAudio && (detachAudio.visibility !== 'visible' || detachAvailability.state === 'absent')) return null
   return <>
     <span className="tl-ctx__sep" aria-hidden="true" />
     <button className="tl-ctx__item" data-cut-ctx="audio" role="menuitem" aria-expanded={open}
@@ -259,11 +263,13 @@ export function AudioSection({ hasTimelineAudio, detachAudio, onDetach, onGain, 
       <Icon name={open ? 'chevronUp' : 'chevronDown'} size={14} className="tl-ctx__caret" />
     </button>
     {open && <div className="tl-ctx__sub" data-cut-ctx-audio-list role="group">
-      {detachAudio.visibility === 'visible' && <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="detach-audio" role="menuitem"
+      <Availability rule="editing.detach-audio" subject={subject}>
+      {detachAudio.visibility === 'visible' && <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="detach-audio" data-cut-action="menu-detach-audio" role="menuitem"
         title="Move this clip's audio onto its own editable track"
         onClick={() => { void onDetach(); onClose() }}>
         <Icon name="waveform" size={14} /> Detach audio
       </button>}
+      </Availability>
       {hasTimelineAudio && <>
         <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="gain" role="menuitem"
           title="Open the Audio mixer to change this clip's level"

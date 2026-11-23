@@ -19,6 +19,7 @@ import {
 } from './healthRecoveryModel'
 
 interface HealthRecoveryProps {
+  assetPaths?: Readonly<Record<string, string>>
   hasProject: boolean
   projectSession: number
   onRefreshDoctor: () => Promise<DoctorReport | null>
@@ -98,6 +99,7 @@ export function runHealthAction(action: Exclude<HealthAction, null>, to: {
 }
 
 export default function HealthRecovery({
+  assetPaths = {},
   hasProject,
   projectSession,
   onRefreshDoctor,
@@ -280,7 +282,7 @@ export default function HealthRecovery({
         })}
       </div>
       <JobRetryRecovery jobs={jobs} projectSession={projectSession} onRefresh={refresh} />
-      <CacheLifecycle hasProject={hasProject} projectSession={projectSession} rebuildAssetIds={rebuildAssetIds} onComplete={refresh} />
+      <CacheLifecycle assetPaths={assetPaths} hasProject={hasProject} projectSession={projectSession} rebuildAssetIds={rebuildAssetIds} onComplete={refresh} />
       <p className="settings-health-note" data-cut-health-confirmation>Recovery actions with ambiguous or destructive consequences stay in their owning workflow and require your confirmation.</p>
     </section>
   )

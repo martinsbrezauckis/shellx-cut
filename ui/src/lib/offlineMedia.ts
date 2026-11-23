@@ -18,7 +18,7 @@ export interface OfflineMediaMaps {
 
 export function offlineMediaMaps(rows: readonly MediaCheckRow[]): OfflineMediaMaps {
   return {
-    offlineAssetIds: new Set(rows.filter((row) => !row.exists).map((row) => row.asset)),
+    offlineAssetIds: new Set(rows.filter((row) => !row.exists || row.readable === false).map((row) => row.asset)),
     modifiedMs: new Map(rows.flatMap((row) => (
       typeof row.modified_ms === 'number' ? [[row.asset, row.modified_ms] as const] : []
     ))),

@@ -1,3 +1,5 @@
+import { Availability, availabilitySentence } from '../../lib/availability'
+import { recordingNotice } from './recordingUiModel'
 import {
   cameraPositionLabel, STUDIO_POSITIONS,
   type StudioCameraPosition, type StudioCameraShape, type StudioCameraState,
@@ -56,11 +58,11 @@ export function cameraSelectionError(
   rawCapture: boolean,
 ): string | null {
   if (!enabled || rawCapture) return null
-  if (!capability.supported) return capability.detail
+  if (!capability.supported) return recordingNotice(capability.detail, 'Camera recording is unavailable with this setup.')
   const selected = capability.devices.find((device) => device.id === deviceId)
   if (!selected) return 'Choose an available camera before recording.'
   if (selected.state === 'ready' || selected.state === 'permission_required') return null
-  return selected.detail || `${selected.label} is not ready for recording.`
+  return recordingNotice(selected.detail || `${selected.label} is not ready for recording.`, 'The camera is unavailable. Check its connection and system permissions.')
 }
 
 /** A single guard and explanation for the visible controls and context menu. */
@@ -73,13 +75,13 @@ export function cameraLayoutUnavailableReason(
 ): string | null {
   if (rawCapture) return 'Switch to Auto-edit to adjust camera layout.'
   if (liveAdjustDisabled) return 'Wait for the current capture operation to finish.'
-  if (!capability.supported) return capability.detail || 'Camera layout is unavailable in this build.'
-  if (capability.devices.length === 0) return capability.detail || 'No camera source is available.'
+  if (!capability.supported) return recordingNotice(capability.detail || 'Camera layout is unavailable in this build.', 'Camera layout is unavailable with this setup.')
+  if (capability.devices.length === 0) return recordingNotice(capability.detail || 'No camera source is available.', 'No camera is available. Connect a camera and refresh the sources.')
   if (!enabled) return 'Turn on Camera to adjust its layout.'
   const selected = capability.devices.find((device) => device.id === deviceId)
   if (!selected) return 'Choose an available camera source to adjust its layout.'
   if (selected.state !== 'ready' && selected.state !== 'permission_required') {
-    return selected.detail || `${selected.label} is not ready for camera layout.`
+    return recordingNotice(selected.detail || `${selected.label} is not ready for camera layout.`, 'The camera is unavailable. Check its connection and system permissions.')
   }
   return null
 }
@@ -108,6 +110,7 @@ export function CameraControl({
   const layoutDisabled = Boolean(layoutReason)
 
   return (
+    <Availability rule="record.camera" replacement={<p className="rec-settings-tabs__note" role="status">{availabilitySentence('record.camera')} {recordingNotice(capability.detail)}</p>}>
     <div
       className="rec-studio-controls__camera"
       data-cut-studio-camera-status={state}
@@ -122,6 +125,7 @@ export function CameraControl({
         <input
           type="checkbox"
           data-cut-rec-camera-toggle
+          data-cut-action="record-camera-toggle"
           checked={enabled && !rawCapture}
           disabled={disabled || rawCapture || (!enabled && !canEnable)}
           onChange={(event) => onEnabled(event.target.checked)}
@@ -164,7 +168,7 @@ export function CameraControl({
               <option key={device.id} value={device.id}>{device.label}</option>
             ))}
           </select>
-          <small data-cut-rec-camera-state={state}>{selected?.detail ?? (capability.devices.length ? 'Choose an available camera source.' : capability.detail)}</small>
+          <small data-cut-rec-camera-state={state}>{recordingNotice(selected?.detail ?? (capability.devices.length ? 'Choose an available camera source.' : capability.detail), 'The camera is unavailable. Check its connection and system permissions.')}</small>
       </label>
 
       <div className="rec-camera-layout" data-cut-rec-camera-layout data-cut-rec-camera-layout-disabled={layoutDisabled ? 'true' : 'false'}>
@@ -206,5 +210,6 @@ export function CameraControl({
       </>}
 
     </div>
+    </Availability>
   )
 }

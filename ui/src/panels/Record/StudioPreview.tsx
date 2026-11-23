@@ -1,4 +1,6 @@
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { recordingNotice } from './recordingUiModel'
 import { studioBackgroundPreset, type StudioState } from './studioTypes'
 import type { RecordingSourcePreviewPresentation } from './recordingNativeSourcePreview'
 import { recordingLivePreviewWords, type RecordingLiveFramePresentation } from './recordingLiveFramePresentation'
@@ -24,6 +26,7 @@ interface StudioPreviewProps {
 }
 
 export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, sourcePreviewCanStart = false, onSourcePreviewStart, activeCaptureId, livePresentation, paused = false, actions }: StudioPreviewProps) {
+  const previewAvailability = useAvailability('record.source-preview')
   const [menu, setMenu] = useState<RecordingCompositionMenuState | null>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
@@ -63,6 +66,7 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
       : sourcePreview.state === 'idle' || sourcePreview.state === 'stopped' ? 'Source preview is off' : 'No source frame'
   const unavailableDetail = showLive
     ? liveWords.detail
+    : showSource && previewAvailability.state === 'absent' ? availabilitySentence('record.source-preview')
     : showSource ? sourcePreview.state === 'idle' || sourcePreview.state === 'stopped'
       ? 'Click Preview source to see real pixels from the selected display or window.' : sourcePreview.detail
       : phase === 'starting' ? 'Waiting for recording to start.'
@@ -108,11 +112,13 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
           ) : (
             <div className="rec-studio-preview__empty" data-cut-rec-preview-unavailable>
               <strong>{sourceLabel}</strong>
-              <span>{unavailableDetail}</span>
+              <span>{recordingNotice(unavailableDetail, 'The preview is unavailable. Check your recording source and try again.')}</span>
               {showSourcePreviewAction && onSourcePreviewStart && (
+                <Availability rule="record.source-preview">
                 <button type="button" className="rec-studio-preview__source-action"
                   data-cut-action="record-source-preview" onClick={onSourcePreviewStart}
                   disabled={!sourcePreviewCanStart}>Preview source</button>
+                </Availability>
               )}
             </div>
           )}
@@ -145,7 +151,7 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
           </div>
         )}
         <div className="rec-studio-preview__status" data-cut-rec-preview-status role="status" aria-live="polite">
-          <span data-cut-rec-preview-phase={phase}>
+          <span data-cut-rec-preview-phase={phase} data-cut-rec-preview-paused={paused && phase === 'recording' ? 'true' : undefined}>
             {phase === 'recording' ? paused ? 'Paused' : 'REC' : phase === 'countdown' || phase === 'starting' ? 'Starting'
               : phase === 'finalizing' ? 'Finishing' : phase === 'error' ? 'Needs attention' : phase === 'done' ? 'Recorded' : 'Ready'}
           </span>

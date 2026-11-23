@@ -93,6 +93,42 @@ pub(crate) fn apply(project: &mut Project, verb: &str, args: &Value) -> Result<(
     apply_inner(project, verb, args, true)
 }
 
+/// Describe a reset using the same transform effect fields as edit.transform,
+/// plus the replaced keyframes. Recording provenance ops retain their effects.
+pub(crate) fn effects(
+    before: &Project,
+    after: &Project,
+    verb: &str,
+    args: &Value,
+) -> Vec<crate::OpEffect> {
+    if verb != "screen_record.camera_reset" {
+        return vec![];
+    }
+    // Called only after apply succeeded on a clone, so both camera slices
+    // exist; an effect is a description, so anything unexpected records none.
+    let Some(clip) = args["clip"].as_str() else {
+        return vec![];
+    };
+    let (Some((track, index)), Some((old_track, old_index))) =
+        (after.find_clip(clip), before.find_clip(clip))
+    else {
+        return vec![];
+    };
+    let (Some(Clip::Media(new)), Some(Clip::Media(old))) = (
+        after.track(track).and_then(|t| t.clips.get(index)),
+        before.track(old_track).and_then(|t| t.clips.get(old_index)),
+    ) else {
+        return vec![];
+    };
+    vec![crate::OpEffect {
+        track: Some(track.to_owned()),
+        detail: serde_json::json!({"clip":clip,"old_transform":old.transform,"new_transform":new.transform,
+            "shape":new.transform.as_ref().map(|t| t.shape).unwrap_or_default(),
+            "old_keyframes":old.keyframes,"keyframes":new.keyframes})
+            .as_object().unwrap().clone(),
+    }]
+}
+
 // Existing durable journals may contain the former unrestricted camera look.
 // Only materialization of those saved ops uses this route.
 pub(crate) fn apply_saved(project: &mut Project, verb: &str, args: &Value) -> Result<(), CutError> {

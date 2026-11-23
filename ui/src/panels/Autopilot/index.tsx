@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type AutopilotReport } from '../../lib/client'
 import { Icon } from '../../icons'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
+import { AutopilotSummaryBanner } from './AutopilotSummaryBanner'
 import '../drawer.css'
 import './autopilot.css'
 
@@ -189,14 +190,7 @@ export default function AutopilotDrawer({ onClose }: AutopilotDrawerProps) {
 
           {report && (
             <div className="ap-report" data-cut-autopilot-report role="status" aria-live="polite">
-              <div className={`ap-summary ${report.checks_pass ? 'ap-summary--pass' : 'ap-summary--warn'}`} data-cut-autopilot-summary data-cut-autopilot-pass={String(report.checks_pass)}>
-                <span className="ap-summary-badge">{report.checks_pass
-                  ? <Icon name="check" size={16} tone="success" label="all checks pass" />
-                  : report.policy === 'preview'
-                    ? <Icon name="pending" size={16} tone="brand" label="preview" />
-                    : <Icon name="warning" size={16} tone="warn" label="needs attention" />}</span>
-                <span>{report.summary_line}</span>
-              </div>
+              <AutopilotSummaryBanner report={report} />
 
               {/* changed (compact, user-facing) */}
               {report.changed && (report.changed.ops ?? 0) > 0 && (

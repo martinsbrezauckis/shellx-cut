@@ -98,6 +98,76 @@ mod tests {
         (state, dir, asset_id)
     }
 
+    fn damaged_picture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/original-still.png")
+    }
+
+    #[tokio::test]
+    async fn damaged_picture_is_refused_before_import_is_recorded() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _, _) = project_with_unprobed_asset(root.path()).await;
+        let before = state
+            .project
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .project
+            .assets
+            .len();
+        let result = media_import(
+            &state,
+            json!({"path": damaged_picture(), "proxy": false}),
+            agent(),
+        )
+        .await;
+        assert!(result.is_err(), "damaged still was admitted");
+        assert_eq!(result.unwrap_err().code, error_codes::UNREADABLE_MEDIA);
+        assert_eq!(
+            state
+                .project
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .project
+                .assets
+                .len(),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_damaged_picture_is_reported_unreadable_not_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, dir, _) = project_with_unprobed_asset(root.path()).await;
+        let id = {
+            let mut guard = state.project.write().await;
+            let asset = cut_core::Asset {
+                path: damaged_picture().display().to_string(),
+                hash: cut_core::hash_file(&damaged_picture()).unwrap(),
+                probe: Some(json!({"kind":"image", "width":320, "height":180})),
+                transcript: None,
+                perception: None,
+                proxy: None,
+                filmstrip: None,
+            };
+            guard
+                .as_mut()
+                .unwrap()
+                .record_import(None, asset, agent(), None)
+                .unwrap()
+                .0
+        };
+        let opened =
+            crate::dispatch::dispatch(&state, "project.open", json!({"path":dir}), agent()).await;
+        assert!(opened.ok, "{:?}", opened.error);
+        let result = media_check(&state, json!({"asset":id})).await.unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["result"]["assets"][0]["exists"], true);
+        assert_eq!(value["result"]["assets"][0]["readable"], false);
+    }
+
     #[tokio::test]
     async fn an_import_whose_probe_cannot_start_leaves_no_asset() {
         let root = tempfile::tempdir().unwrap();

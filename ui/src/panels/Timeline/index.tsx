@@ -263,7 +263,7 @@ export default function Timeline(props: TimelineProps) {
   }, [activeSeam])
   // Asset drag-in (from the Assets tray): the proposed drop point while dragging
   // an asset card over the timeline — drives the insertion line + track tint.
-  // null = no asset hovering. Resolved on drop → ONE edit.insert.
+  // null = no asset hovering. Resolved on drop → one overwrite or insert action.
   const [assetDnd, setAssetDnd] = useState<AssetDropState | null>(null)
 
   const durationMs = useMemo(() => projectDurationMs(project), [project])
@@ -396,7 +396,11 @@ export default function Timeline(props: TimelineProps) {
     return !!cfg.current.rows.find((r) => r.id === trackId)?.locked
   }, [])
 
-  useTimelineAssetDrop({ project, scrollRef, clientXToMs, clientYToRow, setAssetDnd })
+  const snapAsset = useCallback((atMs: number, durationMs: number, shift: boolean) => {
+    const c = cfg.current
+    return resolveSnap(atMs, durationMs, snapCandidates(c.allItems, c.markers, c.playheadMs, new Set()), c.zoom, shift || !c.snapEnabled).ms
+  }, [])
+  useTimelineAssetDrop({ project, scrollRef, clientXToMs, clientYToRow, snapAsset, setAssetDnd })
 
   // --- zoom with anchor identity (timeline behavior contract) ----------------------------
   const pendingAnchor = useRef<{ anchorMs: number; viewportOffset: number } | null>(null)

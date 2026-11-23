@@ -640,7 +640,7 @@ impl ProjectStore {
         let mut next = self.project.clone(); // transactional: swap only on success
         let effects = if crate::recording::is_op(verb) {
             crate::recording::apply(&mut next, verb, &args)?;
-            vec![]
+            crate::recording::effects(&self.project, &next, verb, &args)
         } else if verb == "edit.restore" {
             #[derive(serde::Deserialize)]
             struct A {

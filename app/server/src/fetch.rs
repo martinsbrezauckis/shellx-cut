@@ -18,8 +18,8 @@
 //!   2. https only (redirects included), with deadlines.
 //!   3. FFmpeg: every platform's release is pinned in the source (exact URL,
 //!      size and SHA-256 of each archive and of each program installed from
-//!      it); see `pinned.rs`. uv: the publisher's per-asset checksum is read
-//!      first and the archive is verified against it.
+//!      it); see `pinned.rs`. uv: the exact release and each archive's SHA-256
+//!      are pinned below and checked before extraction.
 //!   4. Staged-then-atomic: download + verify + extract happen in a temp dir;
 //!      the verified payload is moved into place by a single rename (atomic on
 //!      the same volume; a copy+swap fallback otherwise). A failure mid-way
@@ -44,7 +44,7 @@
 //!   `SHELLX_CUT_FETCH_BASE_URL` overrides the registry BASE (the github.com
 //!   release URL) so the full path — download, checksum-verify, extract,
 //!   atomic-install, doctor re-scan — is provable against a LOCAL https/http
-//!   fixture server with a test checksum, with no network. The override changes
+//!   fixture server with a test archive, with no remote network. The override changes
 //!   only the host, never the "no caller URL" property (it is operator/test
 //!   config, not a verb arg).
 //!
@@ -74,20 +74,12 @@ mod zip_member;
 /// TESTABILITY). Never a verb arg.
 pub const ENV_FETCH_BASE_URL: &str = "SHELLX_CUT_FETCH_BASE_URL";
 
-/// astral-sh's maintained latest-release alias for the uv provisioner.
-const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/latest/download";
+/// Exact astral-sh/uv release installed by the qualified captions setup.
+const UV_VERSION: &str = "0.13.9";
+const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/download/0.13.9";
 
-/// Bound both decoded checksum metadata and staged archive bytes. The archive
-/// allowance is well above the current registry assets, including FFmpeg.
-const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
+/// Bound staged archive bytes. The allowance is well above the pinned uv assets.
 const MAX_TOOL_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
-
-/// How a tool's checksum is published.
-#[derive(Clone, Copy)]
-enum ChecksumSource {
-    /// A sibling `<asset>.sha256` next to each asset (astral-sh/uv convention).
-    PerAsset,
-}
 
 /// One built-in tool the user may consent to download. NO field is caller-
 /// supplied; the caller only names the `id`. The download host is PINNED per
@@ -100,8 +92,8 @@ struct ToolSpec {
     base: &'static str,
     /// Archive file name for THIS os/arch under the base URL.
     asset: &'static str,
-    /// Where this tool's current publisher SHA-256 is published.
-    checksum: ChecksumSource,
+    /// SHA-256 of this exact release archive, fixed in source.
+    sha256: &'static str,
     /// Archive kind, picks the extractor: "tar.xz" | "tar.gz" (unix) | "zip".
     kind: &'static str,
     /// The executables this archive provides (so we can locate them after
@@ -112,8 +104,8 @@ struct ToolSpec {
 // uv (astral-sh/uv) is the standalone Python provisioner used by
 // `system.setup_perception` to build the sidecar venv on a modern CPython
 // (system python is too old on real desktops: macOS ships 3.9, onnx-asr needs
-// ≥3.10). The maintained latest-release alias keeps this provisioner current;
-// its publisher-provided per-asset `.sha256` is verified before use.
+// ≥3.10). These digests were computed from the downloaded 0.13.9 archives and
+// compared to the publisher's per-asset checksums before being fixed here.
 
 /// Resolve the built-in spec for `(tool, os, arch)`. Returns None for an unknown
 /// tool id OR an unsupported platform (the verb turns that into an honest
@@ -124,23 +116,39 @@ fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
         // pinned in cut_media::tool_setup (see pinned.rs).
         // ── uv (astral-sh/uv; the perception-venv provisioner) ───────────────
         ("uv", os, arch) => {
-            let asset = match (os, arch) {
-                ("windows", "x86_64") => "uv-x86_64-pc-windows-msvc.zip",
-                ("windows", "aarch64") => "uv-aarch64-pc-windows-msvc.zip",
-                ("linux", "x86_64") => "uv-x86_64-unknown-linux-gnu.tar.gz",
-                ("linux", "aarch64") => "uv-aarch64-unknown-linux-gnu.tar.gz",
-                ("macos", "aarch64") => "uv-aarch64-apple-darwin.tar.gz",
-                ("macos", "x86_64") => "uv-x86_64-apple-darwin.tar.gz",
+            let (asset, sha256) = match (os, arch) {
+                ("windows", "x86_64") => (
+                    "uv-x86_64-pc-windows-msvc.zip",
+                    "edd61f7f5728a56cc62455386661860bdfc7bab65872f39b0c25bdcc1d8e1beb",
+                ),
+                ("windows", "aarch64") => (
+                    "uv-aarch64-pc-windows-msvc.zip",
+                    "72eed595983a4d7d22d79f21065b0f4479cc7e5c7a89104bb410c8f47559a878",
+                ),
+                ("linux", "x86_64") => (
+                    "uv-x86_64-unknown-linux-gnu.tar.gz",
+                    "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5",
+                ),
+                ("linux", "aarch64") => (
+                    "uv-aarch64-unknown-linux-gnu.tar.gz",
+                    "0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d",
+                ),
+                ("macos", "aarch64") => (
+                    "uv-aarch64-apple-darwin.tar.gz",
+                    "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca",
+                ),
+                ("macos", "x86_64") => (
+                    "uv-x86_64-apple-darwin.tar.gz",
+                    "617a3211261b0fc739562f0071aa34e9739797c510208ede8e2977c30903d041",
+                ),
                 _ => return None,
             };
             let kind = if os == "windows" { "zip" } else { "tar.gz" };
             Some(ToolSpec {
                 id: "uv",
-                // Leaked &'static via Box: the version is a const but the URL is
-                // composed; the registry stays a compile-time allow-list of hosts.
                 base: UV_BASE,
                 asset,
-                checksum: ChecksumSource::PerAsset,
+                sha256,
                 kind,
                 binaries: &["uv"],
             })
@@ -157,13 +165,15 @@ pub(crate) fn no_builtin_download(tool: &str, os: &str, arch: &str) -> CutError 
         error_codes::UNSUPPORTED_PLATFORM,
         format!("ShellX Cut has no built-in {tool} download for {os}/{arch}"),
         "built-in downloads exist only where a verified publisher build is registered \
-         (ffmpeg: Windows and Linux x86_64, macOS on Apple silicon; uv: Windows, Linux and macOS)",
+         (ffmpeg: Windows and Linux x86_64, macOS on Apple silicon; uv: Windows, Linux and macOS on x86_64 or aarch64)",
     );
     if tool == "ffmpeg" {
         let guide = cut_media::tool_setup::ffmpeg_setup_guide_for(os, arch);
         error.with_suggested_action(cut_media::tool_setup::ffmpeg_setup_action_for(&guide))
     } else {
-        error
+        error.with_suggested_action(
+            "Install Cut on a supported Windows, Linux or macOS x86_64/aarch64 system, or install uv manually for this platform and set SHELLX_CUT_UV to its absolute path before trying captions setup again",
+        )
     }
 }
 
@@ -293,9 +303,7 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     // RAII-ish cleanup: ensure the staging dir is removed on every exit path.
     let _guard = StagingGuard(staging.clone());
 
-    // ---- 1. load the expected sha256 -----------------------------------------
-    // Every production and explicit fixture request reads its publisher's
-    // matching checksum metadata before archive bytes are accepted.
+    // ---- 1. download and verify against the digest fixed in source ----------
     let archive_path = staging.join(spec.asset);
     let (bytes, got) = fetch_verified_archive(
         &spec,
@@ -346,8 +354,8 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     })
 }
 
-/// Retry only a temporary failure to fetch the current release. Each attempt
-/// starts with a new publisher manifest; no archive is ever trusted across attempts.
+/// Retry only a temporary failure to fetch the pinned release. No archive is
+/// trusted across attempts or accepted without the source digest.
 fn fetch_verified_archive(
     spec: &ToolSpec,
     asset_url: &str,
@@ -362,29 +370,29 @@ fn fetch_verified_archive(
         progress(f32::from_bits(highest.max(fraction.to_bits())), message);
     };
     for attempt in 0..=delays.len() {
-        report(0.02, "loading checksum");
         let result = (|| {
-            let expected = expected_sha256(spec, asset_url)?;
             report(0.05, "downloading");
             let (bytes, got) = download_hashing(asset_url, archive_path, &|frac, msg| {
                 report(0.05 + frac * 0.75, msg);
             })?;
-            report(0.82, "verifying sha256");
-            if !got.eq_ignore_ascii_case(&expected) {
-                return Err(FetchAttemptError::permanent(CutError::new(
-                    error_codes::JOB_FAILED,
-                    "sha256 mismatch — download differs from the publisher checksum",
-                    format!("expected {expected}, got {got}"),
-                ).with_suggested_action(
-                    "nothing was installed; the file was discarded. Retry to load the current publisher checksum. If it persists, report it",
-                )));
+            report(0.82, "verifying pinned sha256");
+            if !got.eq_ignore_ascii_case(spec.sha256) {
+                return Err(FetchAttemptError::permanent(
+                    CutError::new(
+                        error_codes::JOB_FAILED,
+                        "The download did not match what Cut expects. Nothing was installed. Try again later.",
+                        format!("{}: expected {}, got {got}", spec.asset, spec.sha256),
+                    )
+                    .with_suggested_action("Try again later; if this continues, report the download failure"),
+                ));
             }
+            tracing::info!(tool = spec.id, version = UV_VERSION, asset = spec.asset, sha256 = %got, "pinned archive digest verified");
             Ok((bytes, got))
         })();
         match result {
             Ok(verified) => return Ok(verified),
             Err(failure) if failure.transient && attempt < delays.len() => {
-                report(0.02, "current release temporarily unavailable; retrying");
+                report(0.02, "pinned release temporarily unavailable; retrying");
                 pause(delays[attempt]);
             }
             Err(failure) => return Err(failure.error),
@@ -396,68 +404,6 @@ fn fetch_verified_archive(
 // ---------------------------------------------------------------------------
 // HTTP (ureq, blocking)
 // ---------------------------------------------------------------------------
-
-/// Resolve the checksum accepted for this download.
-///
-/// The trusted publisher's current release metadata is authoritative for every
-/// request, including the local-fixture/operator override seam.
-fn expected_sha256(spec: &ToolSpec, asset_url: &str) -> Result<String, FetchAttemptError> {
-    let expected = match spec.checksum {
-        ChecksumSource::PerAsset => {
-            // `<asset>.sha256` holds a single GNU `sha256sum` line for the asset.
-            let text = http_get_string(&format!("{asset_url}.sha256"))?;
-            checksum_for(&text, spec.asset).or_else(|| {
-                // Some per-asset files are just the bare 64-hex digest.
-                let first = text.split_whitespace().next().unwrap_or("");
-                is_hex_sha256(first).then(|| first.to_lowercase())
-            })
-        }
-    };
-    expected.ok_or_else(|| {
-        FetchAttemptError::permanent(
-            CutError::new(
-                error_codes::JOB_FAILED,
-                format!("no sha256 found for asset '{}'", spec.asset),
-                "the selected registry does not list the requested asset",
-            )
-            .with_suggested_action("report this; do not bypass checksum verification"),
-        )
-    })
-}
-
-/// GET a small text resource (the checksum manifest). Errors are actionable.
-fn http_get_string(url: &str) -> Result<String, FetchAttemptError> {
-    http_get_string_with_limit(url, MAX_CHECKSUM_BYTES)
-}
-
-fn http_get_string_with_limit(url: &str, limit: u64) -> Result<String, FetchAttemptError> {
-    require_https(url).map_err(FetchAttemptError::permanent)?;
-    let resp = fetch_agent(url)
-        .get(url)
-        .call()
-        .map_err(|e| FetchAttemptError::network("fetch checksum manifest", url, e))?;
-    reject_oversized_length(&resp, limit, "checksum manifest")?;
-    let mut bytes = Vec::new();
-    resp.into_body()
-        .into_reader()
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| FetchAttemptError {
-            error: net_err("read checksum manifest", url, e),
-            transient: true,
-            status: None,
-        })?;
-    if bytes.len() as u64 > limit {
-        return Err(size_limit_error("checksum manifest", limit));
-    }
-    String::from_utf8(bytes).map_err(|e| {
-        FetchAttemptError::permanent(CutError::new(
-            error_codes::JOB_FAILED,
-            "checksum manifest is not UTF-8",
-            e.to_string(),
-        ))
-    })
-}
 
 /// Stream-download `url` to `dest`, computing sha256 as bytes arrive (never
 /// buffering the whole archive in memory). Reports download fraction when the
@@ -612,44 +558,6 @@ fn require_https(url: &str) -> Result<(), CutError> {
         "refusing a non-https download URL",
         format!("url must be https (or http to loopback for tests): {url}"),
     ))
-}
-
-// ---------------------------------------------------------------------------
-// Checksum manifest parsing
-// ---------------------------------------------------------------------------
-
-/// Find the hex sha256 for `asset` in GNU coreutils `sha256sum` output (a
-/// publisher's `<asset>.sha256` file): `<hex>  <filename>` per line
-/// (two spaces; the name may or may not have a leading `*`). We match on the
-/// basename so a manifest that lists `ffmpeg-...tar.xz` matches our asset.
-fn checksum_for(manifest: &str, asset: &str) -> Option<String> {
-    for line in manifest.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // Split into hash + the rest (filename, possibly with a `*` binary mark).
-        let mut it = line.splitn(2, char::is_whitespace);
-        let hash = it.next()?.trim();
-        let name = it.next()?.trim().trim_start_matches('*').trim();
-        if !is_hex_sha256(hash) {
-            continue;
-        }
-        // Match the asset by basename (manifest may path-qualify the name).
-        let name_base = Path::new(name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(name);
-        if name_base == asset {
-            return Some(hash.to_lowercase());
-        }
-    }
-    None
-}
-
-/// True for a 64-char lowercase/uppercase hex string (a sha256 digest).
-fn is_hex_sha256(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 // ---------------------------------------------------------------------------
@@ -976,30 +884,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_sha256sum_manifest() {
-        let h = "a".repeat(64);
-        let manifest = format!(
-            "# header\n{h}  ffmpeg-master-latest-linux64-gpl.tar.xz\n\
-             {b}  some-other-asset.zip\n",
-            b = "b".repeat(64)
-        );
-        let got = checksum_for(&manifest, "ffmpeg-master-latest-linux64-gpl.tar.xz");
-        assert_eq!(got.as_deref(), Some(h.as_str()));
-        // Asset not present → None (we never guess).
-        assert!(checksum_for(&manifest, "nope.tar.xz").is_none());
-    }
-
-    #[test]
-    fn checksum_matches_basename_when_path_qualified() {
-        let h = "c".repeat(64);
-        let manifest = format!("{h} *bin/ffmpeg-master-latest-win64-gpl.zip\n");
-        assert_eq!(
-            checksum_for(&manifest, "ffmpeg-master-latest-win64-gpl.zip").as_deref(),
-            Some(h.as_str())
-        );
-    }
-
-    #[test]
     fn require_https_rejects_remote_http() {
         assert!(require_https("https://github.com/x").is_ok());
         assert!(require_https("http://127.0.0.1:9000/x").is_ok()); // loopback fixture
@@ -1012,18 +896,6 @@ mod tests {
         assert!(require_https("http://127.0.0.1.evil.com/x").is_err());
         assert!(require_https("http://localhost.evil.example/x").is_err());
         assert!(require_https("http://127.0.0.1evil.com/x").is_err());
-    }
-
-    #[test]
-    fn is_hex_sha256_validates() {
-        assert!(is_hex_sha256(&"0".repeat(64)));
-        // A 64-char mixed-case hex string.
-        let mixed: String = "aBcDeF0123456789".chars().cycle().take(64).collect();
-        assert_eq!(mixed.len(), 64);
-        assert!(is_hex_sha256(&mixed));
-        assert!(!is_hex_sha256(&"0".repeat(63))); // wrong length
-        assert!(!is_hex_sha256(&"g".repeat(64))); // non-hex char
-        assert!(!is_hex_sha256("xyz"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Public DTO guards for the bounded macOS pause-safe recorder.
 
-import { fmtElapsed } from './recordingUiModel'
+import { recordingNotice, fmtElapsed } from './recordingUiModel'
 
 export interface RecordingPauseCapability {
   supported: boolean
@@ -66,14 +66,14 @@ export function recordingTakePause(value: unknown, captureId: string): Recording
   if (status.capture_id !== captureId || !status.pause || typeof status.pause !== 'object') return null
   const pause = status.pause as Record<string, unknown>
   if (pause.enabled === false && typeof pause.reason === 'string' && pause.reason.trim()) {
-    return { enabled: false, state: 'idle', message: pause.reason }
+    return { enabled: false, state: 'idle', message: recordingNotice(pause.reason, 'Pause and resume are unavailable for this take.') }
   }
   if (pause.enabled !== true || status.terminal === true) return null
   const state = pause.state
   if (state !== 'recording' && state !== 'paused' && state !== 'pausing' && state !== 'resuming') return null
   return { enabled: true, state, message: state === 'paused' ? PAUSED_STATUS_LINE
-    : state === 'pausing' ? 'Waiting for the recorder to seal the pause…'
-      : state === 'resuming' ? 'Waiting for the recorder to seal the resume…' : 'Recording.' }
+    : state === 'pausing' ? 'Pausing the recording…'
+      : state === 'resuming' ? 'Resuming the recording…' : 'Recording.' }
 }
 
 export interface RecordingPauseAcknowledgement {
@@ -138,13 +138,13 @@ export function recordingPauseCapability(value: unknown): RecordingPauseCapabili
       if (!entry || typeof entry !== 'object') return []
       const item = entry as Record<string, unknown>
       return typeof item.feature === 'string' && typeof item.reason === 'string'
-        ? [{ feature: item.feature, reason: item.reason }]
+        ? [{ feature: item.feature, reason: recordingNotice(item.reason, 'This option cannot be used with Pause and resume. Turn it off before recording.') }]
         : []
     })
     : []
   return {
     supported: source.supported === true,
-    detail: typeof source.detail === 'string' ? source.detail : NO_RECORDING_PAUSE_CAPABILITY.detail,
+    detail: typeof source.detail === 'string' ? recordingNotice(source.detail, 'Pause and resume are unavailable with these settings. Choose a supported recording setup.') : NO_RECORDING_PAUSE_CAPABILITY.detail,
     incompatible,
   }
 }

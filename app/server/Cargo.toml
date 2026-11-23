@@ -59,7 +59,7 @@ base64 = "0.22"
 # uv provisioner). ureq = tiny, blocking, rustls+webpki-roots by default (no
 # OpenSSL, no async) — ideal for a one-shot download inside a job task. We
 # stream bytes to disk while hashing (sha256 via sha2), verify against the
-# release checksums file, then shell out to the platform archive tool to
+# per-archive digests pinned in source, then shell out to the platform archive tool to
 # extract. No zip/xz crate needed: extraction is of ALREADY-VERIFIED bytes (the
 # security boundary — publisher URL + checksum — stays native in Rust).
 ureq = "3"

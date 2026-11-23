@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.119",
+    "version": "0.6.120",
     "status": "published",
-    "published_version": "0.6.119"
+    "published_version": "0.6.120"
   },
   "mutation_controls": {
     "request_id": {
@@ -2524,7 +2524,7 @@
     {
       "name": "media.import",
       "domain": "media",
-      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job; when the captions runtime is not installed the enrich job finishes done, not failed or warned, with result.skipped=\"captions_not_installed\", the reason and a suggested_action naming Install captions / system.setup_perception). Returns immediately. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job; when the captions runtime is not installed the enrich job finishes done, not failed or warned, with result.skipped=\"captions_not_installed\", the reason and a suggested_action naming Install captions / system.setup_perception). Still images are decoded once without looping under a ten-second limit before registration; a damaged picture is refused with unreadable_media, its filename, cause and suggested_action. Video/audio keep their asynchronous import chain. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
       "args": {
         "type": "object",
         "required": [
@@ -2625,7 +2625,7 @@
     {
       "name": "media.relink",
       "domain": "media",
-      "description": "Repoint an imported asset at a new source file — the recovery verb for OFFLINE media (source moved, renamed, or restored elsewhere). Two modes decided by content hash: SAME hash = the file merely moved, pure repath and every derived artifact (probe/proxy/filmstrip/transcript/perception) is KEPT; NEW hash = different content, derived state is cleared and regenerated via the same import chain a fresh media.import runs (result carries the chain job_id — poll jobs.status), while every timeline clip keeps referencing the same asset id (no re-editing needed). Refuses INVALID_ARGS on a KIND mismatch (e.g. relinking a video asset to an audio file — clips assume the kind; import a new asset + edit.replace instead). WARNS (code relink_shorter_than_used) when the new file is shorter than the furthest source point used by any clip — re-trim those clips or renders come up short. REPLAY-SAFE metadata op off the undo cursor (relink back to the old path to restore). Requires an open project. media.check lists which assets are offline. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Repoint an imported asset at a new source file — the recovery verb for OFFLINE media (source moved, renamed, or restored elsewhere). Two modes decided by content hash: SAME hash = the file merely moved, pure repath and every derived artifact (probe/proxy/filmstrip/transcript/perception) is KEPT; NEW hash = different content, derived state is cleared and regenerated via the same import chain a fresh media.import runs (result carries the chain job_id — poll jobs.status), while every timeline clip keeps referencing the same asset id (no re-editing needed). Refuses INVALID_ARGS on a KIND mismatch (e.g. relinking a video asset to an audio file — clips assume the kind; import a new asset + edit.replace instead). WARNS (code relink_shorter_than_used) when the new file is shorter than the furthest source point used by any clip — re-trim those clips or renders come up short. REPLAY-SAFE metadata op off the undo cursor (relink back to the old path to restore). Requires an open project. media.check lists which assets are offline. Before any repath, still pictures must decode one non-looped frame within ten seconds; damaged pictures are refused with unreadable_media, filename, cause and suggested_action. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
       "args": {
         "type": "object",
         "required": [
@@ -2670,7 +2670,7 @@
     {
       "name": "media.check",
       "domain": "media",
-      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, and how many timeline clips reference it. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
+      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, can a still picture be decoded, and how many timeline clips reference it. readable is false for a missing source or an undecodable still; exists continues to report file existence. offline_count includes unreadable stills. Existing projects with damaged pictures still open; the preview shows those clips as unreadable sources. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
       "args": {
         "type": "object",
         "required": [],
@@ -2682,12 +2682,12 @@
           }
         }
       },
-      "result": "{count, offline_count, assets: [{asset, path, exists, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
+      "result": "{count, offline_count, assets: [{asset, path, exists, readable: <false for missing or undecodable still>, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
           "filesystem": true,
-          "process": false,
+          "process": true,
           "network": false,
           "ui": false
         },
@@ -2854,7 +2854,7 @@
     {
       "name": "media.probe",
       "domain": "media",
-      "description": "Probe an asset (ffprobe) and store the normalized result on the asset. Synchronous (probing is fast). Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Probe an asset (ffprobe) and store the normalized result on the asset. Still pictures also require one non-looped decode within ten seconds; a damaged picture is refused with unreadable_media, filename, cause and suggested_action. Synchronous (probing is fast). Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
       "args": {
         "type": "object",
         "required": [
@@ -2992,7 +2992,7 @@
     {
       "name": "media.transcribe",
       "domain": "media",
-      "description": "Run word-level transcription on an asset (job, returns {job_id}). It can be run again at any time; a successful run replaces that asset's previous word transcript. Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
+      "description": "Run word-level transcription on an asset (job, returns {job_id}). It can be run again at any time; a successful run replaces that asset's previous word transcript. Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset. If the captions analysis process exits unsuccessfully, its sidecar error preserves the diagnostic in cause and supplies suggested_action: install or repair captions tools in Settings > AI & transcription, or call system.setup_perception, wait for its job, then retry.",
       "args": {
         "type": "object",
         "required": [
@@ -3032,7 +3032,7 @@
     {
       "name": "media.perception",
       "domain": "media",
-      "description": "Full instrument run on an asset (words, silences, scenes, beats, loudness) → receipts/<asset>.perception.json (job, returns {job_id}). Cached by asset hash.",
+      "description": "Full instrument run on an asset (words, silences, scenes, beats, loudness) → receipts/<asset>.perception.json (job, returns {job_id}). Cached by asset hash. If the captions analysis process exits unsuccessfully, its sidecar error preserves the diagnostic in cause and supplies suggested_action: install or repair captions tools in Settings > AI & transcription, or call system.setup_perception, wait for its job, then retry.",
       "args": {
         "type": "object",
         "required": [
@@ -3147,7 +3147,7 @@
     {
       "name": "media.relink_apply",
       "domain": "media",
-      "description": "Apply selected exact-hash rows from a fresh media.relink_preview. Requires request_id, expected_revision, and plan_hash; it rescans and fully rehashes before one all-or-nothing, project-local metadata journal op. It refuses ambiguity, metadata_review, and every other metadata-only evidence state. The exact source hash, chosen path, disposition, project identity, revisions, plan hash, and grouped operation id are returned in an immutable versioned result and request receipt for B6 portable packaging. It changes ONLY asset.path: no Library transaction, no import/proxy/enrichment job, no derived-state deletion, and no Ctrl-Z promise.",
+      "description": "Apply selected exact-hash rows from a fresh media.relink_preview. Requires request_id, expected_revision, and plan_hash; it rescans and fully rehashes before one all-or-nothing, project-local metadata journal op. It refuses ambiguity, metadata_review, and every other metadata-only evidence state. Selected still pictures must decode one non-looped frame within ten seconds before any path changes; damaged pictures are refused with unreadable_media, filename, cause and suggested_action. The exact source hash, chosen path, disposition, project identity, revisions, plan hash, and grouped operation id are returned in an immutable versioned result and request receipt for B6 portable packaging. It changes ONLY asset.path: no Library transaction, no import/proxy/enrichment job, no derived-state deletion, and no Ctrl-Z promise.",
       "args": {
         "type": "object",
         "required": [
@@ -3186,7 +3186,7 @@
         "mutation_class": "asset_metadata",
         "side_effects": {
           "filesystem": true,
-          "process": false,
+          "process": true,
           "network": false,
           "ui": false
         },
@@ -4208,7 +4208,7 @@
     {
       "name": "edit.overwrite",
       "domain": "edit",
-      "description": "TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both, WITHOUT shifting downstream timeline time. at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Overwrite without shifting later timeline time. TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both (or destinations requested with create_video_track/create_audio_track, created atomically in the same undo step), WITHOUT shifting downstream timeline time; at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -4228,11 +4228,21 @@
           },
           "video_track": {
             "type": "string",
-            "description": "Explicit video destination. Optional only when audio_track is supplied."
+            "description": "Existing video; excludes create_video_track."
           },
           "audio_track": {
             "type": "string",
-            "description": "Explicit audio destination. Optional only when video_track is supplied."
+            "description": "Existing audio; excludes create_audio_track."
+          },
+          "create_video_track": {
+            "type": "boolean",
+            "default": false,
+            "description": "Create video atomically; excludes video_track."
+          },
+          "create_audio_track": {
+            "type": "boolean",
+            "default": false,
+            "description": "Create audio atomically; excludes audio_track."
           },
           "src_range_ms": {
             "type": "array",
@@ -4268,7 +4278,7 @@
           }
         }
       },
-      "result": "{at_ms, src_range_ms, duration_ms, linked_av, tracks:[{track, clip_id, added_ms, overwritten_existing_ms, overlapped_clip_ids, removed_clip_ids, overwritten_gap_ms, tail_gap_ms, tail_extended_ms}]} — one atomic replayable edit.overwrite op; linked_av is true only when both destination tracks were chosen.",
+      "result": "One atomic overwrite result. {at_ms, src_range_ms, duration_ms, linked_av, tracks:[{track, clip_id, added_ms, overwritten_existing_ms, overlapped_clip_ids, removed_clip_ids, overwritten_gap_ms, tail_gap_ms, tail_extended_ms}]} — one atomic replayable edit.overwrite op; linked_av is true only when both destination tracks were chosen.",
       "result_schema": {
         "type": "object",
         "required": [
@@ -6800,7 +6810,7 @@
     {
       "name": "assets.fetch",
       "domain": "assets",
-      "description": "Import an asset-provider HIT as a normal project asset. Requires an OPEN project (the asset lands in it). Pass the `provider` + the `id` from a prior assets.search; the verb RE-RESOLVES the hit through the provider (no caller-supplied URL — no SSRF surface), then local_folder imports the file in place only when the id is still under the original search `dir`, while network providers DOWNLOAD it (size-capped, into the project's assets/providers/ dir). Import goes through the normal media-import chain (probe→proxy→filmstrip; receipts/replay intact), so the fetched asset is immediately usable on a track. The LICENSE + ATTRIBUTION are recorded on the import op and returned so the caller can credit the source (requires_attribution is false for CC0 / public-domain / local files).",
+      "description": "Import an asset-provider HIT as a normal project asset. Requires an OPEN project (the asset lands in it). Pass the `provider` + the `id` from a prior assets.search; the verb RE-RESOLVES the hit through the provider (no caller-supplied URL — no SSRF surface), then local_folder imports the file in place only when the id is still under the original search `dir`, while network providers DOWNLOAD it (size-capped, into the project's assets/providers/ dir). Before registration, still pictures must decode one non-looped frame within ten seconds; damaged pictures are refused with unreadable_media, filename, cause and suggested_action. Import goes through the normal media-import chain (probe→proxy→filmstrip; receipts/replay intact), so the fetched asset is immediately usable on a track. The LICENSE + ATTRIBUTION are recorded on the import op and returned so the caller can credit the source (requires_attribution is false for CC0 / public-domain / local files).",
       "args": {
         "type": "object",
         "required": [
@@ -13006,7 +13016,7 @@
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{pass, risks:[{kind, severity:high|med|low, detail, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...]} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict and a timeline range_ms when one applies",
+      "result": "{pass, risks:[{kind, severity:high|med|low, detail, suggested_action, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...]} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict, a suggested_action in editor words with available commands (trim the ending, shorten the sound or add picture for empty_tail), and a timeline range_ms when one applies",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -13473,7 +13483,7 @@
     {
       "name": "import.otio",
       "domain": "import",
-      "description": "Preview or atomically import a foreign OpenTimelineIO (.otio) timeline. `mode:\"preview\"` performs a bounded (16 MiB), read-only structure/count/media-availability pass and returns a SHA-256 `source_hash`; `mode:\"replace\"` (default) optionally requires that hash, probes every available referenced media file before mutation, then adds new assets and replaces the active timeline in ONE replay-safe, undoable `import.otio` op. Missing media clips are preserved as timed gaps with an `otio_media_missing` warning. Source ranges beyond probed media duration are refused, except exact Cut frame-rounding drift of at most 50 ms at EOF; accepted clips clamp to EOF with `otio_time_clamped`. A larger or nonmatching overrun requires explicit source retrimming. Unsupported nested stacks/transitions/effects/markers, disabled or cropped items, generated media references, invalid time values, wrong media kinds, remote file authorities, and non-file URI schemes are refused rather than silently dropped. The current project format is preserved; source geometry is reported for an explicit later project.format decision. Caption tracks are not in OTIO.",
+      "description": "Preview or atomically import a foreign OpenTimelineIO (.otio) timeline. `mode:\"preview\"` performs a bounded (16 MiB), read-only structure/count/media-availability pass and returns a SHA-256 `source_hash`; `mode:\"replace\"` (default) optionally requires that hash, probes every available referenced media file before mutation (including one non-looped decode of still pictures within ten seconds; damaged pictures are refused with unreadable_media, filename, cause and suggested_action), then adds new assets and replaces the active timeline in ONE replay-safe, undoable `import.otio` op. Missing media clips are preserved as timed gaps with an `otio_media_missing` warning. Source ranges beyond probed media duration are refused, except exact Cut frame-rounding drift of at most 50 ms at EOF; accepted clips clamp to EOF with `otio_time_clamped`. A larger or nonmatching overrun requires explicit source retrimming. Unsupported nested stacks/transitions/effects/markers, disabled or cropped items, generated media references, invalid time values, wrong media kinds, remote file authorities, and non-file URI schemes are refused rather than silently dropped. The current project format is preserved; source geometry is reported for an explicit later project.format decision. Caption tracks are not in OTIO.",
       "args": {
         "type": "object",
         "required": [
@@ -16773,13 +16783,13 @@
     {
       "name": "system.mcp_test",
       "domain": "system",
-      "description": "Run a bounded, read-only self-test of the exact installed cutd executable's MCP stdio proxy against this running ShellX Cut engine. Verifies protocol-version negotiation, ping, complete tools/list generation within the supported payload budget, typed structuredContent, and a system.doctor call that resolves back to this engine address. It never opens or mutates a project and never creates a second authority layer.",
+      "description": "Test the installed cutd MCP stdio proxy against this engine: protocol negotiation, ping, tools/list budget, structuredContent and full system.doctor with same-engine address. Cold-start budget: 120s; reports total elapsed_ms. Read-only; no second engine.",
       "args": {
         "type": "object",
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{schema:'shellx-cut/mcp-self-test/1', mode:'proxy', read_only:true, executable, command:[executable,'mcp'], protocol_version, ping:true, tools, expected_tools, tools_list_bytes, tools_list_max_bytes, proxy_addr, same_engine:true}",
+      "result": "{schema:'shellx-cut/mcp-self-test/1', mode:'proxy', read_only:true, executable, command:[executable,'mcp'], protocol_version, ping:true, tools, expected_tools, tools_list_bytes, tools_list_max_bytes, proxy_addr, same_engine:true, elapsed_ms}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -16819,7 +16829,7 @@
           }
         }
       },
-      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok, requirements} — essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface. requirements (schema/requirements.json, the one registry of what needs what): {schema: \"shellx-cut/requirements/1\", tools: [{id, kind: tool|condition, name, what, state: ready|missing|needs_attention|not_checked|per_asset|not_applicable, reason?, check?: {verb, args}, get: {settings?, button?, verb?, args?, person?}, doctor_card?, license?: {name, url?}, needed_for: [feature names], improves: [feature names where it is optional], per_asset?}], features: [{id, name, verbs, requires, open_project: all|some|none, any_of?, verb_extra?, optional: [{id, name, state, effect}], can_run: yes|no|depends, blocked_by: [requirement with state, reason and get], depends_on, note?}]}. Tool states are read from these cards; screen, microphone and system-sound permission are not probed here (check names screen_record.doctor); a transcript or analysis is per asset. With feature: only the answer for that verb or feature (see the feature argument).",
+      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok, availability: {pause, camera, live_timer, microphone_choice, source_preview, managed_motion}, requirements} — availability contains fixed booleans for this system and executable, computed without listing, opening or asking permission for any device. It describes support, not setup/readiness; all six facts stay fixed while this engine runs. Older engines omit availability: treat missing fields as unknown, never false. essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface. requirements (schema/requirements.json, the one registry of what needs what): {schema: \"shellx-cut/requirements/1\", tools: [{id, kind: tool|condition, name, what, state: ready|missing|needs_attention|not_checked|per_asset|not_applicable, reason?, check?: {verb, args}, get: {settings?, button?, verb?, args?, person?}, doctor_card?, license?: {name, url?}, needed_for: [feature names], improves: [feature names where it is optional], per_asset?}], features: [{id, name, verbs, requires, open_project: all|some|none, any_of?, verb_extra?, optional: [{id, name, state, effect}], can_run: yes|no|depends, blocked_by: [requirement with state, reason and get], depends_on, note?}]}. Tool states are read from these cards; screen, microphone and system-sound permission are not probed here (check names screen_record.doctor); a transcript or analysis is per asset. For uninstalled matte_premium, details.setup_supported is false only for the known dropped sm_70 generation, null when unknown/unqueried, otherwise the generation is admitted for setup (not a readiness claim). Its hint explains a refusal before downloading; an already installed older runtime retains its own readiness. With feature: only the answer for that verb or feature (see the feature argument).",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -17001,7 +17011,7 @@
     {
       "name": "system.setup_perception",
       "domain": "system",
-      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ok. rationale is recorded on the job.",
+      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (version-pinned astral-sh/uv 0.13.9 release, per-archive SHA-256 embedded in Cut and verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ok. rationale is recorded on the job.",
       "args": {
         "type": "object",
         "required": [],
@@ -17067,7 +17077,7 @@
           }
         }
       },
-      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): NO path -> {job_id} (builds an isolated torch venv + downloads the 135 MB checkpoint; a failed MatAnyone2/SAM2 import probe fails the job; finish result {model, venv_python, uv_version, checkpoint, matanyone_ready:true, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
+      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): before starting a job or downloading, refuses a driver-reported sm_70 (Volta) card with invalid_args, a plain reason, cause and suggested_action to use Standard RVM; unknown generations are never refused. NO path -> {job_id} (builds an isolated torch 2.15.0 / torchvision 0.29.2 venv, cu132 on Windows/Linux and default-index on macOS, with its own setuptools>=84.1.0 floor; downloads 141 MB + 323 MB + 323 MB of models, plus several GB for tools; a failed MatAnyone2/SAM2 import probe fails the job; finish result {model, venv_python, uv_version, checkpoint, matanyone_ready:true, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -19337,7 +19347,7 @@
     {
       "name": "screen_record.camera_reset",
       "domain": "screen_record",
-      "description": "Restore this camera slice's recorded look and rebased keys.",
+      "description": "Restore this camera slice's recorded look and rebased keys; returns op_ids and project_revision.",
       "args": {
         "type": "object",
         "required": [

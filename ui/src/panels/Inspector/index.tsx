@@ -306,7 +306,7 @@ export default function Inspector({ project, projectSession, projectRevision, se
             )}
 
             <ClipActionsSection
-              trackKind={sel.trackKind}
+              trackKind={sel.trackKind} sourceHasAudio={(project?.assets?.[sel.clip.asset]?.probe as { has_audio?: boolean } | undefined)?.has_audio}
               replaceOptions={replaceOptions}
               replaceAssetId={replaceAssetId}
               note={clipActionNote}

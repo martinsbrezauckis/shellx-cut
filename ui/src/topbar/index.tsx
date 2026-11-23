@@ -29,6 +29,7 @@ import {
   recheckVideoTools,
 } from '../lib/videoToolsSetup'
 import { isTauri, pickExportOutput, pickFolder, pickOtio } from '../lib/tauri'
+import { Availability, availabilitySentence, useAvailability } from '../lib/availability'
 import DirectorModal from '../director/DirectorModal'
 import RenderQueueModal from './RenderQueueModal'
 import type { RenderQueueOwner } from './useRenderQueueOwner'
@@ -109,13 +110,15 @@ export interface TopBarProps {
   /** Toggle the bundled local manual. External docs require an explicit choice. */
   onOpenManual?: () => void
   manualOpen?: boolean
+  embeddedManual?: boolean
 }
 
 // Timeline composition FORMAT presets — RES_PRESETS / FPS_PRESETS / resKey
 // live in lib/formatPresets. New projects auto-adopt the first video; these are
 // expert corrections, not quality choices required during project creation.
 
-export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false }: TopBarProps) {
+export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false, embeddedManual }: TopBarProps) {
+  const desktopAvailability = useAvailability('shell.desktop')
   // New project + Import moved OUT of the topbar: create lives in the
   // Projects left-tab (panels/Projects), import lives in the Assets tray + Library.
 
@@ -346,7 +349,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
   // "Choose folder…" — native OS folder picker (desktop only) → set + remember.
   const chooseFolder = async () => {
     setMenuOpen(false)
-    if (!isTauri()) { flash('Folder picker needs the desktop app'); return }
+    if (desktopAvailability.state === 'absent') { flash(availabilitySentence('shell.desktop')); return }
     const dir = await pickFolder()
     if (!dir) return
     if (await applyOutputDir(dir)) {
@@ -483,7 +486,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
 
   const onExportSaveAs = async (opt: (typeof EXPORT_OPTIONS)[number]) => {
     if (ffmpegMissing && exportNeedsFfmpeg(opt.id) && blockMissingFfmpeg(`exporting ${opt.label}`)) return
-    if (!isTauri()) { flash('Save As needs the desktop app'); return }
+    if (desktopAvailability.state === 'absent') { flash(availabilitySentence('shell.desktop')); return }
     const path = await pickExportOutput({
       title: `Save ${opt.label} — ShellX Cut`,
       defaultPath: opt.defaultPath,
@@ -652,8 +655,12 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
         )
       })()}
 
+      {/* Keep the always-present theme control before the changing manual action. */}
+      <ThemeToggle variant="icon" />
+      <Availability rule="manual.toggle" subject={{ embeddedManual }}>
       <button
         className="tb-btn tb-btn--secondary tb-nav"
+        data-cut-action="manual-toggle"
         data-cut-manual-link
         data-cut-manual-id="cut.top.manual"
         aria-label="Manual"
@@ -664,9 +671,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
         <Icon name="manual" size={16} tone="brand" /> <span className="tb-nav-label">Manual</span>
       </button>
 
-      {/* Colour-theme switch (light/dark) — a compact icon toggle; the full
-          labelled control also lives in the Setup/Environment hub. */}
-      <ThemeToggle variant="icon" />
+      </Availability>
 
       <span className="tb-spacer" />
 
@@ -893,11 +898,13 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 ))}
               </select>
             </label>
+            <Availability rule="export.project-settings" subject={{ outputShape: aspect }}>
             <label className="tb-render-field">
               <span>Quality</span>
               <select
                 className="tb-sel"
                 data-cut-render-preset
+                data-cut-action="render-quality"
                 value={preset}
                 title="Quality tier"
                 onChange={(e) => setPreset(selectedOption(PRESETS, e.target.value, preset))}
@@ -912,6 +919,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
               <select
                 className="tb-sel"
                 data-cut-render-format
+                data-cut-action="render-format"
                 value={fileFormat}
                 title="Output file format (codec and container): H.264 (.mp4), HEVC (.mp4), VP9 (.webm), ProRes (.mov), AV1 (.mp4)."
                 onChange={(e) => setFileFormat(selectedOption(FORMATS, e.target.value, fileFormat))}
@@ -926,6 +934,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
               <input
                 type="checkbox"
                 data-cut-render-gpu
+                data-cut-action="render-hardware"
                 checked={useGpu}
                 title="Use the GPU/hardware encoder (NVENC/QSV/AMF/VideoToolbox) when present — much faster, with a probe-verified safe fallback to software. Uncheck to force byte-deterministic software encoding."
                 onChange={(e) => setUseGpu(e.target.checked)}
@@ -936,6 +945,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
               <select
                 className="tb-sel"
                 data-cut-render-profile
+                data-cut-action="render-content"
                 value={profile}
                 title="Content type for quality checks (Auto-detect uses the default checks and proposes a content type)"
                 onChange={(e) => setProfile(selectedOption(PROFILES, e.target.value, profile))}
@@ -950,6 +960,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
               <select
                 className="tb-sel"
                 data-cut-render-loudness
+                data-cut-action="render-loudness"
                 value={loudness}
                 title="Normalize the published audio to a target integrated loudness (LUFS). The render verifies it with the lufs receipt check. -14 social, -16 podcast, -23 broadcast. Off = no normalization."
                 onChange={(e) => setLoudness(selectedOption(LOUDNESS, e.target.value, loudness))}
@@ -959,6 +970,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 ))}
               </select>
             </label>
+            </Availability>
             {/* Timeline composition format is an expert correction for mixed media
                 or a required standard. New projects adopt the first video, so keep
                 this project-wide mutation out of the normal delivery scan path. */}
@@ -1079,9 +1091,11 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
               <span className="tb-menu-dest-label" data-cut-output-dir={outputDir ?? ''}>
                 Default export folder: <b title={outputFolderTitle(outputFolder)} data-cut-output-usable={outputFolder ? String(outputFolder.usable) : ''}>{outputDir ? outputFolderLabel(outputFolder ?? { dir: outputDir, destination: 'chosen', usable: true, problem: null, suggested_action: null }, folderTail) : 'project exports'}</b>
               </span>
-              <button role="menuitem" data-cut-export-choose-folder onClick={() => void chooseFolder()}>
+              <Availability rule="shell.desktop">
+              <button role="menuitem" data-cut-action="export-choose-folder" data-cut-export-choose-folder onClick={() => void chooseFolder()}>
                 Choose default export folder…
               </button>
+              </Availability>
               {outputDir && (
                 <button role="menuitem" data-cut-export-clear-folder onClick={() => void clearFolder()}>
                   Use project exports folder
@@ -1125,8 +1139,10 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                     <button role="menuitem" data-cut-export-option={opt.id} onClick={() => void onExport(opt)}>
                       {opt.label}
                     </button>
+                    <Availability rule="shell.desktop">
                     <button
                       role="menuitem"
+                      data-cut-action="export-save-as"
                       className="tb-export-saveas"
                       data-cut-export-saveas-option={opt.id}
                       title={`Choose a file for ${opt.label}`}
@@ -1134,6 +1150,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                     >
                       <Icon name="save" size={14} label="Save As" />
                     </button>
+                    </Availability>
                   </div>
                 ))}
               </div>

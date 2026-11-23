@@ -74,8 +74,14 @@ pub(super) async fn stop_and_wait(
 ) -> io::Result<ExitStatus> {
     // Closing stdin is the cross-platform graceful request used by JSON workers.
     drop(child.stdin.take());
+    #[cfg(unix)]
+    let _ = tokio::time::timeout(GRACEFUL_STOP, wait_for_exit_without_reaping(child, tree)).await;
+    #[cfg(not(unix))]
     let _ = tokio::time::timeout(GRACEFUL_STOP, child.wait()).await;
     let soft_error = tree.soft_stop().err();
+    #[cfg(unix)]
+    let _ = tokio::time::timeout(GRACEFUL_STOP, wait_for_exit_without_reaping(child, tree)).await;
+    #[cfg(not(unix))]
     let _ = tokio::time::timeout(GRACEFUL_STOP, child.wait()).await;
     let hard_error = tree.hard_stop().err();
     let direct_error = child
@@ -87,6 +93,16 @@ pub(super) async fn stop_and_wait(
         (Ok(status), None, None, None) => Ok(status),
         (Ok(_), soft, hard, direct) => Err(cleanup_failures(soft, hard, direct, None)),
         (Err(wait), soft, hard, direct) => Err(cleanup_failures(soft, hard, direct, Some(wait))),
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_exit_without_reaping(child: &Child, tree: &ProcessTree) -> io::Result<()> {
+    loop {
+        if tree.exit_ready(child)? {
+            return Ok(());
+        }
+        tokio::time::sleep(super::PROCESS_POLL).await;
     }
 }
 

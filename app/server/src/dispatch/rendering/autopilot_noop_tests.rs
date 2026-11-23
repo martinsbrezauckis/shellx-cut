@@ -99,3 +99,66 @@ async fn timeline_fix_count_uses_real_dispatch_operations() {
     assert_eq!(autopilot_applied_fix_count(&report), 3);
     assert_eq!(autopilot_applied_fix_count(&[json!({"failed":null})]), 0);
 }
+
+#[test]
+fn autopilot_summary_requires_passing_checks_and_distinguishes_not_measured() {
+    let base = AutopilotSummaryInput {
+        policy: "preview".into(),
+        pass: false,
+        auto_fixable_planned: 0,
+        unverified: false,
+        stalled: false,
+        iterations: 0,
+        applied_fixes: 0,
+        failed_checks: 0,
+        unmeasured_checks: 0,
+        measured_checks: 2,
+    };
+
+    assert_eq!(
+        autopilot_summary(&AutopilotSummaryInput {
+            pass: true,
+            ..base.clone()
+        }),
+        "All checks already pass — nothing to fix."
+    );
+    assert_eq!(
+        autopilot_summary(&AutopilotSummaryInput {
+            failed_checks: 1,
+            ..base.clone()
+        }),
+        "Some checks did not pass and none can be fixed automatically. Open Inspect to see them."
+    );
+    assert_eq!(
+        autopilot_summary(&AutopilotSummaryInput {
+            unmeasured_checks: 3,
+            ..base.clone()
+        }),
+        "Measured checks passed, and 3 check(s) were not measured. Open Inspect to see them."
+    );
+    assert_eq!(
+        autopilot_summary(&AutopilotSummaryInput {
+            unmeasured_checks: 2,
+            measured_checks: 0,
+            ..base.clone()
+        }),
+        "2 check(s) were not measured. Open Inspect to see them."
+    );
+    assert!(autopilot_summary(&AutopilotSummaryInput {
+        unverified: true,
+        ..base.clone()
+    })
+    .contains("not measured"));
+    assert!(autopilot_summary(&AutopilotSummaryInput {
+        auto_fixable_planned: 2,
+        failed_checks: 2,
+        ..base.clone()
+    })
+    .starts_with("Preview: 2 issue(s) fixable"));
+    assert!(autopilot_summary(&AutopilotSummaryInput {
+        policy: "auto_low_risk".into(),
+        unmeasured_checks: 4,
+        ..base
+    })
+    .contains("not measured"));
+}

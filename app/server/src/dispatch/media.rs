@@ -10,13 +10,17 @@ use std::sync::Arc;
 mod cache_cleanup;
 mod decode_check;
 mod format_adoption;
+mod picture_check;
 mod placement_turn;
 mod probe_recheck;
 mod proxy_missing;
 mod proxy_trust;
 pub(crate) use proxy_trust::{check_held_proxies, hold_proxies, proxy_binding, proxy_check_status};
+#[cfg(test)]
+mod picture_check_tests;
 mod unprobed_import;
 use cache_cleanup::{remove_asset_receipts, remove_owned_cache_outputs_locked};
+pub(super) use picture_check::media_check;
 pub(crate) use placement_turn::PlacementTurns;
 
 fn plain_generated_file(path: &Path) -> bool {
@@ -586,9 +590,9 @@ async fn media_import_admitted(
     if !had_project {
         return Err(no_project());
     }
-    let (asset_id, op) = {
-        let mut guard = state.project.write().await;
-        let store = guard.as_mut().ok_or_else(no_project)?;
+    {
+        let guard = state.project.read().await;
+        let store = guard.as_ref().ok_or_else(no_project)?;
         if let Some(expected) = a.expected_project_dir.as_deref() {
             if store.dir != Path::new(expected) {
                 return Err(CutError::new(
@@ -602,6 +606,17 @@ async fn media_import_admitted(
                 ));
             }
         }
+    }
+    // Attestation and project-owner guards keep their existing refusals. Decode
+    // off the project lock, but before an import op can make the picture visible.
+    let picture = src.clone();
+    run_blocking("media.import.picture", move || {
+        cut_media::picture_decode::check_if_picture(&picture)
+    })
+    .await?;
+    let (asset_id, op) = {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().ok_or_else(no_project)?;
         // A person who chose no proxy keeps that choice: a later open does not make one.
         let choice = if a.proxy == Some(false) {
             json!({"proxy": false})
@@ -1116,65 +1131,6 @@ fn source_modified_ms(path: &Path) -> Option<i64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
     i64::try_from(duration.as_millis()).ok()
-}
-
-/// media.check{asset?} — read-only OFFLINE-media report. Existence is computed
-/// from the filesystem at call time, never persisted (a stored offline flag can
-/// go stale in both directions — the filesystem is the source of truth). For
-/// each asset: does its source file exist, when was it modified, and how many
-/// timeline clips reference it. The UI polls this for offline badges and recent
-/// smart-bin filters; agents run it before render.
-/// Result: {count, offline_count, assets:[{asset, path, exists, modified_ms?,
-/// referenced}]}.
-pub(super) async fn media_check(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
-    #[derive(serde::Deserialize)]
-    struct Args {
-        asset: Option<String>,
-    }
-    let a: Args = parse_args(args)?;
-    let guard = state.project.read().await;
-    let store = guard.as_ref().ok_or_else(no_project)?;
-    let dir = store.dir.clone();
-    let mut rows = Vec::new();
-    let mut offline = 0usize;
-    for (id, asset) in &store.project.assets {
-        if let Some(want) = &a.asset {
-            if want != id {
-                continue;
-            }
-        }
-        let p = asset_source_path(&dir, asset);
-        let exists = p.is_file();
-        let modified_ms = if exists { source_modified_ms(&p) } else { None };
-        if !exists {
-            offline += 1;
-        }
-        let referenced = store
-            .project
-            .all_sequence_tracks()
-            .flat_map(|t| &t.clips)
-            .filter(|c| matches!(c, cut_core::Clip::Media(m) if &m.asset == id))
-            .count();
-        rows.push(json!({
-            "asset": id,
-            "path": asset.path,
-            "exists": exists,
-            "modified_ms": modified_ms,
-            "referenced": referenced,
-        }));
-    }
-    if a.asset.is_some() && rows.is_empty() {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            "no such asset".to_string(),
-            "list assets via project.state (project.assets)".to_string(),
-        ));
-    }
-    Ok(VerbResult::ok(json!({
-        "count": rows.len(),
-        "offline_count": offline,
-        "assets": rows,
-    })))
 }
 
 /// Does `asset` match a smart bin's query? AND-combined: kind (probe kind),

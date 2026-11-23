@@ -31,6 +31,8 @@ use std::time::{Duration, Instant};
 
 const PROCESS_POLL: Duration = Duration::from_millis(20);
 const STOP_GRACE: Duration = Duration::from_millis(250);
+// After tree cleanup, tolerate scheduler delay but still bound externally held pipes.
+const PIPE_CLOSE_GRACE: Duration = Duration::from_secs(5);
 const OUTPUT_CAP_BYTES: usize = 512 * 1024;
 const INPUT_CAP_BYTES: usize = 1024 * 1024;
 const DEFAULT_FOREGROUND_TIMEOUT: Duration = Duration::from_secs(30 * 60);

@@ -4,12 +4,15 @@ use super::MAX_TOOLS_LIST_BYTES;
 use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 // The four replies share this capture budget; tools/list retains its separate
 // client budget below. Leave room for the doctor's full structured/text reply.
 const MAX_SELF_TEST_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+// The full doctor probes tools/hardware on its first call. Keep those checks,
+// allowing a cold engine on a loaded machine to finish rather than failing at 12s.
+const SELF_TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Exercise the exact current executable's MCP stdio proxy against this served
 /// engine. Matching the doctor report's bound address proves that the child
@@ -69,17 +72,18 @@ async fn run_with_command(
     command: &mut tokio::process::Command,
     input: &[u8],
 ) -> Result<VerbResult, CutError> {
+    let started = Instant::now();
     let output = crate::jobs::run_owned(
         command,
         Some(input),
-        &crate::jobs::ProcessControl::for_operation(Duration::from_secs(12))
+        &crate::jobs::ProcessControl::for_operation(SELF_TEST_TIMEOUT)
             .with_output_cap(MAX_SELF_TEST_OUTPUT_BYTES),
     )
     .await
     .map_err(|error| match error.termination() {
         Some(crate::jobs::ProcessTermination::DeadlineExceeded) => test_error(
             "MCP self-test timed out",
-            "the installed MCP stdio process did not complete within 12 seconds",
+            "the installed MCP stdio process, including the full system.doctor checks, did not complete within 120 seconds",
         ),
         _ => test_error("MCP self-test could not complete", &error.to_string()),
     })?;
@@ -215,7 +219,8 @@ async fn run_with_command(
         "tools_list_bytes": tools_list_bytes,
         "tools_list_max_bytes": MAX_TOOLS_LIST_BYTES,
         "proxy_addr": proxied_addr,
-        "same_engine": true
+        "same_engine": true,
+        "elapsed_ms": started.elapsed().as_millis() as u64
     })))
 }
 

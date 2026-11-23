@@ -157,6 +157,7 @@ mod recording_controls;
 mod recording_scenes;
 pub(crate) mod recovery;
 pub(crate) mod rehearsal;
+pub(crate) mod system_availability;
 // Region tickets and geometry remain a private admission foundation pending
 // compiled/native foreground qualification. Do not expose a coordinate-taking
 // verb or an abstract overlay in the meantime.

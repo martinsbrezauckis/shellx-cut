@@ -16,6 +16,9 @@ use super::ff_err;
 
 const PROCESS_POLL: Duration = Duration::from_millis(20);
 const STOP_GRACE: Duration = Duration::from_millis(250);
+// Match cut-media: a reaped tree leaves only worker scheduling/EOF, not a
+// process to stop. Allow scheduler delay, but bound an externally held pipe.
+const PIPE_CLOSE_GRACE: Duration = Duration::from_secs(5);
 pub(super) const OUTPUT_CAP_BYTES: usize = 512 * 1024;
 
 /// One deadline shared by every child in a recording export, plus its job's
@@ -313,25 +316,23 @@ pub(super) fn finish_reader(
     child: &mut ManagedChild,
     context: &str,
 ) -> Result<Vec<u8>> {
-    let (result, timed_out, cleanup) = match reader.done.recv_timeout(STOP_GRACE) {
-        Ok(result) => (Some(result), false, None),
+    let result = match reader.done.recv_timeout(STOP_GRACE) {
+        Ok(result) => Some(result),
         Err(_) => {
-            let cleanup = child.stop_and_reap().err();
-            (reader.done.recv_timeout(STOP_GRACE).ok(), true, cleanup)
+            child.stop_and_reap()?;
+            reader.done.recv_timeout(PIPE_CLOSE_GRACE).ok()
         }
     };
-    let joined = join_reader(&mut reader, context);
-    if let Some(error) = cleanup {
-        return Err(error);
-    }
-    joined?;
     match result {
-        Some(result) => result.map_err(|error| ff_err(context, error)),
-        None if timed_out => Err(ff_err(
+        Some(result) => {
+            join_reader(&mut reader, context)?;
+            result.map_err(|error| ff_err(context, error))
+        }
+        // Never join a worker still blocked on an externally inherited pipe.
+        None => Err(ff_err(
             context,
             "owned ffmpeg pipe did not close after process-tree cleanup",
         )),
-        None => Err(ff_err(context, "owned ffmpeg pipe reader disconnected")),
     }
 }
 

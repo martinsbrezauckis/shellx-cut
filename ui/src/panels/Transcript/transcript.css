@@ -215,6 +215,7 @@
   color: var(--ink-4);
   font-size: var(--fs-ui-sm);
 }
+.tx__setup-err ~ .tx__empty { top: 48px; }
 /* …a real CTA button when a project is open (opens the topbar Import dialog) */
 .tx__empty--cta {
   all: unset;

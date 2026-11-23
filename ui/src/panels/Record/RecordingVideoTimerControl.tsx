@@ -1,3 +1,4 @@
+import { Availability, availabilitySentence } from '../../lib/availability'
 import { useEffect, useState } from 'react'
 import {
   RECORDING_TIMER_PRESET_MINUTES,
@@ -8,6 +9,7 @@ import {
   type RecordingSceneTimerAction,
   type RecordingSceneTimerKind,
 } from './recordingScenes'
+import { recordingNotice } from './recordingUiModel'
 import type { RecordingSceneTimerStatus } from './useRecordingScenes'
 
 interface RecordingVideoTimerControlProps {
@@ -66,6 +68,7 @@ export function RecordingVideoTimerControl({
 
   return (
     <div className="rec-video-timer" data-cut-rec-video-timer={timer.kind}>
+      <Availability rule="record.live-timer" replacement={<p className="rec-settings-tabs__note">{availabilitySentence('record.live-timer')}</p>}>
       {!recording ? (
         <>
           <div className="rec-video-timer__choices" role="group" aria-label="Video timer mode">
@@ -107,7 +110,7 @@ export function RecordingVideoTimerControl({
       ) : (
         <>
           <span className="rec-studio-controls__label">While recording · video timer only</span>
-          <div className="rec-video-timer__actions" role="group" aria-label="Live video timer">
+          <div className="rec-video-timer__actions" data-cut-action="record-live-timer-actions" role="group" aria-label="Live video timer">
             {(['pause', 'resume', 'reset', 'restart', 'end'] as const).map((action) => {
               const reason = actionReason(action)
               return (
@@ -120,7 +123,8 @@ export function RecordingVideoTimerControl({
           {unavailable && <p className="rec-settings-tabs__note" role="status">{unavailable}</p>}
         </>
       )}
-      <p className="rec-settings-tabs__note" role="status" data-cut-rec-video-timer-state={status.state}>{status.message}</p>
+      </Availability>
+      <p className="rec-settings-tabs__note" role="status" data-cut-rec-video-timer-state={status.state}>{recordingNotice(status.message, 'The timer change was not saved. Try again.')}</p>
       <p className="rec-settings-tabs__note">Reaching zero does not stop recording. Capture length and the start countdown are separate settings.</p>
     </div>
   )

@@ -9,6 +9,7 @@ import {
 import type { ReactNode } from 'react'
 import { CameraControl, type CameraCapability } from './CameraControl'
 import { RecordingSettingsTabs, type RecordingSettingsSection } from './RecordingSettingsTabs'
+import { Availability } from '../../lib/availability'
 import './cameraControl.css'
 import './recordingSettingsTabs.css'
 
@@ -90,7 +91,7 @@ export function StudioControls({
     ),
     timer: (
       <>
-        <p className="rec-settings-tabs__note">The on-video timer appears in the finished video. It does not stop capture or control capture Pause.</p>
+        <p className="rec-settings-tabs__note">The on-video timer appears in the finished video. It does not stop capture<Availability rule="record.pause"> or control capture Pause</Availability>.</p>
         {videoTimerControl}
       </>
     ),

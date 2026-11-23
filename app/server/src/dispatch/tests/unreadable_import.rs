@@ -43,7 +43,7 @@ fn text_bytes() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn a_text_file_named_like_media_is_undone_with_a_plain_reason() {
+async fn a_text_file_named_like_media_is_refused_or_undone_with_a_plain_reason() {
     for name in ["textfile.mp4", "textfile.png"] {
         let root = tempfile::tempdir().unwrap();
         let state = AppState::new();
@@ -51,6 +51,20 @@ async fn a_text_file_named_like_media_is_undone_with_a_plain_reason() {
         let media = root.path().join(name);
         std::fs::write(&media, text_bytes()).unwrap();
         let imported = dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+        if name.ends_with(".png") {
+            assert!(!imported.ok, "damaged stills fail before admission");
+            let error = imported.error.unwrap();
+            assert_eq!(error.code, "unreadable_media");
+            assert_eq!(
+                error.message,
+                format!("This picture file is damaged and cannot be used: {name}")
+            );
+            assert!(!error.cause.is_empty());
+            assert!(error.suggested_action.is_some());
+            assert_eq!(assets(&state).await, json!({}));
+            assert_eq!(op_verbs(&state).await, ["project.create"]);
+            continue;
+        }
         assert!(
             imported.ok,
             "the probe runs in the import job: {:?}",

@@ -4,19 +4,29 @@ use crate::state::AppState;
 use cut_core::{edit::make_media_clip, edl_from_project, Clip};
 use serde_json::json;
 
+/// These tests only need an asset to place. A real import of their fake bytes
+/// starts a job that finds the file unreadable and takes the asset away again,
+/// racing the edits that follow (seen on macOS, 2026-11-23).
 async fn import_stub_media(state: &AppState, path: &std::path::Path) -> String {
-    let imported = dispatch(
-        state,
-        "media.import",
-        json!({"path":path,"proxy":false}),
-        test_actor(),
-    )
-    .await;
-    assert!(imported.ok, "{:?}", imported.error);
-    imported.result.unwrap()["asset_id"]
-        .as_str()
+    let name = path.file_name().unwrap().to_string_lossy();
+    let asset = cut_core::Asset {
+        path: path.display().to_string(),
+        hash: format!("sha256:fixture-{name}"),
+        probe: None,
+        transcript: None,
+        perception: None,
+        proxy: None,
+        filmstrip: None,
+    };
+    let (asset_id, _) = state
+        .project
+        .write()
+        .await
+        .as_mut()
         .unwrap()
-        .to_owned()
+        .record_import(None, asset, test_actor(), None)
+        .unwrap();
+    asset_id
 }
 
 #[tokio::test]

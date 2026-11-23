@@ -197,7 +197,7 @@ fn muxed_video_range(project: &cut_core::Project, a: &Args) -> Result<[u64; 2], 
     Ok(range)
 }
 
-fn resolve_destination(
+pub(super) fn resolve_destination(
     project: &cut_core::Project,
     existing: Option<&str>,
     create: bool,

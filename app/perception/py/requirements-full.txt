@@ -27,8 +27,15 @@
 #
 numpy<2.5             # BSD-3 — PIN: hold numba/llvmlite on their prebuilt wheels (see header)
 #
+# Security floors for fresh installs. Newer WhisperX releases currently either
+# require vulnerable torch 2.8 or cannot resolve under our Python 3.12 wheel-only
+# policy; let uv choose the newest compatible combination, not a forced override.
+# These bounds also apply to the torch pulled by the optional detector.
+torch>=2.13.0         # BSD-3 — fixes the open torch advisories in the release scan
+setuptools>=84.1.0    # MIT — fixes the optional runtime's setuptools advisories
+#
 # ── FALLBACK transcription (only used when onnx-asr is absent/errors) ──────────
-whisperx              # BSD-2 — word-level timestamps fallback (pulls faster-whisper, torch)
+whisperx>=3.4.5       # BSD-2 — word-level timestamps fallback (pulls faster-whisper, torch)
 torchaudio            # BSD-2 — MMS_FA forced alignment for Canary word timestamps
 silero-vad            # MIT — voice activity detection
 soundfile             # BSD-3 — WAV reader for Silero silence analysis

@@ -713,6 +713,41 @@ fn command_output_with_timeout(prog: &OsStr, args: &[&str], timeout: Duration) -
 
 static CUDA_VRAM: OnceLock<Option<u64>> = OnceLock::new();
 
+/// Read the selected CUDA card's reported generation using the same bounded
+/// NVIDIA driver helper as VRAM detection. Missing/old drivers and ambiguous
+/// visibility selections are unknown, never grounds for refusing an install.
+pub fn cuda_compute_capability() -> Option<(u32, u32)> {
+    let visible = match std::env::var("CUDA_VISIBLE_DEVICES") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return None,
+    };
+    let device = match visible.as_deref().and_then(|s| s.split(',').next()) {
+        None | Some("0") => "0",
+        Some(s) if s.starts_with("GPU-") || s.starts_with("MIG-") => s,
+        _ => return None,
+    };
+    // Mixed-card ordering can differ from CUDA. Multiple reports remain
+    // unknown rather than refusing a different, usable card.
+    let mut args = vec!["--query-gpu=compute_cap", "--format=csv,noheader,nounits"];
+    if device != "0" {
+        args.extend(["--id", device]);
+    }
+    let out = command_output_with_timeout(OsStr::new("nvidia-smi"), &args, HW_PROBE_TIMEOUT)?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_compute_capability(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_compute_capability(reported: &str) -> Option<(u32, u32)> {
+    let (major, minor) = reported.trim().split_once('.')?;
+    if !major.chars().all(|c| c.is_ascii_digit()) || !minor.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
 /// Total VRAM (bytes) of the primary CUDA device, read once from `nvidia-smi
 /// --query-gpu=memory.total` (MiB). `None` when nvidia-smi is absent or the query
 /// fails — the render gate then uses a conservative default budget rather than
@@ -937,6 +972,14 @@ pub fn probe_ffmpeg_caps(ffmpeg: &Path) -> FfmpegCaps {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reported_cuda_generation_fixture_is_not_a_card_name_table() {
+        assert_eq!(super::parse_compute_capability("7.0\n"), Some((7, 0)));
+        assert_eq!(super::parse_compute_capability("12.0\n"), Some((12, 0)));
+        for unknown in ["", "N/A", "Tesla V100", "7", "7.0\n12.0", "seven.zero"] {
+            assert_eq!(super::parse_compute_capability(unknown), None);
+        }
+    }
     use super::*;
 
     /// FfmpegCaps::rank ladders correctly (not-runnable < software < hw < fast-track)

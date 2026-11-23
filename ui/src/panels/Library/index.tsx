@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callVerb, type LibItem, type Project } from '../../lib/client'
 import { libraryIdFromAssetHash } from '../../lib/mediaPath'
 import type { SourceNavigationState } from '../../app/useSourceNavigationController'
-import { confirmAction, isTauri, pickMedia } from '../../lib/tauri'
+import { availabilitySentence, useAvailability } from '../../lib/availability'
+import { confirmAction, pickMedia } from '../../lib/tauri'
+import LibraryBrowseControl from './LibraryBrowseControl'
 import { Icon } from '../../icons'
 import { LibraryBulkBar } from './LibraryBulkBar'
 import { LibraryCard } from './LibraryCard'
@@ -36,6 +38,7 @@ export interface LibraryPanelProps {
 }
 
 export default function LibraryPanel({ project, onAddedToProject, active, playheadMs = 0, sourceNavigation }: LibraryPanelProps) {
+  const browseAvailability = useAvailability('shell.desktop')
   const hasProject = !!project
   const [actionErr, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -143,8 +146,8 @@ export default function LibraryPanel({ project, onAddedToProject, active, playhe
   // chosen file to the GLOBAL library; addCopy stores a managed blob copy.
   const browseAdd = useCallback(async () => {
     if (busy) return
-    if (!isTauri()) {
-      setErr('Open the desktop app to browse for files')
+    if (browseAvailability.state === 'absent') {
+      setErr(availabilitySentence('shell.desktop'))
       return
     }
     const paths = await pickMedia()
@@ -164,7 +167,7 @@ export default function LibraryPanel({ project, onAddedToProject, active, playhe
       void reload()
     }
     if (firstErr) setErr(firstErr)
-  }, [addCopy, busy, reload])
+  }, [addCopy, browseAvailability.state, busy, reload])
 
   const toggleFavorite = useCallback(
     async (it: LibItem) => {
@@ -465,21 +468,7 @@ export default function LibraryPanel({ project, onAddedToProject, active, playhe
         <div className="lb-command-stack">
         {/* Browse to add media + an optional managed-copy toggle (no path typing). */}
         <div className="lb-add" data-cut-library-add>
-          <button
-            className="lb-browse"
-            data-cut-library-browse
-            data-cut-library-addbtn
-            disabled={busy === 'add'}
-            onClick={() => void browseAdd()}
-          >
-            {busy === 'add' ? (
-              'Adding…'
-            ) : (
-              <>
-                <Icon name="import" size={14} tone="asset" /> Browse files…
-              </>
-            )}
-          </button>
+          <LibraryBrowseControl busy={busy} onBrowse={() => void browseAdd()} />
           <label className="lb-copy" title="Store a managed copy in the Library folder so the original file can move">
             <input type="checkbox" data-cut-library-portable-toggle checked={addCopy} onChange={(e) => setAddCopy(e.target.checked)} />
             Keep a copy

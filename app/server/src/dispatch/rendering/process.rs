@@ -68,6 +68,72 @@ mod tests {
     }
 
     #[test]
+    fn damaged_looped_picture_deadline_reaps_children_and_returns_preview_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new();
+        let mut workers = Vec::new();
+        for slot in 0..2 {
+            let permit = state
+                .frame_render_limiter
+                .clone()
+                .try_acquire_owned()
+                .unwrap();
+            let pid_file = dir.path().join(format!("picture-{slot}.pid"));
+            workers.push(std::thread::spawn(move || {
+                let _permit = permit;
+                let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../media/tests/fixtures/original-still.png");
+                let mut command = Command::new("sh");
+                command.env("CUT_TEST_PID_FILE", &pid_file);
+                command.args([
+                    "-c",
+                    "echo $$ > \"$CUT_TEST_PID_FILE\"; exec \"$@\"",
+                    "picture-fixture",
+                ]);
+                command.arg(cut_media::ffmpeg::ffmpeg_bin());
+                command.args(["-nostdin", "-v", "error", "-loop", "1"]);
+                cut_media::ffmpeg::push_ffmpeg_literal_input(&mut command, &source).unwrap();
+                command.args(["-frames:v", "1", "-f", "null", "-"]);
+                let control =
+                    cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(2), || {
+                        false
+                    });
+                let started = std::time::Instant::now();
+                let result = cut_media::ffmpeg::run_owned_command(
+                    &mut command,
+                    &control,
+                    "looped damaged picture",
+                );
+                let error = result.unwrap_err();
+                assert!(error.message.contains("timed out"), "{error:?}");
+                let pid = wait_for_pid(&pid_file);
+                assert_gone(pid);
+                println!(
+                    "damaged looped picture pid {pid} reaped after {:?}: {}",
+                    started.elapsed(),
+                    error.message
+                );
+            }));
+        }
+        assert_eq!(state.frame_render_limiter.available_permits(), 0);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let first = state
+            .frame_render_limiter
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        let second = state
+            .frame_render_limiter
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        drop((first, second));
+        assert_eq!(state.frame_render_limiter.available_permits(), 2);
+    }
+
+    #[test]
     fn server_shutdown_reaps_direct_foreground_render_tree() {
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("foreground-render.pid");

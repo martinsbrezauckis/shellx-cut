@@ -613,7 +613,7 @@ fn route_verb<'a>(
         // ------------------------------------------------------------------
         DispatchTarget::UiState => verb!(ui_state(state)),
         DispatchTarget::UiScreenshot => verb!(ui_screenshot(state, args)),
-        DispatchTarget::DebugScreenshot => verb!(debug_screenshot(args)),
+        DispatchTarget::DebugScreenshot => verb!(debug_screenshot(state, args)),
         DispatchTarget::UiOpen
         | DispatchTarget::UiPlayhead
         | DispatchTarget::UiSelect
@@ -820,6 +820,7 @@ fn shape_core_result(verb: &str, op: &OpRecord, include_legacy_inverse: bool) ->
             "linked_av": op.args.get("video_track").and_then(Value::as_str).is_some()
                 && op.args.get("audio_track").and_then(Value::as_str).is_some(),
             "tracks": op.effects.iter().filter_map(|effect| {
+                if !effect.detail.contains_key("added_clip") { return None; }
                 let track = effect.track.clone()?;
                 Some(json!({
                     "track": track,

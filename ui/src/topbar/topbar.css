@@ -396,8 +396,6 @@
 .tb-pregate-kicker {
   font: 700 var(--fs-ui-xs) / 1 var(--sans);
   color: var(--ink-3);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 .tb-pregate-close {
   all: unset;

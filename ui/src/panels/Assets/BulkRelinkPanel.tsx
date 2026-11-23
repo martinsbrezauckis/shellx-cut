@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { callVerb, type PortableB5RelinkReceipt } from '../../lib/client'
 import { mediaBasename } from '../../lib/mediaPath'
-import { isTauri, pickFolder } from '../../lib/tauri'
+import { pickFolder } from '../../lib/tauri'
 
 type Disposition = 'eligible_exact_hash' | 'ambiguous_exact_hash' | 'metadata_review' | 'metadata_insufficient' | 'metadata_mismatch' | 'ambiguous_metadata' | 'hash_unavailable' | 'no_match'
 interface PreviewRow {
@@ -50,6 +51,7 @@ export default function BulkRelinkPanel({
   onRefresh: () => Promise<void>
   onReviewIndividually?: (assetId: string) => void | Promise<void>
 }) {
+  const relinkAvailability = useAvailability('shell.desktop')
   const [phase, setPhase] = useState<'idle' | 'previewing' | 'ready' | 'applying' | 'done'>('idle')
   const [preview, setPreview] = useState<Preview | null>(null)
   const [root, setRoot] = useState<string | null>(null)
@@ -67,7 +69,7 @@ export default function BulkRelinkPanel({
   const start = async () => {
     setNote(null)
     setReceipt(null)
-    if (!isTauri()) { setNote('Bulk relink needs the desktop app to choose a local recovery folder.'); return }
+    if (relinkAvailability.state === 'absent') { setNote(availabilitySentence('shell.desktop')); return }
     const root = await pickFolder({ title: 'Find offline media — ShellX Cut' })
     if (activeScope.current !== scopeKey) return
     if (!root) return
@@ -125,7 +127,14 @@ export default function BulkRelinkPanel({
         <strong>Recover missing media</strong>
         <span>{offlineCount} offline {offlineCount === 1 ? 'asset' : 'assets'} · exact files only</span>
       </div>
-      {phase === 'idle' && <button type="button" className="assets__health-btn" data-cut-media-relink-bulk-open onClick={() => void start()}>Find files…</button>}
+      {phase === 'idle' && (
+        <Availability
+          rule="shell.desktop"
+          replacement={<p className="assets__bulk-relink-note" data-cut-media-relink-desktop-note>Recovering missing files needs the desktop app.</p>}
+        >
+          <button type="button" className="assets__health-btn" data-cut-action="media-relink-bulk-open" data-cut-media-relink-bulk-open onClick={() => void start()}>Find files…</button>
+        </Availability>
+      )}
       {(phase === 'previewing' || phase === 'applying') && <span className="assets__bulk-relink-busy" aria-live="polite">{phase === 'previewing' ? 'Checking files…' : 'Relinking selected files…'}</span>}
       {note && <p className="assets__bulk-relink-note" role="status">{note}</p>}
       {preview && (phase === 'ready' || phase === 'done') && (

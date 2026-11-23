@@ -5,7 +5,7 @@
     {
       "name": "edit.overwrite",
       "domain": "edit",
-      "description": "TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both, WITHOUT shifting downstream timeline time. at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Overwrite without shifting later timeline time. TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both (or destinations requested with create_video_track/create_audio_track, created atomically in the same undo step), WITHOUT shifting downstream timeline time; at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
       "args": {
         "type": "object",
         "required": [
@@ -25,12 +25,14 @@
           },
           "video_track": {
             "type": "string",
-            "description": "Explicit video destination. Optional only when audio_track is supplied."
+            "description": "Existing video; excludes create_video_track."
           },
           "audio_track": {
             "type": "string",
-            "description": "Explicit audio destination. Optional only when video_track is supplied."
+            "description": "Existing audio; excludes create_audio_track."
           },
+          "create_video_track": { "type": "boolean", "default": false, "description": "Create video atomically; excludes video_track." },
+          "create_audio_track": { "type": "boolean", "default": false, "description": "Create audio atomically; excludes audio_track." },
           "src_range_ms": {
             "type": "array",
             "items": {
@@ -65,7 +67,7 @@
           }
         }
       },
-      "result": "{at_ms, src_range_ms, duration_ms, linked_av, tracks:[{track, clip_id, added_ms, overwritten_existing_ms, overlapped_clip_ids, removed_clip_ids, overwritten_gap_ms, tail_gap_ms, tail_extended_ms}]} — one atomic replayable edit.overwrite op; linked_av is true only when both destination tracks were chosen.",
+      "result": "One atomic overwrite result. {at_ms, src_range_ms, duration_ms, linked_av, tracks:[{track, clip_id, added_ms, overwritten_existing_ms, overlapped_clip_ids, removed_clip_ids, overwritten_gap_ms, tail_gap_ms, tail_extended_ms}]} — one atomic replayable edit.overwrite op; linked_av is true only when both destination tracks were chosen.",
       "result_schema": {
         "type": "object",
         "required": [

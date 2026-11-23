@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { recordingStandsStill, type RecordingPauseCapability, type RecordingPauseState } from './recordingPause'
+import { Availability } from '../../lib/availability'
 import { RecordingPauseControl } from './RecordingPauseControl'
 
 interface RecordingLiveControlsProps {
@@ -67,6 +68,11 @@ export function RecordingLiveControls({
           >
             {markerPending ? 'Saving marker…' : 'Flag marker (F12)'}
           </button>
+          <button type="button" className="rec__stop" data-cut-action="record-stop"
+            data-cut-rec-stop-retry={stopRetry ? 'true' : undefined} onClick={onStop}>
+            ■ {stopRetry ? 'Retry Stop' : 'Stop'} (F9)
+          </button>
+          <Availability rule="record.pause">
           {pauseAvailable ? (
             <RecordingPauseControl
               mode="live"
@@ -84,15 +90,7 @@ export function RecordingLiveControls({
               <small>{pauseReason}</small>
             </span>
           )}
-          <button
-            type="button"
-            className="rec__stop"
-            data-cut-action="record-stop"
-            data-cut-rec-stop-retry={stopRetry ? 'true' : undefined}
-            onClick={onStop}
-          >
-            ■ {stopRetry ? 'Retry Stop' : 'Stop'} (F9)
-          </button>
+          </Availability>
         </div>
       </div>
       {recoveryControls && <div className="rec-live-controls__recovery">{recoveryControls}</div>}

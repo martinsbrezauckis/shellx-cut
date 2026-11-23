@@ -1,3 +1,4 @@
+import { recordingNotice } from './recordingUiModel'
 import type { ScreenRecordStatusResult } from '../../lib/clientResults'
 import { recordingCaptureSafetyPresentation } from './recordingCaptureSafetyModel'
 import './recordingCaptureSafetyStatus.css'
@@ -22,13 +23,13 @@ export function RecordingCaptureSafetyStatus({
   const presentation = recordingCaptureSafetyPresentation(sourceLifecycle, controllerPlacement)
   return (
     <div className="rec-capture-safety" data-cut-rec-capture-safety>
-      <span data-cut-rec-source-lifecycle title={sourceLifecycle.reason}>
+      <span data-cut-rec-source-lifecycle title={recordingNotice(sourceLifecycle.reason)}>
         {presentation.sourceLabel}
       </span>
       <span
         data-cut-rec-controller-placement={controllerPlacement.state}
         className={`rec-capture-safety__controller rec-capture-safety__controller--${presentation.controllerTone}`}
-        title={controllerPlacement.reason}
+        title={recordingNotice(controllerPlacement.reason)}
       >
         {presentation.controllerLabel}
       </span>

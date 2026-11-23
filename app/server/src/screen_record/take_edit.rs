@@ -11,11 +11,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub(crate) fn bad(message: &str) -> CutError {
-    CutError::new(
-        error_codes::INVALID_ARGS,
-        message,
-        "use screen_record.zoom_list on a new polished recording",
-    )
+    CutError::new(error_codes::INVALID_ARGS, message, message)
 }
 fn convert<T: serde::de::DeserializeOwned>(value: &impl serde::Serialize) -> Result<T, CutError> {
     Ok(serde_json::from_value(serde_json::to_value(value)?)?)
@@ -26,6 +22,7 @@ pub(crate) fn take<'a>(
 ) -> Result<&'a RecordingTake, CutError> {
     cut_core::recording::take_for_clip(project, clip).ok_or_else(|| {
         bad("this clip has no editable recording take (old recordings keep their baked zooms)")
+            .with_suggested_action("Call project.state and choose a clip with an editable recording; old recordings keep their baked zooms.")
     })
 }
 pub(crate) fn file(dir: &Path, path: &str) -> Result<PathBuf, CutError> {
@@ -275,7 +272,11 @@ pub(crate) async fn handle(
                     .iter()
                     .any(|id| !segments.iter().any(|s| &s.id == id))
             {
-                return Err(bad("supply existing zoom id or ids"));
+                return Err(CutError::new(
+                    error_codes::INVALID_ARGS,
+                    "supply existing zoom id or ids",
+                    "no zoom id was supplied in id or ids",
+                ).with_suggested_action("Call screen_record.zoom_list with this clip, then call screen_record.zoom_remove with an id or ids from its segments."));
             }
             segments.retain(|s| !removed.contains(&s.id));
         }
@@ -719,7 +720,11 @@ pub(super) mod tests {
 
 pub(crate) fn guard_export(project: &cut_core::Project, allow: bool) -> Result<(), CutError> {
     if !allow && project.recordings.iter().any(|take| take.stale()) {
-        return Err(bad("This recording has unapplied zoom changes. Update video first (screen_record.take_refresh), or explicitly pass allow_stale_recordings:true to export the old video."));
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "This recording has unapplied zoom changes. Update video first (screen_record.take_refresh), or explicitly pass allow_stale_recordings:true to export the old video.",
+            "the pending recording zoom plan has not been applied to the video",
+        ).with_suggested_action("Call screen_record.take_refresh for the recording clip and wait for jobs.status to complete, then retry export; or explicitly pass allow_stale_recordings:true to export the old video."));
     }
     Ok(())
 }

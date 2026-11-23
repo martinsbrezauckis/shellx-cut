@@ -20,7 +20,6 @@ mod generate_rich_tests;
 mod http;
 mod httpc;
 cut_core::isolate_test_process!();
-
 mod jobs;
 mod library;
 #[cfg(target_os = "linux")]
@@ -48,8 +47,10 @@ mod motion_tracking;
 mod nest;
 mod ocr;
 mod output_paths;
+mod panic_log;
 mod paste_attributes;
 mod perception_setup;
+mod picture_checks;
 mod plugins;
 mod project_materialization;
 mod project_origin;
@@ -58,6 +59,7 @@ mod provider_runtime;
 mod providers;
 mod recipes;
 mod registry;
+mod replace_temporary;
 mod request_control;
 mod requirements;
 mod review_http;
@@ -225,25 +227,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
-    // Tee panic diagnostics to `$HOME/.cutd-panic.log` (or temp) because a
-    // Tauri-piped stderr otherwise hides a handler panic from the caller.
-    {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let path = std::env::var_os("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".cutd-panic.log"))
-                .unwrap_or_else(|| std::env::temp_dir().join("cutd-panic.log"));
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "[cutd panic] {info}");
-            }
-            prev(info);
-        }));
-    }
+    panic_log::install_panic_hook();
     match cli.command {
         Command::Serve {
             project,

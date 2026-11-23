@@ -204,6 +204,10 @@ fn motion_management_status_without_discovery(candidate_present: bool) -> Value 
 /// This is the single lifecycle authority until MOTION-DIST-01 lands. Do not
 /// infer a candidate, version, source URL, digest, or installed state from a
 /// source checkout / npm package / PATH discovery: none is a managed artifact.
+pub(crate) const fn managed_distribution_available() -> bool {
+    false
+}
+
 fn motion_distribution_blocker() -> Value {
     json!({
         "status": "blocked",
@@ -227,10 +231,10 @@ fn motion_distribution_blocker() -> Value {
             "version": null,
         },
         "actions": {
-            "install": { "available": false, "prerequisite": MOTION_DIST_BLOCKER_ID },
-            "repair": { "available": false, "prerequisite": MOTION_DIST_BLOCKER_ID },
-            "update": { "available": false, "prerequisite": MOTION_DIST_BLOCKER_ID },
-            "remove": { "available": false, "prerequisite": MOTION_DIST_BLOCKER_ID },
+            "install": { "available": managed_distribution_available(), "prerequisite": MOTION_DIST_BLOCKER_ID },
+            "repair": { "available": managed_distribution_available(), "prerequisite": MOTION_DIST_BLOCKER_ID },
+            "update": { "available": managed_distribution_available(), "prerequisite": MOTION_DIST_BLOCKER_ID },
+            "remove": { "available": managed_distribution_available(), "prerequisite": MOTION_DIST_BLOCKER_ID },
         },
     })
 }

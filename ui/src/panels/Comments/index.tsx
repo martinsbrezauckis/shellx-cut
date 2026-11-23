@@ -6,7 +6,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { callVerb, exportUrl, type Comment, type Project } from '../../lib/client'
 import { createCommentChatTimelineTarget } from '../../lib/chatTimelineTarget'
 import { resolveCommentTime, type ResolvedCommentTime } from '../../lib/commentAnchors'
-import { isTauri, pickReviewFeedback } from '../../lib/tauri'
+import { pickReviewFeedback } from '../../lib/tauri'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { timecode } from '../Timeline/layout'
 import { Icon } from '../../icons'
 import { TemporalRange } from '../../components/TemporalNavigation'
@@ -35,6 +36,7 @@ export default function Comments({
   onCollapse,
   focus,
 }: Props) {
+  const importAvailability = useAvailability('shell.desktop')
   const comments = useMemo(() => project?.comments ?? [], [project])
   const [filter, setFilter] = useState<Filter>('all')
   const [text, setText] = useState('')
@@ -90,7 +92,7 @@ export default function Comments({
 
   const importReview = useCallback(async () => {
     if (!project || handoffBusy) return
-    if (!isTauri()) return flash('feedback import is available in the desktop app')
+    if (importAvailability.state === 'absent') return flash(availabilitySentence('shell.desktop'))
     const path = await pickReviewFeedback()
     if (!path) return
     setHandoffBusy('import')
@@ -99,7 +101,7 @@ export default function Comments({
     if (!response.ok) return flash(`import feedback: ${response.error?.message ?? response.error?.code ?? 'failed'}`)
     const count = (response.result as { count?: number } | undefined)?.count ?? 0
     flash(`imported ${count} review ${count === 1 ? 'note' : 'notes'}`)
-  }, [handoffBusy, project])
+  }, [handoffBusy, project, importAvailability.state])
 
   const askAgent = useCallback((comment: Comment) => {
     const target = createCommentChatTimelineTarget({ project, comment, selectedClipIds, selectedRange })
@@ -130,10 +132,12 @@ export default function Comments({
           <button className="cm__icon" data-cut-action="comment-export-review" title="Export review package" disabled={!project || !!handoffBusy} onClick={() => void exportReview()} aria-label="Export review package">
             <Icon name={handoffBusy === 'export' ? 'spinner' : 'share'} size={14} />
           </button>
-          <button className="cm__icon" data-cut-action="comment-import-feedback" title={isTauri() ? 'Import review feedback' : 'Import review feedback in the desktop app'} disabled={!project || !!handoffBusy} onClick={() => void importReview()} aria-label="Import review feedback">
-            <Icon name={handoffBusy === 'import' ? 'spinner' : 'import'} size={14} />
-          </button>
           <button className="cm__icon" data-cut-action="comments-collapse" title="Hide comments (Ctrl/Cmd+Shift+C)" onClick={onCollapse} aria-label="Hide comments"><Icon name="chevronLeft" size={14} /></button>
+          <Availability rule="shell.desktop">
+            <button className="cm__icon" data-cut-action="comment-import-feedback" title="Import review feedback" disabled={!project || !!handoffBusy} onClick={() => void importReview()} aria-label="Import review feedback">
+              <Icon name={handoffBusy === 'import' ? 'spinner' : 'import'} size={14} />
+            </button>
+          </Availability>
         </div>
       </header>
 

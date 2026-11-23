@@ -1,6 +1,7 @@
 import { useCallback, type Dispatch, type SetStateAction } from 'react'
+import { availabilitySentence, useAvailability } from '../../lib/availability'
 import { callVerb, type LibItem } from '../../lib/client'
-import { isTauri, pickLibraryRelinkMedia } from '../../lib/tauri'
+import { pickLibraryRelinkMedia } from '../../lib/tauri'
 
 interface LibraryRelinkOptions {
   busy: string | null
@@ -17,11 +18,12 @@ export function useLibraryRelink({
   flash,
   reload,
 }: LibraryRelinkOptions) {
+  const relinkAvailability = useAvailability('shell.desktop')
   return useCallback(
     async (item: LibItem) => {
       if (!item.src_path || item.blob || item.media_ok !== false || busy) return
-      if (!isTauri()) {
-        setError('Open the desktop app to choose the moved source file')
+      if (relinkAvailability.state === 'absent') {
+        setError(availabilitySentence('shell.desktop'))
         return
       }
       const path = await pickLibraryRelinkMedia()
@@ -38,6 +40,6 @@ export function useLibraryRelink({
       }
       reload()
     },
-    [busy, flash, reload, setBusy, setError],
+    [busy, flash, relinkAvailability.state, reload, setBusy, setError],
   )
 }

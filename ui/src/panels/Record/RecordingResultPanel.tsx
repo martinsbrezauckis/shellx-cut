@@ -1,6 +1,8 @@
+import { Availability, useAvailability } from '../../lib/availability'
 import { RecordingInputHookWarning } from './RecordingInputHookWarning'
 import { UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from './recordingInputHook'
 import { cursorCorrelationLabel, type CursorCorrelation, type StudioRawStreams } from './studioTypes'
+import { recordingNotice } from './recordingUiModel'
 import type { RecordingQualityResolution } from './recordingQuality'
 import './recordingResultPanel.css'
 
@@ -47,6 +49,7 @@ export function RecordingResultPanel({
   onCancelExport, onSaveRawCopy, onCancelRawCopy, onAddRawToTimeline,
   onOpenEdit, onNewRecording, onOpenOutputSettings, onRecovery,
 }: RecordingResultPanelProps) {
+  const chooser = useAvailability('shell.desktop')
   const saved = outcome === 'saved'
   const title = saved
     ? raw ? 'Unedited raw MP4 saved' : 'Editable clip added to current project'
@@ -62,7 +65,7 @@ export function RecordingResultPanel({
       <div className={`rec-result__hero rec-result__hero--${outcome}`}>
         <span className="rec-result__icon" aria-hidden="true">{saved ? '✓' : outcome === 'processing' ? '…' : '!'}</span>
         <h2>{title}</h2>
-        <p>{message}</p>
+        <p>{recordingNotice(message)}</p>
       </div>
       <RecordingInputHookWarning input={inputHook} saved={rawSaved} />
       <div className="rec-result__facts" aria-label="Recording result">
@@ -86,7 +89,9 @@ export function RecordingResultPanel({
       {rawSaved && (
         <div className="rec-result__export" data-cut-rec-export>
           <h2>Export</h2>
-          <p>{raw
+          <p>{chooser.state === 'absent'
+            ? 'The recording is saved in the default export folder. Use its file there, or add it to the timeline to edit and export it.'
+            : raw
             ? 'The unchanged MP4 is already saved. Add it to the timeline or save a copy elsewhere.'
             : polishedClipSaved
               ? 'The original MP4 is saved. Export the polished clip when it is ready, or save a copy of the original.'
@@ -106,17 +111,19 @@ export function RecordingResultPanel({
                 {exportCancelable && <button type="button" className="rec__export-btn" data-cut-action="record-export-cancel" onClick={onCancelExport}>Cancel export</button>}
               </>
             )}
+            {rawCopyCancelable && <button type="button" className="rec__export-btn" data-cut-action="record-copy-cancel" onClick={onCancelRawCopy}>Cancel copy</button>}
+            {onOpenOutputSettings && <button type="button" className="rec__export-btn" data-cut-action="record-output-settings" onClick={onOpenOutputSettings}>Export folder settings</button>}
+            <Availability rule="shell.desktop">
             {raw ? (
               <button type="button" className="rec__export-btn" data-cut-action="record-save-copy" disabled={rawCopyRunning} onClick={onSaveRawCopy}>Save a copy…</button>
             ) : (
               <button type="button" className="rec__export-btn" data-cut-action="record-save-raw-copy" disabled={rawCopyRunning} onClick={onSaveRawCopy}>Save raw MP4 copy…</button>
             )}
-            {rawCopyCancelable && <button type="button" className="rec__export-btn" data-cut-action="record-copy-cancel" onClick={onCancelRawCopy}>Cancel copy</button>}
-            {onOpenOutputSettings && <button type="button" className="rec__export-btn" data-cut-action="record-output-settings" onClick={onOpenOutputSettings}>Export folder settings</button>}
+            </Availability>
           </div>
-          {rawCopyNote && <p className="rec__export-note" data-cut-rec-copy-note role="status">{rawCopyNote}</p>}
+          {rawCopyNote && <p className="rec__export-note" data-cut-rec-copy-note role="status">{recordingNotice(rawCopyNote, 'The recording copy could not be saved. Choose a destination and try again.')}</p>}
           {!raw && <p className="rec__export-note">Edits you make later in Edit are not in this file. Export from Edit to include them.</p>}
-          {exportNote && <p className="rec__export-note" data-cut-rec-export-note role="status">{exportNote}</p>}
+          {exportNote && <p className="rec__export-note" data-cut-rec-export-note role="status">{recordingNotice(exportNote, 'The export could not be completed. Check your export settings and try again.')}</p>}
         </div>
       )}
 

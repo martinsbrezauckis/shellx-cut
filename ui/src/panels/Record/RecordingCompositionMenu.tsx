@@ -1,3 +1,4 @@
+import { Availability, availabilitySentence } from '../../lib/availability'
 import { createPortal } from 'react-dom'
 import type { ButtonHTMLAttributes } from 'react'
 import ContextMenuFrame from '../../components/ContextMenuFrame'
@@ -77,6 +78,14 @@ export function RecordingCompositionMenu({ menu, studio, actions, onClose }: {
       onClose={onClose}
     >
       <span className="tl-ctx__label" aria-hidden="true">{menu.target === 'camera' ? 'Camera' : 'Composition'}</span>
+      {menu.target === 'composition' && <>
+        <span className="tl-ctx__label" aria-hidden="true">Background</span>
+        <button data-cut-action="record-context-background-gradient" {...backgroundItem('gradient')} />
+        <button data-cut-action="record-context-background-solid" {...backgroundItem('solid')} />
+        <button data-cut-action="record-context-background-blur_screen" {...backgroundItem('blur_screen')} />
+        <button data-cut-action="record-context-background-none" {...backgroundItem('none')} />
+      </>}
+      <Availability rule="record.camera" replacement={menu.target === 'camera' ? <span className="tl-ctx__label">{availabilitySentence('record.camera')}</span> : undefined}>
       <button
         type="button" className="tl-ctx__item" role="menuitem"
         data-cut-action="record-context-camera-toggle"
@@ -100,14 +109,7 @@ export function RecordingCompositionMenu({ menu, studio, actions, onClose }: {
           'Restore this scene’s camera layout', actions.onCameraReset,
         )} />
       </>}
-      {menu.target === 'composition' && <>
-        <span className="tl-ctx__sep" aria-hidden="true" />
-        <span className="tl-ctx__label" aria-hidden="true">Background</span>
-        <button data-cut-action="record-context-background-gradient" {...backgroundItem('gradient')} />
-        <button data-cut-action="record-context-background-solid" {...backgroundItem('solid')} />
-        <button data-cut-action="record-context-background-blur_screen" {...backgroundItem('blur_screen')} />
-        <button data-cut-action="record-context-background-none" {...backgroundItem('none')} />
-      </>}
+      </Availability>
     </ContextMenuFrame>, document.body,
   )
 }

@@ -11,6 +11,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadRequirements, loadVerbs, verbRequirements } from './lib/requirements-contract.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const AVAILABILITY_NOTE = [
+  'The full `system.doctor` report also includes fixed `availability` booleans: `pause`, `camera`,',
+  '`live_timer`, `microphone_choice`, `source_preview`, `managed_motion`. These describe this system and',
+  'executable without listing or opening devices; they are not setup or permission checks. Older engines',
+  'omit the field: missing means unknown, never unsupported. Do not query recorder devices just to learn these facts.',
+  '',
+]
+
 export const SKILL_PATH = 'skill/shellx-cut/SKILL.md'
 export const REFERENCE_PATH = 'skill/shellx-cut/reference.md'
 const START = '<!-- generated:requirements:start (node scripts/generate-requirements-docs.mjs) -->'
@@ -41,6 +49,7 @@ export function renderSkillSection(registry, verbs) {
     'a refusal for something missing carries `error.requirement {id, name, get}`. A person\'s licence, sign-in or',
     'system permission is theirs: tell them what `get.person` says and never do it for them.',
     '',
+    ...AVAILABILITY_NOTE,
     '| Tool or condition | Needed for | Get it |',
     '|---|---|---|',
   ]
@@ -82,6 +91,7 @@ export function renderReferenceSection(registry, verbs) {
     '`{feature:"<verb>"}` for one verb). "Open project" follows each verb\'s `project_state`. "Optional" items',
     'change the result as described; "one of" means any one alternative is enough.',
     '',
+    ...AVAILABILITY_NOTE,
     '| Feature | Verbs | Needs | One of | Optional (effect) |',
     '|---|---|---|---|---|',
   ]

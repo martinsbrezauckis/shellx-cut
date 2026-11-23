@@ -561,9 +561,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.1"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -693,7 +693,7 @@ checksum = "914a755b7c2d4af2bdcff7ce1739e2db9a1b81a9b07123d8015786ae03c0980d"
 
 [[package]]
 name = "cut-native-runtime-context"
-version = "0.6.119"
+version = "0.6.120"
 dependencies = [
  "serde",
  "serde_json",
@@ -3575,7 +3575,7 @@ dependencies = [
 
 [[package]]
 name = "shellx-cut"
-version = "0.6.119"
+version = "0.6.120"
 dependencies = [
  "base64 0.22.1",
  "cc",

@@ -1,3 +1,4 @@
+import { Availability } from '../../lib/availability'
 import type { RecordingPauseCapability, RecordingPauseState } from './recordingPause'
 
 interface RecordingPauseControlProps {
@@ -48,24 +49,26 @@ export function RecordingPauseControl({
 }: RecordingPauseControlProps) {
   const switching = state === 'pausing' || state === 'resuming'
   const recording = state === 'recording' || state === 'paused' || switching
+  const setupDisabled = disabled || !capability.supported || recording
   if (mode === 'live') {
     if (!recording) return null
     return (
       <div className="rec-pause rec-pause--live-only" data-cut-rec-pause-state={state}>
-        <PauseResumeButton state={state} compact onControl={onControl} />
         <span className="rec-pause__live-status" data-cut-rec-pause-status role="status">{message}</span>
+        <Availability rule="record.pause"><PauseResumeButton state={state} compact onControl={onControl} /></Availability>
       </div>
     )
   }
 
   return (
+    <Availability rule="record.pause">
     <div className="rec-pause" data-cut-rec-pause-supported={capability.supported ? 'true' : 'false'}>
       <label className="rec__toggle rec-pause__enable" data-cut-rec-pause-enable>
         <input
           type="checkbox"
           data-cut-action="record-pause-enable"
           checked={enabled}
-          disabled={disabled || !capability.supported || recording}
+          disabled={setupDisabled}
           onChange={(event) => onEnabled(event.target.checked)}
         />
         Pause &amp; resume this recording
@@ -77,5 +80,6 @@ export function RecordingPauseControl({
         </p>
       )}
     </div>
+    </Availability>
   )
 }

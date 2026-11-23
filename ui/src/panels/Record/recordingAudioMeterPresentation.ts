@@ -1,3 +1,4 @@
+import { recordingNotice } from './recordingUiModel'
 import type { ScreenRecordAudioMeter, ScreenRecordAudioMeterState } from '../../lib/clientResults'
 
 export interface RecordingAudioMeterPresentation {
@@ -18,15 +19,15 @@ function finiteDbfs(value: number | null): number | null {
 }
 
 function stateDetail(state: ScreenRecordAudioMeterState, detail?: string): string {
-  if (detail) return detail
+  if (detail) return recordingNotice(detail, stateDetail(state))
   switch (state) {
     case 'not_requested': return 'Not enabled for this recording.'
-    case 'awaiting_samples': return 'Waiting for native audio samples.'
-    case 'stale': return 'Native audio samples are no longer current.'
-    case 'device_lost': return 'The native audio device stopped delivering samples.'
+    case 'awaiting_samples': return 'Waiting for sound.'
+    case 'stale': return 'The sound level has not updated. Check your audio source.'
+    case 'device_lost': return 'The audio device stopped sending sound. Check its connection.'
     case 'stopped': return 'Audio delivery has stopped for this recording.'
-    case 'unavailable': return 'Native metering is unavailable on this capture path.'
-    case 'live': return 'Receiving native audio samples.'
+    case 'unavailable': return 'Sound levels are unavailable for this recording.'
+    case 'live': return 'Receiving sound.'
   }
 }
 

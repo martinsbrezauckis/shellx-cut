@@ -12,12 +12,15 @@
 .tl-scroll--asset-dnd { background: var(--cut-dim); }
 .tl-asset-drop {
   position: absolute;
-  bottom: 0;
-  width: 2px;
-  background: var(--cut);
+  background: var(--cut-dim);
+  border: 2px solid var(--cut);
+  box-sizing: border-box;
   box-shadow: 0 0 8px var(--cut-glow);
   pointer-events: none;
   z-index: calc(var(--z-playhead) + 2);
+}
+.tl-asset-drop[data-cut-asset-placement="insert"] {
+  border-style: dashed;
 }
 .tl-asset-drop__chip {
   position: absolute;
@@ -236,12 +239,13 @@
 }
 .tl-zoom-chip button:hover { background: var(--surface-3); color: var(--ink); }
 
-/* --- Tool toggles (razor / snap) — centered tool cluster in the toolbar -- */
+/* Fixed edits, then changing tools; the final actions yield first on overflow. */
 .tl-tools {
-  flex: 1; order: 2; display: flex; align-items: center; justify-content: safe center; gap: 4px;
+  flex: 1; order: 2; display: flex; align-items: center; justify-content: flex-start; gap: 4px;
   user-select: none; min-width: 0; overflow-x: auto; overflow-y: hidden;
 }
 .tl-global-tools { flex: none; display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.tl-tools > .tl-tool--right { margin-left: auto; }
 .tl-tool {
   all: unset; cursor: pointer; box-sizing: border-box;
   flex: none; display: flex; align-items: center; gap: 5px; white-space: nowrap;
@@ -259,7 +263,7 @@
 .tl-tool:disabled:hover { background: none; color: var(--ink-3); }
 .tl-tool:disabled:hover svg { color: var(--ink-4); }
 /* Hairline separator inside the tool cluster (groups razor/snap from delete). */
-.tl-tool-sep { width: 1px; align-self: stretch; margin: 2px 2px; background: var(--hairline-2); }
+.tl-tool-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 2px; background: var(--hairline-2); }
 /* "Save clip" transient outcome note. */
 .tl-save-note { align-self: center; font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--cut-soft); white-space: nowrap; }
 .tl-action-note {

@@ -35,7 +35,7 @@ pub enum InterpreterProblem {
 
 /// The next step for an agent (and what it should relay to the person).
 pub fn captions_setup_action() -> String {
-    "Ask the person to choose Install captions (Settings > Environment, or the Transcript \
+    "Ask the person to choose Install captions (Settings > AI & transcription, or the Transcript \
      panel), or call system.setup_perception and wait for its job; it needs no administrator \
      rights and no Python of their own. Then retry. Core editing and export work without it."
         .to_string()
@@ -124,6 +124,8 @@ mod tests {
         let action = error.suggested_action.unwrap();
         assert!(action.contains("Install captions"));
         assert!(action.contains("system.setup_perception"));
+        assert!(action.contains("Settings > AI & transcription"), "{action}");
+        assert!(!action.contains("Environment"), "{action}");
     }
 
     #[test]

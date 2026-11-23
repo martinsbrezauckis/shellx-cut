@@ -19,7 +19,7 @@
 use crate::userdata;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -246,11 +246,38 @@ pub fn save(idx: &ProjectsIndex) -> io::Result<()> {
             "no HOME/USERPROFILE for ~/.shellx-cut/projects.json",
         ));
     };
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(idx).unwrap_or_else(|_| "{}".into());
-    std::fs::write(&p, json)
+    save_at(&p, idx)
+}
+
+pub(crate) fn save_at(path: &Path, idx: &ProjectsIndex) -> io::Result<()> {
+    save_before_replace(path, idx, || Ok(()))
+}
+
+fn save_before_replace(
+    path: &Path,
+    idx: &ProjectsIndex,
+    before_replace: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let body = serde_json::to_vec_pretty(idx)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".projects-index-")
+        .tempfile_in(parent)?;
+    file.write_all(&body)?;
+    file.as_file().sync_all()?;
+    before_replace()?;
+    // tempfile uses a same-directory rename on Unix and MoveFileExW with
+    // replacement on Windows. Never truncate or remove the previous index
+    // before replacement so concurrent readers never observe an empty list.
+    crate::replace_temporary::replace_temporary(file, path)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent).and_then(|directory| directory.sync_all())?;
+    Ok(())
 }
 
 /// A `.cutproj` is "live" if it still has its log or cache on disk.
@@ -718,5 +745,83 @@ mod tests {
         assert_eq!(idx.entries[0].path, r"C:\u\w.cutproj"); // stored normalized
         assert!(idx.remove(r"C:\u\w.cutproj")); // forget by the plain path matches
         assert!(idx.entries.is_empty());
+    }
+
+    #[test]
+    fn concurrent_reader_never_observes_empty_or_partial_index_during_save() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let build_index = |tick: u64| {
+            let mut idx = ProjectsIndex::default();
+            for i in 0..300u64 {
+                idx.upsert(entry(
+                    &format!("Project {i} tick {tick}"),
+                    &format!("/projects/p_{i:03}.cutproj"),
+                    1_000 + i,
+                    2_000 + tick + i,
+                ));
+            }
+            idx
+        };
+        let initial = build_index(0);
+        save_at(&path, &initial).unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let path_reader_a = path.clone();
+        let done_reader_a = Arc::clone(&done);
+        let reader_a = std::thread::spawn(move || -> Result<usize, String> {
+            let mut reads = 0usize;
+            while !done_reader_a.load(Ordering::Acquire) {
+                let raw = std::fs::read_to_string(&path_reader_a)
+                    .map_err(|e| format!("read error at iteration {reads}: {e}"))?;
+                let parsed: ProjectsIndex = serde_json::from_str(&raw).map_err(|e| {
+                    format!(
+                        "partial/empty JSON at iteration {reads} (len={}): {e}",
+                        raw.len()
+                    )
+                })?;
+                if parsed.entries.len() != 300 {
+                    return Err(format!(
+                        "unexpected entry count {} at iteration {reads}",
+                        parsed.entries.len()
+                    ));
+                }
+                reads += 1;
+            }
+            Ok(reads)
+        });
+
+        for tick in 1..=600u64 {
+            save_at(&path, &build_index(tick)).unwrap();
+        }
+        done.store(true, Ordering::Release);
+        let reads = reader_a.join().unwrap().unwrap();
+        assert!(reads > 0, "reader should execute concurrent reads");
+    }
+
+    #[test]
+    fn interrupted_save_preserves_previous_index_and_leaves_no_temp_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let mut before = ProjectsIndex::default();
+        before.upsert(entry("Keep", "/p/Keep.cutproj", 10, 20));
+        save_at(&path, &before).unwrap();
+        let before_bytes = std::fs::read(&path).unwrap();
+
+        let mut after = ProjectsIndex::default();
+        after.upsert(entry("Replaced", "/p/Replaced.cutproj", 30, 40));
+        let err = save_before_replace(&path, &after, || {
+            Err(io::Error::other("simulated crash before replace"))
+        });
+        assert!(err.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        let loaded: ProjectsIndex = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(loaded.entries, before.entries);
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 }

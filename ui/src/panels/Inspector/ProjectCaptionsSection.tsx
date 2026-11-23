@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { callVerb, type CaptionStyle, type Project } from '../../lib/client'
 import { pickSubtitle } from '../../lib/tauri'
 import {
@@ -24,6 +25,7 @@ const CAPTION_COLOR_PRESETS = [
 ] as const
 
 export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: ProjectCaptionsSectionProps) {
+  const importAvailability = useAvailability('shell.desktop')
   const [capText, setCapText] = useState('')
   const [capPos, setCapPos] = useState<CaptionPosition>('bottom')
   const [capColor, setCapColor] = useState('#ffffff')
@@ -141,6 +143,10 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
   }
 
   const importCaptions = async () => {
+    if (importAvailability.state === 'absent') {
+      setCapNote(availabilitySentence('shell.desktop'))
+      return
+    }
     const path = await pickSubtitle()
     if (!path) return
     setCapNote('Importing captions…')
@@ -233,16 +239,19 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
           onClick={() => void addCaptionText()}
         >Add caption at playhead</button>
       </div>
-      <div className="insp__row">
-        <button
-          type="button"
-          className="insp__btn"
-          data-cut-caption-import
-          disabled={!project}
-          title="Import an existing SRT, VTT, or ASS subtitle file as caption clips"
-          onClick={() => void importCaptions()}
-        >Import captions (SRT/VTT)…</button>
-      </div>
+      <Availability rule="shell.desktop">
+        <div className="insp__row">
+          <button
+            type="button"
+            className="insp__btn"
+            data-cut-action="caption-import"
+            data-cut-caption-import
+            disabled={!project}
+            title="Import an existing SRT, VTT, or ASS subtitle file as caption clips"
+            onClick={() => void importCaptions()}
+          >Import captions (SRT/VTT)…</button>
+        </div>
+      </Availability>
       <CaptionBulkSection project={project} onSeek={onSeek} />
       <div className="insp__group-title insp__group-title--sub">Style</div>
       <div className="insp__row">

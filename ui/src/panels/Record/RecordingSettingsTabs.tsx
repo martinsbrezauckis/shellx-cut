@@ -1,3 +1,4 @@
+import { useAvailability } from '../../lib/availability'
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 export type RecordingSettingsSection = 'camera' | 'background' | 'timer' | 'timing' | 'quality'
@@ -16,6 +17,7 @@ interface RecordingSettingsTabsProps {
 
 /** Keep every page mounted so draft inputs survive a tab switch. */
 export function RecordingSettingsTabs({ pages }: RecordingSettingsTabsProps) {
+  const pause = useAvailability('record.pause')
   const [active, setActive] = useState<RecordingSettingsSection>('camera')
   const id = useId()
   const tabs = useRef<(HTMLButtonElement | null)[]>([])
@@ -48,7 +50,7 @@ export function RecordingSettingsTabs({ pages }: RecordingSettingsTabsProps) {
             data-cut-rec-settings-tab={section.id}
             onClick={() => setActive(section.id)}
             onKeyDown={(event) => chooseFromKey(event, index)}
-          >{section.label}</button>
+          >{section.id === 'timing' && pause.state === 'absent' ? 'Start & length' : section.label}</button>
         ))}
       </div>
       {SECTIONS.map((section) => (

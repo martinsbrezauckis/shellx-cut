@@ -1,7 +1,7 @@
 //! Bounded stdin/stdout/stderr workers for an owned media child.
 
 use super::child::ManagedChild;
-use super::{OUTPUT_CAP_BYTES, STOP_GRACE};
+use super::{OUTPUT_CAP_BYTES, PIPE_CLOSE_GRACE, STOP_GRACE};
 use std::io::{self, Read, Write};
 use std::process::ChildStdin;
 use std::sync::mpsc::{self, Receiver};
@@ -152,7 +152,12 @@ fn finish_worker<T>(
         Ok(result) => (Some(result), false, None),
         Err(_) => {
             let cleanup = child.stop_and_reap(context).err();
-            (done.recv_timeout(STOP_GRACE).ok(), true, cleanup)
+            let grace = if cleanup.is_none() {
+                PIPE_CLOSE_GRACE
+            } else {
+                STOP_GRACE
+            };
+            (done.recv_timeout(grace).ok(), true, cleanup)
         }
     };
     if result.is_some() {
@@ -239,7 +244,12 @@ pub(super) fn finish_progress(
         let wait = close_deadline
             .map(|deadline: Instant| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(STOP_GRACE);
-        match progress.done.recv_timeout(wait) {
+        let received = if wait.is_zero() {
+            Err(mpsc::RecvTimeoutError::Timeout)
+        } else {
+            progress.done.recv_timeout(wait)
+        };
+        match received {
             Ok(Some(us)) if total_ms > 0 => {
                 on_progress(((us / 1000) as f32 / total_ms as f32).clamp(0.0, 1.0))
             }
@@ -249,9 +259,14 @@ pub(super) fn finish_progress(
                 return cleanup.map_or(Ok(()), Err);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if cleanup.is_none() {
+                if close_deadline.is_none() {
                     cleanup = child.stop_and_reap("ffmpeg progress").err();
-                    close_deadline = Some(Instant::now() + STOP_GRACE);
+                    let grace = if cleanup.is_none() {
+                        PIPE_CLOSE_GRACE
+                    } else {
+                        STOP_GRACE
+                    };
+                    close_deadline = Some(Instant::now() + grace);
                 } else {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
@@ -262,6 +277,10 @@ pub(super) fn finish_progress(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pipe_tests.rs"]
+mod pipe_tests;
 
 #[cfg(all(test, unix))]
 mod early_exit_tests {

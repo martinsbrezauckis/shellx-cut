@@ -53,5 +53,35 @@ fn unavailable_pause(args: Value) -> Result<VerbResult, CutError> {
         error_codes::NOT_FOUND,
         "Pause and resume are available only on macOS",
         "this build has no public pause-safe capture owner on the current platform",
+    )
+    .with_suggested_action(
+        "Stop the recording to finish it, or start a new take. Pause and resume is available on macOS only.",
     ))
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pause_and_resume_refusals_keep_cause_and_offer_a_next_action() {
+        for result in [
+            pause(serde_json::json!({ "capture_id": "recording-test" })).await,
+            resume(serde_json::json!({ "capture_id": "recording-test" })).await,
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, error_codes::NOT_FOUND);
+            assert_eq!(
+                error.message,
+                "Pause and resume are available only on macOS"
+            );
+            assert_eq!(
+                error.cause,
+                "this build has no public pause-safe capture owner on the current platform"
+            );
+            assert_eq!(error.suggested_action.as_deref(), Some(
+                "Stop the recording to finish it, or start a new take. Pause and resume is available on macOS only."
+            ));
+        }
+    }
 }

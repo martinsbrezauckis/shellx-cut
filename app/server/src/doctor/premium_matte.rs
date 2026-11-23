@@ -10,7 +10,7 @@ use std::time::Duration;
 /// PREMIUM background-removal capability: MatAnyone2 (`edit.matte{model:"matanyone"}`)
 /// — target-assigned matting (pick WHICH subject) with cleaner edges + temporal
 /// stability than RVM. Opt-in, NVIDIA-realistic, NON-COMMERCIAL (NTU S-Lab License
-/// 1.0). Its OWN isolated torch venv + a 135 MB checkpoint, installed by
+/// 1.0). Its OWN isolated torch venv + a 141 MB checkpoint + 646 MB SAM2 weights, installed by
 /// `system.setup_matte{model:"matanyone", accept_noncommercial:true}`. A supplied
 /// native runtime instead binds the sealed RVM, MatAnyone2, and SAM2 group. OPTIONAL —
 /// the default RVM tier + core editing work without it.
@@ -45,7 +45,18 @@ pub(super) fn matte_premium_card() -> Card {
     let cuda_avail = rt
         .as_ref()
         .and_then(|runtime| matte_premium_cuda_availability(&runtime.python, false));
-    let (status, hint) = matte_premium_status(installed, cuda_avail);
+    // This is NEW-install admission only. An already installed older runtime
+    // keeps its own readiness and is not disabled by the candidate's policy.
+    let generation = (!installed)
+        .then(cut_media::hwencode::cuda_compute_capability)
+        .flatten();
+    let setup_refusal = generation
+        .and_then(|cap| crate::perception_setup::require_premium_gpu_generation(Some(cap)).err());
+    let (status, hint) = if let Some(error) = &setup_refusal {
+        (CardStatus::Degraded, Some(error.message.clone()))
+    } else {
+        matte_premium_status(installed, cuda_avail)
+    };
     Card {
         id: "matte_premium".into(),
         kind: "matte".into(),
@@ -56,6 +67,8 @@ pub(super) fn matte_premium_card() -> Card {
         details: json!({
             "model": "matanyone2",
             "installed": installed,
+            // null = unqueried/unknown; never a confident rejection.
+            "setup_supported": generation.map(|_| setup_refusal.is_none()),
             "checkpoint_present": model_present,
             "checkpoint_path": model.map(|p| p.display().to_string()),
             // null when UNVERIFIED (the GPU probe timed out) — never a confident

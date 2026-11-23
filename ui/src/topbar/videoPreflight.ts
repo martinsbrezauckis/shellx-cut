@@ -1,4 +1,5 @@
 import type { PregateReport, PregateRisk } from '../lib/client'
+import { errorText } from '../lib/jobFailureText'
 
 /** The TopBar owns this gate for single renders, video exports, and queue submission. */
 export type VideoPreflightStatus = 'blocked' | 'warning' | 'started'
@@ -9,7 +10,7 @@ export async function runVideoPreflightAction(
     ffmpegMissing: boolean
     /** `blocked`: the render plan itself was refused (e.g. an odd project
      *  size); the action is not started and the sentence is shown instead. */
-    check: () => Promise<{ ok: boolean; result?: PregateReport; error?: { message?: string; code?: string }; blocked?: string }>
+    check: () => Promise<{ ok: boolean; result?: PregateReport; error?: { message?: string; code?: string; cause?: string; suggested_action?: string }; blocked?: string }>
     showWarning: (report: PregateReport, actionLabel: string, action: () => Promise<void>) => void
     note: (message: string) => void
   },
@@ -17,6 +18,14 @@ export async function runVideoPreflightAction(
   if (deps.ffmpegMissing) {
     deps.note(`Install FFmpeg before ${actionLabel}.`)
     return 'blocked'
+  }
+  const unavailable = (reason: string): VideoPreflightStatus => {
+    deps.showWarning({ pass: true, risks: [{
+      kind: 'checks_unavailable', severity: 'low',
+      // The reason often names Settings > AI & transcription already (missing captions tools); say where to look only once.
+      detail: `Picture and sound were not checked. ${reason}${reason.includes('Settings') ? '' : ' Check the captions tools in Settings > AI & transcription.'} You can cancel or export anyway.`,
+    }] }, actionLabel, action)
+    return 'warning'
   }
   try {
     const r = await deps.check()
@@ -30,11 +39,11 @@ export async function runVideoPreflightAction(
         deps.showWarning(report, actionLabel, action)
         return 'warning'
       }
-    } else if (!r.ok) {
-      deps.note(`preflight unavailable: ${r.error?.message ?? r.error?.code ?? 'continuing'}`)
+    } else {
+      return unavailable(errorText(r.error, 'No check results were returned.'))
     }
-  } catch {
-    deps.note('preflight unavailable; continuing')
+  } catch (error) {
+    return unavailable(errorText(error instanceof Error ? { message: error.message, cause: typeof error.cause === 'string' ? error.cause : undefined } : null, 'The check request did not complete.'))
   }
   await action()
   return 'started'

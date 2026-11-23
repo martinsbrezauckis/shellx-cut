@@ -1,3 +1,4 @@
+import { recordingNotice } from './recordingUiModel'
 import { useState } from 'react'
 import { callVerb, type ScreenRecordSystemAudioProbeResult } from '../../lib/client'
 
@@ -39,7 +40,7 @@ export function SystemAudioProbeControl({ disabled, onRunningChange, hostOs = nu
         detail: error?.suggested_action ?? error?.cause ?? error?.message ?? 'The audio test did not complete.',
       })
     } catch {
-      setState({ kind: 'error', detail: 'Cut could not reach the audio test. Check the engine and try again.' })
+      setState({ kind: 'error', detail: 'Cut could not reach the audio test. Try the sound test again.' })
     } finally {
       onRunningChange(false)
     }
@@ -49,7 +50,7 @@ export function SystemAudioProbeControl({ disabled, onRunningChange, hostOs = nu
     ? 'Listening for system audio for 2.5 seconds…'
     : state.kind === 'done'
       ? state.result.live && state.result.signal_detected
-        ? `✓ System audio ready — first packet after ${state.result.first_packet_offset_ms ?? 0} ms.`
+        ? '✓ System audio is ready.'
         : state.result.detail
       : state.kind === 'error'
         ? state.detail
@@ -76,7 +77,7 @@ export function SystemAudioProbeControl({ disabled, onRunningChange, hostOs = nu
       >
         {state.kind === 'running' ? 'Testing…' : 'Test system audio'}
       </button>
-      <span className="rec__audio-probe-status" aria-live="polite">{status}</span>
+      <span className="rec__audio-probe-status" aria-live="polite">{recordingNotice(status, 'No system sound was heard. Play a sound, check your sound settings and test again.')}</span>
     </div>
   )
 }

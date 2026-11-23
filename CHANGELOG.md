@@ -1,5 +1,17 @@
 This changelog records release notes for ShellX Cut. For older versions, see the [GitHub releases page](https://github.com/martinsbrezauckis/shellx-cut/releases).
 
+## 0.6.120 - 2026-11-23
+- Controls that do not apply are no longer shown. The timeline toolbar follows the selected clip: no Speed for captions; no Color, Transform, Remove background or GIF for sound. The source monitor shows only the targets a source has. Pause is shown only on macOS, where it exists.
+- Dragging a clip from Assets onto the timeline overwrites at the drop position; hold Alt to insert it and push the rest to the right. A label shows which will happen.
+- Record page: messages say in plain words what to do; a check that has not run says "Not checked"; markers and the timer follow the recorded time after a pause; a Start that is refused keeps you on the Record page and says why, and one refused by the checks leaves no empty project; the camera size slider is reachable in a small window.
+- Export: the warning before an export says in plain words what was found or was not checked, and it also opens when the checks could not run. You always choose whether to export.
+- A damaged picture file is refused when you add it instead of stalling the preview; in an existing project it shows as a file that cannot be read.
+- Premium background removal uses updated tools and shows the real download size before the install. It needs a current NVIDIA driver, and cards of the 2017 Volta generation (Titan V, Quadro GV100) are no longer supported by it; existing installs keep working.
+- In a wide window the preview stays visible beside Properties.
+- Windows: saving the recent projects list, the Library and the search index no longer fails while another program reads the file.
+- For agents: every refusal names the next step, including pause on Windows and Linux; the system report says what this system can do.
+- Many smaller fixes.
+
 ## 0.6.119 - 2026-11-22
 - Screen recordings: the zooms can be edited after recording. Select the recording in Edit and open Zoom in the Inspector: change a zoom's strength, target and timing, add or delete zooms, or redo the automatic ones, then press Update video.
 - Screen recordings with a camera: the camera is on its own Camera track. Move it, resize it, change its shape, cut it or hide it for a stretch, or put it back as it was recorded. A switch on the Record page keeps the camera drawn into the video as before.

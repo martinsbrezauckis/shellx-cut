@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import { withAuthorizedOutputPath } from '../../lib/exportDestination'
-import { isTauri, pickExportOutput } from '../../lib/tauri'
+import { availabilitySentence, useAvailability } from '../../lib/availability'
+import { pickExportOutput } from '../../lib/tauri'
 
 interface CopyJob { id: string; projectKey: string; ownerKey: string }
 
 /** Post-Stop Save a copy; the first raw MP4 has already been saved. */
 export function useRawRecordingCopy(rawPath: string | null, projectKey: string | null, takeKey: string | null = null) {
+  const chooser = useAvailability('shell.desktop')
   const [job, setJob] = useState<CopyJob | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [note, setNote] = useState('')
@@ -115,7 +117,7 @@ export function useRawRecordingCopy(rawPath: string | null, projectKey: string |
 
   const saveCopy = useCallback(async () => {
     if (!rawPath || !ownerKey || !projectKey || pendingRef.current || admittedRef.current) return
-    if (!isTauri()) { setNote('Save a copy needs the desktop app. The original MP4 is already saved.'); return }
+    if (chooser.state === 'absent') { setNote(availabilitySentence('shell.desktop')); return }
     pendingRef.current = true
     setSubmitting(true)
     setNote('Choosing where to save the copy…')
@@ -174,7 +176,7 @@ export function useRawRecordingCopy(rawPath: string | null, projectKey: string |
       pendingRef.current = false
       if (liveRef.current) setSubmitting(false)
     }
-  }, [rawPath, ownerKey, projectKey])
+  }, [rawPath, ownerKey, projectKey, chooser.state])
 
   const cancelCopy = useCallback(async () => {
     const admitted = admittedRef.current

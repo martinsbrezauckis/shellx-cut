@@ -87,6 +87,7 @@ import { mediaScopeOf, setActiveMediaScope } from './lib/mediaScope'
 import type { AgentChatPrefill } from './lib/evidenceAttachments'
 import { OfflineMediaProvider } from './app/OfflineMediaContext'
 import { VolumeAutomationProvider } from './app/VolumeAutomationContext'
+import { AppAvailabilityProvider } from './lib/availability'
 import { createStockImportCoordinator, type StockImportCoordinator } from './panels/Stock/importCoordinator'
 
 const EnvironmentPanel = lazy(() =>
@@ -452,7 +453,7 @@ export default function App() {
     if (!response || response.mode === 'no_project') {
       const nextProject = projectAfterUnavailableSync(projectRef.current, response)
       if (response?.mode === 'no_project') {
-        if (layout.workspaceMode === 'record' && recordingWorkspaceAdmission.blocked) {
+        if (layout.workspaceMode === 'record' && recordingWorkspaceAdmission.blocked && projectRef.current !== null) {
           deferredProjectChange.current = true
           return finish(nextProject)
         }
@@ -827,6 +828,7 @@ export default function App() {
   // column (transcript|preview split over timeline) + full-height review
   // rail right. Three draggable dividers; sizes persisted via useLayout.
   return (
+    <AppAvailabilityProvider doctor={doctor}>
     <OfflineMediaProvider project={project} onProjectChanged={resync}>
     <RecordingSessionProvider session={recordingSession}>
     <RecordingDeliveryProvider project={project}>
@@ -860,6 +862,7 @@ export default function App() {
         />
       ) : (
       <TopBar
+        embeddedManual={embeddedManualFrontend}
         project={project}
         renderQueueOwner={renderQueueOwner}
         onOpenMusic={() => toggleDrawer('music')}
@@ -1054,6 +1057,7 @@ export default function App() {
             onClose={() => setEnvOpen(false)}
             initialCategory={envCategory}
             onCategoryChange={setEnvCategory}
+            assetPaths={Object.fromEntries(Object.entries(project?.assets ?? {}).map(([id, asset]) => [id, asset.path]))}
             hasProject={project != null}
             projectSession={projectSession}
             onOpenAssets={() => {
@@ -1086,5 +1090,6 @@ export default function App() {
     </RecordingDeliveryProvider>
     </RecordingSessionProvider>
     </OfflineMediaProvider>
+    </AppAvailabilityProvider>
   )
 }

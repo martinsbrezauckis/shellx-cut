@@ -12,6 +12,35 @@ fn media_asset(path: &str, hash: &str) -> cut_core::Asset {
     }
 }
 
+#[tokio::test]
+async fn overwrite_creates_destination_and_undoes_in_one_step() {
+    let state = overwrite_state().await;
+    let before = state.project.read().await.as_ref().unwrap().project.clone();
+    let result = dispatch(
+        &state,
+        "edit.overwrite",
+        json!({
+            "asset": "a2", "at_ms": 1000, "video_track": "v1",
+            "create_audio_track": true, "src_range_ms": [0, 2000]
+        }),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        result.ok,
+        "atomic overwrite with new audio: {:?}",
+        result.error
+    );
+    assert_eq!(result.op_ids.as_ref().map(Vec::len), Some(1));
+    let undo = dispatch(&state, "project.undo", json!({}), test_actor()).await;
+    assert!(undo.ok);
+    let after = state.project.read().await.as_ref().unwrap().project.clone();
+    assert_eq!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+}
+
 async fn overwrite_state() -> AppState {
     let root = tempfile::tempdir().unwrap();
     let project_dir = root.keep().join("overwrite.cutproj");

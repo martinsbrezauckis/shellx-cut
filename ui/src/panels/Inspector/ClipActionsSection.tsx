@@ -1,4 +1,5 @@
 import type { TrackKind } from '../../lib/client'
+import { Availability } from '../../lib/availability'
 
 export interface ClipActionAssetOption {
   id: string
@@ -7,6 +8,7 @@ export interface ClipActionAssetOption {
 
 export interface ClipActionsSectionProps {
   trackKind: TrackKind
+  sourceHasAudio?: boolean
   replaceOptions: ClipActionAssetOption[]
   replaceAssetId: string
   note: string | null
@@ -17,6 +19,7 @@ export interface ClipActionsSectionProps {
 
 export default function ClipActionsSection({
   trackKind,
+  sourceHasAudio,
   replaceOptions,
   replaceAssetId,
   note,
@@ -53,15 +56,18 @@ export default function ClipActionsSection({
           Replace source
         </button>
         {trackKind === 'video' && (
+          <Availability rule="editing.detach-audio" subject={{ streams: { audio: sourceHasAudio } }}>
           <button
             type="button"
             className="insp__btn"
             data-cut-inspector-action="detach-audio"
+            data-cut-action="inspector-detach-audio"
             title="Move this clip's audio onto its own editable audio track"
             onClick={() => void onDetachAudio()}
           >
             Detach audio
           </button>
+          </Availability>
         )}
       </div>
       {note && <p className="insp__hint" data-cut-inspector-quick-actions-note>{note}</p>}

@@ -1236,7 +1236,7 @@ fn storyboard_assembly_error(_error: CutError) -> CutError {
         "the extracted frames could not be scaled and tiled into one image",
     )
     .with_suggested_action(
-        "retry once; if it continues, open Settings > Environment and re-check FFmpeg",
+        "retry once; if it continues, open Settings > Video & performance and re-check FFmpeg",
     )
 }
 
@@ -1559,7 +1559,12 @@ mod storyboard_internal_tests {
         assert_eq!(mapped.code, error_codes::FFMPEG);
         assert!(!encoded.contains(private));
         assert!(!encoded.contains("raw stderr"));
-        assert!(mapped.suggested_action.is_some());
+        let action = mapped.suggested_action.unwrap();
+        assert!(
+            action.contains("Settings > Video & performance"),
+            "{action}"
+        );
+        assert!(!action.contains("Environment"), "{action}");
     }
 
     #[test]
@@ -4198,6 +4203,117 @@ fn autopilot_applied_fix_count(fixes_applied: &[Value]) -> usize {
         .count()
 }
 
+#[derive(Clone)]
+pub(super) struct AutopilotSummaryInput {
+    pub policy: String,
+    pub pass: bool,
+    pub auto_fixable_planned: usize,
+    pub unverified: bool,
+    pub stalled: bool,
+    pub iterations: u32,
+    pub applied_fixes: usize,
+    pub failed_checks: usize,
+    pub unmeasured_checks: usize,
+    pub measured_checks: usize,
+}
+
+pub(super) fn autopilot_summary(input: &AutopilotSummaryInput) -> String {
+    if input.policy == "preview" {
+        if input.pass {
+            return "All checks already pass — nothing to fix.".to_string();
+        }
+        if input.unverified {
+            return "Checks were not measured (no verification receipt was produced). Open Inspect to see details."
+                .to_string();
+        }
+        if input.auto_fixable_planned > 0 {
+            return if input.unmeasured_checks > 0 {
+                format!(
+                    "Preview: {} issue(s) fixable — approve (policy:auto_low_risk) to apply ({} check(s) not measured).",
+                    input.auto_fixable_planned, input.unmeasured_checks
+                )
+            } else {
+                format!(
+                    "Preview: {} issue(s) fixable — approve (policy:auto_low_risk) to apply.",
+                    input.auto_fixable_planned
+                )
+            };
+        }
+        if input.failed_checks > 0 {
+            return if input.unmeasured_checks > 0 {
+                format!(
+                    "Some checks did not pass ({} not measured) and none can be fixed automatically. Open Inspect to see them.",
+                    input.unmeasured_checks
+                )
+            } else {
+                "Some checks did not pass and none can be fixed automatically. Open Inspect to see them."
+                    .to_string()
+            };
+        }
+        if input.unmeasured_checks > 0 {
+            return if input.measured_checks > 0 {
+                format!(
+                    "Measured checks passed, and {} check(s) were not measured. Open Inspect to see them.",
+                    input.unmeasured_checks
+                )
+            } else {
+                format!(
+                    "{} check(s) were not measured. Open Inspect to see them.",
+                    input.unmeasured_checks
+                )
+            };
+        }
+        return "Checks were not measured. Open Inspect to see details.".to_string();
+    }
+
+    if input.pass {
+        format!(
+            "Done: {} fix(es) applied over {} pass(es), all checks pass.",
+            input.applied_fixes,
+            input.iterations + 1
+        )
+    } else if input.unverified {
+        "Stopped: render completed but no receipt was produced, so checks were not measured."
+            .to_string()
+    } else if input.failed_checks == 0 && input.unmeasured_checks > 0 {
+        if input.measured_checks > 0 {
+            format!(
+                "Stopped after {} pass(es): {} fix(es) applied; measured checks pass, and {} check(s) were not measured (see receipt).",
+                input.iterations, input.applied_fixes, input.unmeasured_checks
+            )
+        } else {
+            format!(
+                "Stopped after {} pass(es): {} fix(es) applied; {} check(s) were not measured (see receipt).",
+                input.iterations, input.applied_fixes, input.unmeasured_checks
+            )
+        }
+    } else if input.failed_checks == 0 {
+        "Stopped: checks were not measured (see receipt).".to_string()
+    } else if input.stalled {
+        if input.unmeasured_checks > 0 {
+            format!(
+                "Stopped: applied {} fix(es) but the remaining checks did not improve ({} not measured — needs a human or verify.judge).",
+                input.applied_fixes, input.unmeasured_checks
+            )
+        } else {
+            format!(
+                "Stopped: applied {} fix(es) but the remaining checks did not improve (the mapped fix can't resolve them — needs a human or verify.judge).",
+                input.applied_fixes
+            )
+        }
+    } else if input.unmeasured_checks > 0 {
+        format!(
+            "Stopped after {} pass(es): {} fix(es) applied, some checks still fail ({} not measured; see receipt).",
+            input.iterations, input.applied_fixes, input.unmeasured_checks
+        )
+    } else {
+        format!(
+            "Stopped after {} pass(es): {} fix(es) applied, some checks still fail (see receipt).",
+            input.iterations, input.applied_fixes
+        )
+    }
+}
+
 #[cfg(test)]
 mod autopilot_noop_tests;
 
@@ -4345,6 +4461,9 @@ pub(super) async fn autopilot_run(
         let mut iters = 0u32;
         let mut final_pass = false;
         let mut last_plan: Vec<Value> = Vec::new();
+        let mut last_auto_fixable_count: usize = 0;
+        let mut last_outcome: Option<cut_core::CheckOutcome> = None;
+        let mut last_measured_checks: usize = 0;
         let mut unverified: Option<Value> = None;
         // No-progress guard state: the failing-check signature of the previous
         // pass, and whether the loop stopped because fixes weren't converging.
@@ -4460,11 +4579,28 @@ pub(super) async fn autopilot_run(
                 Err(e) => return st.jobs.fail(&jid, e),
             };
             receipt_ids.push(receipt.render_id.clone());
+            let outcome = receipt
+                .outcome
+                .clone()
+                .unwrap_or_else(|| cut_core::check_outcome(&receipt.checks));
+            last_measured_checks = receipt
+                .checks
+                .iter()
+                .filter(|c| {
+                    !cut_core::is_not_applicable(c) && !outcome.unmeasured.contains(&c.name)
+                })
+                .count();
+            last_outcome = Some(outcome);
             if receipt.pass {
                 final_pass = true;
                 break;
             }
             // The plan = the auto-fixable actions this receipt exposes.
+            last_auto_fixable_count = receipt
+                .fix_actions
+                .iter()
+                .filter(|fa| fa.auto_fixable)
+                .count();
             last_plan = receipt
                 .fix_actions
                 .iter()
@@ -4579,35 +4715,35 @@ pub(super) async fn autopilot_run(
         .await;
         let diff_res = diff.result.unwrap_or(Value::Null);
         let applied_fix_count = autopilot_applied_fix_count(&fixes_applied);
-        let summary = if policy == "preview" {
-            if last_plan.is_empty() {
-                "All checks already pass — nothing to fix.".to_string()
-            } else {
-                format!(
-                    "Preview: {} issue(s) fixable — approve (policy:auto_low_risk) to apply.",
-                    last_plan.len()
-                )
-            }
-        } else if final_pass {
-            format!(
-                "Done: {} fix(es) applied over {} pass(es), all checks pass.",
-                applied_fix_count,
-                iters + 1
-            )
-        } else if unverified.is_some() {
-            "Stopped: render completed but no receipt was produced, so checks are unverified.".to_string()
-        } else if stalled {
-            format!("Stopped: applied {} fix(es) but the remaining checks did not improve (the mapped fix can't resolve them — needs a human or verify.judge).", applied_fix_count)
-        } else {
-            format!("Stopped after {} pass(es): {} fix(es) applied, some checks still fail (see receipt).", iters, applied_fix_count)
-        };
-        // Failed checks leave the requested work partially done. Unverified
-        // checks retain their separate warning because no failure was measured.
+        let failed_checks = last_outcome
+            .as_ref()
+            .map(|o| o.failed.len())
+            .unwrap_or(0);
+        let unmeasured_checks = last_outcome
+            .as_ref()
+            .map(|o| o.unmeasured.len())
+            .unwrap_or(0);
+        let summary = autopilot_summary(&AutopilotSummaryInput {
+            policy: policy.clone(),
+            pass: final_pass,
+            auto_fixable_planned: last_auto_fixable_count,
+            unverified: unverified.is_some(),
+            stalled,
+            iterations: iters,
+            applied_fixes: applied_fix_count,
+            failed_checks,
+            unmeasured_checks,
+            measured_checks: last_measured_checks,
+        });
+        // Failed measured checks leave the requested work partially done
+        // (Finish::Problems). Unmeasured or unverified checks warn without
+        // falsely claiming checks failed.
         let settled = final_pass && unverified.is_none();
         let warnings: Vec<String> = if settled { Vec::new() } else { vec![summary.clone()] };
+        let only_unmeasured = !settled && (unverified.is_some() || failed_checks == 0);
         let finish = if settled {
             check_finish::Finish::Plain
-        } else if unverified.is_some() {
+        } else if only_unmeasured {
             check_finish::Finish::Warnings
         } else {
             check_finish::Finish::Problems

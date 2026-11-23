@@ -310,7 +310,16 @@ export function doctorReportFrom(v: unknown): DoctorReport | null {
   const appVersion = stringField(obj, 'app_version')
   const essentialOk = booleanField(obj, 'essential_ok')
   if (!schema || !scannedAt || !os || !arch || !appVersion || essentialOk == null) return null
+  const fixed = recordFrom(obj.availability)
   return {
+    ...(fixed ? { availability: {
+      pause: booleanField(fixed, 'pause'),
+      camera: booleanField(fixed, 'camera'),
+      live_timer: booleanField(fixed, 'live_timer'),
+      microphone_choice: booleanField(fixed, 'microphone_choice'),
+      source_preview: booleanField(fixed, 'source_preview'),
+      managed_motion: booleanField(fixed, 'managed_motion'),
+    } } : {}),
     schema,
     scanned_at: scannedAt,
     os,

@@ -1,3 +1,5 @@
+import { Availability } from '../../lib/availability'
+import { recordingNotice } from './recordingUiModel'
 import type {
   ScreenRecordSourcePreviewStatus,
 } from '../../lib/clientResults'
@@ -33,10 +35,11 @@ export function RecordingSourcePreview({
     <section className="rec-source-preview" data-cut-record-source-preview data-cut-record-source-preview-state={preview.state} aria-label="Source preview">
       <header className="rec-source-preview__head">
         <strong>Source preview</strong>
-        <small role="status" data-cut-record-source-preview-detail>{preview.detail}</small>
+        <small role="status" data-cut-record-source-preview-detail>{recordingNotice(preview.detail, 'The source preview is unavailable. Choose a source and try again.')}</small>
       </header>
       {target && <p className="rec-source-preview__target" data-cut-record-source-preview-target>{target.label}</p>}
-      {statusError && <p className="rec-source-preview__error" data-cut-record-source-preview-error role="status">{statusError}</p>}
+      {statusError && <p className="rec-source-preview__error" data-cut-record-source-preview-error role="status">{recordingNotice(statusError, 'The source preview could not be changed. Check your source and try again.')}</p>}
+      <Availability rule="record.source-preview">
       <div className="rec-source-preview__actions" aria-label="Source preview controls">
         {active && <button type="button" data-cut-action="record-source-preview-pause" onClick={onPause} disabled={busy}>Pause</button>}
         {paused && <button type="button" data-cut-action="record-source-preview-resume" onClick={onResume} disabled={busy}>Resume</button>}
@@ -45,6 +48,7 @@ export function RecordingSourcePreview({
           <button type="button" data-cut-action="record-source-preview-stop" onClick={onStop} disabled={busy}>Stop</button>
         </>}
       </div>
+      </Availability>
     </section>
   )
 }

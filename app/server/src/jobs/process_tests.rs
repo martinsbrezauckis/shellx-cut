@@ -42,6 +42,24 @@ async fn assert_gone(pid: i32) {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn exited_leader_reserves_group_until_hard_stop() {
+    let mut command = Command::new("true");
+    tree::configure(&mut command).unwrap();
+    let mut child = command.spawn().unwrap();
+    let pid = child.id().unwrap() as i32;
+    let mut tree = ProcessTree::establish(&child).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !tree.exit_ready(&child).unwrap() {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "leader was reaped early");
+    tree.hard_stop().unwrap();
+    assert!(child.wait().await.unwrap().success());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cancellation_stops_and_reaps_a_child_tree() {
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("grandchild.pid");

@@ -1,4 +1,5 @@
 import { engineMediaUrl } from '../../lib/mediaUrl'
+import { recordingNotice } from './recordingUiModel'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
   API_BASE,
@@ -141,7 +142,7 @@ export function RecordingRehearsal({
       if (!response.ok || !take) {
         setState({
           kind: 'error',
-          detail: response.error?.suggested_action ?? response.error?.message ?? 'The native rehearsal did not complete.',
+          detail: response.error?.suggested_action ?? response.error?.message ?? 'The practice recording did not finish. Check the setup and try again.',
         })
         return
       }
@@ -150,7 +151,7 @@ export function RecordingRehearsal({
       onRefresh()
     } catch {
       if (id === requestId.current) {
-        setState({ kind: 'error', detail: 'Cut could not reach the native rehearsal. Check the engine and try again.' })
+        setState({ kind: 'error', detail: 'The practice recording could not start. Check the setup and try again.' })
       }
     }
   }, [discard, fps, monitor, monitorId, onRefresh, sourceKind, windowId])
@@ -183,7 +184,7 @@ export function RecordingRehearsal({
           {state.kind === 'running' ? 'Capturing…' : state.kind === 'ready' ? 'Try again' : 'Rehearse'}
         </button>
       </div>
-      <p className="rec-rehearsal__status" data-cut-rec-rehearsal-status role="status" aria-live="polite">{status}</p>
+      <p className="rec-rehearsal__status" data-cut-rec-rehearsal-status role="status" aria-live="polite">{recordingNotice(status, 'The practice recording could not be completed. Check your recording setup and try again.')}</p>
       <p className="rec-rehearsal__boundary" data-cut-rec-rehearsal-disposable>
         This is a disposable test take: it does not create a project, recording, recovery item, or timeline media.
       </p>
@@ -203,7 +204,7 @@ export function RecordingRehearsal({
             playsInline
             onKeyDownCapture={recordingRehearsalPlaybackKey}
             onKeyUpCapture={recordingRehearsalPlaybackKey}
-            onError={() => setState({ kind: 'error', detail: 'The native take completed, but this browser could not play its temporary video.' })}
+            onError={() => setState({ kind: 'error', detail: 'The practice recording finished, but Cut could not play it. Try a new practice recording.' })}
           />
           <button
             type="button"

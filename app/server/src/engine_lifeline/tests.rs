@@ -26,16 +26,15 @@ fn a_helper_is_found_by_the_runs_mark_and_stopped() {
     let mut found = Vec::new();
     for _ in 0..50 {
         found = scan::marked(ENV_ENGINE_RUN, &mark);
-        if found.contains(&pid) {
+        if found.iter().any(|process| process.pid == pid) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(
-        found.contains(&pid),
-        "the marked helper is found: {found:?}"
-    );
-    assert!(!found.contains(&(bystander.id() as i32)));
+    assert!(found.iter().any(|process| process.pid == pid));
+    assert!(!found
+        .iter()
+        .any(|process| process.pid == bystander.id() as i32));
     assert_eq!(stop_marked(&mark), 1);
     let status = helper.wait().unwrap();
     assert!(!status.success(), "the helper was stopped");

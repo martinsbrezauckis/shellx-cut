@@ -1,7 +1,73 @@
 use super::*;
 
+#[test]
+fn exited_child_allows_late_pipe_reader_result() {
+    #[cfg(unix)]
+    let mut command = Command::new("sh");
+    #[cfg(unix)]
+    command.args(["-c", "exit 0"]);
+    #[cfg(windows)]
+    let mut command = Command::new("cmd");
+    #[cfg(windows)]
+    command.args(["/c", "exit 0"]);
+    let mut child = ManagedChild::spawn(
+        &mut command,
+        ProcessControl::bounded(Duration::from_secs(30), || false),
+        "late reader",
+    )
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+    // Test hook: the pipe has reached EOF, but its worker is scheduled late.
+    let (tx, done) = mpsc::sync_channel(1);
+    let handle = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(750));
+        let _ = tx.send(Ok(b"complete".to_vec()));
+    });
+    let reader = Reader {
+        done,
+        handle: Some(handle),
+    };
+    assert_eq!(
+        finish_reader(reader, &mut child, "late reader").unwrap(),
+        b"complete"
+    );
+}
+
 #[cfg(unix)]
 use std::fs;
+
+#[cfg(unix)]
+#[test]
+fn outside_process_holding_a_pipe_is_still_a_bounded_error() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::process::Stdio;
+
+    let mut command = Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    let mut child = ManagedChild::spawn(
+        &mut command,
+        ProcessControl::bounded(Duration::from_secs(30), || false),
+        "held pipe",
+    )
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+    let (input, output) = UnixStream::pair().unwrap();
+    // Independent process, outside the owned child's tree. Eight seconds also
+    // bounds the regression's old unconditional join, so a failure cleans up.
+    let mut holder = Command::new("sleep")
+        .arg("8")
+        .stdout(Stdio::from(OwnedFd::from(output)))
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let result = finish_reader(read_capped(input), &mut child, "held pipe");
+    let elapsed = started.elapsed();
+    let _ = holder.kill();
+    holder.wait().unwrap();
+    assert!(result.unwrap_err().cause.contains("did not close"));
+    assert!(elapsed < Duration::from_secs(7), "elapsed: {elapsed:?}");
+}
 
 fn slow_command() -> Command {
     #[cfg(unix)]

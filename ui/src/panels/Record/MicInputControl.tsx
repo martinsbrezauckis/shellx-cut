@@ -1,3 +1,5 @@
+import { recordingNotice } from './recordingUiModel'
+import { Availability } from '../../lib/availability'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import { microphoneProblemText, type MicrophoneProblem } from '../../app/microphoneMessages'
@@ -107,7 +109,7 @@ export function MicInputControl({ audio, disabled, idle, refreshSequence, onAudi
       setState({ kind: 'result', result })
       await refreshSelection()
     } catch {
-      if (id === requestId.current) setState({ kind: 'error', detail: 'Cut could not reach the microphone test. Check the engine and try again.' })
+      if (id === requestId.current) setState({ kind: 'error', detail: 'Cut could not reach the microphone test. Check your microphone connection and try again.' })
     } finally {
       if (id === requestId.current) onTestingChange(false)
     }
@@ -164,11 +166,16 @@ export function MicInputControl({ audio, disabled, idle, refreshSequence, onAudi
       {audio && (
         <div className="rec__mic-input-detail">
           <div className="rec__mic-input-head">
+            <button type="button" className="rec__export-btn rec__export-btn--small rec__export-btn--ghost" data-cut-action="record-mic-test" disabled={disabled || state.kind === 'testing'} onClick={() => void testMicrophone()}>
+              {state.kind === 'testing' ? 'Testing…' : 'Test microphone'}
+            </button>
+            <Availability rule="record.microphone-choice" replacement={<span className="rec__mic-input-device">System default microphone</span>}>
             <label className="rec__mic-input-device">
               Input
               <select
                 data-cut-rec-mic-selection={selection.mode}
-                disabled={disabled || selection.status === 'system_default_only'}
+                data-cut-action="record-microphone-choice"
+                disabled={disabled}
                 value={selection.mode === 'selected' ? '__selected__' : 'system_default'}
                 onChange={(event) => {
                   if (event.target.value !== '__selected__') void changeSelection(event.target.value)
@@ -179,17 +186,17 @@ export function MicInputControl({ audio, disabled, idle, refreshSequence, onAudi
                 {microphones.map((microphone) => <option key={microphone.token} value={microphone.token}>{microphone.label}</option>)}
               </select>
             </label>
-            <button type="button" className="rec__export-btn rec__export-btn--small rec__export-btn--ghost" data-cut-action="record-mic-test" disabled={disabled || state.kind === 'testing'} onClick={() => void testMicrophone()}>
-              {state.kind === 'testing' ? 'Testing…' : 'Test microphone'}
-            </button>
+            </Availability>
           </div>
           <div className="rec__mic-meter" data-cut-rec-mic-meter={typeof peak === 'number' ? 'measured' : 'none'} role="meter" aria-label="Microphone test peak" aria-valuemin={0} aria-valuemax={100} aria-valuenow={meter} aria-valuetext={typeof peak === 'number' ? `${peak} dBFS peak from the last test` : 'No measurable signal'}>
             <span className="rec__mic-meter-fill" style={{ width: `${meter}%` }} />
           </div>
-          <p className="rec__mic-status" data-cut-rec-mic-status={statusKind} data-cut-rec-mic-blocked={blocked?.reason ?? 'none'} aria-live="polite">{selection.status === 'unavailable' ? 'Selected microphone is unavailable. Start is blocked until you choose another input or System Default.' : blockedNote ?? statusFor(state)}</p>
-          <p className="rec__source-note" data-cut-rec-mic-identity-boundary>
-            Device choices use expiring opaque tokens and safe display labels. Cut stores the native endpoint privately and never exposes it here.
-          </p>
+          <p className="rec__mic-status" data-cut-rec-mic-status={statusKind} data-cut-rec-mic-blocked={blocked?.reason ?? 'none'} aria-live="polite">{selection.status === 'unavailable' ? 'Selected microphone is unavailable. Start is blocked until you choose another input or System Default.' : recordingNotice(blockedNote ?? statusFor(state), 'The microphone is unavailable. Check its connection and system permissions, then test again.')}</p>
+          <Availability rule="record.microphone-choice">
+            <p className="rec__source-note" data-cut-rec-mic-identity-boundary>
+              Choose the microphone you want to record. If it is missing, reconnect it and refresh the sources.
+            </p>
+          </Availability>
         </div>
       )}
     </div>

@@ -5,13 +5,13 @@
     {
       "name": "system.mcp_test",
       "domain": "system",
-      "description": "Run a bounded, read-only self-test of the exact installed cutd executable's MCP stdio proxy against this running ShellX Cut engine. Verifies protocol-version negotiation, ping, complete tools/list generation within the supported payload budget, typed structuredContent, and a system.doctor call that resolves back to this engine address. It never opens or mutates a project and never creates a second authority layer.",
+      "description": "Test the installed cutd MCP stdio proxy against this engine: protocol negotiation, ping, tools/list budget, structuredContent and full system.doctor with same-engine address. Cold-start budget: 120s; reports total elapsed_ms. Read-only; no second engine.",
       "args": {
         "type": "object",
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{schema:'shellx-cut/mcp-self-test/1', mode:'proxy', read_only:true, executable, command:[executable,'mcp'], protocol_version, ping:true, tools, expected_tools, tools_list_bytes, tools_list_max_bytes, proxy_addr, same_engine:true}",
+      "result": "{schema:'shellx-cut/mcp-self-test/1', mode:'proxy', read_only:true, executable, command:[executable,'mcp'], protocol_version, ping:true, tools, expected_tools, tools_list_bytes, tools_list_max_bytes, proxy_addr, same_engine:true, elapsed_ms}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -51,7 +51,7 @@
           }
         }
       },
-      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok, requirements} — essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface. requirements (schema/requirements.json, the one registry of what needs what): {schema: \"shellx-cut/requirements/1\", tools: [{id, kind: tool|condition, name, what, state: ready|missing|needs_attention|not_checked|per_asset|not_applicable, reason?, check?: {verb, args}, get: {settings?, button?, verb?, args?, person?}, doctor_card?, license?: {name, url?}, needed_for: [feature names], improves: [feature names where it is optional], per_asset?}], features: [{id, name, verbs, requires, open_project: all|some|none, any_of?, verb_extra?, optional: [{id, name, state, effect}], can_run: yes|no|depends, blocked_by: [requirement with state, reason and get], depends_on, note?}]}. Tool states are read from these cards; screen, microphone and system-sound permission are not probed here (check names screen_record.doctor); a transcript or analysis is per asset. With feature: only the answer for that verb or feature (see the feature argument).",
+      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok, availability: {pause, camera, live_timer, microphone_choice, source_preview, managed_motion}, requirements} — availability contains fixed booleans for this system and executable, computed without listing, opening or asking permission for any device. It describes support, not setup/readiness; all six facts stay fixed while this engine runs. Older engines omit availability: treat missing fields as unknown, never false. essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface. requirements (schema/requirements.json, the one registry of what needs what): {schema: \"shellx-cut/requirements/1\", tools: [{id, kind: tool|condition, name, what, state: ready|missing|needs_attention|not_checked|per_asset|not_applicable, reason?, check?: {verb, args}, get: {settings?, button?, verb?, args?, person?}, doctor_card?, license?: {name, url?}, needed_for: [feature names], improves: [feature names where it is optional], per_asset?}], features: [{id, name, verbs, requires, open_project: all|some|none, any_of?, verb_extra?, optional: [{id, name, state, effect}], can_run: yes|no|depends, blocked_by: [requirement with state, reason and get], depends_on, note?}]}. Tool states are read from these cards; screen, microphone and system-sound permission are not probed here (check names screen_record.doctor); a transcript or analysis is per asset. For uninstalled matte_premium, details.setup_supported is false only for the known dropped sm_70 generation, null when unknown/unqueried, otherwise the generation is admitted for setup (not a readiness claim). Its hint explains a refusal before downloading; an already installed older runtime retains its own readiness. With feature: only the answer for that verb or feature (see the feature argument).",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -233,7 +233,7 @@
     {
       "name": "system.setup_perception",
       "domain": "system",
-      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ok. rationale is recorded on the job.",
+      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (version-pinned astral-sh/uv 0.13.9 release, per-archive SHA-256 embedded in Cut and verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ok. rationale is recorded on the job.",
       "args": {
         "type": "object",
         "required": [],
@@ -299,7 +299,7 @@
           }
         }
       },
-      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): NO path -> {job_id} (builds an isolated torch venv + downloads the 135 MB checkpoint; a failed MatAnyone2/SAM2 import probe fails the job; finish result {model, venv_python, uv_version, checkpoint, matanyone_ready:true, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
+      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): before starting a job or downloading, refuses a driver-reported sm_70 (Volta) card with invalid_args, a plain reason, cause and suggested_action to use Standard RVM; unknown generations are never refused. NO path -> {job_id} (builds an isolated torch 2.15.0 / torchvision 0.29.2 venv, cu132 on Windows/Linux and default-index on macOS, with its own setuptools>=84.1.0 floor; downloads 141 MB + 323 MB + 323 MB of models, plus several GB for tools; a failed MatAnyone2/SAM2 import probe fails the job; finish result {model, venv_python, uv_version, checkpoint, matanyone_ready:true, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { createPortal } from 'react-dom'
 import { callVerb, sourceUrl, type Project } from '../../lib/client'
 import { scopeMediaUrl } from '../../lib/mediaScope'
@@ -26,7 +27,7 @@ export interface SourceMonitorAsset {
   name: string
   kind: 'video' | 'audio' | 'image'
   durationMs: number
-  hasAudio: boolean
+  hasAudio?: boolean
   proxy?: string
 }
 
@@ -48,6 +49,7 @@ function formatTime(ms: number): string {
 }
 
 export default function SourceMonitor({ asset, project, playheadMs, initialMs = 0, onProjectChanged, onClose }: SourceMonitorProps) {
+  const desktopAvailability = useAvailability('shell.desktop')
   const mediaRef = useRef<HTMLMediaElement | null>(null)
   const overwriteButtonRef = useRef<HTMLButtonElement | null>(null)
   const overwriteFocusPending = useRef(false)
@@ -66,7 +68,9 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
   const overwriteTargets = useMemo(() => sourceOverwriteTrackTargets(project), [project])
   const isStill = asset.kind === 'image'
   const sourceHasVideo = asset.kind === 'video' || isStill
-  const sourceHasAudio = !isStill && (asset.kind === 'audio' || asset.hasAudio)
+  // Placement keeps its existing boolean readiness; availability keeps the raw probe.
+  const sourceHasAudio = !isStill && (asset.kind === 'audio' || !!asset.hasAudio)
+  const streamSubject = { streams: { video: sourceHasVideo, audio: isStill ? false : asset.kind === 'audio' ? true : asset.hasAudio } }
   const videoTargets = sourceHasVideo ? overwriteTargets.video : []
   const audioTargets = sourceHasAudio ? overwriteTargets.audio : []
   const [videoTarget, setVideoTarget] = useState<string | null>(() => videoTargets[0] ?? null)
@@ -162,7 +166,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
       project,
       playheadMs,
       [insertTargets.videoTrack, sourceHasAudio ? insertTargets.audioTrack : undefined],
-      asset.kind === 'video' && asset.hasAudio && (!insertTargets.videoTrack || !insertTargets.audioTrack),
+      asset.kind === 'video' && !!asset.hasAudio && (!insertTargets.videoTrack || !insertTargets.audioTrack),
     ),
     [asset.hasAudio, asset.kind, insertTargets.audioTrack, insertTargets.videoTrack, playheadMs, project, sourceHasAudio],
   )
@@ -332,6 +336,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
   }
 
   const revealSourceFile = async () => {
+    if (desktopAvailability.state === 'absent') return setNote(availabilitySentence('shell.desktop'))
     if (sourceFileBusy) return
     setSourceFileBusy(true)
     const reply = await revealRegisteredSource(asset.id)
@@ -477,6 +482,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
 
         <div className="source-monitor__targets" data-cut-source-targets data-cut-source-overwrite-state={overwriteState} aria-label="Overwrite destinations">
           <span className="source-monitor__targets-label">Overwrite to</span>
+          <Availability rule="source.video-target" subject={streamSubject}>
           <label className="source-monitor__target-control">
             <span>V</span>
             <select
@@ -496,6 +502,8 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
               {videoTargets.map((track) => <option key={track} value={track}>{track}</option>)}
             </select>
           </label>
+          </Availability>
+          <Availability rule="source.audio-target" subject={streamSubject}>
           {!isStill && <label className="source-monitor__target-control">
             <span>A</span>
             <select
@@ -515,6 +523,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
               {audioTargets.map((track) => <option key={track} value={track}>{track}</option>)}
             </select>
           </label>}
+          </Availability>
           {isStill && <label className="source-monitor__duration-control">
             <span>Duration</span>
             <input
@@ -608,6 +617,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
             >
               <Icon name="folder" size={14} /> Library
             </button>
+            <Availability rule="shell.desktop">
             <button
               type="button"
               className="source-monitor__reveal"
@@ -619,6 +629,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
             >
               <Icon name="file" size={14} /> {sourceFileBusy ? 'Revealing…' : 'Source file'}
             </button>
+            </Availability>
           </div>
           <div className="source-monitor__actions">
             {!isStill && <button

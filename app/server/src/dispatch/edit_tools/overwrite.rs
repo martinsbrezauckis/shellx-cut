@@ -18,6 +18,10 @@ pub(in crate::dispatch) async fn edit_overwrite(
         at_ms: u64,
         video_track: Option<String>,
         audio_track: Option<String>,
+        #[serde(default)]
+        create_video_track: bool,
+        #[serde(default)]
+        create_audio_track: bool,
         src_range_ms: Option<[u64; 2]>,
         source_in_ms: Option<u64>,
         source_out_ms: Option<u64>,
@@ -26,7 +30,9 @@ pub(in crate::dispatch) async fn edit_overwrite(
         group_id: Option<String>,
     }
     let a: Args = parse_args(args.clone())?;
-    if a.video_track.is_none() && a.audio_track.is_none() {
+    let wants_video = a.video_track.is_some() || a.create_video_track;
+    let wants_audio = a.audio_track.is_some() || a.create_audio_track;
+    if !wants_video && !wants_audio {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             "edit.overwrite needs video_track, audio_track, or both",
@@ -75,7 +81,7 @@ pub(in crate::dispatch) async fn edit_overwrite(
             .and_then(Value::as_u64);
 
         if kind == "image" {
-            if a.audio_track.is_some() {
+            if wants_audio {
                 return Err(CutError::new(
                     error_codes::INVALID_ARGS,
                     format!(
@@ -115,7 +121,7 @@ pub(in crate::dispatch) async fn edit_overwrite(
                     "use Source In/Out or src_range_ms for timed media",
                 ));
             }
-            if kind == "audio" && a.video_track.is_some() {
+            if kind == "audio" && wants_video {
                 return Err(CutError::new(
                     error_codes::INVALID_ARGS,
                     format!(
@@ -125,7 +131,7 @@ pub(in crate::dispatch) async fn edit_overwrite(
                     "choose audio_track only, or select a source with video",
                 ));
             }
-            if a.audio_track.is_some()
+            if wants_audio
                 && probe
                     .and_then(|p| p.get("has_audio"))
                     .and_then(Value::as_bool)
@@ -173,7 +179,69 @@ pub(in crate::dispatch) async fn edit_overwrite(
     map.remove("source_in_ms");
     map.remove("source_out_ms");
     map.remove("duration_ms");
-    commit_core(state, "edit.overwrite", committed_args, actor).await
+    if !a.create_video_track && !a.create_audio_track {
+        return commit_core(state, "edit.overwrite", committed_args, actor).await;
+    }
+    // Creation and replacement share one staged project and one undo record.
+    // Lowered steps are durable, so replay never has to guess destination ids.
+    let op = {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().ok_or_else(no_project)?;
+        let mut steps = Vec::new();
+        for (existing, create, kind, field, create_field) in [
+            (
+                a.video_track.as_deref(),
+                a.create_video_track,
+                cut_core::TrackKind::Video,
+                "video_track",
+                "create_video_track",
+            ),
+            (
+                a.audio_track.as_deref(),
+                a.create_audio_track,
+                cut_core::TrackKind::Audio,
+                "audio_track",
+                "create_audio_track",
+            ),
+        ] {
+            if existing.is_none() && !create {
+                continue;
+            }
+            let (id, created) = super::linked_insert::resolve_destination(
+                &store.project,
+                existing,
+                create,
+                kind,
+                field,
+                create_field,
+            )?;
+            if created {
+                steps.push(InverseOp {
+                    verb: "edit.add_track".into(),
+                    args: json!({"kind": if kind == cut_core::TrackKind::Video { "video" } else { "audio" }, "id": id}),
+                });
+            }
+            committed_args[field] = json!(id);
+        }
+        steps.push(InverseOp {
+            verb: "edit.overwrite".into(),
+            args: committed_args.clone(),
+        });
+        guard_call("edit.overwrite", || {
+            store.apply_lowered(
+                "edit.overwrite",
+                committed_args,
+                actor,
+                a.rationale,
+                steps,
+                vec![],
+            )
+        })?
+    };
+    let result = shape_core_result("edit.overwrite", &op, false);
+    let op_id = op.op_id.clone();
+    state.events.publish(Event::OpApplied { op });
+    Ok(VerbResult::ok_with_ops(result, vec![op_id]))
 }
 
 fn validate_destinations(

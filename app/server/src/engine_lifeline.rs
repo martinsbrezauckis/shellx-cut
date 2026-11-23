@@ -184,19 +184,19 @@ pub(crate) fn stop_marked(mark: &str) -> usize {
     #[cfg(unix)]
     {
         let found = scan::marked(ENV_ENGINE_RUN, mark);
-        for pid in &found {
-            scan::signal_if_marked(*pid, ENV_ENGINE_RUN, mark, libc::SIGTERM);
+        for process in &found {
+            scan::signal_if_marked(process, ENV_ENGINE_RUN, mark, libc::SIGTERM);
         }
         let deadline = std::time::Instant::now() + GRACE;
         while std::time::Instant::now() < deadline
             && found
                 .iter()
-                .any(|pid| scan::carries(*pid, ENV_ENGINE_RUN, mark))
+                .any(|process| scan::still_marked(process, ENV_ENGINE_RUN, mark))
         {
             std::thread::sleep(Duration::from_millis(50));
         }
-        for pid in &found {
-            scan::signal_if_marked(*pid, ENV_ENGINE_RUN, mark, libc::SIGKILL);
+        for process in &found {
+            scan::signal_if_marked(process, ENV_ENGINE_RUN, mark, libc::SIGKILL);
         }
         found.len()
     }

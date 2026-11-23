@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OpRecord, Project } from '../../lib/client'
 import { dispatchVerb, effectsSummary, fmtDur, opSeekMs } from './shared'
+import { Availability } from '../../lib/availability'
 import { editActionLabel } from './opGroupModel'
 
 export interface DiffViewProps {
@@ -164,9 +165,16 @@ export default function DiffView({ project, ops, onSeek, request }: DiffViewProp
             {chips.length === 0 && <span className="rr-chip">no changes</span>}
           </div>
           <div className="rr-diff__ops">
-            {(diff.ops ?? []).map((op, i) => (
+            {(diff.ops ?? []).map((op, i) => {
+              const description = <>
+                <span className="rr-diff__op-verb">{editActionLabel(op.verb)}</span>
+                <span className="rr-diff__op-fx">{effectsSummary(op) || op.op_id}</span>
+              </>
+              return <Availability key={`${op.op_id}-${i}`} rule="history.seek"
+                subject={{ operation: { timelinePosition: opSeekMs(op) } }}
+                replacement={<div className={`rr-diff__op rr-diff__op--${opTint(op.verb)}`}>{description}</div>}>
               <button
-                key={`${op.op_id}-${i}`}
+                data-cut-action="diff-seek"
                 className={`rr-diff__op rr-diff__op--${opTint(op.verb)}`}
                 data-cut-diff-op={op.op_id}
                 onClick={() => {
@@ -175,10 +183,10 @@ export default function DiffView({ project, ops, onSeek, request }: DiffViewProp
                 }}
                 title={op.rationale ?? op.op_id}
               >
-                <span className="rr-diff__op-verb">{editActionLabel(op.verb)}</span>
-                <span className="rr-diff__op-fx">{effectsSummary(op) || op.op_id}</span>
+                {description}
               </button>
-            ))}
+              </Availability>
+            })}
           </div>
         </>
       )}

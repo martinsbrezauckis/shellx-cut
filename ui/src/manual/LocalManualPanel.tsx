@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Icon } from '../icons'
+import { Availability } from '../lib/availability'
 import { MANUAL_FEATURES, resolveManualFeatureId, type ManualFeatureContent } from './content'
 import { CUT_MANUAL_PROTOCOL } from './protocol'
 import { manualFeatureTarget } from './targets'
@@ -47,6 +48,7 @@ function revealFeature(featureId: string): void {
   }))
 }
 
+// Availability changes only the reveal action, never the article or its explanation.
 export default function LocalManualPanel({ open, requestedFeatureId, requestId, onClose }: LocalManualPanelProps) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('cut.left.assets')
@@ -129,8 +131,11 @@ export default function LocalManualPanel({ open, requestedFeatureId, requestId, 
         {selectedTarget?.unavailable && (
           <p className="local-manual__availability" role="status">{selectedTarget.unavailable}</p>
         )}
+        <Availability rule="manual.archive" subject={{ article: { featureId: selected.id } }}>
+        <Availability rule="manual.editor-target" subject={{ article: { featureId: selected.id, editorTarget: selectedTarget ? !selectedTarget.unavailable : undefined } }}>
         <button
           type="button"
+          data-cut-action="manual-show-in-editor"
           className="local-manual__reveal"
           onClick={showInEditor}
           disabled={Boolean(selectedTarget?.unavailable)}
@@ -138,6 +143,8 @@ export default function LocalManualPanel({ open, requestedFeatureId, requestId, 
         >
           {selectedTarget?.unavailable ? 'Reference only' : 'Show in Cut'}
         </button>
+        </Availability>
+        </Availability>
       </article>
 
       <nav className="local-manual__index" aria-label="Manual index">

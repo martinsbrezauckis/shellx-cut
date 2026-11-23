@@ -382,6 +382,18 @@ kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
 }
 .app__timeline { flex: none; min-height: 160px; max-height: 60%; display: flex; min-width: 0; }
 
+/* The Properties rail floats over the editor (position: absolute, see .app__rail--overlay), so
+   the preview used to run under it: its right-hand controls (Frame, Render selection, Audio,
+   grid, full screen, source chip) and 30% of the picture were hidden. A window of 1600 px or
+   more has room for both, so there the preview keeps to the space left of the rail; below that
+   the rail still floats as before. 1600 px is the point where the preview, at its 480 px
+   minimum, still fits beside the widest rail (480 px) for any left-panel share. */
+@media (min-width: 1600px) {
+  .app:not([data-cut-drawer="mask"]) .app__middle[data-cut-overlay-rail-open='true'] .app__preview {
+    margin-right: var(--cut-overlay-rail-width, 340px);
+  }
+}
+
 /* The Mask drawer needs the preview as its drawing surface. Reserve its fixed
    right-hand width and give the preview the remaining editor space while it is
    open. Otherwise a narrow preview can sit entirely behind the drawer. */

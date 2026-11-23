@@ -3831,25 +3831,28 @@ async fn multicam_switch_does_not_destroy_user_program_track() {
     .await;
     assert!(r.ok, "{:?}", r.error);
 
+    // This is a metadata-only multicam test. Do not launch an import job on
+    // fake bytes: its legitimate unreadable-file cleanup races these edits.
     for name in ["cam1.mp4", "cam2.mp4"] {
-        std::fs::write(dir.path().join(name), b"x").unwrap();
-        let r = dispatch(
-            &state,
-            "media.import",
-            json!({"path": dir.path().join(name)}),
-            test_actor(),
-        )
-        .await;
-        assert!(r.ok, "media.import {name}: {:?}", r.error);
-    }
-    for asset in ["a1", "a2"] {
-        update_asset(&state, asset, |a| {
-            a.probe = Some(json!({
+        let asset = cut_core::Asset {
+            path: dir.path().join(name).display().to_string(),
+            hash: format!("sha256:fixture-{name}"),
+            probe: Some(json!({
                 "kind":"video","width":1920,"height":1080,"duration_ms":2000,"has_audio":true
-            }));
-        })
-        .await
-        .unwrap();
+            })),
+            transcript: None,
+            perception: None,
+            proxy: None,
+            filmstrip: None,
+        };
+        state
+            .project
+            .write()
+            .await
+            .as_mut()
+            .unwrap()
+            .record_import(None, asset, test_actor(), None)
+            .unwrap();
     }
 
     let r = dispatch(

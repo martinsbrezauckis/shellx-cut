@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { MotionClipLink } from '../../lib/client'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { callVerb } from '../../lib/client'
 import { pickMotionPackage } from '../../lib/tauri'
 import MotionEffectsSection from './MotionEffectsSection'
@@ -14,6 +15,7 @@ function shortDigest(value: string): string {
 }
 
 export default function MotionLinkSection({ link }: MotionLinkSectionProps) {
+  const relinkAvailability = useAvailability('shell.desktop')
   const [busy, setBusy] = useState<'edit' | 'refresh' | 'relink' | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const canRefresh = link.availability?.canRefresh ?? !!link.sourcePath
@@ -53,6 +55,10 @@ export default function MotionLinkSection({ link }: MotionLinkSectionProps) {
 
   const relink = async () => {
     if (busy) return
+    if (relinkAvailability.state === 'absent') {
+      setNote(availabilitySentence('shell.desktop'))
+      return
+    }
     const packageDir = await pickMotionPackage()
     if (!packageDir) return
     setBusy('relink')
@@ -108,15 +114,18 @@ export default function MotionLinkSection({ link }: MotionLinkSectionProps) {
         >
           {busy === 'refresh' ? 'Rendering…' : 'Refresh render'}
         </button>
-        <button
-          type="button"
-          className="insp__btn"
-          data-cut-motion-relink={link.clipId}
-          disabled={busy !== null}
-          onClick={() => void relink()}
-        >
-          {busy === 'relink' ? 'Relinking…' : 'Relink source…'}
-        </button>
+        <Availability rule="shell.desktop">
+          <button
+            type="button"
+            className="insp__btn"
+            data-cut-action="motion-relink"
+            data-cut-motion-relink={link.clipId}
+            disabled={busy !== null}
+            onClick={() => void relink()}
+          >
+            {busy === 'relink' ? 'Relinking…' : 'Relink source…'}
+          </button>
+        </Availability>
       </div>
       {!canRefresh && <p className="insp__motion-warning">The rendered fallback is still usable, but its editable Motion source is not connected on this PC.</p>}
       {note && <p className="insp__motion-note" role="status" data-cut-motion-action-status>{note}</p>}

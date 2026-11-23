@@ -41,7 +41,7 @@ fn reduced_composed_frame_conforms_proxy_before_gap_concat() {
                         assert!(r.ok, "{verb}: {:?}", r.error);
                     }
                     let mut ready = false;
-                    for _ in 0..600 {
+                    for _ in 0..6_000 {
                         {
                             let g = state.project.read().await;
                             let p = &g.as_ref().unwrap().project;

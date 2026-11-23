@@ -1,5 +1,6 @@
 import { mediaBasename } from '../lib/mediaPath'
-import { isTauri, pickFolder } from '../lib/tauri'
+import { Availability, useAvailability } from '../lib/availability'
+import { pickFolder } from '../lib/tauri'
 
 type FolderPickerKind = 'stock' | 'assemble' | 'portable'
 
@@ -25,7 +26,7 @@ export default function NativeFolderPicker({
   onDesktopRequired,
   onSelected,
 }: NativeFolderPickerProps) {
-  const desktop = isTauri()
+  const folderAvailability = useAvailability('shell.desktop')
   const wrapperProps = kind === 'stock'
     ? { 'data-cut-stock-dir-picker': '' }
     : kind === 'assemble'
@@ -44,7 +45,7 @@ export default function NativeFolderPicker({
 
   const choose = async () => {
     onChooseStart?.()
-    if (!desktop) {
+    if (folderAvailability.state === 'absent') {
       onDesktopRequired()
       return
     }
@@ -56,10 +57,12 @@ export default function NativeFolderPicker({
     <div className="cd-field" {...wrapperProps}>
       <span className="cd-field-label">{label}</span>
       <div className="cd-row">
-        <button className="cd-btn cd-btn--ghost" data-cut-action="native-folder-choose" {...buttonProps} type="button" disabled={disabled}
-          onClick={() => void choose()}>{value ? 'Change folder…' : 'Choose folder…'}</button>
+        <Availability rule="shell.desktop">
+          <button className="cd-btn cd-btn--ghost" data-cut-action="native-folder-choose" {...buttonProps} type="button" disabled={disabled}
+            onClick={() => void choose()}>{value ? 'Change folder…' : 'Choose folder…'}</button>
+        </Availability>
         <span className="cd-note" {...statusProps}>
-          {value ? mediaBasename(value) : (desktop ? 'No folder selected' : 'Desktop app required')}
+          {value ? mediaBasename(value) : (folderAvailability.state === 'absent' ? 'Desktop app required' : 'No folder selected')}
         </span>
       </div>
     </div>

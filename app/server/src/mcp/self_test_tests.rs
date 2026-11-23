@@ -68,6 +68,32 @@ async fn self_test_accepts_combined_replies_larger_than_default_capture() {
     assert!(stdout.len() > 524_288);
     let result = fake_process(&state, &stdout).await.unwrap();
     assert!(result.ok);
+    let value = result.result.unwrap();
+    assert!(value["elapsed_ms"].is_u64());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn self_test_accepts_a_cold_doctor_slower_than_twelve_seconds() {
+    let state = AppState::new();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("replies.jsonl");
+    std::fs::write(&path, transcript(&state, 200_000)).unwrap();
+    let mut command = tokio::process::Command::new("sh");
+    command
+        .args(["-c", "cat >/dev/null; sleep 13; cat \"$1\"", "sh"])
+        .arg(path);
+    let result = run_with_command(
+        &state,
+        TEST_ADDR,
+        std::path::Path::new("cold-mcp"),
+        &mut command,
+        b"{}\n",
+    )
+    .await
+    .unwrap();
+    assert!(result.ok);
+    assert!(result.result.unwrap()["elapsed_ms"].as_u64().unwrap() >= 13_000);
 }
 
 #[cfg(unix)]

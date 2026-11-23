@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Availability } from '../../lib/availability'
 import type { LibItem } from '../../lib/client'
 import ContextMenuFrame from '../../components/ContextMenuFrame'
 import { Icon } from '../../icons'
@@ -161,17 +162,20 @@ export function LibraryContextMenus({
               </div>
             )}
             {cardMenuItem.media_ok === false && cardMenuItem.src_path && !cardMenuItem.blob && (
-              <button
-                className="lb-ctx__item"
-                data-cut-library-card-ctx="relink"
-                role="menuitem"
-                disabled={busy === cardMenuItem.id}
-                title={busy === cardMenuItem.id ? 'This Library item is already being updated' : 'Choose the same media file at its new location'}
-                aria-description={busy === cardMenuItem.id ? 'This Library item is already being updated' : undefined}
-                onClick={() => { onRelink(cardMenuItem); onCloseCardMenu() }}
-              >
-                <Icon name="link" size={14} /> Relink source…
-              </button>
+              <Availability rule="shell.desktop">
+                <button
+                  className="lb-ctx__item"
+                  data-cut-action="library-card-ctx"
+                  data-cut-library-card-ctx="relink"
+                  role="menuitem"
+                  disabled={busy === cardMenuItem.id}
+                  title={busy === cardMenuItem.id ? 'This Library item is already being updated' : 'Choose the same media file at its new location'}
+                  aria-description={busy === cardMenuItem.id ? 'This Library item is already being updated' : undefined}
+                  onClick={() => { onRelink(cardMenuItem); onCloseCardMenu() }}
+                >
+                  <Icon name="link" size={14} /> Relink source…
+                </button>
+              </Availability>
             )}
             {cardMenuItem.media_ok !== false && cardMenuItem.src_path && !cardMenuItem.blob && (
               <button

@@ -8,6 +8,16 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 When speaking to a person, use the person-facing names below. Keep verb names,
 argument names and stored values exact in calls and code.
 
+Still-picture admission (`media.import`, Library import, `assets.fetch`, generated
+media import, `import.otio` replace, `media.relink`, `media.relink_apply`) includes
+one non-looped decode under a ten-second limit. A damaged picture is refused
+before registration/repath with `unreadable_media`, its filename, `cause` and
+`suggested_action`: obtain a fresh copy and import it again. `media.probe` also
+checks a still's decode before storing its probe. Existing projects
+still open. `media.check` preserves `exists` as file existence and adds
+`readable`; false also covers undecodable stills, included in `offline_count`.
+The preview uses its existing offline-source treatment for those pictures.
+
 | What a person calls it | What the verb is called |
 |---|---|
 | Timeline contact sheet | `render.storyboard`; shot planning remains `generate.storyboard` |
@@ -57,8 +67,8 @@ Example: "FFmpeg is missing. It is free software under the GNU GPL version 3
 (https://www.gnu.org/licenses/gpl-3.0.html). May I download it and accept that
 licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 
-<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
-> **Engine v0.6.119 published.** v0.6.119 is the latest published release.
+<!-- shellx-cut-release-truth: published; version=0.6.120; published=0.6.120 -->
+> **Engine v0.6.120 published.** v0.6.120 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **326 verbs across 34 domains** under the public verb contract.
@@ -774,6 +784,8 @@ That discovery response also carries the exact packaged executable and a
 copyable MCP client config. `system.mcp_test {}` is a bounded read-only check
 of initialize, ping, tools/list, structured output, and same-engine proxy
 resolution; Settings > Agent control exposes it without editing client config.
+It allows 120 seconds for the full doctor's cold tool/hardware checks and reports
+total proxy-check time in `elapsed_ms`; it does not skip doctor checks.
 Use its `read_first` links, including
 `/api/agent-doc/docs/public/DEBUG_API.md`, for the endpoint and security contract
 shipped with that build.
@@ -1155,8 +1167,12 @@ any requested tracks together; an error leaves no partial placement. Its shared
 only once.
 
 **Overwrite is its own edit, never `edit.insert {ripple:false}`.** Use
-`edit.overwrite {asset, at_ms, video_track?, audio_track?, src_range_ms?}` to
+`edit.overwrite {asset, at_ms, video_track?, audio_track?, create_video_track?, create_audio_track?, src_range_ms?}` to
 replace the fixed source-duration interval without moving downstream material.
+Use `create_video_track:true` or `create_audio_track:true` instead of the matching
+existing-track field to create that destination in the same atomic undo step.
+Assets drags use overwrite plainly and insert with Alt; the dropped lane chooses
+the track, and only dropping on an overlay lane puts video on top.
 Choose both destinations for one atomic linked A/V overwrite, or only one for
 an intentional video-only/audio-only edit. Source Monitor In/Out may be sent
 as `source_in_ms` + `source_out_ms` instead of `src_range_ms`; every overlapping
@@ -1365,6 +1381,11 @@ measured, because captions and transcription are not installed`
 person_action:"Install captions", suggested_action}`; relay it once, do not
 retry in a loop. Every `suggested_action` names a route of the installed app,
 never a path or command of a source checkout.
+If the captions analysis process starts but exits unsuccessfully, the `sidecar`
+error keeps its diagnostic in `cause` and supplies `suggested_action`: install or
+repair the captions tools in Settings > AI & transcription, or call `system.setup_perception`,
+wait for its job, then retry. This applies to `media.transcribe` and
+`media.perception`; inspect the completed job's error, not only its start reply.
 Captions on Windows need the Microsoft Visual C++ Redistributable; ShellX Cut
 tells you when it is missing and gets it from Microsoft for you. It is ONE tool:
 doctor card `vc-runtime` (Windows only; `details`: `installed`, `version`,
@@ -1497,7 +1518,8 @@ camera_asset. Use `edit.transform{clip,x,y,scale,opacity,shape,radius?,ring?}`,
 including unchanged transform fields, to change its look. x/y are top-left frame
 fractions, scale is width/frame width; shape is circle, rounded or rect. The
 optional ring is {width,colour}, for example {width:0.02,colour:"#ffffffe6"}.
-`screen_record.camera_reset{clip}` returns {clip,transform,keyframes} and restores
+`screen_record.camera_reset{clip}` returns {clip,transform,keyframes} in the standard
+mutation envelope with `op_ids` and `project_revision`, and restores
 the recorded look and placement in one undoable op, leaving trim, timing and speed
 alone. Each camera change/reset supports project.undo. Update video keeps a
 separate screen bubble-free. Make a copy carries each take's source, events,
@@ -2062,6 +2084,11 @@ Every verb needs only what the requirements registry lists for it (an open proje
 `project_state`). Before a verb, `system.doctor {feature:"<verb>"}` says whether it can run and what blocks it;
 a refusal for something missing carries `error.requirement {id, name, get}`. A person's licence, sign-in or
 system permission is theirs: tell them what `get.person` says and never do it for them.
+
+The full `system.doctor` report also includes fixed `availability` booleans: `pause`, `camera`,
+`live_timer`, `microphone_choice`, `source_preview`, `managed_motion`. These describe this system and
+executable without listing or opening devices; they are not setup or permission checks. Older engines
+omit the field: missing means unknown, never unsupported. Do not query recorder devices just to learn these facts.
 
 | Tool or condition | Needed for | Get it |
 |---|---|---|

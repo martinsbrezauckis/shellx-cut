@@ -96,7 +96,11 @@ pub fn probe_source(path: &Path) -> Result<MediaProbe, CutError> {
         }
         Err(e) => return Err(e),
     };
-    classify_normalized(path, normalize_ffprobe(raw, path))
+    let probe = classify_normalized(path, normalize_ffprobe(raw, path))?;
+    if probe.kind == super::kinds::IMAGE {
+        crate::picture_decode::check(path)?;
+    }
+    Ok(probe)
 }
 
 /// Pure half of [`probe_source`]: judge a normalized probe result.

@@ -1,5 +1,4 @@
 import type { Asset, Project } from '../../lib/client'
-import { assetHasAudio } from '../../lib/placement'
 import { isMediaContentClass, linkedSiblings, type LaidItem, type TimelineContentClass } from './layout'
 
 // Direct-edit menu helpers (edit.replace / edit.fit_to_fill / edit.nest).
@@ -145,7 +144,7 @@ export function exactTimelineAudioTarget(item: LaidItem, items: LaidItem[]): str
  */
 export function clipContextMenuContract(
   item: LaidItem,
-  project: Project | null,
+  _project: Project | null,
   allItems: LaidItem[],
 ): ClipContextMenuContract {
   const { contentClass } = item
@@ -163,9 +162,7 @@ export function clipContextMenuContract(
       : enabled('Adjacent media clips share an editorial cut')
   const detachAudio = contentClass !== 'video'
     ? hidden('Detach audio applies only to moving video footage')
-    : !item.asset || !assetHasAudio(project, item.asset)
-      ? hidden('This video asset has no audio stream to detach')
-      : enabled('This video asset has an audio stream that can be extracted')
+    : enabled('Detach this video clip’s source audio')
 
   return {
     surface: contentClass === 'gap' ? 'none' : contentClass === 'caption' ? 'caption' : 'media',

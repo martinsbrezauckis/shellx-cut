@@ -1,4 +1,15 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static SCREENSHOT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn screenshot_name(prefix: &str) -> String {
+    format!(
+        "{prefix}_{}_{}.png",
+        chrono::Utc::now().timestamp_millis(),
+        SCREENSHOT_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 // ---------------------------------------------------------------------------
 // ui.* handlers — WS relay to the connected UI client (ui_bridge.rs)
@@ -109,7 +120,7 @@ pub(super) async fn ui_screenshot(state: &AppState, args: Value) -> Result<VerbR
     // Persist next to the project (frames/) or tmp when nothing is open.
     // Item 140 sweep: inside a project the folder is created only through
     // plain folders and the file is replaced by name, never written in place.
-    let name = format!("ui_{}.png", chrono::Utc::now().timestamp_millis());
+    let name = screenshot_name("ui");
     let path = match project_paths(state).await {
         Ok((dir, _r, _p)) => {
             let frames =
@@ -119,8 +130,7 @@ pub(super) async fn ui_screenshot(state: &AppState, args: Value) -> Result<VerbR
             path
         }
         Err(_) => {
-            let dir = std::env::temp_dir().join("shellx-cut");
-            std::fs::create_dir_all(&dir)?;
+            let dir = state.screenshot_temp_dir()?;
             let path = dir.join(&name);
             std::fs::write(&path, &bytes)?;
             path
@@ -144,7 +154,10 @@ pub(super) async fn ui_screenshot(state: &AppState, args: Value) -> Result<VerbR
 /// unlike ui.screenshot (which relays to the WebView and fails with no client). Returns
 /// {path, width, height, mime} and, when `inline` (default true), the base64 PNG — so an
 /// agent can SEE the app, menus and dialogs while driving cutd over the debug API.
-pub(super) async fn debug_screenshot(args: Value) -> Result<VerbResult, CutError> {
+pub(super) async fn debug_screenshot(
+    state: &AppState,
+    args: Value,
+) -> Result<VerbResult, CutError> {
     fn default_true() -> bool {
         true
     }
@@ -156,12 +169,8 @@ pub(super) async fn debug_screenshot(args: Value) -> Result<VerbResult, CutError
         inline: bool,
     }
     let a: Args = parse_args(args)?;
-    let dir = std::env::temp_dir().join("shellx-cut");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!(
-        "debug_shot_{}.png",
-        chrono::Utc::now().timestamp_millis()
-    ));
+    let dir = state.screenshot_temp_dir()?;
+    let path = dir.join(screenshot_name("debug_shot"));
     // The capture backend BLOCKS (and on Linux spins up its own tokio runtime for the XDG
     // portal), so it must run OFF cutd's async runtime — calling it inline panics with
     // "cannot start a runtime from within a runtime" (screen_record.start uses a thread for
@@ -751,9 +760,17 @@ pub(super) async fn system_setup_matte(
                     "re-run system.setup_matte{model:\"matanyone\", accept_noncommercial:true} to download it",
                 ));
             }
+            // Refuse only the measured dropped generation, before a job,
+            // runtime prerequisite or any large download. Unknown is admitted.
+            run_blocking("check premium graphics card", || {
+                crate::perception_setup::require_premium_gpu_generation(
+                    cut_media::hwencode::cuda_compute_capability(),
+                )
+            })
+            .await?;
             // Windows: torch needs Microsoft's Visual C++ runtime first.
             crate::vc_runtime::require_for("Cleaner background removal")?;
-            // Consented install: a progress job (cu128 torch ~3 GB + 135 MB ckpt).
+            // Consented install: several GB of tools + 141 MB MatAnyone2 + 646 MB SAM2 weights.
             let job = state.jobs.create("setup_matte");
             let job_id = job.job_id.clone();
             let st = state.clone();

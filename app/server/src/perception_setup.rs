@@ -460,19 +460,36 @@ fn onnx_warm_model_id(selected: Option<&str>) -> Option<&str> {
 //
 // Same uv-provisioned pattern as setup_perception, but builds a SEPARATE, isolated
 // torch venv (kept apart from the perception venv so the premium tier can never
-// perturb transcription/captions/reframe). Installs cu128 torch + the curated
+// perturb transcription/captions/reframe). Installs cu132 torch + the curated
 // INFERENCE-ONLY deps (no thinplate[train]/PySide6/gradio/tensorboard) + the
-// matanyone2 package (git, --no-deps), then fetches the 135 MB checkpoint. The
+// matanyone2 package (git, --no-deps), then fetches the 141 MB checkpoint. The
 // caller gates this behind explicit NON-COMMERCIAL consent (NTU S-Lab License 1.0).
 
-/// PyTorch CUDA wheels index for the pinned torch 2.8.0+cu128 configuration.
-/// NVIDIA-targeted (the premium tier is GPU-realistic; CPU torch = unusably slow).
-const TORCH_CU128_INDEX: &str = "https://download.pytorch.org/whl/cu128";
+/// Stable torch 2.15.0 default CUDA family (PyPI's CUDA 13.2 runtime).
+/// Upstream retains sm_75/80/86/90/100/120 but dropped sm_70 (Volta).
+const TORCH_CU132_INDEX: &str = "https://download.pytorch.org/whl/cu132";
+
+/// Admission uses the pinned wheel's measured flags, not names/marketing years.
+/// The installed-wheel proof must match these facts when the pins are reviewed.
+const PREMIUM_CUDA_ARCHS: &str = "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120";
+
+pub(crate) fn require_premium_gpu_generation(cap: Option<(u32, u32)>) -> Result<(), CutError> {
+    if cap == Some((7, 0)) {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "This graphics card is too old for the premium background removal. The standard background removal works on it.",
+            "the pinned premium wheel no longer contains sm_70 (Volta) kernels",
+        ).with_suggested_action("use system.setup_matte{model:\"rvm\"} for standard background removal, or install Premium on a supported NVIDIA card"));
+    }
+    Ok(())
+}
 
 /// MatAnyone2's INFERENCE-ONLY dependencies (curated set; the upstream
 /// core deps drag thinplate[training]/PySide6/gradio/tensorboard/cchardet we don't
 /// need and that break a clean install).
 const MATANYONE_DEPS: &[&str] = &[
+    // This venv is independent of captions: protect its own companion graph.
+    "setuptools>=84.1.0",
     "opencv-python-headless",
     "tqdm",
     "imageio",
@@ -584,7 +601,7 @@ mod matte_source_archive_tests;
 const SAM2_GIT: &str =
     "git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4";
 
-/// The SAM2 weights (HF, ~80 MB, Apache-2.0), pre-fetched into `<matanyone>/hf` at
+/// The SAM2 weights (HF, 323 MB .pt + 323 MB safetensors, Apache-2.0), pre-fetched into `<matanyone>/hf` at
 /// a pinned revision so `sam2_runner.py` loads them offline deterministically.
 const SAM2_HF_ID: &str = "facebook/sam2-hiera-base-plus";
 const SAM2_HF_REVISION: &str = "98efa66555fceff5f74ad281fb8003536dcfb6ff";
@@ -635,7 +652,10 @@ pub fn setup_matanyone(
     let venv_python = venv_python_path(&venv_dir);
 
     // ---- 1. uv (env override or consented download) --------------------------
-    progress(0.02, "locating uv");
+    progress(
+        0.02,
+        "preparing background removal (models: 141 MB + 323 MB + 323 MB; tools: several GB)",
+    );
     let uv = resolve_uv(progress)?;
     check_cancelled()?;
     let uv_version = run_capture(&uv, &["--version"])
@@ -708,7 +728,7 @@ pub fn setup_matanyone(
     })?;
 
     // ---- 4. platform-selected torch (the big one, ~3 GB on CUDA) ------------
-    // macOS must use its platform build from uv's default index. The cu128
+    // macOS must use its platform build from uv's default index. The cu132
     // index is NVIDIA-only, so keeping it for macOS makes the ordinary installer
     // select an inapplicable package source. Windows and Linux retain the pinned
     // CUDA route; this is source selection, not a compatibility claim.
@@ -756,9 +776,9 @@ pub fn setup_matanyone(
         0.80,
     )?;
 
-    // ---- 7. the checkpoint (135 MB, sha-pinned) ------------------------------
+    // ---- 7. the checkpoint (141 MB, sha-pinned) ------------------------------
     check_cancelled()?;
-    progress(0.80, "downloading the MatAnyone2 checkpoint (135 MB)");
+    progress(0.80, "downloading the MatAnyone2 checkpoint (141 MB)");
     let checkpoint = crate::matte::install_matanyone_model(&|f, m| {
         // The download cannot be interrupted: say so while a cancel waits for it.
         if m.starts_with("downloading") {
@@ -791,7 +811,7 @@ pub fn setup_matanyone(
     )?;
     let hf_dir = crate::matte::matanyone_dir().map(|d| d.join("hf"));
     if let Some(hf) = hf_dir.as_ref().and_then(|p| p.to_str()) {
-        progress(0.93, "downloading the SAM2 weights (~80 MB)");
+        progress(0.93, "downloading the SAM2 weights (323 MB + 323 MB)");
         run_streaming(
             &venv_python,
             &["-c", PREFETCH_SAM2_PY, hf, SAM2_HF_ID, SAM2_HF_REVISION],
@@ -808,9 +828,16 @@ pub fn setup_matanyone(
         &venv_python,
         &[
             "-c",
-            "import matanyone2, sam2, torch; print('ok', torch.cuda.is_available())",
+            "import matanyone2, sam2, torch, sys; actual = getattr(torch._C, '_cuda_getArchFlags', lambda: None)(); assert actual is None or set(actual.split()) == set(sys.argv[1].split()), 'premium wheel architecture list changed: ' + str(actual); print('ok', torch.cuda.is_available())",
+            PREMIUM_CUDA_ARCHS,
         ],
-    )?;
+    ).map_err(|error| {
+        CutError::new(
+            error_codes::SIDECAR,
+            "Premium background removal could not verify its tools.",
+            format!("{}: {}", error.message, error.cause),
+        ).with_suggested_action("Use Standard background removal and report this failed premium installation; do not override the wheel source")
+    })?;
     let cuda_available = parse_matanyone_probe(&probe)?;
     check_cancelled()?;
     partial_venv.armed = false;
@@ -835,11 +862,11 @@ fn premium_torch_install_args(venv_python: &str, macos: bool) -> Vec<&str> {
         "install",
         "--python",
         venv_python,
-        "torch==2.8.0",
-        "torchvision==0.23.0",
+        "torch==2.15.0",
+        "torchvision==0.29.2",
     ];
     if !macos {
-        args.extend(["--index-url", TORCH_CU128_INDEX]);
+        args.extend(["--index-url", TORCH_CU132_INDEX]);
     }
     args
 }
@@ -1722,18 +1749,46 @@ mod tests {
     #[test]
     fn premium_torch_source_is_platform_specific() {
         let macos = premium_torch_install_args("/venv/bin/python", true);
+        assert_eq!(TORCH_CU132_INDEX, "https://download.pytorch.org/whl/cu132");
+        assert!(macos.contains(&"torch==2.15.0"));
+        assert!(macos.contains(&"torchvision==0.29.2"));
+        assert_eq!(PREMIUM_CUDA_ARCHS, "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120");
+        assert!(MATANYONE_DEPS.contains(&"setuptools>=84.1.0"));
         assert!(
-            !macos.contains(&TORCH_CU128_INDEX),
-            "macOS must not select NVIDIA's cu128 wheel index"
+            !macos.contains(&TORCH_CU132_INDEX),
+            "macOS must not select NVIDIA's cu132 wheel index"
         );
 
         for target in ["windows", "linux"] {
             let args = premium_torch_install_args("C:/venv/python", false);
             assert!(
                 args.windows(2)
-                    .any(|pair| pair == ["--index-url", TORCH_CU128_INDEX]),
+                    .any(|pair| pair == ["--index-url", TORCH_CU132_INDEX]),
                 "{target} must retain the reviewed CUDA wheel source"
             );
+        }
+    }
+
+    #[test]
+    fn premium_install_refuses_only_the_dropped_reported_generation() {
+        let error = require_premium_gpu_generation(Some((7, 0))).unwrap_err();
+        assert!(error.message.contains("This graphics card is too old"));
+        assert!(!error.cause.is_empty());
+        assert!(error.suggested_action.is_some());
+        // Unknown, CPU-only, all retained generations and generations not
+        // previously shipped are not silently classified as Volta.
+        for cap in [
+            None,
+            Some((7, 5)),
+            Some((8, 0)),
+            Some((8, 6)),
+            Some((9, 0)),
+            Some((10, 0)),
+            Some((12, 0)),
+            Some((6, 0)),
+            Some((13, 0)),
+        ] {
+            assert!(require_premium_gpu_generation(cap).is_ok(), "{cap:?}");
         }
     }
 

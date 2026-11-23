@@ -11,15 +11,16 @@
 // Callers: SettingsCategoryContent (storage-privacy). Deps: lib/tauri
 // (get/set of the persisted native-shell preference).
 
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { useEffect, useState } from 'react'
 import {
   getLaunchUpdatePreference,
-  isTauri,
   setLaunchUpdatePreference,
 } from '../../lib/tauri'
 
 export default function UpdateNetworkSettings() {
-  const desktop = isTauri()
+  const availability = useAvailability('shell.desktop')
+  const desktop = availability.state !== 'absent'
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
@@ -37,7 +38,8 @@ export default function UpdateNetworkSettings() {
   }, [desktop])
 
   const changePreference = async (next: boolean) => {
-    if (!desktop || saving) return
+    if (availability.state === 'absent') { setMessage(availabilitySentence('shell.desktop')); return }
+    if (saving) return
     setSaving(true)
     setMessage('')
     const saved = await setLaunchUpdatePreference(next)
@@ -65,21 +67,23 @@ export default function UpdateNetworkSettings() {
           an update never interrupts you — it only shows a topbar button and the status in About.
         </p>
       </div>
-      <label className={`settings-network-toggle${desktop ? '' : ' settings-network-toggle--disabled'}`}>
+      <Availability rule="shell.desktop" replacement={<p>{availabilitySentence('shell.desktop')}</p>}>
+      <label className="settings-network-toggle">
         <input
           type="checkbox"
           role="switch"
           checked={checked}
-          disabled={!desktop || enabled === null || saving}
+          disabled={enabled === null || saving}
           data-cut-action="update-check-on-launch"
           data-cut-update-check-on-launch
           onChange={(event) => { void changePreference(event.currentTarget.checked) }}
         />
         <span>
           <strong>Check for app updates automatically</strong>
-          <small>{desktop ? 'Covers the launch check and the 6-hour re-check; changes apply immediately. Checking from About stays available.' : 'Available in the installed desktop app.'}</small>
+          <small>Covers the launch check and the 6-hour re-check; changes apply immediately. Checking from About stays available.</small>
         </span>
       </label>
+      </Availability>
       <p
         className={message.startsWith('Could not') ? 'settings-network-message settings-network-message--error' : 'settings-network-message'}
         data-cut-update-check-status

@@ -456,7 +456,7 @@
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{pass, risks:[{kind, severity:high|med|low, detail, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...]} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict and a timeline range_ms when one applies",
+      "result": "{pass, risks:[{kind, severity:high|med|low, detail, suggested_action, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...]} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict, a suggested_action in editor words with available commands (trim the ending, shorten the sound or add picture for empty_tail), and a timeline range_ms when one applies",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {

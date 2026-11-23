@@ -62,6 +62,33 @@ impl CompiledVerbSchemas {
 }
 
 fn validation_error(verb: &str, error: &jsonschema::ValidationError<'_>) -> CutError {
+    // Do not flatten mutually exclusive required alternatives to just the
+    // first missing property: either alternative can repair this request.
+    if let ValidationErrorKind::OneOfNotValid { context } = error.kind() {
+        let alternatives: Option<Vec<String>> = context
+            .iter()
+            .map(|branch| {
+                if branch.len() != 1 {
+                    return None;
+                }
+                match branch[0].kind() {
+                    ValidationErrorKind::Required { property } => Some(bounded_json(property)),
+                    _ => None,
+                }
+            })
+            .collect();
+        if let Some(alternatives) = alternatives.filter(|items| items.len() > 1) {
+            let expected = format!("include exactly one of {}", alternatives.join(" or "));
+            return CutError::new(
+                error_codes::INVALID_ARGS,
+                format!("invalid args for verb '{verb}': {expected}"),
+                "none of the required oneOf alternatives was supplied",
+            )
+            .with_suggested_action(format!(
+                "{expected}; GET /api/verbs shows the exact input schema"
+            ));
+        }
+    }
     if let Some(detail) = composition_detail(error.kind()) {
         return validation_error(verb, detail);
     }

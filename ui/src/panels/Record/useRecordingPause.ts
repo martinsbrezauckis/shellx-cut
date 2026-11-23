@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { recordingNotice } from './recordingUiModel'
 import { callVerb } from '../../lib/client'
 import {
   NO_RECORDING_PAUSE_CAPABILITY,
@@ -124,7 +125,7 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
     setCaptureId(id)
     setActiveEnabled(true)
     setState('recording')
-    setMessage('Recording. Pause only changes state after the recorder seals it.')
+    setMessage('Recording. Pause takes effect once it is confirmed.')
   }, [enabled, captureId, activeEnabled])
 
   const clearCapture = useCallback(() => {
@@ -146,7 +147,7 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
     controlPendingRef.current = true
     const action = state === 'paused' ? 'resume' : 'pause'
     setState(action === 'pause' ? 'pausing' : 'resuming')
-    setMessage(action === 'pause' ? 'Waiting for the recorder to seal the pause…' : 'Waiting for the recorder to seal the resume…')
+    setMessage(action === 'pause' ? 'Pausing the recording…' : 'Resuming the recording…')
     let response
     try {
       response = await callVerb(`screen_record.${action}`, { capture_id: captureId })
@@ -165,8 +166,8 @@ export function useRecordingPause(initialEnabled = false, activeCaptureId: strin
     if (!acknowledgement) {
       setState(action === 'pause' ? 'recording' : 'paused')
       setMessage(response.ok
-        ? 'The recorder did not return a durable acknowledgement; state is unchanged.'
-        : `${response.error?.code ?? 'failed'}: ${response.error?.message ?? 'Pause control failed'}`)
+        ? 'The change was not confirmed as saved. Nothing has changed; try again.'
+        : recordingNotice(response.error?.message ?? '', 'Could not change Pause. Check the recording status and try again.') || 'Could not change Pause. Check the recording status and try again.')
       return
     }
     const line = recordingPauseAcknowledgedLine(acknowledgement.state, acknowledgement.logical_media_time_ms)

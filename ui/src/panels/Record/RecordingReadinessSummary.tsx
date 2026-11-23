@@ -1,6 +1,6 @@
 import { useCallback, useRef, type KeyboardEvent } from 'react'
 import { useDismissOnOutside } from './useDismissOnOutside'
-import { recordCardLabel, recordingInputUnavailable, type RecordCard } from './recordingUiModel'
+import { recordingNotice, recordingCardNotice, recordCardLabel, recordingInputAdvice, recordingInputUnavailable, type RecordCard } from './recordingUiModel'
 import { RECORDING_FRAME_RATE_MIN } from './recordingFrameRate'
 import type { ScreenCheck } from './recordDoctorRead'
 
@@ -18,6 +18,8 @@ interface RecordingReadinessSummaryProps {
 }
 
 function cardStatus(card: RecordCard): 'ok' | 'degraded' | 'unknown' | 'missing' {
+  // Doctor explicitly reports compiled support, not a startup check.
+  if (card.status === 'ok' && /\bunchecked\b|\bnot checked\b/i.test(card.detail)) return 'unknown'
   if (card.status === 'ok') return 'ok'
   if (card.status === 'degraded') return 'degraded'
   if (card.status === 'unknown') return 'unknown'
@@ -70,7 +72,7 @@ function readinessSummary(cards: readonly RecordCard[], videoEncoder: unknown, r
         && encoder.checked === true && typeof encoder.fps === 'number' && Number.isFinite(encoder.fps)
         && encoder.fps > RECORDING_FRAME_RATE_MIN
       return {
-        label: encoderCard.detail,
+        label: recordingNotice(encoderCard.detail, 'Video recording is unavailable at these settings.'),
         detail: retry ? 'Try a lower frame rate, then check again.'
           : encoder?.reason === 'video_encoder_unavailable'
             ? "This PC's graphics adapter cannot record at these settings."
@@ -132,7 +134,7 @@ export function RecordingReadinessSummary({ cards, videoEncoder, ready, startAll
         <p className="rec__source-note rec__source-note--unavailable" data-cut-rec-input-unavailable role="status">
           Show keystrokes, click highlights and click-based automatic zoom are unavailable. Scroll and input activity data will also be absent.
           {' '}You can start a plain recording with screen and sound. Turn off Show keystrokes if it was selected.
-          {' '}{inputUnavailable}
+          {' '}{recordingInputAdvice(inputUnavailable)}
         </p>
       )}
       <details ref={detailsRef} className="rec__readiness-details" data-cut-rec-readiness-details onKeyDown={closeChecksOnEscape}>
@@ -144,7 +146,7 @@ export function RecordingReadinessSummary({ cards, videoEncoder, ready, startAll
               <div key={card.name} className={`rec__card rec__card--${status}`} data-cut-rec-card={card.name} data-cut-rec-card-status={status} role="listitem">
                 <span className="rec__card-name">{recordCardLabel(card.name)}</span>
                 <span className="rec__card-state"><span className="rec__card-mark" aria-hidden="true" />{CARD_STATE_WORDS[status]}</span>
-                <span className="rec__card-detail">{card.detail}</span>
+                <span className="rec__card-detail">{recordingCardNotice(card, status === 'unknown' ? 'Not checked yet. Check when you start recording.' : status === 'ok' ? 'Available for recording.' : 'Unavailable with the current setup. Check your devices and system permissions, then check again.')}</span>
               </div>
             )
           })}

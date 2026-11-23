@@ -58,7 +58,7 @@ export function PreviewOfflineAsset({
     >
       <Icon name="warning" size={overlay ? 16 : 20} />
       <span className="pv-offline__copy">
-        <strong>{overlay ? 'Overlay source is offline' : 'Source file is offline'}</strong>
+        <strong>{overlay ? 'Overlay source cannot be read' : 'Source file cannot be read'}</strong>
         <span title={asset.label}>{asset.label}</span>
       </span>
       <button

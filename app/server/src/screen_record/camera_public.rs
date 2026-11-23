@@ -10,6 +10,10 @@ use cut_core::{error_codes, CutError};
 use record_capture::{CameraDevice, CameraReadiness};
 use serde_json::{json, Value};
 
+pub(super) const fn supported() -> bool {
+    cfg!(any(windows, target_os = "macos", target_os = "linux"))
+}
+
 pub(super) fn capability() -> Value {
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
@@ -20,7 +24,7 @@ pub(super) fn capability() -> Value {
                     .map(|device| device_projection(device, readiness(&device.id)))
                     .collect::<Vec<_>>();
                 json!({
-                    "supported": true,
+                    "supported": supported(),
                     "devices": rows,
                     "detail": if devices.is_empty() {
                         "No camera is currently connected."
@@ -32,7 +36,7 @@ pub(super) fn capability() -> Value {
                 })
             }
             Err(error) => json!({
-                "supported": true,
+                "supported": supported(),
                 "devices": [],
                 "detail": format!("Camera discovery is unavailable: {}", error.message),
             }),
@@ -40,7 +44,7 @@ pub(super) fn capability() -> Value {
     }
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     json!({
-        "supported": false,
+        "supported": supported(),
         "devices": [],
         "detail": "Camera recording is unavailable in this build.",
     })

@@ -17,7 +17,7 @@ export function recordingCaptureSafetyPresentation(
   const sourceLabel = sourceLifecycle.state === 'active'
     ? 'Native source active'
     : sourceLifecycle.state === 'awaiting_first_frame'
-      ? 'Waiting for native source'
+      ? 'Waiting for the recording source'
       : sourceLifecycle.state === 'source_lost'
         ? 'Selected source closed'
         : sourceLifecycle.state === 'unavailable'

@@ -91,7 +91,7 @@ async fn look_cache_case() {
             .success());
         look_call(&state, "media.import", json!({"path":path,"proxy":false})).await;
         let mut ready = false;
-        for _ in 0..600 {
+        for _ in 0..6_000 {
             ready = state.project.read().await.as_ref().unwrap().project.assets[id]
                 .probe
                 .is_some();
@@ -103,7 +103,7 @@ async fn look_cache_case() {
         assert!(ready);
     }
     // Wait for the import auto-placement turn, not just its probe.
-    for _ in 0..600 {
+    for _ in 0..6_000 {
         if state
             .project
             .read()

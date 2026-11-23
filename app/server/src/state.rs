@@ -89,6 +89,9 @@ pub struct AppState {
     pub ui_state: Arc<RwLock<Option<serde_json::Value>>>,
     /// Server→UI command channel + screenshot request correlation.
     pub ui_bridge: UiBridge,
+    /// Screenshots without a project remain readable until this app state
+    /// closes; the private temporary directory is then removed.
+    screenshot_dir: Arc<std::sync::Mutex<Option<tempfile::TempDir>>>,
     /// First mounted real Cut app root for this server run. The startup doctor
     /// waits on this one-shot handoff instead of guessing that a bound listener
     /// means a desktop UI has painted.
@@ -117,6 +120,8 @@ pub struct AppState {
     /// Admission slots for uncached frame rendering. Cache hits do not consume
     /// a slot, while excess misses fail promptly instead of queuing ffmpeg work.
     pub frame_render_limiter: Arc<Semaphore>,
+    /// Volatile picture verdicts and a non-queuing gate for one check pass.
+    pub(crate) picture_checks: Arc<crate::picture_checks::PictureChecks>,
 }
 
 /// Proxies held back from an opened project while this engine checks that it
@@ -159,6 +164,7 @@ impl AppState {
             registry: VerbRegistry::shared(),
             ui_state: Arc::new(RwLock::new(None)),
             ui_bridge: UiBridge::default(),
+            screenshot_dir: Arc::new(std::sync::Mutex::new(None)),
             ui_mount_readiness: UiMountReadiness::default(),
             #[cfg(test)]
             doctor,
@@ -167,6 +173,7 @@ impl AppState {
             server_shutdown_requested: Arc::new(AtomicBool::new(false)),
             frame_cache: Arc::new(FrameCache::new(FRAME_CACHE_CAP, FRAME_CACHE_BYTE_CAP)),
             frame_render_limiter: Arc::new(Semaphore::new(FRAME_RENDER_CONCURRENCY)),
+            picture_checks: Arc::new(crate::picture_checks::PictureChecks::default()),
         }
     }
 
@@ -187,6 +194,28 @@ impl AppState {
     /// Clone the shared shutdown probe for a blocking foreground operation.
     pub fn server_shutdown_probe(&self) -> Arc<AtomicBool> {
         self.server_shutdown_requested.clone()
+    }
+
+    pub(crate) fn screenshot_temp_dir(&self) -> std::io::Result<std::path::PathBuf> {
+        let mut slot = self
+            .screenshot_dir
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix("shellx-cut-shots-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                builder.permissions(std::fs::Permissions::from_mode(0o700));
+            }
+            *slot = Some(builder.tempdir()?);
+        }
+        Ok(slot
+            .as_ref()
+            .expect("screenshot directory set")
+            .path()
+            .to_path_buf())
     }
 
     /// Read the doctor cache, joining a scan after any missing-tool refusal.
@@ -230,5 +259,26 @@ pub(crate) fn align_sidecar_ffmpeg_env() {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod screenshot_temp_tests {
+    #[test]
+    fn temporary_screenshots_have_a_private_lifetime_bound_folder() {
+        let state = super::AppState::new();
+        let dir = state.screenshot_temp_dir().unwrap();
+        assert_eq!(dir, state.screenshot_temp_dir().unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        std::fs::write(dir.join("shot.png"), b"test").unwrap();
+        drop(state);
+        assert!(!dir.exists());
     }
 }

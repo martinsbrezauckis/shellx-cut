@@ -5,6 +5,8 @@ import {
   type VerbResult,
 } from './client'
 
+import { captionsFailureText } from './jobFailureText'
+
 export const USER_ACTION_FEEDBACK_EVENT = 'cut:user-action-feedback'
 
 export interface UserActionFeedbackDetail {
@@ -59,6 +61,8 @@ export function missingVideoToolsMessage(result: VerbResult): string | null {
 
 export function userVerbFailureMessage(result: VerbResult, fallback: string): string | null {
   if (result.ok) return null
+  const captions = captionsFailureText(result.error)
+  if (captions) return captions
   const missing = missingVideoToolsMessage(result)
   if (missing) return missing
   const message = result.error?.message?.trim() || fallback

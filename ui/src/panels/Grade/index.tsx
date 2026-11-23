@@ -28,8 +28,9 @@
 // lib/client, ../drawer.css.
 
 import { useEffect, useMemo, useState } from 'react'
+import { Availability, availabilitySentence, useAvailability } from '../../lib/availability'
 import { callVerb, type ClipGrade, type Project } from '../../lib/client'
-import { isTauri, pickCube } from '../../lib/tauri'
+import { pickCube } from '../../lib/tauri'
 import '../drawer.css'
 
 export interface GradeDrawerProps {
@@ -105,7 +106,7 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
     grade?.temperature_k ?? '',
     grade?.lut ?? '',
   ].join('|')
-  const desktop = isTauri()
+  const lutAvailability = useAvailability('shell.desktop')
 
   // Seed from the clip's current grade (or neutral). temperature is opt-in.
   const [contrast, setContrast] = useState(grade?.contrast ?? NEUTRAL.contrast)
@@ -194,6 +195,10 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
    *  user-editable: the picker owns selection and the engine still validates the
    *  chosen file before applying it. */
   const pickLut = async () => {
+    if (lutAvailability.state === 'absent') {
+      setErr(availabilitySentence('shell.desktop'))
+      return
+    }
     const p = await pickCube()
     if (p) setLut(p)
   }
@@ -272,23 +277,25 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
               <label className="cd-field">
                 <span className="cd-field-label">Look-up table (.cube)</span>
                 <div className="cd-lut-row">
-                  <button
-                    type="button"
-                    className="cd-btn cd-btn--ghost"
-                    data-cut-grade-lut-pick
-                    disabled={!desktop}
-                    onClick={() => void pickLut()}
-                    style={{ flexShrink: 0 }}
-                  >
-                    {lut ? 'Change .cube…' : 'Choose .cube…'}
-                  </button>
+                  <Availability rule="shell.desktop">
+                    <button
+                      type="button"
+                      className="cd-btn cd-btn--ghost"
+                      data-cut-action="grade-lut-pick"
+                      data-cut-grade-lut-pick
+                      onClick={() => void pickLut()}
+                      style={{ flexShrink: 0 }}
+                    >
+                      {lut ? 'Change .cube…' : 'Choose .cube…'}
+                    </button>
+                  </Availability>
                   <span className="cd-lut-chip" data-cut-grade-lut-picked>
                     {lut ? lut.split(/[\\/]/).pop() : 'No LUT selected'}
                   </span>
                 </div>
-                <p className="cd-note">{desktop
-                  ? 'Optional 3D color preset. Choose a .cube file; Apply commits it to the selected clip.'
-                  : 'Open the desktop app to choose a .cube file.'}</p>
+                <p className="cd-note">{lutAvailability.state === 'absent'
+                  ? 'Open the desktop app to choose a .cube file.'
+                  : 'Optional 3D color preset. Choose a .cube file; Apply commits it to the selected clip.'}</p>
               </label>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>

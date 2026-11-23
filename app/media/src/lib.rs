@@ -34,6 +34,7 @@ mod internal_files;
 pub mod loudness;
 pub mod mask;
 pub mod paths;
+pub mod picture_decode;
 pub mod poster;
 pub mod preview;
 pub mod private_work;

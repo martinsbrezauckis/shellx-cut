@@ -1245,7 +1245,7 @@
         "mutation_class": "read",
         "side_effects": {
           "filesystem": true,
-          "process": false,
+          "process": true,
           "network": false,
           "ui": false
         },
@@ -1476,7 +1476,7 @@
         "mutation_class": "asset_metadata",
         "side_effects": {
           "filesystem": true,
-          "process": false,
+          "process": true,
           "network": false,
           "ui": false
         },

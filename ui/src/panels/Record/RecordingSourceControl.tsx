@@ -173,7 +173,7 @@ export function RecordingSourceControl({
                 ))}
               </optgroup>
             ) : (
-              <optgroup label="Windows — record one app">
+              <optgroup label="App windows — record one window">
                 <option value="">Choose an application…</option>
                 {windows.map((window) => (
                   <option key={`win-${window.id}`} value={`win:${window.id}`}>

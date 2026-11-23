@@ -144,7 +144,7 @@
 /* ── export destination preference ───────────────────────────────────────── */
 .env-export-destination {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2) var(--space-3);
   align-items: center;
   padding: var(--space-3);
@@ -177,7 +177,7 @@
 .env-export-actions {
   display: flex;
   gap: var(--space-2);
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: wrap;
 }
 .env-export-note {
@@ -640,7 +640,7 @@
   background: var(--accent);          /* dark: white · light: near-black */
   color: var(--accent-ink);
 }
-.env-btn--primary:hover { background: var(--accent-hover); }
+.env-btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
 /* compact action button for the dense capability rows */
 .env-btn--sm {
   padding: 5px 11px;

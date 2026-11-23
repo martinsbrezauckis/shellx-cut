@@ -451,3 +451,174 @@ async fn a_plain_export_is_not_judged_against_a_loudness_target_nobody_set() {
         "the stand-in measured -30 LUFS: {lufs}"
     );
 }
+
+struct MissingPerceptionTools {
+    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl MissingPerceptionTools {
+    fn set(dir: &Path) -> Self {
+        let keys = [
+            cut_perception::sidecar::ENV_SIDECAR_DIR,
+            cut_perception::sidecar::ENV_PYTHON,
+            cut_native_runtime_context::CONTEXT_ENV,
+        ];
+        let previous = keys.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        std::env::set_var(
+            cut_perception::sidecar::ENV_SIDECAR_DIR,
+            dir.join("missing-sidecar"),
+        );
+        std::env::set_var(
+            cut_perception::sidecar::ENV_PYTHON,
+            dir.join("missing-python"),
+        );
+        std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
+        Self { previous }
+    }
+}
+
+impl Drop for MissingPerceptionTools {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn autopilot_preview_with_unmeasured_checks_reports_not_measured_truthfully() {
+    let _env = super::lock_agent_cli_env();
+    let root = tempfile::tempdir().unwrap();
+    let _missing = MissingPerceptionTools::set(root.path());
+    let clip = make_clip(root.path(), "unmeasured-autopilot.mp4", 100);
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name": "ap-unmeasured", "dir": root.path().join("ap-unmeasured.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let imported = dispatch(&state, "media.import", json!({"path": clip}), test_actor()).await;
+    assert!(imported.ok, "{:?}", imported.error);
+    let job = wait_job(
+        &state,
+        imported.result.unwrap()["job_id"].as_str().unwrap(),
+        60,
+    )
+    .await;
+    let proxy = job.result.unwrap()["proxy_job"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    wait_job(&state, &proxy, 120).await;
+
+    let preview = dispatch(
+        &state,
+        "autopilot.run",
+        json!({"policy": "preview"}),
+        test_actor(),
+    )
+    .await;
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = wait_job(
+        &state,
+        preview.result.unwrap()["job_id"].as_str().unwrap(),
+        240,
+    )
+    .await;
+    let record = serde_json::to_value(&preview).unwrap();
+    let summary = record["result"]["summary_line"].as_str().unwrap();
+    assert_eq!(record["result"]["checks_pass"], false, "{record}");
+    assert!(
+        summary.to_ascii_lowercase().contains("not measured"),
+        "preview summary must say 'not measured' when checks never ran: {record}"
+    );
+    assert!(
+        !summary.contains("All checks already pass"),
+        "preview summary must never claim all checks pass when checks were unmeasured: {record}"
+    );
+    assert!(
+        !summary.contains("did not pass"),
+        "preview summary must not claim checks failed when they were unmeasured: {record}"
+    );
+    assert_eq!(record["completion"], "done_with_warnings", "{record}");
+    assert_ne!(record["outcome_reason"], "checks_failed", "{record}");
+
+    let auto = dispatch(
+        &state,
+        "autopilot.run",
+        json!({"policy": "auto_low_risk", "max_fix_iters": 1}),
+        test_actor(),
+    )
+    .await;
+    assert!(auto.ok, "{:?}", auto.error);
+    let auto = wait_job(
+        &state,
+        auto.result.unwrap()["job_id"].as_str().unwrap(),
+        240,
+    )
+    .await;
+    let auto_record = serde_json::to_value(&auto).unwrap();
+    let auto_summary = auto_record["result"]["summary_line"].as_str().unwrap();
+    assert_eq!(auto_record["result"]["checks_pass"], false, "{auto_record}");
+    assert!(
+        auto_summary.to_ascii_lowercase().contains("not measured"),
+        "auto_low_risk summary must say 'not measured' when checks never ran: {auto_record}"
+    );
+    assert!(
+        !auto_summary.contains("still fail"),
+        "auto_low_risk summary must not say checks fail when they were unmeasured: {auto_record}"
+    );
+    assert_eq!(
+        auto_record["completion"], "done_with_warnings",
+        "{auto_record}"
+    );
+    assert_ne!(
+        auto_record["outcome_reason"], "checks_failed",
+        "{auto_record}"
+    );
+}
+
+#[tokio::test]
+async fn autopilot_preview_with_unfixable_failed_checks_does_not_claim_all_pass_or_fixable() {
+    let _env = super::lock_agent_cli_env();
+    let _analysis = StandInAnalysis::install(ON_TARGET_LUFS);
+    let (_root, state) = project_with("ap-manual-fail.mp4", 25).await;
+
+    let preview = dispatch(
+        &state,
+        "autopilot.run",
+        json!({"policy": "preview"}),
+        test_actor(),
+    )
+    .await;
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = wait_job(
+        &state,
+        preview.result.unwrap()["job_id"].as_str().unwrap(),
+        240,
+    )
+    .await;
+    let record = serde_json::to_value(&preview).unwrap();
+    let summary = record["result"]["summary_line"].as_str().unwrap();
+    assert_eq!(record["result"]["checks_pass"], false, "{record}");
+    assert!(
+        !summary.contains("All checks already pass"),
+        "preview summary must not say all pass on failed checks: {record}"
+    );
+    assert!(
+        !summary.contains("fixable"),
+        "preview summary must not claim issues are fixable when only manual fixes remain: {record}"
+    );
+    assert!(
+        summary.contains("did not pass"),
+        "preview summary must report that checks did not pass: {record}"
+    );
+    assert_eq!(record["outcome"], "partial", "{record}");
+    assert_eq!(record["outcome_reason"], "checks_failed", "{record}");
+}

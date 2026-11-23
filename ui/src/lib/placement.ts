@@ -14,7 +14,7 @@
 //   2. "second clip instantly becomes an overlay" — the drag path created a new
 //      overlay video track for any drop below the lanes, so a normal "add another
 //      clip to cut" gesture stacked it as PiP. The DEFAULT is now append to the
-//      base track; an overlay is an explicit opt-in (Alt-drop / a chosen lane).
+//      base track; an overlay is an explicit opt-in via a chosen lane.
 //
 // Each call resolves fresh track ids from project.state (no stale closure) and
 // emits real verbs (every mutation stays one op in the review rail).
@@ -56,6 +56,8 @@ export function trackEndMs(project: Project | null, trackId: string): number {
 }
 
 export interface PlaceOptions {
+  /** Explicit replacement; omitted for existing Insert-button callers. */
+  placement?: 'overwrite'
   asset: string
   /** Probe kind: 'video' | 'audio' | 'image'. */
   kind: string
@@ -89,12 +91,7 @@ export interface TimelineDropTarget {
   locked?: boolean
 }
 
-export interface PlacementPlan extends PlaceOptions {
-  /** Explicit overlay/separate-track placement can ask the caller to create the
-   *  track first, then pass that new id back as `videoTrack` or `audioTrack`. */
-  createTrackKind?: 'video' | 'audio'
-  useCreatedTrackFor?: 'video' | 'audio'
-}
+export type PlacementPlan = PlaceOptions
 
 /** Result of a placement: the clip(s) the verbs created, for selection/undo UX. */
 export interface PlaceResult {
@@ -235,9 +232,7 @@ export function planAssetInsertAtPlayhead(opts: {
 }
 
 /** Timeline drag/drop behavior:
- *  - base track or empty area = insert into the story/base timeline;
- *  - existing overlay/extra track = place on top without rippling the base;
- *  - Alt-drop = create a new overlay/separate track, then place there.
+ * Plain overwrites, Alt inserts. The dropped lane alone chooses the destination.
  */
 export function planTimelineAssetDrop(opts: {
   asset: string
@@ -248,7 +243,7 @@ export function planTimelineAssetDrop(opts: {
    * needs a second linked destination and therefore atomic track creation. */
   hasAudio?: boolean
   target?: TimelineDropTarget | null
-  overlay?: boolean
+  alt?: boolean
 }): PlacementPlan | null {
   const kind = opts.kind === 'audio' ? 'audio' : opts.kind === 'image' ? 'image' : 'video'
   if (opts.target?.locked) return null
@@ -256,48 +251,24 @@ export function planTimelineAssetDrop(opts: {
     asset: opts.asset,
     kind,
     at_ms: opts.at_ms,
-    ripple: true,
+    ripple: opts.alt === true,
+    ...(opts.alt ? {} : { placement: 'overwrite' as const }),
     rationale: `drop ${opts.asset} into the base timeline at ${fmtS(opts.at_ms)}s`,
   }
   if (kind === 'image' && opts.duration_ms) base.duration_ms = opts.duration_ms
 
-  if (opts.overlay) {
-    const createTrackKind = kind === 'audio' ? 'audio' : 'video'
-    if (kind === 'video' && opts.hasAudio) {
-      return {
-        asset: opts.asset,
-        kind,
-        at_ms: opts.at_ms,
-        ripple: false,
-        newVideoTrack: true,
-        newAudioTrack: true,
-        rationale: `place ${opts.asset} on new linked overlay tracks at ${fmtS(opts.at_ms)}s`,
-      }
-    }
-    const plan: PlacementPlan = {
-      asset: opts.asset,
-      kind,
-      at_ms: opts.at_ms,
-      ripple: false,
-      createTrackKind,
-      useCreatedTrackFor: createTrackKind,
-      newAudioTrack: kind !== 'audio',
-      rationale: `place ${opts.asset} on a new ${createTrackKind === 'audio' ? 'audio' : 'overlay'} track at ${fmtS(opts.at_ms)}s`,
-    }
-    if (kind === 'image' && opts.duration_ms) plan.duration_ms = opts.duration_ms
-    return plan
-  }
-
   const target = opts.target
-  if (target && target.kindIndex > 0) {
+  if (target) {
     if (kind !== 'audio' && target.kind === 'video') {
+      if (target.kindIndex === 0) return { ...base, videoTrack: target.id }
       const plan: PlacementPlan = {
         asset: opts.asset,
         kind,
         at_ms: opts.at_ms,
-        ripple: false,
+        ripple: base.ripple,
+        ...(base.placement ? { placement: base.placement } : {}),
         videoTrack: target.id,
-        newAudioTrack: kind === 'video' && opts.hasAudio,
+        ...(target.kindIndex > 0 ? { newAudioTrack: kind === 'video' && opts.hasAudio } : {}),
         rationale: `place ${opts.asset} on overlay track ${target.id} at ${fmtS(opts.at_ms)}s`,
       }
       if (kind === 'image' && opts.duration_ms) plan.duration_ms = opts.duration_ms
@@ -308,7 +279,8 @@ export function planTimelineAssetDrop(opts: {
         asset: opts.asset,
         kind,
         at_ms: opts.at_ms,
-        ripple: false,
+        ripple: base.ripple,
+        ...(base.placement ? { placement: base.placement } : {}),
         audioTrack: target.id,
         rationale: `place ${opts.asset} on audio track ${target.id} at ${fmtS(opts.at_ms)}s`,
       }
@@ -342,6 +314,20 @@ export async function placeLinkedAV(opts: PlaceOptions): Promise<PlaceResult> {
     project = sr.ok ? (sr.result as Project) : null
   }
   const rationale = opts.rationale ?? `place ${opts.asset}`
+  if (opts.placement === 'overwrite') {
+    const targets = resolvePlacementTargets(project, opts)
+    const r = await callVerb('edit.overwrite', {
+      asset: opts.asset, at_ms: opts.at_ms,
+      ...(targets.videoTrack ? { video_track: targets.videoTrack } : {}),
+      ...(targets.audioTrack ? { audio_track: targets.audioTrack } : {}),
+      ...((opts.kind !== 'audio' && !targets.videoTrack) ? { create_video_track: true } : {}),
+      ...((opts.kind === 'audio' || (opts.kind === 'video' && assetHasAudio(project, opts.asset))) && !targets.audioTrack ? { create_audio_track: true } : {}),
+      ...(opts.src_range_ms ? { src_range_ms: opts.src_range_ms } : {}),
+      ...(opts.duration_ms ? { duration_ms: opts.duration_ms } : {}),
+      rationale,
+    })
+    return { ok: r.ok, videoOk: r.ok, audioLinked: r.ok && opts.kind === 'video' && assetHasAudio(project, opts.asset), ...targets, error: errOf(r) }
+  }
 
   // Audio-only asset → straight onto an audio track.
   if (opts.kind === 'audio') {

@@ -3,6 +3,10 @@ import { msToPx, RAIL_W, RULER_H, shortDur } from './layout'
 export interface AssetDropState {
   atMs: number
   trackId: string | null
+  durationMs: number
+  top: number
+  height: number
+  insert: boolean
 }
 
 interface TimelineOverlaysProps {
@@ -27,10 +31,13 @@ export default function TimelineOverlays({
       {assetDnd && (
         <div
           className="tl-asset-drop"
-          style={{ left: RAIL_W + msToPx(assetDnd.atMs, zoom), top: RULER_H }}
+          style={{ left: RAIL_W + msToPx(assetDnd.atMs, zoom), top: RULER_H + assetDnd.top,
+            width: Math.max(2, msToPx(assetDnd.durationMs, zoom)), height: assetDnd.height }}
           data-cut-asset-drop={Math.round(assetDnd.atMs)}
+          data-cut-asset-placement={assetDnd.insert ? 'insert' : 'overwrite'}
+          data-cut-asset-track={assetDnd.trackId ?? ''}
         >
-          <span className="tl-asset-drop__chip">{shortDur(assetDnd.atMs)}</span>
+          <span className="tl-asset-drop__chip">{assetDnd.insert ? 'Insert: pushes the rest right' : 'Overwrite: replaces what is under it · Alt: Insert'} · {shortDur(assetDnd.atMs)}</span>
         </div>
       )}
       {range && (() => {

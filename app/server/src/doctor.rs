@@ -129,6 +129,10 @@ pub struct DoctorReport {
     pub os: String,
     pub arch: String,
     pub app_version: String,
+    /// Fixed system/build facts; computed without enumerating or opening devices.
+    /// Absent when deserializing an older engine's report, never inferred as false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<crate::screen_record::system_availability::SystemAvailability>,
     /// The server bind address (e.g. "127.0.0.1:6166"), so an agent reading the
     /// card knows where this cutd is. Filled by the caller (main.rs has it).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,7 +148,7 @@ impl DoctorReport {
     /// statuses+sources+versions match (ignoring the scanned_at timestamp).
     /// Used to decide whether to emit `doctor_updated`.
     pub fn same_capabilities(&self, other: &DoctorReport) -> bool {
-        if self.cards.len() != other.cards.len() {
+        if self.availability != other.availability || self.cards.len() != other.cards.len() {
             return false;
         }
         self.cards.iter().zip(&other.cards).all(|(a, b)| {
@@ -1385,7 +1389,7 @@ fn judge_runtime_hint(
     if captions_missing {
         Some(
             "This CLI is installed, but render review runs on ShellX Cut's captions runtime, \
-             which is not installed yet. Choose Install captions (Settings > Environment) or \
+             which is not installed yet. Choose Install captions (Settings > AI & transcription) or \
              call system.setup_perception, then re-scan. Agent chat can still use this CLI \
              meanwhile."
                 .into(),
@@ -2201,6 +2205,7 @@ pub fn scan(addr: Option<String>) -> DoctorReport {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        availability: Some(crate::screen_record::system_availability::fixed()),
         addr,
         cards,
         essential_ok,
@@ -2218,6 +2223,7 @@ pub fn scan_minimal() -> DoctorReport {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        availability: Some(crate::screen_record::system_availability::fixed()),
         addr: None,
         cards: Vec::new(),
         essential_ok: false,
@@ -2228,6 +2234,42 @@ pub fn scan_minimal() -> DoctorReport {
 mod tests {
     use super::service_cards::service_card;
     use super::*;
+
+    #[test]
+    fn system_availability_is_fixed_device_free_and_additive() {
+        let mut report = serde_json::to_value(scan_minimal()).unwrap();
+        let facts = &report["availability"];
+        for key in [
+            "pause",
+            "camera",
+            "live_timer",
+            "microphone_choice",
+            "source_preview",
+            "managed_motion",
+        ] {
+            assert!(facts[key].is_boolean(), "missing fixed fact: {key}");
+        }
+        assert_eq!(facts["pause"], cfg!(target_os = "macos"));
+        assert_eq!(
+            facts["camera"],
+            cfg!(any(windows, target_os = "macos", target_os = "linux"))
+        );
+        assert_eq!(facts["live_timer"], cfg!(any(unix, windows)));
+        assert_eq!(
+            facts["microphone_choice"],
+            cfg!(any(windows, target_os = "macos"))
+        );
+        assert_eq!(facts["managed_motion"], false);
+        assert_eq!(
+            facts,
+            &serde_json::to_value(scan_minimal()).unwrap()["availability"]
+        );
+        report.as_object_mut().unwrap().remove("availability");
+        assert!(
+            serde_json::from_value::<DoctorReport>(report).is_ok(),
+            "old reports still deserialize"
+        );
+    }
     #[test]
     fn stt_preference_keeps_default_and_explicit_language() {
         let (model, is_default, language) = stt_preference(None, None);
@@ -2492,6 +2534,8 @@ mod tests {
         let hint = judge_runtime_hint(true, false, false).expect("a hint");
         assert!(hint.contains("Install captions"), "{hint}");
         assert!(hint.contains("system.setup_perception"), "{hint}");
+        assert!(hint.contains("Settings > AI & transcription"), "{hint}");
+        assert!(!hint.contains("Environment"), "{hint}");
         assert!(!hint.contains("Reinstall"), "{hint}");
         assert!(!hint.contains("adapter is missing"), "{hint}");
         // An adapter that is really absent keeps the reinstall advice.

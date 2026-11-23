@@ -5,7 +5,7 @@
     {
       "name": "media.import",
       "domain": "media",
-      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job; when the captions runtime is not installed the enrich job finishes done, not failed or warned, with result.skipped=\"captions_not_installed\", the reason and a suggested_action naming Install captions / system.setup_perception). Returns immediately. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job; when the captions runtime is not installed the enrich job finishes done, not failed or warned, with result.skipped=\"captions_not_installed\", the reason and a suggested_action naming Install captions / system.setup_perception). Still images are decoded once without looping under a ten-second limit before registration; a damaged picture is refused with unreadable_media, its filename, cause and suggested_action. Video/audio keep their asynchronous import chain. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
       "args": {
         "type": "object",
         "required": [
@@ -106,7 +106,7 @@
     {
       "name": "media.relink",
       "domain": "media",
-      "description": "Repoint an imported asset at a new source file — the recovery verb for OFFLINE media (source moved, renamed, or restored elsewhere). Two modes decided by content hash: SAME hash = the file merely moved, pure repath and every derived artifact (probe/proxy/filmstrip/transcript/perception) is KEPT; NEW hash = different content, derived state is cleared and regenerated via the same import chain a fresh media.import runs (result carries the chain job_id — poll jobs.status), while every timeline clip keeps referencing the same asset id (no re-editing needed). Refuses INVALID_ARGS on a KIND mismatch (e.g. relinking a video asset to an audio file — clips assume the kind; import a new asset + edit.replace instead). WARNS (code relink_shorter_than_used) when the new file is shorter than the furthest source point used by any clip — re-trim those clips or renders come up short. REPLAY-SAFE metadata op off the undo cursor (relink back to the old path to restore). Requires an open project. media.check lists which assets are offline. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Repoint an imported asset at a new source file — the recovery verb for OFFLINE media (source moved, renamed, or restored elsewhere). Two modes decided by content hash: SAME hash = the file merely moved, pure repath and every derived artifact (probe/proxy/filmstrip/transcript/perception) is KEPT; NEW hash = different content, derived state is cleared and regenerated via the same import chain a fresh media.import runs (result carries the chain job_id — poll jobs.status), while every timeline clip keeps referencing the same asset id (no re-editing needed). Refuses INVALID_ARGS on a KIND mismatch (e.g. relinking a video asset to an audio file — clips assume the kind; import a new asset + edit.replace instead). WARNS (code relink_shorter_than_used) when the new file is shorter than the furthest source point used by any clip — re-trim those clips or renders come up short. REPLAY-SAFE metadata op off the undo cursor (relink back to the old path to restore). Requires an open project. media.check lists which assets are offline. Before any repath, still pictures must decode one non-looped frame within ten seconds; damaged pictures are refused with unreadable_media, filename, cause and suggested_action. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
       "args": {
         "type": "object",
         "required": [
@@ -151,7 +151,7 @@
     {
       "name": "media.check",
       "domain": "media",
-      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, and how many timeline clips reference it. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
+      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, can a still picture be decoded, and how many timeline clips reference it. readable is false for a missing source or an undecodable still; exists continues to report file existence. offline_count includes unreadable stills. Existing projects with damaged pictures still open; the preview shows those clips as unreadable sources. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
       "args": {
         "type": "object",
         "required": [],
@@ -163,12 +163,12 @@
           }
         }
       },
-      "result": "{count, offline_count, assets: [{asset, path, exists, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
+      "result": "{count, offline_count, assets: [{asset, path, exists, readable: <false for missing or undecodable still>, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
           "filesystem": true,
-          "process": false,
+          "process": true,
           "network": false,
           "ui": false
         },
@@ -335,7 +335,7 @@
     {
       "name": "media.probe",
       "domain": "media",
-      "description": "Probe an asset (ffprobe) and store the normalized result on the asset. Synchronous (probing is fast). Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Probe an asset (ffprobe) and store the normalized result on the asset. Still pictures also require one non-looped decode within ten seconds; a damaged picture is refused with unreadable_media, filename, cause and suggested_action. Synchronous (probing is fast). Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
       "args": {
         "type": "object",
         "required": [
@@ -473,7 +473,7 @@
     {
       "name": "media.transcribe",
       "domain": "media",
-      "description": "Run word-level transcription on an asset (job, returns {job_id}). It can be run again at any time; a successful run replaces that asset's previous word transcript. Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
+      "description": "Run word-level transcription on an asset (job, returns {job_id}). It can be run again at any time; a successful run replaces that asset's previous word transcript. Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset. If the captions analysis process exits unsuccessfully, its sidecar error preserves the diagnostic in cause and supplies suggested_action: install or repair captions tools in Settings > AI & transcription, or call system.setup_perception, wait for its job, then retry.",
       "args": {
         "type": "object",
         "required": [
@@ -513,7 +513,7 @@
     {
       "name": "media.perception",
       "domain": "media",
-      "description": "Full instrument run on an asset (words, silences, scenes, beats, loudness) → receipts/<asset>.perception.json (job, returns {job_id}). Cached by asset hash.",
+      "description": "Full instrument run on an asset (words, silences, scenes, beats, loudness) → receipts/<asset>.perception.json (job, returns {job_id}). Cached by asset hash. If the captions analysis process exits unsuccessfully, its sidecar error preserves the diagnostic in cause and supplies suggested_action: install or repair captions tools in Settings > AI & transcription, or call system.setup_perception, wait for its job, then retry.",
       "args": {
         "type": "object",
         "required": [

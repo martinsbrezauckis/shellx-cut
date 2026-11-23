@@ -49,7 +49,7 @@ export function rebuildSummary(result: ProjectCacheRebuildResult, remainingAsset
     return `No rebuild was needed.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}`
   }
   if (result.status === 'estimated') {
-    return `${queued} item${queued === 1 ? '' : 's'} have verified rebuild work.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}${more}`
+    return `${queued} item${queued === 1 ? ' has' : 's have'} verified rebuild work.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}${more}`
   }
   return `${queued} item${queued === 1 ? '' : 's'} queued.${upToDate > 0 ? ` ${upToDate} already up to date.` : ''}${attention}${more}`
 }

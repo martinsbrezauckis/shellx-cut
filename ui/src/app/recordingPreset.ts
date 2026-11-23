@@ -1,4 +1,4 @@
-import { recordingInputUnavailable } from '../panels/Record/recordingUiModel'
+import { keystrokesUnavailableNotice, recordingInputUnavailable } from '../panels/Record/recordingUiModel'
 import type { ProjectIdentity } from '../lib/projectIdentity'
 import type { StudioBackground, StudioCameraShape } from '../panels/Record/studioTypes'
 import type { RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
@@ -175,7 +175,7 @@ export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown
   if (readinessFailure) return readinessFailure
   const d = doctor as Record<string, unknown>
   const inputUnavailable = Array.isArray(d.cards) ? recordingInputUnavailable(d.cards) : null
-  if (preset.keys && !preset.raw && !preset.pause && inputUnavailable !== null) return `Show keystrokes is unavailable: ${inputUnavailable}. Turn it off to record screen and sound.`
+  if (preset.keys && !preset.raw && !preset.pause && inputUnavailable !== null) return keystrokesUnavailableNotice(inputUnavailable)
   if (preset.source.kind === 'portal_display') {
     if (!doctorAllowsPortalDisplay(d)) return 'The Linux screen-sharing portal is not available. Review Recorder setup.'
   } else if (preset.source.kind === 'display') {

@@ -1,4 +1,5 @@
 import { Icon } from '../../icons'
+import { Availability } from '../../lib/availability'
 import type { LibItem } from '../../lib/client'
 
 type ItemAction = (item: LibItem) => void | Promise<void>
@@ -74,15 +75,18 @@ export function LibraryActions({
         <Icon name="bookmark" size={14} /> <span className="lb-act-label">Tag</span>
       </button>
       {item.media_ok === false && item.src_path && !item.blob && (
-        <button
-          className="lb-act lb-act--primary"
-          data-cut-library-relink={item.id}
-          title="Choose the same media file at its new location"
-          disabled={busy === item.id}
-          onClick={() => { void onRelink(item) }}
-        >
-          <Icon name="link" size={14} /> <span className="lb-act-label">{busy === item.id ? 'Checking…' : 'Relink…'}</span>
-        </button>
+        <Availability rule="shell.desktop">
+          <button
+            className="lb-act lb-act--primary"
+            data-cut-action="library-relink"
+            data-cut-library-relink={item.id}
+            title="Choose the same media file at its new location"
+            disabled={busy === item.id}
+            onClick={() => { void onRelink(item) }}
+          >
+            <Icon name="link" size={14} /> <span className="lb-act-label">{busy === item.id ? 'Checking…' : 'Relink…'}</span>
+          </button>
+        </Availability>
       )}
       {item.media_ok !== false && item.src_path && !item.blob && (
         <button

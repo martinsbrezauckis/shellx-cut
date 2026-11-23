@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: published; version=0.6.119; published=0.6.119 -->
+<!-- shellx-cut-release-truth: published; version=0.6.120; published=0.6.120 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,24 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
+## v0.6.120 published
+
+v0.6.120 remains the latest published release.
+
+- Controls that do not apply are no longer shown. The timeline toolbar follows the selected clip: no Speed for captions; no Color, Transform, Remove background or GIF for sound. The source monitor shows only the targets a source has. Pause is shown only on macOS, where it exists.
+- Dragging a clip from Assets onto the timeline overwrites at the drop position; hold Alt to insert it and push the rest to the right. A label shows which will happen.
+- Record page: messages say in plain words what to do; a check that has not run says "Not checked"; markers and the timer follow the recorded time after a pause; a Start that is refused keeps you on the Record page and says why, and one refused by the checks leaves no empty project; the camera size slider is reachable in a small window.
+- Export: the warning before an export says in plain words what was found or was not checked, and it also opens when the checks could not run. You always choose whether to export.
+- A damaged picture file is refused when you add it instead of stalling the preview; in an existing project it shows as a file that cannot be read.
+- Premium background removal uses updated tools and shows the real download size before the install. It needs a current NVIDIA driver, and cards of the 2017 Volta generation (Titan V, Quadro GV100) are no longer supported by it; existing installs keep working.
+- In a wide window the preview stays visible beside Properties.
+- Windows: saving the recent projects list, the Library and the search index no longer fails while another program reads the file.
+- For agents: every refusal names the next step, including pause on Windows and Linux; the system report says what this system can do.
+- Many smaller fixes.
+
 ## v0.6.119 published
 
-v0.6.119 remains the latest published release.
+This section records the published v0.6.119 release.
 
 - Screen recordings: the zooms can be edited after recording. Select the recording in Edit and open Zoom in the Inspector: change a zoom's strength, target and timing, add or delete zooms, or redo the automatic ones, then press Update video.
 - Screen recordings with a camera: the camera is on its own Camera track. Move it, resize it, change its shape, cut it or hide it for a stretch, or put it back as it was recorded. A switch on the Record page keeps the camera drawn into the video as before.
@@ -333,10 +348,11 @@ route to the same surface registry.
   the gap together instead of deleting the whole selected clip.
 - The timeline toolbar exposes Video track and Audio track. Empty
   user-created tracks remain available through unrelated edits and deletes.
-- Timeline placement follows NLE layer semantics: Add at playhead and a normal
-  drop from Assets insert media on the base story timeline and push later clips
-  right; Alt-drag from Assets or dropping on an existing overlay lane places
-  video on top without moving the base.
+- Add at playhead inserts media on the base story timeline and pushes later
+  clips right. Dragging from Assets overwrites what is under the drop; hold Alt
+  to insert and push later clips right. The dropped lane chooses the track:
+  video goes on top only when dropped on an overlay lane. Empty space uses the
+  base track. The preview shows Overwrite or Insert before release.
 - Video layers use bottom-to-top compositing: the first
   non-empty video track is the stable base canvas, later video tracks render in
   track order above it, and an empty track does not steal the base role. A hidden

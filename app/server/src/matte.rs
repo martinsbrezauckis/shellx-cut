@@ -520,7 +520,7 @@ fn install_pinned_model(
 // notice. Pluggable through the SAME ClipMatte infra (`model: matanyone`): the
 // cache key already includes the model, the renderer is model-blind.
 
-/// The pinned MatAnyone2 checkpoint (pq-yang/MatAnyone2 release v1.0.0, ~135 MB).
+/// The pinned MatAnyone2 checkpoint (pq-yang/MatAnyone2 release v1.0.0, ~141 MB).
 /// We ship integration; the USER fetches the weights on consent (non-commercial).
 const MATANYONE_URL: &str =
     "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth";
@@ -848,7 +848,7 @@ fn bake_matanyone(
 /// The weights are NON-COMMERCIAL (NTU S-Lab License 1.0) — the caller
 /// (`system.setup_matte{model:matanyone}`) gates this behind EXPLICIT consent.
 /// Idempotent (verifies a present file). Streaming read (ureq's read_to_vec caps
-/// at 10 MB; the checkpoint is ~135 MB).
+/// at 10 MB; the checkpoint is ~141 MB).
 pub fn install_matanyone_model(progress: &dyn Fn(f32, &str)) -> Result<PathBuf, CutError> {
     let dir = matanyone_dir().ok_or_else(|| io_err("matanyone dir", "HOME/LOCALAPPDATA unset"))?;
     std::fs::create_dir_all(&dir).map_err(|e| io_err("create matanyone dir", e))?;
@@ -857,7 +857,7 @@ pub fn install_matanyone_model(progress: &dyn Fn(f32, &str)) -> Result<PathBuf, 
         progress(1.0, "checkpoint already installed");
         return Ok(dest);
     }
-    progress(0.05, "downloading the MatAnyone2 checkpoint (135 MB)");
+    progress(0.05, "downloading the MatAnyone2 checkpoint (141 MB)");
     let dest = install_pinned_model(
         MATANYONE_URL,
         &dir,

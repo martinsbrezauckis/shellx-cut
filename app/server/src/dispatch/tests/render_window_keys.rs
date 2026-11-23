@@ -9,7 +9,7 @@ async fn call(state: &AppState, verb: &str, args: Value) -> Value {
 async fn import(state: &AppState, path: &Path, proxy: bool) {
     let r = call(state, "media.import", json!({"path":path,"proxy":proxy})).await;
     let id = r["asset_id"].as_str().unwrap_or("a1");
-    for _ in 0..600 {
+    for _ in 0..6_000 {
         let ready = {
             let g = state.project.read().await;
             let a = &g.as_ref().unwrap().project.assets[id];

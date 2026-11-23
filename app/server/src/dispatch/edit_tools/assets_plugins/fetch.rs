@@ -148,6 +148,11 @@ async fn assets_fetch_admitted(
         ));
     }
     let src = src_path.canonicalize()?;
+    let picture = src.clone();
+    run_blocking("assets.fetch.picture", move || {
+        cut_media::picture_decode::check_if_picture(&picture)
+    })
+    .await?;
     let hash = cut_core::hash_file(&src)?;
     // Record the credit on the op rationale so the timeline history carries it.
     let rationale = a

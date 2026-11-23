@@ -229,7 +229,11 @@ pub(crate) async fn run_owned(
             )
             .await);
         }
-        match child.try_wait() {
+        #[cfg(unix)]
+        let ready = tree.exit_ready(&child).map(|ready| ready.then_some(None));
+        #[cfg(not(unix))]
+        let ready = child.try_wait().map(|status| status.map(Some));
+        match ready {
             Ok(Some(status)) => break status,
             Ok(None) => tokio::time::sleep(PROCESS_POLL).await,
             Err(error) => {
@@ -248,6 +252,10 @@ pub(crate) async fn run_owned(
     // group/Job is operation-owned, not a detached service lifecycle.
     if let Err(error) = tree.hard_stop() {
         let mut failure = ManagedProcessError::io("close external worker tree", error);
+        #[cfg(unix)]
+        if let Err(reap) = cleanup::direct_kill_and_wait(&mut child).await {
+            failure = failure.with_cleanup(reap);
+        }
         if let Err(readers) =
             cleanup::abort_and_join_readers(&mut stdout_reader, &mut stderr_reader).await
         {
@@ -255,6 +263,15 @@ pub(crate) async fn run_owned(
         }
         return Err(failure);
     }
+    // Unix's WNOWAIT observation kept the group leader unreaped through the
+    // group signal. Windows already cached its exit status in try_wait.
+    let status = match status {
+        Some(status) => status,
+        None => child
+            .wait()
+            .await
+            .map_err(|error| ManagedProcessError::io("reap external worker", error))?,
+    };
     let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
         cleanup::finish_readers(&mut tree, &mut stdout_reader, &mut stderr_reader)
             .await
