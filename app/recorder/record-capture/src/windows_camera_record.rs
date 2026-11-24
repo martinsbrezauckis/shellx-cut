@@ -6,10 +6,10 @@ use record_core::Result;
 use sha2::{Digest, Sha256};
 use windows::core::Interface;
 use windows::Win32::Media::MediaFoundation::{
-    IMFAttributes, IMFByteStream, IMFCaptureEngine, IMFCaptureRecordSink, MFCreateMediaType,
-    MFTranscodeContainerType_MPEG4, MFVideoFormat_H264,
+    eAVEncH264VProfile_Base, IMFAttributes, IMFByteStream, IMFCaptureEngine, IMFCaptureRecordSink,
+    MFCreateMediaType, MFTranscodeContainerType_MPEG4, MFVideoFormat_H264,
     MF_CAPTURE_ENGINE_PREFERRED_SOURCE_STREAM_FOR_VIDEO_RECORD, MF_CAPTURE_ENGINE_SINK_TYPE_RECORD,
-    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
+    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MPEG2_PROFILE, MF_MT_SUBTYPE,
 };
 use windows::Win32::System::Com::IStream;
 
@@ -58,14 +58,34 @@ pub(super) fn configure_record(
             .SetUINT32(&MF_MT_AVG_BITRATE, output_bitrate(&native_type)?)
             .map_err(|error| windows_error("set Windows camera output bitrate", error))?;
         let mut sink_index = 0_u32;
-        record
-            .AddStream(
-                MF_CAPTURE_ENGINE_PREFERRED_SOURCE_STREAM_FOR_VIDEO_RECORD.0,
-                &output_type,
-                None::<&IMFAttributes>,
-                Some(&mut sink_index),
-            )
-            .map_err(|error| windows_error("connect Windows camera record stream", error))?;
+        // Baseline forbids B-slices and ctts frame reordering in H.264; fall back
+        // cleanly if a camera driver or MFT rejects the explicit profile constraint.
+        let mut configured_base = output_type
+            .SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)
+            .is_ok();
+        if configured_base
+            && record
+                .AddStream(
+                    MF_CAPTURE_ENGINE_PREFERRED_SOURCE_STREAM_FOR_VIDEO_RECORD.0,
+                    &output_type,
+                    None::<&IMFAttributes>,
+                    Some(&mut sink_index),
+                )
+                .is_err()
+        {
+            let _ = output_type.DeleteItem(&MF_MT_MPEG2_PROFILE);
+            configured_base = false;
+        }
+        if !configured_base {
+            record
+                .AddStream(
+                    MF_CAPTURE_ENGINE_PREFERRED_SOURCE_STREAM_FOR_VIDEO_RECORD.0,
+                    &output_type,
+                    None::<&IMFAttributes>,
+                    Some(&mut sink_index),
+                )
+                .map_err(|error| windows_error("connect Windows camera record stream", error))?;
+        }
         let (output, writer_stream, stage) =
             reserve_windows_no_replace_output(capture_directory, artifact_id, video)?;
         if let Err(error) = record.SetOutputByteStream(&output, &MFTranscodeContainerType_MPEG4) {

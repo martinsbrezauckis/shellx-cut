@@ -259,17 +259,15 @@ fn add_graph_asset_input(
     }
     // Stills are looped at the input (-loop 1) so the trim chain can cut
     // the clip's duration out of an infinite single-frame stream.
-    let image = asset
-        .probe
-        .as_ref()
-        .and_then(|p| p.get("kind"))
-        .and_then(|k| k.as_str())
-        == Some("image");
+    let probe = super::source_facts::input_probe(&path)?;
+    let image = probe.kind == "image";
     input_idx.insert(asset_id.to_string(), inputs.len());
     // gpu_decode defaults false (CPU decode); build_graph_gpu flips it on for
     // BASE-track inputs only (NVDEC). The software path leaves it false.
-    let decode_threads =
-        super::source_dims(asset).and_then(|(w, h)| super::resources::decoder_threads(w, h));
+    let decode_threads = probe
+        .width
+        .zip(probe.height)
+        .and_then(|(w, h)| super::resources::decoder_threads(w, h));
     inputs.push(GraphInput {
         path,
         image,

@@ -86,6 +86,48 @@ async fn camera_timeline_fixture_duration(
     (root, state, reply.result.unwrap())
 }
 
+fn rename_camera_project_dir(original: &Path, unavailable: &Path) {
+    assert!(
+        original.exists(),
+        "original project folder missing before rename: {}",
+        original.display()
+    );
+    let max_attempts = if cfg!(windows) { 40 } else { 1 };
+    for attempt in 0..max_attempts {
+        match std::fs::rename(original, unavailable) {
+            Ok(()) => return,
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(5 | 32))
+                    && attempt + 1 < max_attempts =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => {
+                let remaining = if cfg!(windows) {
+                    match std::fs::read_dir(original) {
+                        Ok(entries) => format!(
+                            "; source folder entries: {:?}",
+                            entries
+                                .map(|entry| entry.map(|entry| entry.file_name()))
+                                .collect::<Vec<_>>()
+                        ),
+                        Err(list_error) => format!("; cannot list source folder: {list_error}"),
+                    }
+                } else {
+                    String::new()
+                };
+                panic!(
+                    "rename project folder {} to {} failed after {} attempt(s): {error}{remaining}",
+                    original.display(),
+                    unavailable.display(),
+                    attempt + 1
+                );
+            }
+        }
+    }
+}
+
 async fn camera_copy_refresh_case() {
     let (root, state, reply) = camera_timeline_fixture("separate", false).await;
     let original = root.path().join("camera.cutproj");
@@ -103,27 +145,9 @@ async fn camera_copy_refresh_case() {
     assert!(create.ok, "{:?}", create.error);
     camera_wait_job(&state, create.result.unwrap()["job_id"].as_str().unwrap()).await;
     close_camera_test_project_after_jobs_drain(&state, "before source rename").await;
+    drop(state);
     let unavailable = root.path().join("original-unavailable");
-    std::fs::rename(&original, &unavailable).unwrap_or_else(|error| {
-        let remaining = if cfg!(windows) {
-            match std::fs::read_dir(&original) {
-                Ok(entries) => format!(
-                    "; source folder entries: {:?}",
-                    entries
-                        .map(|entry| entry.map(|entry| entry.file_name()))
-                        .collect::<Vec<_>>()
-                ),
-                Err(list_error) => format!("; cannot list source folder: {list_error}"),
-            }
-        } else {
-            String::new()
-        };
-        panic!(
-            "rename project folder {} to {} failed: {error}{remaining}",
-            original.display(),
-            unavailable.display()
-        )
-    });
+    rename_camera_project_dir(&original, &unavailable);
     assert!(!original.exists());
     let copy = destination.join("copy.cutproj");
     let state = AppState::new();

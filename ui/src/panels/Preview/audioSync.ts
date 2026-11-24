@@ -1,6 +1,11 @@
 export const MONITOR_AUDIO_RESYNC_DRIFT_S = 0.75
 export const MONITOR_AUDIO_FORCE_RESYNC_DRIFT_S = 2.0
 export const MONITOR_AUDIO_RESYNC_COOLDOWN_MS = 1500
+export const MONITOR_AUDIO_SEEK_EPSILON_S = 0.02
+
+export function shouldSeekMonitorAudio(audioTimeS: number, targetTimeS: number): boolean {
+  return !Number.isFinite(audioTimeS) || Math.abs(audioTimeS - targetTimeS) > MONITOR_AUDIO_SEEK_EPSILON_S
+}
 
 export interface MonitorAudioResyncArgs {
   audioTimeS: number

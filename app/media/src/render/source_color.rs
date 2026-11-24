@@ -23,7 +23,7 @@ pub enum Hdr {
 
 impl Hdr {
     /// The zscale transfer name.
-    fn zscale_transfer(self) -> &'static str {
+    pub fn zscale_transfer(self) -> &'static str {
         match self {
             Hdr::Hlg => "arib-std-b67",
             Hdr::Pq => "smpte2084",
@@ -123,6 +123,10 @@ pub fn source_color_from_probe(probe: &Value) -> SourceColor {
 /// (A raw value such as `bt709,movie=/etc/passwd` would otherwise add a filter
 /// that reads files.)
 fn zscale_primaries(probe: Option<&str>) -> &'static str {
+    zscale_primaries_pub(probe)
+}
+
+pub fn zscale_primaries_pub(probe: Option<&str>) -> &'static str {
     match probe {
         Some("bt709") => "bt709",
         Some("smpte170m") => "smpte170m",
@@ -136,6 +140,10 @@ fn zscale_primaries(probe: Option<&str>) -> &'static str {
 
 /// See [`zscale_primaries`]: allow-listed matrix spelling.
 fn zscale_matrix(probe: Option<&str>) -> &'static str {
+    zscale_matrix_pub(probe)
+}
+
+pub fn zscale_matrix_pub(probe: Option<&str>) -> &'static str {
     match probe {
         Some("bt2020c") => "bt2020c",
         Some("bt709") => "bt709",
@@ -145,6 +153,10 @@ fn zscale_matrix(probe: Option<&str>) -> &'static str {
 
 /// See [`zscale_primaries`]: allow-listed range spelling.
 fn zscale_range(probe: Option<&str>) -> &'static str {
+    zscale_range_pub(probe)
+}
+
+pub fn zscale_range_pub(probe: Option<&str>) -> &'static str {
     match probe {
         Some("pc") => "pc",
         _ => "tv",
@@ -186,7 +198,33 @@ pub(super) fn clip_color_chain(
     input: Option<&cut_core::ColorSpace>,
     color: &cut_core::ColorConfig,
 ) -> String {
+    clip_color_chain_for(asset, input, color, None, false, false)
+}
+
+pub(super) fn clip_color_chain_for(
+    asset: Option<&cut_core::Asset>,
+    input: Option<&cut_core::ColorSpace>,
+    color: &cut_core::ColorConfig,
+    hdr_target: Option<Hdr>,
+    sdr_fallback_needed: bool,
+    preserve_alpha: bool,
+) -> String {
     let source = asset.map(source_color).unwrap_or_default();
+    if let Some(target) = hdr_target {
+        return match (source.hdr, input) {
+            (Some(_), None) if sdr_fallback_needed => {
+                super::hdr::sdr_to_hdr_filter(target, None, preserve_alpha)
+            }
+            (Some(_), None) => String::new(),
+            (Some(_), Some(_tag)) => {
+                // Explicitly tagged HDR clip follows BT.709-like placement when Keep HDR is active.
+                super::hdr::sdr_to_hdr_filter(target, source.range.as_deref(), preserve_alpha)
+            }
+            (None, _) => {
+                super::hdr::sdr_to_hdr_filter(target, source.range.as_deref(), preserve_alpha)
+            }
+        };
+    }
     match (source.hdr, input) {
         (Some(_), None) => super::colorspace_filter(Some(&cut_core::ColorSpace::Rec709), color),
         (None, None) if super::source_prep::is_bt601(&source) => {
@@ -215,6 +253,10 @@ pub const HANDLING_SDR: &str = "sdr";
 pub const HANDLING_TONE_MAPPED: &str = "tone_mapped_to_sdr";
 pub const HANDLING_TAGGED_NOT_CONVERTED: &str = "hdr_tagged_not_converted";
 pub const HANDLING_BT601_CONVERTED: &str = "converted_bt601_to_bt709";
+pub const HANDLING_KEPT_HDR: &str = "kept_hdr";
+pub const HANDLING_CONVERTED_HDR: &str = "converted_hdr_transfer";
+pub const HANDLING_SDR_TO_HDR: &str = "sdr_to_hdr";
+pub const HANDLING_HDR_GRADED_IN_SDR: &str = "hdr_graded_in_sdr";
 
 /// Bits per sample of the encoded file, from the encoder's `-pix_fmt`.
 fn file_bit_depth(video_args: &[String]) -> u8 {
@@ -237,6 +279,25 @@ pub fn color_report(
     edl: &cut_core::Edl,
     video_args: &[String],
 ) -> cut_core::ColorReport {
+    color_report_with_mode(
+        project,
+        edl,
+        video_args,
+        super::options::RenderColorMode::Sdr,
+    )
+}
+
+pub fn color_report_with_mode(
+    project: &cut_core::Project,
+    edl: &cut_core::Edl,
+    video_args: &[String],
+    mode: super::options::RenderColorMode,
+) -> cut_core::ColorReport {
+    if mode == super::options::RenderColorMode::KeepHdr {
+        if let Some(plan) = super::hdr::analyze_hdr_plan(project, edl) {
+            return keep_hdr_color_report(project, edl, video_args, &plan);
+        }
+    }
     let mut seen = std::collections::BTreeMap::<String, Option<cut_core::ColorSpace>>::new();
     for seg in edl
         .segments
@@ -266,7 +327,7 @@ pub fn color_report(
             (Some(hdr), None) => {
                 notes.push(format!(
                     "{file} is HDR ({}{bits}) and was converted to SDR BT.709 for this export; \
-                     exports cannot keep HDR yet.",
+                     choose Keep HDR to export 10-bit HDR.",
                     hdr.label()
                 ));
                 HANDLING_TONE_MAPPED
@@ -317,6 +378,150 @@ pub fn color_report(
         output,
         processing_bit_depth: 8,
         file_bit_depth: file_bits,
+        transfer: None,
+        hdr10_metadata: None,
+        sources,
+        note: (!notes.is_empty()).then(|| notes.join(" ")),
+    }
+}
+
+fn keep_hdr_color_report(
+    project: &cut_core::Project,
+    edl: &cut_core::Edl,
+    video_args: &[String],
+    plan: &super::hdr::HdrPlan,
+) -> cut_core::ColorReport {
+    use std::collections::BTreeMap;
+    struct AssetUsage {
+        tag: Option<cut_core::ColorSpace>,
+        sdr_features: Vec<&'static str>,
+        stabilized: bool,
+    }
+    let mut usage = BTreeMap::<String, AssetUsage>::new();
+    for seg in edl
+        .segments
+        .iter()
+        .filter(|s| s.track_kind == cut_core::TrackKind::Video)
+    {
+        let Some(a) = seg.asset.as_deref() else {
+            continue;
+        };
+        let entry = usage.entry(a.to_string()).or_insert_with(|| AssetUsage {
+            tag: seg.input_color_space,
+            sdr_features: Vec::new(),
+            stabilized: false,
+        });
+        for feat in super::hdr::clip_sdr_only_features(seg) {
+            if !entry.sdr_features.contains(&feat) {
+                entry.sdr_features.push(feat);
+            }
+        }
+        if seg.stabilize.is_some() {
+            entry.stabilized = true;
+        }
+    }
+    let short_target = match plan.target {
+        Hdr::Hlg => "HLG",
+        Hdr::Pq => "PQ",
+    };
+    let mut sources = Vec::new();
+    let mut notes = Vec::new();
+    for (id, u) in &usage {
+        let Some(asset) = project.assets.get(id) else {
+            continue;
+        };
+        let c = source_color(asset);
+        let file = std::path::Path::new(&asset.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| asset.path.clone());
+        let handling = match (c.hdr, u.tag) {
+            (Some(_), Some(tag)) => {
+                notes.push(format!(
+                    "{file} is tagged {} with edit.color_space and was placed at 203 nits.",
+                    tag.as_str()
+                ));
+                HANDLING_TAGGED_NOT_CONVERTED
+            }
+            (Some(_), None) if !u.sdr_features.is_empty() => {
+                notes.push(format!(
+                    "{file}'s {} only works in SDR, so it was applied in SDR BT.709 and converted back to {short_target} (BT.2020, 203 nits).",
+                    u.sdr_features.join(", ")
+                ));
+                HANDLING_HDR_GRADED_IN_SDR
+            }
+            (Some(src_hdr), None) if src_hdr == plan.target => {
+                if u.stabilized {
+                    notes.push(format!(
+                        "{file}'s stabilization ran in 8 bits before 10-bit {short_target} output."
+                    ));
+                }
+                HANDLING_KEPT_HDR
+            }
+            (Some(src_hdr), None) => {
+                notes.push(format!(
+                    "{file} ({}) was converted to {short_target} (BT.2020).",
+                    src_hdr.label()
+                ));
+                HANDLING_CONVERTED_HDR
+            }
+            (None, _) => {
+                notes.push(format!(
+                    "{file} (SDR) was placed in {short_target} BT.2020 at 203 nits (ITU-R BT.2408)."
+                ));
+                HANDLING_SDR_TO_HDR
+            }
+        };
+        sources.push(cut_core::SourceColorReport {
+            asset: id.clone(),
+            file,
+            transfer: c.transfer.clone(),
+            bit_depth: c.bit_depth,
+            handling: handling.to_string(),
+        });
+    }
+    for adj in &edl.adjustments {
+        let feats = super::hdr::adjustment_sdr_only_features(adj.grade.as_ref(), &adj.effects);
+        if !feats.is_empty() {
+            notes.push(format!(
+                "Adjustment layer {} only works in SDR, so it was applied in SDR BT.709 and converted back to {short_target}.",
+                feats.join(", ")
+            ));
+        }
+    }
+    if plan.metadata_carried {
+        notes.push("HDR10 static metadata (mastering display / MaxCLL) carried.".to_string());
+    } else if plan.present_in_sources && plan.target == Hdr::Hlg {
+        notes.push(
+            "Source PQ HDR10 static metadata does not apply to HLG output and was omitted."
+                .to_string(),
+        );
+    } else if plan.target == Hdr::Pq {
+        notes.push("No HDR10 static metadata found in source clips.".to_string());
+    }
+    let file_bits = file_bit_depth(video_args);
+    cut_core::ColorReport {
+        output: format!("HDR 10-bit {short_target} (BT.2020)"),
+        processing_bit_depth: 10,
+        file_bit_depth: file_bits,
+        transfer: Some(plan.target.zscale_transfer().to_string()),
+        hdr10_metadata: Some(cut_core::Hdr10StaticMetadataReport {
+            present_in_sources: plan.present_in_sources,
+            carried: plan.metadata_carried,
+            mastering_display: plan
+                .metadata_carried
+                .then(|| {
+                    plan.metadata
+                        .mastering_display
+                        .as_ref()
+                        .map(|m| m.x265_param())
+                })
+                .flatten(),
+            max_cll: plan
+                .metadata_carried
+                .then(|| plan.metadata.max_cll_str())
+                .flatten(),
+        }),
         sources,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
     }

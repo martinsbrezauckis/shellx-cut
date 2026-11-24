@@ -16,6 +16,7 @@ import {
   type UiDomState,
   type UiObservableState,
 } from './uiControlState'
+import { notifyUiStateCommitted } from './uiCommandCommit'
 
 interface UiStatePublisherArgs {
   layout: LayoutState
@@ -104,6 +105,7 @@ export function useUiStatePublisher(args: UiStatePublisherArgs) {
       exportFolder,
     })
     stateRef.current = next
+    notifyUiStateCommitted(stateRef)
     events.pushUiState(next)
   }, [
     args.activeDrawer,

@@ -114,6 +114,12 @@ pub struct RenderReceipt {
     /// forward. Filled by `compute_pass`; absent on older receipts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<crate::check_outcome::CheckOutcome>,
+    /// Every export check with its state for the finished file: checked,
+    /// something found, not checked (optional tool missing, not run yet) or
+    /// not checked because something failed. Information only: it never
+    /// changes `pass`, `checks` or `outcome`. Absent on older receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_checks: Option<crate::export_checks::ExportChecks>,
 }
 
 /// The encoder a render really used, recorded on the receipt and in the render
@@ -159,15 +165,36 @@ pub struct EncodeReport {
     pub pipeline_reason: Option<String>,
 }
 
+/// HDR10 static metadata disposition on a Keep HDR export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hdr10StaticMetadataReport {
+    /// True when at least one source HDR clip on the timeline carried mastering display or MaxCLL/MaxFALL metadata.
+    pub present_in_sources: bool,
+    /// True when the metadata was written onto the exported HDR stream.
+    pub carried: bool,
+    /// Human summary / raw coordinates of carried mastering display metadata, when carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mastering_display: Option<String>,
+    /// Carried content light level summary ("MaxCLL,MaxFALL" nits), when carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cll: Option<String>,
+}
+
 /// The colour handling of one render.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColorReport {
-    /// The delivered picture, e.g. "SDR BT.709".
+    /// The delivered picture, e.g. "SDR BT.709" or "HDR 10-bit HLG (BT.2020)".
     pub output: String,
-    /// Bits per sample the picture is processed in (8: the render graph is 8-bit).
+    /// Bits per sample the picture is processed in (8 for SDR, 10 for Keep HDR).
     pub processing_bit_depth: u8,
-    /// Bits per sample of the encoded file (10 for ProRes, else 8).
+    /// Bits per sample of the encoded file (10 for ProRes or Keep HDR, else 8).
     pub file_bit_depth: u8,
+    /// Output transfer characteristic for Keep HDR exports ("arib-std-b67" or "smpte2084"). Absent for plain SDR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<String>,
+    /// HDR10 static metadata status (mastering display + MaxCLL/MaxFALL) for Keep HDR exports. Absent for SDR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr10_metadata: Option<Hdr10StaticMetadataReport>,
     /// Each video source on the timeline and what happened to it.
     pub sources: Vec<SourceColorReport>,
     /// Plain sentences for the person when a source was converted, reduced in
@@ -186,9 +213,8 @@ pub struct SourceColorReport {
     pub transfer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bit_depth: Option<u8>,
-    /// "sdr" | "tone_mapped_to_sdr" | "hdr_tagged_not_converted" (the person tagged
-    /// the HDR clip with edit.color_space, so it was not tone-mapped) |
-    /// "converted_bt601_to_bt709" (an SD source's BT.601 matrix was converted).
+    /// "sdr" | "tone_mapped_to_sdr" | "hdr_tagged_not_converted" | "converted_bt601_to_bt709" |
+    /// "kept_hdr" | "converted_hdr_transfer" | "sdr_to_hdr" | "hdr_graded_in_sdr".
     pub handling: String,
 }
 
@@ -427,6 +453,7 @@ mod fix_action_tests {
             fix_actions: vec![],
             encode: None,
             outcome: None,
+            export_checks: None,
         };
         r.compute_pass();
         assert!(!r.pass);

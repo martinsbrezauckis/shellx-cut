@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::dispatch::{parse_args, run_blocking_cancellable, snapshot};
 use crate::output_paths::{
-    authorized_export_read_roots, fence_output_path, publish_output_atomic, OutputPath,
-    OutputPathPolicy,
+    authorized_export_read_roots, fence_output_path, OutputPath, OutputPathPolicy,
 };
 use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
@@ -115,11 +114,13 @@ fn copy_to_output(
     output: OutputPath,
     cancel: crate::jobs::JobCancellation,
 ) -> Result<u64, CutError> {
-    let parent = output.parent().unwrap_or_else(|| Path::new("."));
-    let mut stage = tempfile::Builder::new()
-        .prefix(".raw-recording-copy-")
-        .tempfile_in(parent)
-        .map_err(|error| io_error("create private copy stage", error))?;
+    let stage_dir = cut_media::PrivateStageDir::new()?;
+    let staged_path = stage_dir.reserve_named_file("raw-recording-copy.mp4")?;
+    let mut stage = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&staged_path)
+        .map_err(|error| io_error("open private copy stage", error))?;
     let mut bytes = 0_u64;
     let mut buffer = [0_u8; 1024 * 1024];
     loop {
@@ -138,15 +139,14 @@ fn copy_to_output(
         bytes += count as u64;
     }
     stage
-        .as_file()
-        .sync_all()
+        .flush()
+        .and_then(|()| stage.sync_all())
         .map_err(|error| io_error("flush private copy stage", error))?;
+    drop(stage);
     if cancel.is_cancelled() {
         return Err(cancelled());
     }
-    // Close the stage handle before rename so Windows can publish it too.
-    let stage = stage.into_temp_path();
-    publish_output_atomic(stage.as_ref(), &output)?;
+    cut_media::publish_staged_file(&staged_path, &output, false)?;
     Ok(bytes)
 }
 

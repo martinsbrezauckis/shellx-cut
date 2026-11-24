@@ -368,6 +368,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e}))
                 } else {
                     let state = AppState::new();
+                    state.doctor_cache.disable_background_enrichment();
                     open_if_given(&state, project).await?;
                     let actor = Actor {
                         kind: ActorKind::Agent,

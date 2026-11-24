@@ -4,8 +4,10 @@ use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 
 #[path = "verify_handlers/adapter_result.rs"]
 mod adapter_result;
+pub(super) mod export_checks_collect;
 mod judge_files;
 mod judge_inputs;
+pub(super) mod on_request_cache;
 use judge_files::RenderReport;
 pub(super) mod receipt_file;
 mod rerun;
@@ -133,7 +135,7 @@ pub(super) async fn verify_pregate(state: &AppState, args: Value) -> Result<Verb
     // Snapshot the EDL + fps + referenced asset ids under a SHORT read lock, then
     // release it before loading the (disk-cached) perception reports — each
     // load_perception_report takes its own lock.
-    let (edl, fps, asset_ids) = {
+    let (edl, fps, asset_ids, project, receipts_dir, at_op) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
         let edl = cut_core::edl_from_project(&store.project);
@@ -143,7 +145,14 @@ pub(super) async fn verify_pregate(state: &AppState, args: Value) -> Result<Verb
             .iter()
             .filter_map(|s| s.asset.clone())
             .collect();
-        (edl, fps, asset_ids)
+        (
+            edl,
+            fps,
+            asset_ids,
+            store.project.clone(),
+            store.receipts_dir(),
+            export_checks_collect::current_at_op(store),
+        )
     };
 
     // Load whatever perception reports are CACHED; a missing/never-analyzed asset
@@ -159,7 +168,31 @@ pub(super) async fn verify_pregate(state: &AppState, args: Value) -> Result<Verb
 
     let report =
         cut_perception::pregate(&edl, fps, &reports, cut_perception::PregateOpts::default());
-    Ok(VerbResult::ok(serde_json::to_value(report)?))
+    // The list of every check and its state: information beside the verdict,
+    // never a reason to refuse an export.
+    let list_report = report.clone();
+    let export_checks = run_blocking("verify.pregate.list", move || {
+        Ok::<_, CutError>(export_checks_collect::collect(
+            export_checks_collect::Inputs {
+                project: &project,
+                edl: &edl,
+                receipts: &receipts_dir,
+                at_op,
+                phase: cut_core::export_checks::ExportCheckPhase::BeforeExport,
+                render_id: None,
+                pregate: Some(&list_report),
+                before_snapshot: None,
+                receipt_checks: &[],
+                source_errors: &Default::default(),
+                memory: cut_perception::export_check_list::ResourceFact::NotEstimated,
+                disk: cut_perception::export_check_list::ResourceFact::NotEstimated,
+            },
+        ))
+    })
+    .await?;
+    let mut value = serde_json::to_value(report)?;
+    value["export_checks"] = serde_json::to_value(export_checks)?;
+    Ok(VerbResult::ok(value))
 }
 
 /// verify.captions{max_cps?, min_duration_ms?, max_duration_ms?, min_gap_ms?,
@@ -284,21 +317,57 @@ pub(super) async fn verify_delivery(state: &AppState, args: Value) -> Result<Ver
         .map(|w| w.to_lowercase())
         .collect();
     // Which assets to measure: the named one, else every asset in the project.
-    let asset_ids: Vec<String> = {
+    let (project_dir, at_op, asset_ids, asset_hashes) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
-        if let Some(id) = &a.asset {
+        let at_op = store
+            .log
+            .read_all()
+            .ok()
+            .and_then(|ops| ops.last().map(|o| o.op_id.clone()))
+            .unwrap_or_else(|| "op_000000".into());
+        let ids = if let Some(id) = &a.asset {
             speech_text::check_scope(&store.project, Some(id.as_str()), None)?;
             vec![id.clone()]
         } else {
             store.project.assets.keys().cloned().collect()
+        };
+        let mut hashes = std::collections::BTreeMap::new();
+        for id in &ids {
+            if let Some(asset) = store.project.assets.get(id) {
+                hashes.insert(id.clone(), asset.hash.clone());
+            }
         }
+        (store.dir.clone(), at_op, ids, hashes)
     };
     let mut per_asset: Vec<Vec<cut_perception::WordSpan>> = Vec::new();
+    let mut load_error: Option<CutError> = None;
     for id in &asset_ids {
-        if let Ok(t) = load_transcript(state, id).await {
-            per_asset.push(t.words);
+        match load_transcript(state, id).await {
+            Ok(t) => per_asset.push(t.words),
+            Err(err) if err.code != error_codes::NOT_FOUND && load_error.is_none() => {
+                load_error = Some(err);
+            }
+            Err(_) => {}
         }
+    }
+    if let Some(err) = load_error {
+        on_request_cache::record_delivery(
+            &project_dir,
+            on_request_cache::DeliveryCache {
+                ts: OpRecord::now_ts(),
+                at_op,
+                asset: a.asset.clone(),
+                asset_hashes,
+                word_count: 0,
+                pass: false,
+                flags: Value::Null,
+                wpm: None,
+                filler_pct: None,
+                error: Some(err.clone()),
+            },
+        );
+        return Err(err);
     }
     // No transcript in scope: say why, never a delivery report of nothing.
     if per_asset.is_empty() {
@@ -307,9 +376,26 @@ pub(super) async fn verify_delivery(state: &AppState, args: Value) -> Result<Ver
         ));
     }
     let slices: Vec<&[cut_perception::WordSpan]> = per_asset.iter().map(|v| v.as_slice()).collect();
-    Ok(VerbResult::ok(cut_perception::delivery(
-        &slices, &lexicon, opts,
-    )))
+    let result = cut_perception::delivery(&slices, &lexicon, opts);
+    on_request_cache::record_delivery(
+        &project_dir,
+        on_request_cache::DeliveryCache {
+            ts: OpRecord::now_ts(),
+            at_op,
+            asset: a.asset,
+            asset_hashes,
+            word_count: result
+                .get("word_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+            pass: result.get("pass").and_then(Value::as_bool).unwrap_or(false),
+            flags: result.get("flags").cloned().unwrap_or(Value::Null),
+            wpm: result.get("wpm").and_then(Value::as_f64),
+            filler_pct: result.get("filler_pct").and_then(Value::as_f64),
+            error: None,
+        },
+    );
+    Ok(VerbResult::ok(result))
 }
 
 /// verify.loudness{asset, target_lufs?=-14} — integrated-loudness RECEIPT for one
@@ -328,11 +414,44 @@ pub(super) async fn verify_loudness(state: &AppState, args: Value) -> Result<Ver
     }
     let a: Args = parse_args(args)?;
     let target = a.target_lufs.unwrap_or(-14.0);
-    let (src, _hash) = asset_info(state, &a.asset).await?;
-    let m = run_blocking("verify.loudness", move || {
+    let (src, asset_hash) = asset_info(state, &a.asset).await?;
+    let (project_dir, at_op) = {
+        let guard = state.project.read().await;
+        let store = guard.as_ref().ok_or_else(no_project)?;
+        let at_op = store
+            .log
+            .read_all()
+            .ok()
+            .and_then(|ops| ops.last().map(|o| o.op_id.clone()))
+            .unwrap_or_else(|| "op_000000".into());
+        (store.dir.clone(), at_op)
+    };
+    let measured = run_blocking("verify.loudness", move || {
         cut_media::loudness::measure(&src)
     })
-    .await?;
+    .await;
+    let m = match measured {
+        Ok(m) => m,
+        Err(err) => {
+            on_request_cache::record_source_loudness(
+                &project_dir,
+                on_request_cache::SourceLoudnessEntry {
+                    asset_id: a.asset,
+                    asset_hash,
+                    target_lufs: target,
+                    integrated_lufs: None,
+                    true_peak_dbtp: None,
+                    within_tolerance: false,
+                    true_peak_ok: false,
+                    recommendation: String::new(),
+                    error: Some(err.clone()),
+                    ts: OpRecord::now_ts(),
+                    at_op,
+                },
+            );
+            return Err(err);
+        }
+    };
     // Tolerance: EBU R128 compliance is conventionally ±1 LU of the target.
     let gap = m.integrated_lufs - target; // negative = quieter than target
     let within = gap.abs() <= 1.0;
@@ -356,10 +475,31 @@ pub(super) async fn verify_loudness(state: &AppState, args: Value) -> Result<Ver
             m.true_peak_dbtp
         )
     };
+    let integrated_r = (m.integrated_lufs * 100.0).round() / 100.0;
+    let tp_r = m
+        .true_peak_dbtp
+        .is_finite()
+        .then(|| (m.true_peak_dbtp * 100.0).round() / 100.0);
+    on_request_cache::record_source_loudness(
+        &project_dir,
+        on_request_cache::SourceLoudnessEntry {
+            asset_id: a.asset.clone(),
+            asset_hash,
+            target_lufs: target,
+            integrated_lufs: Some(integrated_r),
+            true_peak_dbtp: tp_r,
+            within_tolerance: within,
+            true_peak_ok: tp_ok,
+            recommendation: recommendation.clone(),
+            error: None,
+            ts: OpRecord::now_ts(),
+            at_op,
+        },
+    );
     Ok(VerbResult::ok(json!({
         "asset": a.asset,
-        "integrated_lufs": (m.integrated_lufs * 100.0).round() / 100.0,
-        "true_peak_dbtp": if m.true_peak_dbtp.is_finite() { json!((m.true_peak_dbtp * 100.0).round() / 100.0) } else { Value::Null },
+        "integrated_lufs": integrated_r,
+        "true_peak_dbtp": tp_r.map(|v| json!(v)).unwrap_or(Value::Null),
         "lra": (m.lra * 100.0).round() / 100.0,
         "threshold_lufs": if m.threshold_lufs.is_finite() { json!((m.threshold_lufs * 100.0).round() / 100.0) } else { Value::Null },
         "target_lufs": target,
@@ -413,11 +553,14 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
             cut_media::scopes::ScopeKind::Histogram,
         ],
     };
-    let asset_path = match &a.asset {
-        Some(id) => Some(asset_info(state, id).await?.0),
-        None => None,
+    let (asset_path, asset_hash) = match &a.asset {
+        Some(id) => {
+            let (p, h) = asset_info(state, id).await?;
+            (Some(p), Some(h))
+        }
+        None => (None, None),
     };
-    let (project, edl, dir, _at) = snapshot(state).await?;
+    let (project, edl, dir, at_op) = snapshot(state).await?;
     let scope_outputs = scope_outputs::image_paths(&dir, at_ms, want_images, &kinds)?;
     // The frame the scopes describe is written here (kept as evidence); scope images
     // land beside it. `fence_output_path` creates the literal project-relative
@@ -435,27 +578,30 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
         "timeline"
     };
     let frame_for_receipt = frame_path.clone();
-    let (scopes, images) = run_blocking("verify.scopes", move || {
+    let measured = run_blocking("verify.scopes", move || {
         // 1. Materialize the frame to analyze.
         if let Some(src) = &asset_path {
             // A source asset's frame at at_ms (seek-then-decode one frame).
             let secs = format!("{:.3}", at_ms as f64 / 1000.0);
-            cut_media::ffmpeg::run_ffmpeg(&[
-                "-y".into(),
-                "-ss".into(),
-                secs,
-                "-i".into(),
-                src.to_string_lossy().into_owned(),
-                "-frames:v".into(),
-                "1".into(),
-                "-update".into(),
-                "1".into(),
-                frame_path.to_string_lossy().into_owned(),
-            ])?;
+            cut_media::ffmpeg::run_ffmpeg_atomic_output(
+                &[
+                    "-y".into(),
+                    "-ss".into(),
+                    secs,
+                    "-i".into(),
+                    src.to_string_lossy().into_owned(),
+                    "-frames:v".into(),
+                    "1".into(),
+                    "-update".into(),
+                    "1".into(),
+                    frame_path.to_string_lossy().into_owned(),
+                ],
+                &frame_path,
+            )?;
         } else {
             // The COMPOSED timeline frame at at_ms (full project geometry, raw source).
             let jpeg = cut_media::extract_frame(&project, &edl, &dir, at_ms, None)?;
-            std::fs::write(&frame_path, jpeg).map_err(|e| {
+            cut_media::write_bytes_privately_and_publish(&frame_path, &jpeg).map_err(|e| {
                 CutError::new(
                     cut_core::error_codes::FFMPEG,
                     "failed to write the scope frame",
@@ -473,7 +619,33 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
         }
         Ok::<_, CutError>((scopes, images))
     })
-    .await?;
+    .await;
+    let project_dir = frame_for_receipt
+        .ancestors()
+        .nth(3)
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let (scopes, images) = match measured {
+        Ok(res) => res,
+        Err(err) => {
+            on_request_cache::record_signal_scopes(
+                &project_dir,
+                on_request_cache::SignalScopesCache {
+                    ts: OpRecord::now_ts(),
+                    at_op,
+                    scope: source_label.into(),
+                    asset_id: a.asset,
+                    asset_hash,
+                    at_ms,
+                    pass: false,
+                    flags: vec![],
+                    frame: Some(frame_for_receipt.display().to_string()),
+                    error: Some(err.clone()),
+                },
+            );
+            return Err(err);
+        }
+    };
 
     // Actionable flags (the agent reads these to decide a grade fix).
     let mut flags: Vec<&str> = Vec::new();
@@ -493,6 +665,21 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
         flags.push("over_saturated");
     }
     let pass = scopes.broadcast_legal && !scopes.clip_highlights && !scopes.clip_shadows;
+    on_request_cache::record_signal_scopes(
+        &project_dir,
+        on_request_cache::SignalScopesCache {
+            ts: OpRecord::now_ts(),
+            at_op,
+            scope: source_label.into(),
+            asset_id: a.asset,
+            asset_hash,
+            at_ms,
+            pass,
+            flags: flags.iter().map(|s| (*s).to_string()).collect(),
+            frame: Some(frame_for_receipt.display().to_string()),
+            error: None,
+        },
+    );
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
     let mut out = json!({
         "at_ms": at_ms,

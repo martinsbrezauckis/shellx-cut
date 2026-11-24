@@ -70,7 +70,22 @@ pub(super) struct Plan<'a> {
     pub out: &'a Path,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_TOTAL_MB: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 pub(super) fn render_preflight(plan: &Plan) -> Preflight {
+    host_preflight(plan, true, |args| {
+        estimate_memory(plan.project, plan.edl, plan.width, plan.height, args)
+    })
+}
+
+fn host_preflight(
+    plan: &Plan,
+    check_disk: bool,
+    estimate: impl Fn(&[String]) -> MemoryEstimate,
+) -> Preflight {
     let host = cut_media::host_memory::host_memory();
     let mb = |b: u64| b / (1024 * 1024);
     let volume = plan
@@ -78,17 +93,28 @@ pub(super) fn render_preflight(plan: &Plan) -> Preflight {
         .parent()
         .map(crate::doctor::nearest_existing)
         .unwrap_or_else(|| plan.out.to_path_buf());
-    let machine = Machine {
+    #[allow(unused_mut)]
+    let mut machine = Machine {
         total_mb: host.map(|h| mb(h.total_bytes)),
         available_mb: host.map(|h| mb(h.available_bytes)),
         swap_mb: host.map(|h| mb(h.swap_bytes)).unwrap_or(0),
-        disk_free_mb: crate::doctor::free_total_bytes(&volume).0.map(mb),
+        disk_free_mb: check_disk
+            .then(|| crate::doctor::free_total_bytes(&volume).0.map(mb))
+            .flatten(),
         limit_mb: threads::memory_limit_mb(),
     };
-    decide(plan, &machine, &volume, |args| {
-        estimate_memory(plan.project, plan.edl, plan.width, plan.height, args)
-    })
+    #[cfg(test)]
+    TEST_TOTAL_MB.with(|total| {
+        if let Some(total) = total.get() {
+            machine.total_mb = Some(total);
+            machine.swap_mb = 0;
+        }
+    });
+    decide(plan, &machine, &volume, estimate)
 }
+
+mod exports;
+pub(super) use exports::{export_preflight, post_pass_preflight};
 
 fn gb(mb: u64) -> String {
     format!("{:.1} GB", mb as f64 / 1024.0)

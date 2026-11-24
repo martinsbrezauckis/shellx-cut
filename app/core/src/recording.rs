@@ -83,6 +83,7 @@ pub(crate) fn is_op(verb: &str) -> bool {
     matches!(
         verb,
         "screen_record.take_link"
+            | "screen_record.make_editable"
             | "screen_record.zoom_set"
             | "screen_record.take_refresh"
             | "screen_record.camera_reset"
@@ -101,6 +102,42 @@ pub(crate) fn effects(
     verb: &str,
     args: &Value,
 ) -> Vec<crate::OpEffect> {
+    if verb == "screen_record.make_editable" {
+        let Some(cam_id) = args["recording"]["camera_clip"].as_str() else {
+            return vec![];
+        };
+        let (Some((after_track, after_idx)), Some((before_track, before_idx))) =
+            (after.find_clip(cam_id), before.find_clip(cam_id))
+        else {
+            return vec![];
+        };
+        let (Some(after_tr), Some(before_tr)) =
+            (after.track(after_track), before.track(before_track))
+        else {
+            return vec![];
+        };
+        let (Some(Clip::Media(new)), Some(Clip::Media(old))) = (
+            after_tr.clips.get(after_idx),
+            before_tr.clips.get(before_idx),
+        ) else {
+            return vec![];
+        };
+        return vec![crate::OpEffect {
+            track: Some(after_track.to_owned()),
+            detail: serde_json::json!({
+                "clip": cam_id,
+                "old_visible": before_tr.visible,
+                "visible": after_tr.visible,
+                "old_transform": old.transform,
+                "new_transform": new.transform,
+                "old_keyframes": old.keyframes,
+                "keyframes": new.keyframes,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        }];
+    }
     if verb != "screen_record.camera_reset" {
         return vec![];
     }
@@ -184,6 +221,64 @@ fn apply_inner(
                 camera::validate_take_camera_legacy(project, &take)?;
             }
             project.recordings.push(take);
+        }
+        "screen_record.make_editable" => {
+            let take: RecordingTake = serde_json::from_value(args["recording"].clone())?;
+            if take.id.is_empty()
+                || take.clip_ids.is_empty()
+                || project.recordings.iter().any(|t| {
+                    t.id == take.id
+                        || t.asset == take.asset
+                        || (take.camera_look.is_some()
+                            && take.camera_asset.is_some()
+                            && t.camera_asset == take.camera_asset)
+                })
+            {
+                return Err(bad("take id and asset must be unique"));
+            }
+            if !project.assets.contains_key(&take.asset) {
+                return Err(bad("take asset is missing"));
+            }
+            for id in &take.clip_ids {
+                let Some((track, index)) = project.find_clip(id) else {
+                    return Err(bad("take clip is missing"));
+                };
+                let Clip::Media(media) = &project.track(track).unwrap().clips[index] else {
+                    return Err(bad("take clip must be media"));
+                };
+                if media.asset != take.asset {
+                    return Err(bad("take clip does not play the recording asset"));
+                }
+            }
+            validate_segments(&take.segments)?;
+            if enforce_bound {
+                camera::validate_take_camera(project, &take)?;
+            } else {
+                camera::validate_take_camera_legacy(project, &take)?;
+            }
+            let camera_clip = take.camera_clip.clone();
+            let has_camera_look = take.camera_look.is_some();
+            project.recordings.push(take);
+            if has_camera_look {
+                if let Some(cam_id) = camera_clip.as_deref() {
+                    let look = if enforce_bound {
+                        camera_look_for_clip(project, cam_id)?
+                    } else {
+                        camera::camera_look_for_clip_legacy(project, cam_id)?
+                    };
+                    let (cam_track, cam_idx) = project
+                        .find_clip(cam_id)
+                        .ok_or_else(|| bad("camera clip is missing"))?;
+                    let cam_track = cam_track.to_owned();
+                    let tr = project.track_mut(&cam_track).unwrap();
+                    tr.visible = true;
+                    let Clip::Media(media) = &mut tr.clips[cam_idx] else {
+                        return Err(bad("camera must be media"));
+                    };
+                    media.transform = Some(look.transform);
+                    media.keyframes = look.keyframes;
+                }
+            }
         }
         "screen_record.zoom_set" => {
             let segments: Vec<ZoomSegment> = serde_json::from_value(args["segments"].clone())?;

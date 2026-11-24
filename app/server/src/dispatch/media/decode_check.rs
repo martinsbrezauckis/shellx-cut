@@ -46,6 +46,19 @@ pub(super) async fn record_decode_check(
         .map(String::from);
     let mut probe = source_probe;
     probe["decode_check"] = record;
+    if let Some(obj) = probe.as_object_mut() {
+        obj.remove("decode_check_error");
+        obj.remove("proxy_error");
+    }
+    save_probe_preservation(state, asset_id, probe).await?;
+    Ok(warning)
+}
+
+async fn save_probe_preservation(
+    state: &AppState,
+    asset_id: &str,
+    probe: Value,
+) -> Result<(), CutError> {
     let stored = probe.clone();
     // The check adds an engine fact to the probe: it stays verified only if
     // the probe it extends was (a received probe stays unknown).
@@ -55,14 +68,63 @@ pub(super) async fn record_decode_check(
         super::mark_probe_verified(state, asset_id).await;
     }
     persist_probe_file(state, asset_id, &probe).await;
-    Ok(warning)
+    Ok(())
 }
 
-/// Keep an earlier decode check when a probe is refreshed (`media.probe`): the
-/// new probe comes from the index and knows nothing about decoding.
+/// Record a failed proxy decode check without fabricating `probe.decode_check`
+/// so export-check diagnostics keep the real error reason.
+pub(super) async fn record_decode_check_or_error(
+    state: &AppState,
+    asset_id: &str,
+    proxy: &Path,
+) -> Result<Option<String>, CutError> {
+    match record_decode_check(state, asset_id, proxy).await {
+        Ok(warning) => Ok(warning),
+        Err(error) => {
+            record_probe_check_error(state, asset_id, "decode_check_error", &error).await;
+            Err(error)
+        }
+    }
+}
+
+/// Record why proxy preparation failed for `asset_id` so pregate never treats
+/// a failed proxy transcode as an unrun decode check.
+pub(super) async fn record_proxy_error(state: &AppState, asset_id: &str, error: &CutError) {
+    record_probe_check_error(state, asset_id, "proxy_error", error).await;
+}
+
+async fn record_probe_check_error(state: &AppState, asset_id: &str, key: &str, error: &CutError) {
+    let Some(mut probe) = super::asset_probe(state, asset_id).await else {
+        return;
+    };
+    let Some(obj) = probe.as_object_mut() else {
+        return;
+    };
+    obj.remove("decode_check");
+    obj.insert(
+        key.to_string(),
+        serde_json::json!({
+            "code": error.code,
+            "message": error.message,
+            "cause": error.cause,
+            "suggested_action": error.suggested_action,
+        }),
+    );
+    let _ = save_probe_preservation(state, asset_id, probe).await;
+}
+
+/// Keep an earlier decode check (or preserved failure) when a probe is
+/// refreshed (`media.probe`): the new probe comes from the index and knows
+/// nothing about decoding.
 pub(super) fn keep_decode_check(old: Option<&Value>, mut new: Value) -> Value {
     if let Some(check) = old.and_then(|p| p.get("decode_check")) {
         new["decode_check"] = check.clone();
+    }
+    if let Some(err) = old.and_then(|p| p.get("decode_check_error")) {
+        new["decode_check_error"] = err.clone();
+    }
+    if let Some(err) = old.and_then(|p| p.get("proxy_error")) {
+        new["proxy_error"] = err.clone();
     }
     new
 }
@@ -102,5 +164,58 @@ pub(super) async fn proxy_tone_map(
                 .into(),
         );
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_decode_check_preserves_error_and_successful_recheck_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let actor = Actor {
+            kind: cut_core::ActorKind::Agent,
+            name: "test".into(),
+            via: "test".into(),
+            request: None,
+        };
+        let created = crate::dispatch::dispatch(
+            &state,
+            "project.create",
+            json!({"name": "dc", "dir": dir.path().join("dc.cutproj")}),
+            actor,
+        )
+        .await;
+        assert!(created.ok, "{:?}", created.error);
+        let source = dir.path().join("src.mp4");
+        std::fs::write(&source, b"source").unwrap();
+        update_asset_or_insert(&state, &source).await;
+
+        let missing_proxy = dir.path().join("missing-proxy.mp4");
+        let err = record_decode_check_or_error(&state, "a1", &missing_proxy)
+            .await
+            .unwrap_err();
+        assert!(!err.message.is_empty());
+        let probe = super::super::asset_probe(&state, "a1").await.unwrap();
+        assert!(probe.get("decode_check").is_none());
+        assert_eq!(probe["decode_check_error"]["message"], json!(err.message));
+
+        let kept = keep_decode_check(Some(&probe), json!({"kind": "video"}));
+        assert_eq!(kept["decode_check_error"]["message"], json!(err.message));
+    }
+
+    async fn update_asset_or_insert(state: &AppState, source: &Path) {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().unwrap();
+        let asset: cut_core::Asset = serde_json::from_value(json!({
+            "path": source.display().to_string(),
+            "hash": "sha256:test",
+            "probe": {"kind": "video", "duration_ms": 1000}
+        }))
+        .unwrap();
+        store.project.assets.insert("a1".into(), asset);
+        store.save().unwrap();
     }
 }

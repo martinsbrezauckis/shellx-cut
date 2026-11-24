@@ -15,6 +15,7 @@ fn receipt(checks: Vec<cut_core::CheckResult>) -> cut_core::RenderReceipt {
         fix_actions: Vec::new(),
         encode: None,
         outcome: None,
+        export_checks: None,
     }
 }
 

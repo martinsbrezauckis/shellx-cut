@@ -48,9 +48,19 @@ pub(super) fn contact_sheet(
     media: PathBuf,
     out_dir: PathBuf,
     preset: String,
+    receipts: PathBuf,
+    artifact_id: String,
 ) -> Result<serde_json::Value, CutError> {
     with_sidecar(cancellation, |control| {
-        cut_perception::build_contact_sheet_owned(&media, &out_dir, &preset, control)
+        cut_perception::build_contact_sheet_recorded(
+            &media,
+            &out_dir,
+            &preset,
+            &receipts,
+            &artifact_id,
+            "",
+            control,
+        )
     })
 }
 
@@ -59,9 +69,19 @@ pub(super) fn qc_sheet(
     media: PathBuf,
     out_dir: PathBuf,
     preset: String,
+    receipts: PathBuf,
+    artifact_id: String,
 ) -> Result<serde_json::Value, CutError> {
     with_sidecar(cancellation, |control| {
-        cut_perception::build_qc_sheet_owned(&media, &out_dir, &preset, control)
+        cut_perception::build_qc_sheet_recorded(
+            &media,
+            &out_dir,
+            &preset,
+            &receipts,
+            &artifact_id,
+            "",
+            control,
+        )
     })
 }
 
@@ -71,9 +91,19 @@ pub(super) fn subject_track(
     hash: String,
     preset: String,
     direction: Option<serde_json::Value>,
+    receipts: PathBuf,
+    artifact_id: String,
 ) -> Result<cut_perception::types::SubjectTrack, CutError> {
     with_sidecar(cancellation, |control| {
-        cut_perception::run_subject_owned(&media, &hash, &preset, direction, control)
+        cut_perception::run_subject_recorded(
+            &media,
+            &receipts,
+            &artifact_id,
+            &hash,
+            &preset,
+            direction,
+            control,
+        )
     })
 }
 

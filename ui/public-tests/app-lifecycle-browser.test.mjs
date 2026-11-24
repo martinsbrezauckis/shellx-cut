@@ -198,6 +198,9 @@ test(`mounted App settles failed reconnect work and fences older Doctor reads be
   assert.doesNotMatch(await page.locator('[data-cut-panel="review"]').textContent(), /old\.project/)
 
   await page.locator('[data-cut-env-chip]').click()
+  const openSettingsDoctor = await waitFor(doctorRequests, 4 + doctorOffset)
+  assert.deepEqual(openSettingsDoctor.request().postDataJSON(), {})
+  await reply(openSettingsDoctor, doctor('ok', 'open-settings'))
   await page.locator('[data-cut-settings-category="video-performance"]').click()
   for (const missing of ['ffmpeg', 'ffprobe']) {
     const ready = doctor('ok', `before-${missing}`)
@@ -221,7 +224,7 @@ test(`mounted App settles failed reconnect work and fences older Doctor reads be
   await page.locator('[data-cut-env-download="ffprobe"]').click()
   assert.deepEqual(await waitFor(downloadRequests, 1), { tool: 'ffmpeg', accept_license: true })
   await page.locator('[data-cut-environment-refresh]').click()
-  const pendingDoctor = await waitFor(doctorRequests, 4 + doctorOffset)
+  const pendingDoctor = await waitFor(doctorRequests, 5 + doctorOffset)
   await page.evaluate(() => window.__cutWs.onopen())
   const pendingUnmount = await waitFor(projectRequests, 12)
   await page.evaluate(() => window.__cutUnmount())

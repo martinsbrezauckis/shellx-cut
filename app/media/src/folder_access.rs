@@ -22,17 +22,30 @@ fn shown(folder: &Path) -> String {
 /// Map an I/O error met while resolving or opening `folder` to an actionable
 /// error. `label` is the person-facing name of the folder ("output folder").
 pub fn folder_error(label: &str, folder: &Path, error: &std::io::Error) -> CutError {
+    let shown = shown(folder);
     match error.kind() {
         ErrorKind::NotFound => CutError::new(
             error_codes::NOT_FOUND,
-            format!("{label} not found: {}", shown(folder)),
+            format!("{label} not found: {shown}"),
             error.to_string(),
         )
         .with_suggested_action("create the folder first, or choose an existing folder"),
+        ErrorKind::NotADirectory => CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("{label} is a file, not a folder: {shown}"),
+            "a destination folder cannot be an existing file",
+        )
+        .with_suggested_action("choose a folder, or a different name for the output path"),
         ErrorKind::PermissionDenied => cannot_write(label, folder, error),
+        ErrorKind::StorageFull => CutError::new(
+            error_codes::IO,
+            format!("{label} is full: {shown} (the disk has no free space)"),
+            error.to_string(),
+        )
+        .with_suggested_action("free up disk space, or choose a folder on another drive"),
         _ => CutError::new(
             error_codes::IO,
-            format!("{label} cannot be used: {}", shown(folder)),
+            format!("{label} cannot be used: {shown}"),
             error.to_string(),
         )
         .with_suggested_action(
@@ -110,6 +123,58 @@ mod tests {
     fn the_folder_is_shown_without_the_extended_length_prefix() {
         assert_eq!(shown(Path::new(r"\\?\C:\CutFix\ro")), r"C:\CutFix\ro");
         assert_eq!(shown(Path::new("/projects/x")), "/projects/x");
+    }
+
+    #[test]
+    fn folder_error_names_file_full_disk_and_other_failures_for_any_caller() {
+        let file = Path::new(r"\\?\C:\work\clip.mp4");
+        let not_dir = folder_error(
+            "recording folder",
+            file,
+            &std::io::Error::from(ErrorKind::NotADirectory),
+        );
+        assert_eq!(not_dir.code, error_codes::INVALID_ARGS);
+        assert_eq!(
+            not_dir.message,
+            r"recording folder is a file, not a folder: C:\work\clip.mp4"
+        );
+        assert!(!not_dir.message.contains("not found"));
+        assert!(not_dir
+            .suggested_action
+            .as_deref()
+            .is_some_and(|a| a.contains("choose a folder")));
+
+        let folder = Path::new(r"\\?\C:\work\exports");
+        let full = folder_error(
+            "output folder",
+            folder,
+            &std::io::Error::new(ErrorKind::StorageFull, "disk full"),
+        );
+        assert_eq!(full.code, error_codes::IO);
+        assert_eq!(
+            full.message,
+            r"output folder is full: C:\work\exports (the disk has no free space)"
+        );
+        assert!(full.cause.contains("disk full"));
+        assert!(full
+            .suggested_action
+            .as_deref()
+            .is_some_and(|a| a.contains("free up disk space")));
+
+        let other = folder_error(
+            "export folder",
+            Path::new("/media/offline"),
+            &std::io::Error::other("device disconnected"),
+        );
+        assert_eq!(other.code, error_codes::IO);
+        assert_eq!(
+            other.message,
+            "export folder cannot be used: /media/offline"
+        );
+        assert!(other
+            .suggested_action
+            .as_deref()
+            .is_some_and(|a| a.contains("connected drive")));
     }
 
     #[test]

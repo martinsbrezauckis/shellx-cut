@@ -78,7 +78,7 @@ g.fetch = async () => ({ json: async () => ({ ok: false, error: { code: 'invalid
 await callVerb('render.final', {})
 assert.equal(seen.filter(event => event.type === ODD_PROJECT_SIZE_EVENT).length, 1)
 assert.equal(seen.at(-1)?.type, 'cut:user-action-feedback')
-assert.equal((seen.at(-1)?.detail as { message: string }).message, 'export failed: x')
+assert.equal((seen.at(-1)?.detail as { message: string }).message, 'Export failed: X. Check your choices and try again.')
 
 // The Render button's preflight stops at a refused plan: no quality dialog,
 // no "Export anyway", the action is not started, the sentence is shown.

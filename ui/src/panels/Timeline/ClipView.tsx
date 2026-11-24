@@ -8,6 +8,21 @@ const WAVE_VIDEO_STRIP_H = 18
 
 type ClipGestureMode = 'move' | 'trim-l' | 'trim-r'
 
+/** Clip markers inside the visible source range, at their offset (px) from the
+ *  clip's left edge: source time -> timeline time through reverse and speed,
+ *  the same map as the engine's src_off_to_tl. */
+function visibleClipMarkers(item: LaidItem, zoom: number): Array<{ id: string; label: string; leftPx: number }> {
+  const { markers, srcInMs, srcOutMs } = item
+  if (!markers?.length || srcInMs === undefined || srcOutMs === undefined || item.freezeAtMs !== undefined) return []
+  const speed = item.speed && item.speed > 0 ? item.speed : 1
+  return markers
+    .filter((m) => m.source_ms >= srcInMs && m.source_ms < srcOutMs)
+    .map((m) => {
+      const srcOff = item.reverse ? srcOutMs - m.source_ms : m.source_ms - srcInMs
+      return { id: m.id, label: m.label, leftPx: msToPx(speed === 1 ? srcOff : Math.round(srcOff / speed), zoom) }
+    })
+}
+
 interface ClipViewProps {
   item: LaidItem
   zoom: number
@@ -300,6 +315,19 @@ const ClipView = memo(function ClipView({ item, zoom, fps = 30, selected, draggi
           title={`crossfade ${shortDur(item.xfadeInMs)} (overlap with the previous clip)`}
         />
       )}
+      {/* Clip markers (recording markers of the take, kept in SOURCE time):
+          a thin tick with the label as its tooltip. No handlers of its own, so
+          a press on it reaches the clip (select/move) through the bubble; drawn
+          before the trim zones so those stay on top at the clip edges. */}
+      {visibleClipMarkers(item, zoom).map((m) => (
+        <span
+          key={m.id}
+          className="tl-clip-marker"
+          data-cut-clip-marker={m.id}
+          style={{ left: m.leftPx }}
+          title={m.label}
+        />
+      ))}
       {/* Trim zones: 9px hit area overhanging 3px outward, per-side cursors
           (timeline behavior contract). AV clips → edit.trim; caption clips → captions
           .set_range; captions are draggable and trimmable. */}

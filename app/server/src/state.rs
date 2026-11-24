@@ -82,6 +82,10 @@ pub struct AppState {
     pub jobs: JobManager,
     /// WS event fan-out.
     pub events: EventBus,
+    /// Active running `agent.chat` turns (keyed by project dir + conversation id).
+    pub(crate) chat_active: Arc<std::sync::Mutex<crate::chat::conversations::ActiveChatState>>,
+    /// Serializes reads/writes of `<project>.cutproj/chat/*.json` across requests.
+    pub(crate) chat_io_lock: Arc<tokio::sync::Mutex<()>>,
     /// Parsed schema/verbs.json — the verb contract.
     pub registry: Arc<VerbRegistry>,
     /// Last known UI-client state JSON (panels/playhead/selection), pushed by
@@ -122,6 +126,50 @@ pub struct AppState {
     pub frame_render_limiter: Arc<Semaphore>,
     /// Volatile picture verdicts and a non-queuing gate for one check pass.
     pub(crate) picture_checks: Arc<crate::picture_checks::PictureChecks>,
+    /// Bounded cache of source-media verification verdicts keyed by canonical path,
+    /// byte length, and modified timestamp so `/api/source` playback stays fast.
+    pub(crate) source_media_cache: Arc<SourceMediaCache>,
+}
+
+const SOURCE_MEDIA_CACHE_CAP: usize = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SourceMediaKey {
+    pub path: std::path::PathBuf,
+    pub len: u64,
+    pub modified: std::time::SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceMediaVerdict {
+    Media { kind: String },
+    Refused,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SourceMediaCache(
+    std::sync::Mutex<std::collections::HashMap<SourceMediaKey, SourceMediaVerdict>>,
+);
+
+impl SourceMediaCache {
+    pub(crate) fn get(&self, key: &SourceMediaKey) -> Option<SourceMediaVerdict> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    pub(crate) fn insert(&self, key: SourceMediaKey, verdict: SourceMediaVerdict) {
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.len() >= SOURCE_MEDIA_CACHE_CAP {
+            guard.clear();
+        }
+        guard.insert(key, verdict);
+    }
 }
 
 /// Proxies held back from an opened project while this engine checks that it
@@ -161,6 +209,10 @@ impl AppState {
             proxy_check: Arc::new(std::sync::Mutex::new(None)),
             jobs: JobManager::new(events.clone()).with_doctor(doctor_cache.clone()),
             events: events.clone(),
+            chat_active: Arc::new(std::sync::Mutex::new(
+                crate::chat::conversations::ActiveChatState::default(),
+            )),
+            chat_io_lock: Arc::new(tokio::sync::Mutex::new(())),
             registry: VerbRegistry::shared(),
             ui_state: Arc::new(RwLock::new(None)),
             ui_bridge: UiBridge::default(),
@@ -174,6 +226,7 @@ impl AppState {
             frame_cache: Arc::new(FrameCache::new(FRAME_CACHE_CAP, FRAME_CACHE_BYTE_CAP)),
             frame_render_limiter: Arc::new(Semaphore::new(FRAME_RENDER_CONCURRENCY)),
             picture_checks: Arc::new(crate::picture_checks::PictureChecks::default()),
+            source_media_cache: Arc::new(SourceMediaCache::default()),
         }
     }
 

@@ -212,25 +212,28 @@ async fn add_project_media_cache_header(
 }
 
 /// Content-Security-Policy for the served UI (S3). The UI is a Vite SPA: one
-/// same-origin ES-module script + same-origin CSS, React inline `style={{}}`
-/// (CSSOM, plus `'unsafe-inline'` for any style attribute), `data:`/`blob:`
-/// images + media (frames, proxies), and the `/api/events` WebSocket. connect-src
+/// same-origin ES-module script + same-origin CSS, CSSOM `style` properties,
+/// `data:` images + media (screenshots, mock/native frame previews, rehearsal),
+/// same-origin `/manual.html` live preview iframe (`frame-src 'self'` and
+/// `frame-ancestors 'self'`), and the `/api/events` WebSocket. connect-src
 /// is scoped to loopback at ANY port (the app falls back to an OS-chosen port when
-/// 6161 is held) so the WS never breaks. `ipc.localhost` is Tauri's loopback IPC
-/// bridge for remote-origin WebViews; without it WebView2 logs a CSP error before
-/// falling back to postMessage. The policy still blocks off-host exfiltration.
+/// 6161 is held) and WebKit does not match `ws:` with `'self'`. `ipc:` (macOS
+/// WKWebView / Linux WebKitGTK) and `http://ipc.localhost` (Windows WebView2)
+/// allow Tauri IPC without opening remote hosts, wildcards, `asset:`, or
+/// `'unsafe-eval'`. Kept aligned with `app/desktop/src-tauri/tauri.conf.json`.
 const UI_CSP: &str = "default-src 'self'; \
 base-uri 'self'; \
 object-src 'none'; \
-frame-ancestors 'none'; \
+frame-src 'self'; \
+frame-ancestors 'self'; \
 form-action 'self'; \
 script-src 'self'; \
-style-src 'self' 'unsafe-inline'; \
-img-src 'self' data: blob:; \
-media-src 'self' blob: data:; \
-font-src 'self' data:; \
-worker-src 'self' blob:; \
-connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* http://ipc.localhost";
+style-src 'self'; \
+img-src 'self' data:; \
+media-src 'self' data:; \
+font-src 'self'; \
+worker-src 'none'; \
+connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ipc: http://ipc.localhost";
 
 /// Middleware: stamp the UI CSP on responses. Opt-out via `SHELLX_CUT_DISABLE_CSP=1`
 /// (a field-deployment escape hatch should an unforeseen UI feature ever need a
@@ -503,19 +506,86 @@ mod tests {
             .is_ok());
         for must in [
             "default-src 'self'",
+            "base-uri 'self'",
+            "form-action 'self'",
             "script-src 'self'",
             "object-src 'none'",
-            "frame-ancestors 'none'",
-            "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: blob:",
+            "frame-src 'self'",
+            "frame-ancestors 'self'",
+            "style-src 'self'",
+            "img-src 'self' data:",
+            "media-src 'self' data:",
             "ws://127.0.0.1:*",
+            "ws://localhost:*",
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "ipc:",
             "http://ipc.localhost",
         ] {
             assert!(UI_CSP.contains(must), "CSP missing directive: {must}");
         }
+        assert!(
+            !UI_CSP.contains("frame-ancestors 'none'"),
+            "frame-ancestors 'none' breaks same-origin /manual.html preview framing"
+        );
+        assert!(!UI_CSP.contains("asset:"));
         // Must NOT weaken script execution (no unsafe-inline/eval on scripts).
         assert!(!UI_CSP.contains("script-src 'self' 'unsafe-inline'"));
         assert!(!UI_CSP.contains("unsafe-eval"));
+        for directive in UI_CSP.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+            for part in directive.split_whitespace().skip(1) {
+                assert_ne!(part, "*", "wildcard host forbidden in UI_CSP: {UI_CSP}");
+                assert!(
+                    !part.contains("*."),
+                    "wildcard subdomain forbidden in UI_CSP: {UI_CSP}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn served_ui_and_manual_send_ui_csp_header_with_same_origin_framing() {
+        let dist = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dist.path().join("index.html"),
+            "<!doctype html><html></html>",
+        )
+        .unwrap();
+        std::fs::write(
+            dist.path().join("manual.html"),
+            "<!doctype html><html><body><iframe src=\"/manual.html?manual=embed\"></iframe></body></html>",
+        )
+        .unwrap();
+        let server =
+            spawn_test_server(build_router(AppState::new(), Some(dist.path().into()))).await;
+
+        let (root_csp, manual_csp) = tokio::task::spawn_blocking(move || {
+            let get_csp = |path: &str| {
+                let url = format!("{}{path}", server.base_url);
+                let response = ureq::get(&url).call().unwrap();
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned)
+            };
+            (get_csp("/"), get_csp("/manual.html?manual=embed&mock=1"))
+        })
+        .await
+        .unwrap();
+
+        for (label, hdr) in [("/", root_csp), ("/manual.html", manual_csp)] {
+            let hdr = hdr.unwrap_or_else(|| panic!("missing CSP header for {label}"));
+            assert_eq!(hdr, UI_CSP, "unexpected CSP header for {label}");
+            assert!(
+                hdr.contains("frame-ancestors 'self'"),
+                "{label} must permit same-origin framing"
+            );
+            assert!(
+                hdr.contains("ipc:"),
+                "{label} must permit macOS/Linux Tauri IPC scheme"
+            );
+        }
     }
 
     /// Packaged/release mode refuses a non-loopback address even if an inherited
@@ -977,12 +1047,21 @@ mod tests {
             },
         )
         .await;
-        // A 16-byte "source" file outside any project subdir (4..=9 spell "ftypmp",
-        // 12..=15 spell "stub"); register it as asset a1 in the open project.
+        const FIRST_EDIT_MP4: &[u8] = include_bytes!("../assets/first-edit-sample.mp4");
+        const ONE_BY_ONE_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        // Real small source files outside any project subdir; registered as a1/a2
+        // on the open project.
         let src = dir.path().join("clip.mp4");
-        std::fs::write(&src, b"\x00\x00\x00\x18ftypmp42stub").unwrap();
+        std::fs::write(&src, FIRST_EDIT_MP4).unwrap();
         let still = dir.path().join("still.png");
-        std::fs::write(&still, b"\x89PNG\r\n\x1a\nsource-still").unwrap();
+        std::fs::write(&still, ONE_BY_ONE_PNG).unwrap();
+        let mp4_len = FIRST_EDIT_MP4.len();
+        let png_len = ONE_BY_ONE_PNG.len();
         {
             let mut guard = state.project.write().await;
             let store = guard.as_mut().expect("project open");
@@ -1051,11 +1130,13 @@ mod tests {
             "a satisfiable range on a registered source must be 206"
         );
         assert_eq!(
-            cr, "bytes 4-9/16",
+            cr,
+            format!("bytes 4-9/{mp4_len}"),
             "Content-Range names the slice + total length"
         );
         assert_eq!(
-            body, b"ftypmp",
+            body.as_slice(),
+            &FIRST_EDIT_MP4[4..=9],
             "body is exactly the requested byte slice of the SOURCE"
         );
         assert_eq!(content_type, "video/mp4");
@@ -1069,7 +1150,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(st_i, 206);
-        assert_eq!(cr_i, "bytes 0-7/20");
+        assert_eq!(cr_i, format!("bytes 0-7/{png_len}"));
         assert_eq!(content_type_i, "image/png");
         assert_eq!(body_i, b"\x89PNG\r\n\x1a\n");
 
@@ -1082,11 +1163,13 @@ mod tests {
         .unwrap();
         assert_eq!(st_s, 206, "a suffix range must be 206");
         assert_eq!(
-            cr_s, "bytes 12-15/16",
+            cr_s,
+            format!("bytes {}-{}/{mp4_len}", mp4_len - 4, mp4_len - 1),
             "suffix range resolves to the last bytes"
         );
         assert_eq!(
-            body_s, b"stub",
+            body_s.as_slice(),
+            &FIRST_EDIT_MP4[mp4_len - 4..],
             "suffix body is the file's tail (moov-at-end seek)"
         );
 
@@ -1101,6 +1184,496 @@ mod tests {
             st_u, 404,
             "an unregistered asset id must not serve any file"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn source_route_refuses_non_media_and_kind_mismatch_from_replayed_journal() {
+        const FIRST_EDIT_MP4: &[u8] = include_bytes!("../assets/first-edit-sample.mp4");
+        const ONE_BY_ONE_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        const REFUSAL_MSG: &str =
+            "This clip's file is not a video, audio or picture file that Cut can play.";
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside-media");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let secret_txt = outside.join("secret.txt");
+        std::fs::write(&secret_txt, b"PRIVATE-SSH-KEY-SECRET-BYTES").unwrap();
+
+        let fake_mp4 = outside.join("x.mp4");
+        std::fs::write(&fake_mp4, b"PRIVATE-TEXT-MASQUERADING-AS-MP4").unwrap();
+
+        let real_png = outside.join("still.png");
+        std::fs::write(&real_png, ONE_BY_ONE_PNG).unwrap();
+
+        let real_mp4 = outside.join("sample.mp4");
+        std::fs::write(&real_mp4, FIRST_EDIT_MP4).unwrap();
+
+        let mut store = cut_core::ProjectStore::create(dir.path(), "received", None).unwrap();
+        let proj_dir = store.dir.clone();
+        store
+            .record_import(
+                Some("a_txt".into()),
+                cut_core::types::Asset {
+                    path: secret_txt.to_string_lossy().into_owned(),
+                    hash: "sha256:txt".into(),
+                    probe: Some(serde_json::json!({"kind": "video"})),
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                Actor::system(),
+                None,
+            )
+            .unwrap();
+        store
+            .record_import(
+                Some("a_fake_mp4".into()),
+                cut_core::types::Asset {
+                    path: fake_mp4.to_string_lossy().into_owned(),
+                    hash: "sha256:fake-mp4".into(),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                Actor::system(),
+                None,
+            )
+            .unwrap();
+        store
+            .record_import(
+                Some("a_png_as_video".into()),
+                cut_core::types::Asset {
+                    path: real_png.to_string_lossy().into_owned(),
+                    hash: "sha256:png-as-video".into(),
+                    probe: Some(serde_json::json!({"kind": "video"})),
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                Actor::system(),
+                None,
+            )
+            .unwrap();
+        store
+            .record_import(
+                Some("a_real_mp4".into()),
+                cut_core::types::Asset {
+                    path: real_mp4.to_string_lossy().into_owned(),
+                    hash: "sha256:real-mp4".into(),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                Actor::system(),
+                None,
+            )
+            .unwrap();
+        drop(store);
+        // Simulate receiving only the journal + folder, forcing ProjectStore::open
+        // to replay `ops.jsonl`.
+        std::fs::remove_file(proj_dir.join("project.json")).unwrap();
+
+        let state = AppState::new();
+        let opened = dispatch(
+            &state,
+            "project.open",
+            serde_json::json!({"path": proj_dir}),
+            Actor {
+                kind: ActorKind::Agent,
+                name: "t".into(),
+                via: "test".into(),
+                request: None,
+            },
+        )
+        .await;
+        assert!(
+            opened.ok,
+            "received project should open cleanly: {:?}",
+            opened.error
+        );
+
+        let server = spawn_test_server(build_router(state, None)).await;
+        let base = server.base_url.clone();
+
+        fn fetch(url: &str, range: Option<&str>) -> (u16, String, Vec<u8>) {
+            let builder = ureq::get(url);
+            let builder = match range {
+                Some(r) => builder.header("Range", r),
+                None => builder,
+            };
+            let mut resp = builder
+                .config()
+                .http_status_as_error(false)
+                .build()
+                .call()
+                .expect("http response");
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let status = resp.status().as_u16();
+            let body = resp.body_mut().read_to_vec().unwrap_or_default();
+            (status, ct, body)
+        }
+
+        for id in ["a_txt", "a_fake_mp4", "a_png_as_video"] {
+            for range in [None, Some("bytes=0-31")] {
+                let (st, _ct, body) = tokio::task::spawn_blocking({
+                    let u = format!("{base}/api/source/{id}");
+                    let r = range.map(str::to_string);
+                    move || fetch(&u, r.as_deref())
+                })
+                .await
+                .unwrap();
+                let body_str = String::from_utf8_lossy(&body);
+                assert!(
+                    st != 200 && st != 206,
+                    "asset {id} (range={range:?}) must be refused, got HTTP {st} body={body_str:?}"
+                );
+                assert!(
+                    !body.windows(b"PRIVATE".len()).any(|w| w == b"PRIVATE")
+                        && !body.starts_with(b"\x89PNG"),
+                    "asset {id} (range={range:?}) leaked file bytes in body: {body:?}"
+                );
+                assert!(
+                    body_str.contains(REFUSAL_MSG),
+                    "asset {id} (range={range:?}) must explain refusal cleanly, got {body_str:?}"
+                );
+            }
+        }
+
+        // Real outside media file still streams properly with 206 + exact bytes.
+        let (st_ok, ct_ok, body_ok) = tokio::task::spawn_blocking({
+            let u = format!("{base}/api/source/a_real_mp4");
+            move || fetch(&u, Some("bytes=0-15"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_ok, 206, "real media outside project folder must stream");
+        assert_eq!(ct_ok, "video/mp4");
+        assert_eq!(body_ok.as_slice(), &FIRST_EDIT_MP4[..16]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn source_route_edge_cases_cache_overwrite_concurrent_and_render_rejection() {
+        const FIRST_EDIT_MP4: &[u8] = include_bytes!("../assets/first-edit-sample.mp4");
+        const ONE_BY_ONE_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        const REFUSAL_MSG: &str =
+            "This clip's file is not a video, audio or picture file that Cut can play.";
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let swapped_mp4 = outside.join("swapped.mp4");
+        std::fs::write(&swapped_mp4, FIRST_EDIT_MP4).unwrap();
+        let real_png = outside.join("still.png");
+        std::fs::write(&real_png, ONE_BY_ONE_PNG).unwrap();
+        let empty_mp4 = outside.join("empty.mp4");
+        std::fs::write(&empty_mp4, b"").unwrap();
+        let fake_render_mp4 = outside.join("fake-render.mp4");
+        std::fs::write(&fake_render_mp4, b"PRIVATE-NONMEDIA-RENDER-INPUT").unwrap();
+        let subdir_path = outside.join("not-a-file");
+        std::fs::create_dir_all(&subdir_path).unwrap();
+
+        let mut store = cut_core::ProjectStore::create(dir.path(), "edges", None).unwrap();
+        let proj_dir = store.dir.clone();
+        std::fs::create_dir_all(proj_dir.join("clips")).unwrap();
+        let rel_mp4 = proj_dir.join("clips/rel.mp4");
+        std::fs::write(&rel_mp4, FIRST_EDIT_MP4).unwrap();
+
+        for (id, path, probe) in [
+            (
+                "a_swap",
+                swapped_mp4.to_string_lossy().into_owned(),
+                Some(serde_json::json!({"kind": "video", "duration_ms": 2000})),
+            ),
+            ("a_png", real_png.to_string_lossy().into_owned(), None),
+            (
+                "a_rel",
+                "clips/rel.mp4".to_string(),
+                Some(serde_json::json!({"kind": "video"})),
+            ),
+            ("a_empty", empty_mp4.to_string_lossy().into_owned(), None),
+            (
+                "a_missing",
+                outside.join("gone.mp4").to_string_lossy().into_owned(),
+                None,
+            ),
+            ("a_dir", subdir_path.to_string_lossy().into_owned(), None),
+            (
+                "a_bad_kind",
+                swapped_mp4.to_string_lossy().into_owned(),
+                Some(serde_json::json!({"kind": "script"})),
+            ),
+            (
+                "a_render_fake",
+                fake_render_mp4.to_string_lossy().into_owned(),
+                Some(
+                    serde_json::json!({"kind": "video", "duration_ms": 1500, "width": 64, "height": 64, "fps": 30.0}),
+                ),
+            ),
+        ] {
+            store
+                .record_import(
+                    Some(id.into()),
+                    cut_core::types::Asset {
+                        path,
+                        hash: format!("sha256:{id}"),
+                        probe,
+                        transcript: None,
+                        perception: None,
+                        proxy: None,
+                        filmstrip: None,
+                    },
+                    Actor::system(),
+                    None,
+                )
+                .unwrap();
+        }
+        drop(store);
+        std::fs::remove_file(proj_dir.join("project.json")).unwrap();
+
+        let state = AppState::new();
+        let opened = dispatch(
+            &state,
+            "project.open",
+            serde_json::json!({"path": proj_dir}),
+            Actor::system(),
+        )
+        .await;
+        assert!(opened.ok, "open failed: {:?}", opened.error);
+
+        // Mark `a_png`'s probe as verified + unchanged so the fast path avoids
+        // shelling out on verified engine media too.
+        {
+            let probe_json = cut_media::probe_source(&real_png).unwrap();
+            let mut guard = state.project.write().await;
+            let store = guard.as_mut().unwrap();
+            if let Some(a) = store.project.assets.get_mut("a_png") {
+                a.probe = Some(serde_json::to_value(probe_json).unwrap());
+            }
+            store.project.mark_probe_verified("a_png");
+            if let Some(binding) = store.project.probe_binding("a_png") {
+                cut_media::cache_trust::remember_source(&real_png, &binding);
+            }
+        }
+
+        // Item 2 check: insert fake non-media asset into default track "v1" & confirm
+        // cut_media::render_final fails cleanly before writing any output file.
+        let r_ins = dispatch(
+            &state,
+            "edit.insert",
+            serde_json::json!({
+                "asset": "a_render_fake",
+                "track": "v1",
+                "at_ms": 0,
+                "src_range_ms": [0, 1000]
+            }),
+            Actor::system(),
+        )
+        .await;
+        assert!(r_ins.ok, "insert failed: {:?}", r_ins.error);
+        {
+            let guard = state.project.read().await;
+            let store = guard.as_ref().unwrap();
+            let exports_dir = proj_dir.join("exports");
+            std::fs::create_dir_all(&exports_dir).unwrap();
+            let out_mp4 = exports_dir.join("never-written.mp4");
+            let edl = cut_core::edl_from_project(&store.project);
+            let fence = cut_media::PathFence::new(&proj_dir).unwrap();
+            let preset = cut_media::RenderPreset::named("draft").unwrap();
+            let render_err = cut_media::render_final(
+                &store.project,
+                &edl,
+                &fence,
+                &out_mp4,
+                &preset,
+                Default::default(),
+                None,
+            )
+            .expect_err("render_final must fail on non-media input");
+            assert!(
+                !out_mp4.exists(),
+                "failed render must leave zero output file: {render_err:?}"
+            );
+        }
+
+        let cache = state.source_media_cache.clone();
+        let server = spawn_test_server(build_router(state, None)).await;
+        let base = server.base_url.clone();
+
+        fn fetch(url: &str, range: Option<&str>) -> (u16, String, Vec<u8>) {
+            let b = ureq::get(url);
+            let b = match range {
+                Some(r) => b.header("Range", r),
+                None => b,
+            };
+            let mut r = b
+                .config()
+                .http_status_as_error(false)
+                .build()
+                .call()
+                .unwrap();
+            let ct = r
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let st = r.status().as_u16();
+            let body = r.body_mut().read_to_vec().unwrap_or_default();
+            (st, ct, body)
+        }
+
+        // Relative path inside project + verified PNG work cleanly; bad/missing/empty fail.
+        let (st_rel, ct_rel, body_rel) = tokio::task::spawn_blocking({
+            let u = format!("{base}/api/source/a_rel");
+            move || fetch(&u, Some("bytes=0-15"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_rel, 206);
+        assert_eq!(ct_rel, "video/mp4");
+        assert_eq!(body_rel.as_slice(), &FIRST_EDIT_MP4[..16]);
+
+        let (st_png, ct_png, body_png) = tokio::task::spawn_blocking({
+            let u = format!("{base}/api/source/a_png");
+            move || fetch(&u, None)
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_png, 206);
+        assert_eq!(ct_png, "image/png");
+        assert_eq!(body_png.as_slice(), ONE_BY_ONE_PNG);
+
+        for (id, expected_status) in [
+            ("a_empty", 404),
+            ("a_missing", 404),
+            ("a_dir", 415),
+            ("a_bad_kind", 415),
+        ] {
+            let (st, _, body) = tokio::task::spawn_blocking({
+                let u = format!("{base}/api/source/{id}");
+                move || fetch(&u, None)
+            })
+            .await
+            .unwrap();
+            assert_eq!(st, expected_status, "asset {id} unexpected status");
+            if expected_status == 415 {
+                assert!(String::from_utf8_lossy(&body).contains(REFUSAL_MSG));
+            }
+        }
+
+        // Stream valid `a_swap`, confirm cache entry populated, then overwrite
+        // file with plain text -> cache busts on (size, mtime) and refuses.
+        let (st_1, _, _) = tokio::task::spawn_blocking({
+            let u = format!("{base}/api/source/a_swap");
+            move || fetch(&u, Some("bytes=0-15"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_1, 206);
+        let swap_meta = std::fs::metadata(&swapped_mp4).unwrap();
+        let swap_key = crate::state::SourceMediaKey {
+            path: std::fs::canonicalize(&swapped_mp4).unwrap(),
+            len: swap_meta.len(),
+            modified: swap_meta.modified().unwrap(),
+        };
+        assert_eq!(
+            cache.get(&swap_key),
+            Some(crate::state::SourceMediaVerdict::Media {
+                kind: "video".into()
+            }),
+            "verified source decision must be cached by canonical path + size + mtime"
+        );
+
+        let mut replacement = b"PRIVATE-REPLACED-TEXT-SECRET-".to_vec();
+        replacement.resize(FIRST_EDIT_MP4.len() + 37, b'X');
+        std::fs::write(&swapped_mp4, &replacement).unwrap();
+        let (st_2, _, body_2) = tokio::task::spawn_blocking({
+            let u = format!("{base}/api/source/a_swap");
+            move || fetch(&u, Some("bytes=0-31"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_2, 415, "modified file must miss cache and be refused");
+        assert!(!body_2.windows(b"PRIVATE".len()).any(|w| w == b"PRIVATE"));
+        assert!(String::from_utf8_lossy(&body_2).contains(REFUSAL_MSG));
+
+        // Second client concurrently accessing good and non-media sources.
+        let (r1, r2, r3, r4) = tokio::join!(
+            tokio::task::spawn_blocking({
+                let u = format!("{base}/api/source/a_rel");
+                move || fetch(&u, Some("bytes=0-7"))
+            }),
+            tokio::task::spawn_blocking({
+                let u = format!("{base}/api/source/a_png");
+                move || fetch(&u, None)
+            }),
+            tokio::task::spawn_blocking({
+                let u = format!("{base}/api/source/a_render_fake");
+                move || fetch(&u, None)
+            }),
+            tokio::task::spawn_blocking({
+                let u = format!("{base}/api/source/a_swap");
+                move || fetch(&u, None)
+            }),
+        );
+        assert_eq!(r1.unwrap().0, 206);
+        assert_eq!(r2.unwrap().0, 206);
+        assert_eq!(r3.unwrap().0, 415);
+        assert_eq!(r4.unwrap().0, 415);
+
+        // Simulated restart (fresh AppState opening same project from disk).
+        let restarted_state = AppState::new();
+        let reopened = dispatch(
+            &restarted_state,
+            "project.open",
+            serde_json::json!({"path": proj_dir}),
+            Actor::system(),
+        )
+        .await;
+        assert!(reopened.ok);
+        let restarted_server = spawn_test_server(build_router(restarted_state, None)).await;
+        let r_base = restarted_server.base_url.clone();
+        let (st_r_bad, _, body_r_bad) = tokio::task::spawn_blocking({
+            let u = format!("{r_base}/api/source/a_render_fake");
+            move || fetch(&u, None)
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_r_bad, 415);
+        assert!(!body_r_bad
+            .windows(b"PRIVATE".len())
+            .any(|w| w == b"PRIVATE"));
+        let (st_r_ok, _, body_r_ok) = tokio::task::spawn_blocking({
+            let u = format!("{r_base}/api/source/a_rel");
+            move || fetch(&u, Some("bytes=0-15"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_r_ok, 206);
+        assert_eq!(body_r_ok.as_slice(), &FIRST_EDIT_MP4[..16]);
     }
 
     // ---------------------------------------------------------------------
@@ -2048,14 +2621,93 @@ async fn serve_rehearsal_media(
         .into_response()
 }
 
+const NON_MEDIA_SOURCE_MESSAGE: &str =
+    "This clip's file is not a video, audio or picture file that Cut can play.";
+
+fn is_playable_media_kind(kind: &str) -> bool {
+    matches!(kind, "video" | "audio" | "image")
+}
+
+fn declared_asset_kind(asset: &cut_core::Asset) -> Result<Option<String>, ()> {
+    let Some(probe) = asset.probe.as_ref() else {
+        return Ok(None);
+    };
+    let Some(kind_val) = probe.get("kind") else {
+        return Ok(None);
+    };
+    if kind_val.is_null() {
+        return Ok(None);
+    }
+    let Some(kind) = kind_val.as_str() else {
+        return Err(());
+    };
+    if is_playable_media_kind(kind) {
+        Ok(Some(kind.to_string()))
+    } else {
+        Err(())
+    }
+}
+
+fn source_content_type(path: &std::path::Path, kind: &str) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match (kind, ext.as_str()) {
+        ("image", "png") => "image/png",
+        ("image", "jpg" | "jpeg") => "image/jpeg",
+        ("image", "gif") => "image/gif",
+        ("image", "webp") => "image/webp",
+        ("image", "bmp") => "image/bmp",
+        ("image", "tif" | "tiff") => "image/tiff",
+        ("image", _) => "image/png",
+        ("audio", "mp3") => "audio/mpeg",
+        ("audio", "m4a" | "aac") => "audio/mp4",
+        ("audio", "wav") => "audio/wav",
+        ("audio", "flac") => "audio/flac",
+        ("audio", "opus" | "ogg") => "audio/ogg",
+        ("audio", _) => "audio/mp4",
+        ("video", "webm") => "video/webm",
+        ("video", "mov") => "video/quicktime",
+        ("video", "mkv") => "video/x-matroska",
+        ("video", "ogv") => "video/ogg",
+        ("video", "gif") => "image/gif",
+        ("video", "avi") => "video/x-msvideo",
+        _ => "video/mp4",
+    }
+}
+
+fn classify_source_media(
+    path: &std::path::Path,
+    verified_kind: Option<String>,
+    probe_binding: Option<String>,
+) -> Result<crate::state::SourceMediaVerdict, String> {
+    if let (Some(kind), Some(binding)) = (verified_kind, probe_binding) {
+        if is_playable_media_kind(&kind)
+            && cut_media::cache_trust::source_unchanged_for(path, &binding)
+        {
+            return Ok(crate::state::SourceMediaVerdict::Media { kind });
+        }
+    }
+    match cut_media::probe_source(path) {
+        Ok(probe) if is_playable_media_kind(&probe.kind) => {
+            Ok(crate::state::SourceMediaVerdict::Media { kind: probe.kind })
+        }
+        Ok(_) => Ok(crate::state::SourceMediaVerdict::Refused),
+        Err(error) if error.code == cut_core::error_codes::TOOL_MISSING => Err(error.message),
+        Err(_) => Ok(crate::state::SourceMediaVerdict::Refused),
+    }
+}
+
 /// GET /api/source/{asset} — stream a registered asset's ORIGINAL source media for
 /// the preview `<video>` when no proxy exists yet, allowing editing while
 /// the proxy builds, or when proxy generation is toggled off). FENCED: the asset id
 /// must resolve to an asset in the CURRENT project — the served path comes from the
-/// project's own asset registry, never from caller-controlled input. SEEK + capped
+/// project's own asset registry, never from caller-controlled input. Only files
+/// verified as playable media of the asset's kind may stream. SEEK + capped
 /// chunk (never reads the whole file) and honors a single HTTP byte-range so the
-/// `<video>` can seek; always replies 206. A source whose codec the browser can't
-/// decode just fires `<video>` onError → the UI falls back to the composed poster.
+/// `<video>` can seek; always replies 206.
 async fn serve_source(
     State(state): State<AppState>,
     Path(asset): Path<String>,
@@ -2063,50 +2715,109 @@ async fn serve_source(
 ) -> Response {
     use axum::http::StatusCode;
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    // Resolve the asset's source path from the OPEN project (registered id only).
-    let path = {
+    // Resolve the asset's source path and declared/verified kind under a short lock.
+    let (path, declared_kind, verified_kind, probe_binding) = {
         let guard = state.project.read().await;
-        match guard.as_ref().and_then(|s| s.project.assets.get(&asset)) {
-            Some(a) => std::path::PathBuf::from(&a.path),
-            None => return (StatusCode::NOT_FOUND, "unknown asset").into_response(),
+        let Some(store) = guard.as_ref() else {
+            return (StatusCode::NOT_FOUND, "unknown asset").into_response();
+        };
+        let Some(a) = store.project.assets.get(&asset) else {
+            return (StatusCode::NOT_FOUND, "unknown asset").into_response();
+        };
+        let declared_kind = match declared_asset_kind(a) {
+            Ok(kind) => kind,
+            Err(()) => {
+                return (StatusCode::UNSUPPORTED_MEDIA_TYPE, NON_MEDIA_SOURCE_MESSAGE)
+                    .into_response();
+            }
+        };
+        let verified_kind = store
+            .project
+            .verified_probe(&asset)
+            .and_then(|p| p.get("kind"))
+            .and_then(|k| k.as_str())
+            .filter(|k| is_playable_media_kind(k))
+            .map(str::to_string);
+        let probe_binding = store.project.probe_binding(&asset);
+        let path = crate::dispatch::asset_source_path(&store.dir, a);
+        (path, declared_kind, verified_kind, probe_binding)
+    };
+    let meta = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => return (StatusCode::NOT_FOUND, "source unavailable").into_response(),
+    };
+    if !meta.is_file() {
+        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, NON_MEDIA_SOURCE_MESSAGE).into_response();
+    }
+    let len = meta.len();
+    if len == 0 {
+        return (StatusCode::NOT_FOUND, "empty source").into_response();
+    }
+    let modified = meta.modified().ok();
+    let canon_path = tokio::fs::canonicalize(&path)
+        .await
+        .unwrap_or_else(|_| path.clone());
+    let cache_key = modified.map(|modified| crate::state::SourceMediaKey {
+        path: canon_path,
+        len,
+        modified,
+    });
+    let verdict = match cache_key
+        .as_ref()
+        .and_then(|key| state.source_media_cache.get(key))
+    {
+        Some(cached) => cached,
+        None => {
+            let probe_path = path.clone();
+            match tokio::task::spawn_blocking(move || {
+                classify_source_media(&probe_path, verified_kind, probe_binding)
+            })
+            .await
+            {
+                Ok(Ok(verdict)) => {
+                    if let Some(key) = cache_key {
+                        state.source_media_cache.insert(key, verdict.clone());
+                    }
+                    verdict
+                }
+                Ok(Err(tool_missing)) => {
+                    return (StatusCode::SERVICE_UNAVAILABLE, tool_missing).into_response();
+                }
+                Err(_) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "media check failed")
+                        .into_response();
+                }
+            }
         }
     };
+    let actual_kind = match verdict {
+        crate::state::SourceMediaVerdict::Media { kind } => kind,
+        crate::state::SourceMediaVerdict::Refused => {
+            return (StatusCode::UNSUPPORTED_MEDIA_TYPE, NON_MEDIA_SOURCE_MESSAGE).into_response();
+        }
+    };
+    if declared_kind
+        .as_deref()
+        .is_some_and(|expected| expected != actual_kind)
+    {
+        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, NON_MEDIA_SOURCE_MESSAGE).into_response();
+    }
+
     let mut file = match tokio::fs::File::open(&path).await {
         Ok(f) => f,
         Err(_) => return (StatusCode::NOT_FOUND, "source unavailable").into_response(),
     };
-    let len = match file.metadata().await {
-        Ok(m) => m.len(),
+    let open_meta = match file.metadata().await {
+        Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "source unavailable").into_response(),
     };
-    if len == 0 {
-        return (StatusCode::NOT_FOUND, "empty source").into_response();
-    }
-    let ct = match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
+    if !open_meta.is_file()
+        || open_meta.len() != len
+        || (modified.is_some() && open_meta.modified().ok() != modified)
     {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        "mp3" => "audio/mpeg",
-        "m4a" | "aac" => "audio/mp4",
-        "wav" => "audio/wav",
-        "flac" => "audio/flac",
-        "opus" | "ogg" => "audio/ogg",
-        "webm" => "video/webm",
-        "mov" => "video/quicktime",
-        "mkv" => "video/x-matroska",
-        "ogv" => "video/ogg",
-        // mp4/m4v + best-effort default: an undecodable codec just errors in <video>.
-        _ => "video/mp4",
-    };
+        return (StatusCode::CONFLICT, "source changed; retry request").into_response();
+    }
+    let ct = source_content_type(&path, &actual_kind);
     // Resolve the requested range (synthesize `bytes=0-` when absent), then CAP it.
     let (start, end) = match headers
         .get(axum::http::header::RANGE)

@@ -77,7 +77,18 @@ pub fn make_gif(
     }
     let fps = fps.clamp(2, 50);
     let width = width.clamp(64, 1920);
-    crate::ffmpeg::run_ffmpeg(&gif_ffmpeg_args(input, out, fps, width, dither))?;
+    let probe = crate::probe::probe(input)?;
+    let mut args = Vec::new();
+    // Keep the baked-movie decoder at the count used by export preflight.
+    if let Some(n) = probe
+        .width
+        .zip(probe.height)
+        .and_then(|(w, h)| crate::render::resources::decoder_threads(w, h))
+    {
+        args.extend(["-threads".into(), n.to_string()]);
+    }
+    args.extend(gif_ffmpeg_args(input, out, fps, width, dither));
+    crate::ffmpeg::run_ffmpeg_atomic_output(&args, out)?;
     Ok(())
 }
 

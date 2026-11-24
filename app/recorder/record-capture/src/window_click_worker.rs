@@ -2,7 +2,7 @@
 //! The low-level hook only retains transitions and attempts a nonblocking enqueue.
 use crate::window_click_coordinates::{WindowClicks, WindowRect, MAX_EVENT_AGE_MS};
 use record_core::MouseButton;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -26,9 +26,20 @@ pub(crate) struct WindowClickWorker {
 }
 
 impl WindowClickWorker {
+    #[allow(dead_code)]
     pub(crate) fn new(
         state: Arc<Mutex<WindowClicks>>,
         start: Instant,
+        geometry: impl FnMut((f64, f64)) -> Option<WindowRect> + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let origin = Arc::new(OnceLock::new());
+        let _ = origin.set(start);
+        Self::new_deferred(state, origin, geometry)
+    }
+
+    pub(crate) fn new_deferred(
+        state: Arc<Mutex<WindowClicks>>,
+        origin: Arc<OnceLock<Instant>>,
         mut geometry: impl FnMut((f64, f64)) -> Option<WindowRect> + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::sync_channel(QUEUE_CAPACITY);
@@ -52,6 +63,9 @@ impl WindowClickWorker {
                     };
                     let Work::Click(job) = work else {
                         break;
+                    };
+                    let Some(start) = origin.get().copied() else {
+                        continue;
                     };
                     let age_at = |age: u32| {
                         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);

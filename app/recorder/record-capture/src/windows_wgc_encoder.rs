@@ -165,6 +165,14 @@ impl WgcVideoEncoder {
         })
     }
 
+    pub(crate) fn set_timed_origin(
+        &mut self,
+        start: Instant,
+        origin: crate::windows_wgc_clock_origin::QpcCaptureOrigin,
+    ) {
+        self.timed_origin.get_or_insert((start, origin));
+    }
+
     pub(crate) fn send_frame(&mut self, frame: &Frame<'_>) -> Result<bool, Error> {
         let native = frame.timestamp()?.Duration;
         let surface = crate::windows_wgc_surface::snapshot(frame, self.width, self.height)?;

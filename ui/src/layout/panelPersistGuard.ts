@@ -149,10 +149,14 @@ export function adoptUnconfirmedPanelAttempt(): string | null {
  *  Register ONCE per WebView boot (AppRightRail does this in a mount effect).
  *  `target` is injectable so node-level tests can drive it without a DOM. */
 export function disarmPanelAttemptOnOrderlyUnload(
-  target: Pick<Window, 'addEventListener'> | null = typeof window === 'undefined' ? null : window,
-): void {
-  if (!target) return
-  target.addEventListener('pagehide', () => removeKey(ATTEMPT_KEY))
+  target: (Pick<Window, 'addEventListener'> & Partial<Pick<Window, 'removeEventListener'>>) | null = typeof window === 'undefined' ? null : window,
+): () => void {
+  if (!target) return () => {}
+  const onPageHide = () => removeKey(ATTEMPT_KEY)
+  target.addEventListener('pagehide', onPageHide)
+  return () => {
+    target.removeEventListener?.('pagehide', onPageHide)
+  }
 }
 
 /** Restore-time gate: never restore a tab that failed to render. The fallback

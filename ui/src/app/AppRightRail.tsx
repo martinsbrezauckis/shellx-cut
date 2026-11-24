@@ -157,9 +157,7 @@ export default function AppRightRail({
   // not the crash class the sentinel hunts. Without this, a reload inside the
   // arm→confirm window would blocklist an innocent tab at the next boot
   // during a normal reload. Once per boot.
-  useEffect(() => {
-    disarmPanelAttemptOnOrderlyUnload()
-  }, [])
+  useEffect(() => disarmPanelAttemptOnOrderlyUnload(), [])
 
   useEffect(() => {
     const requestTab = (tab: ReviewTab, diff?: { from: string; to: string }) => {

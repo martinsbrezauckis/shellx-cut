@@ -107,6 +107,9 @@ fn validate_capture_cadence(fps: f64, cadence: &CaptureCadence) -> Result<(), Se
     Ok(())
 }
 
+// Native capture needs a short grace period to close the run after limit-triggered Stop.
+const ACTIVE_LIMIT_STOP_OVERSHOOT_MS: u64 = 2_000;
+
 pub(crate) fn validate_run(
     intent: &RecordingSessionIntent,
     previous: Option<&SealedRun>,
@@ -122,9 +125,10 @@ pub(crate) fn validate_run(
         || run.checkpoints.first != expected_checkpoint_first
         || run.checkpoints.last < run.checkpoints.first
         || previous.is_some_and(|previous| run.observed_start_ms < previous.observed_end_ms)
-        || intent
-            .active_duration_limit_ms
-            .is_some_and(|limit| run.logical_end_ms > limit)
+        || intent.active_duration_limit_ms.is_some_and(|limit| {
+            run.logical_start_ms >= limit
+                || run.logical_end_ms.saturating_sub(limit) > ACTIVE_LIMIT_STOP_OVERSHOOT_MS
+        })
         || run.fragments.is_empty()
     {
         return Err(invalid("sealed run ordering or intervals are invalid"));

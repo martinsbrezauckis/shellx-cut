@@ -351,6 +351,10 @@ pub struct PerceptionReport {
     /// `media.diarize` ran. Additive — pre-diarization reports load unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diarization: Option<Diarization>,
+    /// Matching execution evidence, not a check verdict. Old reports retain
+    /// unknown history; cache hits keep the original snapshot and attempt id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis_attempt: Option<crate::analysis_attempts::AnalysisAttempt>,
     /// Present only when this report ran under a supplied prepared runtime. Legacy
     /// reports remain compatible and cannot satisfy a prepared-context cache hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]

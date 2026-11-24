@@ -35,6 +35,7 @@
 //! Dependencies: types.rs, ops.rs, edit.rs, error.rs. Primary callers: server
 //! (project.* verbs) and integration tests.
 
+use crate::clip_markers;
 use crate::edit;
 use crate::error::{codes, CutError, VerbWarning};
 use crate::ops::{Actor, InverseOp, OpEffect, OpLog, OpRecord, OpStatus};
@@ -3178,10 +3179,7 @@ pub fn apply_edit_verb_pinned(
                 ripple: bool,
             }
             let a: A = serde_json::from_value(args.clone())?;
-            // Pin the cloned clip id on replay (rebase id-stability). One id per
-            // op ⇒ a single Option (the linked-audio half is a separate op).
-            let pin = pinned.as_ref().and_then(|p| p.added_clip.clone());
-            edit::duplicate_pinned(project, &a.clip, a.ripple, pin.as_deref())
+            clip_markers::duplicate(project, &a.clip, a.ripple, pinned.as_deref_mut())
         }
         "edit.nest" => {
             // Compound clip / nest: MOVE a contiguous run of clips into a sub-timeline
@@ -4187,6 +4185,7 @@ pub fn apply_edit_verb_pinned(
             edit::apply_set_timeline(project, args)?;
             Ok(vec![])
         }
+        "edit._set_clip_markers" => clip_markers::apply_verb(project, args, pinned),
         other => Err(CutError::new(
             codes::INVALID_ARGS,
             format!("'{other}' is not a core edit verb"),

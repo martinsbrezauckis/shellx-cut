@@ -83,6 +83,17 @@ impl MicRecordingGate {
         Ok(origin)
     }
 
+    #[cfg_attr(
+        not(all(windows, feature = "capture-windows")),
+        allow(
+            dead_code,
+            reason = "Windows first-frame gate anchors mic at first video frame"
+        )
+    )]
+    pub(crate) fn arm_at(&self, origin: Instant) -> Instant {
+        *self.0.get_or_init(|| origin)
+    }
+
     pub(crate) fn origin(&self) -> Option<Instant> {
         self.0.get().copied()
     }
@@ -117,37 +128,14 @@ pub(crate) fn join_bounded<T>(
     }
 }
 
-pub(crate) fn spawn_device_mic(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_device_mic_with_level_and_gate(
     path: String,
     device: cpal::Device,
     stop: Arc<AtomicBool>,
     ready: Arc<AtomicBool>,
     capture_started: Instant,
-) -> JoinHandle<Result<CapturedMicrophone>> {
-    spawn_device_mic_with_optional_level(path, device, stop, ready, capture_started, None)
-}
-
-/// Start an already-selected microphone stream and feed its existing callback
-/// into a caller-owned live meter. This is intentionally an explicit handle:
-/// the owner controls its lifecycle instead of consulting process-global audio
-/// state, and no additional device or CPAL stream is opened.
-pub(crate) fn spawn_device_mic_with_level(
-    path: String,
-    device: cpal::Device,
-    stop: Arc<AtomicBool>,
-    ready: Arc<AtomicBool>,
-    capture_started: Instant,
-    level: Arc<RollingAudioLevel>,
-) -> JoinHandle<Result<CapturedMicrophone>> {
-    spawn_device_mic_with_optional_level(path, device, stop, ready, capture_started, Some(level))
-}
-
-fn spawn_device_mic_with_optional_level(
-    path: String,
-    device: cpal::Device,
-    stop: Arc<AtomicBool>,
-    ready: Arc<AtomicBool>,
-    capture_started: Instant,
+    recording_gate: Option<Arc<MicRecordingGate>>,
     level: Option<Arc<RollingAudioLevel>>,
 ) -> JoinHandle<Result<CapturedMicrophone>> {
     match reserve_microphone_capture() {
@@ -158,7 +146,7 @@ fn spawn_device_mic_with_optional_level(
             ready,
             capture_started,
             reservation,
-            None,
+            recording_gate,
             level,
         ),
         Err(error) => {

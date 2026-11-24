@@ -18,40 +18,35 @@ pub(super) async fn render_export(
         });
         match format {
             ExportFormat::Mp4 => {
+                let stage = cut_media::PrivateStageDir::new()?;
                 progress.preparing_audio();
-                let audio = capture_audio.prepare(
-                    out.parent().unwrap_or_else(|| std::path::Path::new(".")),
-                    &control,
-                )?;
+                let audio = capture_audio.prepare(stage.path(), &control)?;
+                let staged_out = stage.reserve_named_file("recorder-export.mp4")?;
                 progress.rendering_started();
-                crate::screen_record::render_with_control_progress(
+                let frames = crate::screen_record::render_with_control_progress(
                     &source,
                     &plan,
-                    &out,
+                    &staged_out,
                     audio.path(),
                     &control,
                     |frames, expected_frames| progress.rendering(frames, expected_frames),
-                )
+                )?;
+                control
+                    .check("publish recording export MP4")
+                    .map_err(crate::screen_record::record_err)?;
+                cut_media::publish_staged_file(&staged_out, &out, false)?;
+                Ok(frames)
             }
             ExportFormat::Gif { fps, width } => {
-                let tmp = tempfile::Builder::new()
-                    .prefix(".cut-recorder-export-")
-                    .suffix(".mp4")
-                    .tempfile_in(out.parent().unwrap_or_else(|| std::path::Path::new(".")))
-                    .map_err(|error| {
-                        CutError::new(
-                            error_codes::IO,
-                            format!("could not create a secure GIF intermediate: {error}"),
-                            "creating the recorder export intermediate failed",
-                        )
-                    })?
-                    .into_temp_path();
+                let stage = cut_media::PrivateStageDir::new()?;
+                let staged_mp4 = stage.reserve_named_file("recorder-gif-src.mp4")?;
+                let staged_gif = stage.reserve_named_file("recorder-export.gif")?;
                 progress.preparing_audio();
                 progress.rendering_started();
                 let frames = crate::screen_record::render_with_control_progress(
                     &source,
                     &plan,
-                    tmp.as_ref(),
+                    &staged_mp4,
                     None,
                     &control,
                     |frames, expected_frames| progress.rendering(frames, expected_frames),
@@ -60,7 +55,17 @@ pub(super) async fn render_export(
                 control
                     .check("convert recording export to GIF")
                     .map_err(crate::screen_record::record_err)?;
-                crate::screen_record::gif_with_control(tmp.as_ref(), &out, fps, width, &control)?;
+                crate::screen_record::gif_with_control(
+                    &staged_mp4,
+                    &staged_gif,
+                    fps,
+                    width,
+                    &control,
+                )?;
+                control
+                    .check("publish recording export GIF")
+                    .map_err(crate::screen_record::record_err)?;
+                cut_media::publish_staged_file(&staged_gif, &out, false)?;
                 Ok(frames)
             }
         }

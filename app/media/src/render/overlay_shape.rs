@@ -1,23 +1,23 @@
-//! Overlay placement; rect retains its original scale/pad graph exactly.
+//! Overlay placement. Rectangle width is saved; height follows the source.
 use cut_core::ClipTransform;
 
-pub(super) fn geometry(t: &ClipTransform, w: u32, h: u32) -> (u32, u32, u32, u32) {
+pub(super) fn geometry(
+    t: &ClipTransform,
+    w: u32,
+    h: u32,
+    source: Option<(u32, u32)>,
+) -> (u32, u32, u32, u32) {
     let ow = super::even_size_px(f64::from(w) * t.scale, w);
     let oh = if t.shape.is_rect() {
-        super::even_size_px(f64::from(h) * t.scale, h)
+        let (sw, sh) = source.unwrap_or((w, h));
+        super::even_size_px(f64::from(ow) * f64::from(sh) / f64::from(sw), u32::MAX)
     } else {
         ow
     };
-    let max_x = if t.shape.is_rect() {
-        w.saturating_sub(ow)
-    } else {
-        w
-    };
-    let max_y = if t.shape.is_rect() {
-        h.saturating_sub(oh)
-    } else {
-        h
-    };
+    // Placement is top-left anchored like CSS. Overflow clips at the stage;
+    // never move a saved rectangle or squash it to fit the output.
+    let max_x = w;
+    let max_y = h;
     (
         ow,
         oh,
@@ -26,22 +26,23 @@ pub(super) fn geometry(t: &ClipTransform, w: u32, h: u32) -> (u32, u32, u32, u32
     )
 }
 
-pub(super) fn place_filter(t: &ClipTransform, w: u32, h: u32, mask: &str) -> String {
-    let (ow, oh, ox, oy) = geometry(t, w, h);
-    if t.shape.is_rect() {
-        format!(",scale={ow}:{oh},setsar=1,pad={w}:{h}:{ox}:{oy}:color=black@0.0")
-    } else {
-        // Pad to the whole bubble before cropping the canvas: large or edge
-        // bubbles clip at frame bounds just as they do in the CSS stage.
-        format!(
-            ",scale={ow}:{oh},setsar=1{mask},pad={}:{}:{ox}:{oy}:color=black@0.0,crop={w}:{h}:0:0",
-            w.max(ow + ox),
-            h.max(oh + oy)
-        )
-    }
+pub(super) fn place_filter(
+    t: &ClipTransform,
+    w: u32,
+    h: u32,
+    mask: &str,
+    source: Option<(u32, u32)>,
+) -> String {
+    let (ow, oh, ox, oy) = geometry(t, w, h, source);
+    // Pad before clipping overflow at the stage bounds, just like CSS.
+    format!(
+        ",scale={ow}:{oh},setsar=1{mask},pad={}:{}:{ox}:{oy}:color=black@0.0,crop={w}:{h}:0:0",
+        w.max(ow + ox),
+        h.max(oh + oy)
+    )
 }
 
-pub(super) fn mask_filter(t: &ClipTransform, d: u32, tag: &str) -> String {
+pub(super) fn mask_filter_for(t: &ClipTransform, d: u32, tag: &str, keep_hdr: bool) -> String {
     if t.shape.is_rect() {
         return String::new();
     }
@@ -81,24 +82,39 @@ pub(super) fn mask_filter(t: &ClipTransform, d: u32, tag: &str) -> String {
         "color=c=black:s={d}x{d}:r=30,trim=end_frame=1,format={format},{filter},loop=loop=-1:size=1:start=0[{tag}_{label}];"
     )
     };
+    let (ap, rp, gray, scale_max, yuva) = if keep_hdr {
+        ("gbrap10le", "gbrp10le", "gray10le", 1023u32, "yuva420p10le")
+    } else {
+        ("gbrap", "gbrp", "gray", 255u32, "yuva420p")
+    };
+    let ch = |v: u8| u32::from(v) * scale_max / 255;
     let mut graph = format!(
-        ",format=gbrap,split[{tag}_rgb][{tag}_alpha];\
+        ",format={ap},split[{tag}_rgb][{tag}_alpha];\
          [{tag}_alpha]alphaextract[{tag}_a];"
     );
-    graph.push_str(&still("gray", &format!("geq=lum='{inside}*255'"), "shape"));
+    graph.push_str(&still(
+        gray,
+        &format!("geq=lum='{inside}*{scale_max}'"),
+        "shape",
+    ));
     graph.push_str(&format!(
         "[{tag}_a][{tag}_shape]blend=all_mode=multiply:shortest=1[{tag}_masked_a];\
-         [{tag}_rgb]format=gbrp[{tag}_colour];"
+         [{tag}_rgb]format={rp}[{tag}_colour];"
     ));
     let colour = if t.ring.is_some() {
         graph.push_str(&still(
-            "gray",
-            &format!("geq=lum='if({ring},255*{a},0)'"),
+            gray,
+            &format!("geq=lum='if({ring},{scale_max}*{a},0)'"),
             "ring",
         ));
         graph.push_str(&still(
-            "gbrp",
-            &format!("lutrgb=r={}:g={}:b={}", rgba[0], rgba[1], rgba[2]),
+            rp,
+            &format!(
+                "lutrgb=r={}:g={}:b={}",
+                ch(rgba[0]),
+                ch(rgba[1]),
+                ch(rgba[2])
+            ),
             "ink",
         ));
         graph.push_str(&format!(
@@ -109,7 +125,7 @@ pub(super) fn mask_filter(t: &ClipTransform, d: u32, tag: &str) -> String {
         "colour"
     };
     graph.push_str(&format!(
-        "[{tag}_{colour}][{tag}_masked_a]alphamerge=shortest=1,format=yuva420p"
+        "[{tag}_{colour}][{tag}_masked_a]alphamerge=shortest=1,format={yuva}"
     ));
     graph
 }

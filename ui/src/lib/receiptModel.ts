@@ -4,6 +4,7 @@
 import type { CheckResult, FixAction, JudgeEnvelope } from './clientModel'
 
 export interface RenderReceipt {
+  export_checks?: import('./exportChecks').ExportChecks
   render_id: string
   ts: string
   output_path: string

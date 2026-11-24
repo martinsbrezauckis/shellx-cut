@@ -77,7 +77,8 @@ pub fn automatic_pick() -> AutomaticPick {
 const CARGO_CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 
 /// Is `exe` a binary of a cargo build: `<target>/[<triple>/]{debug,release}/cutd`,
-/// or a test binary in `.../{debug,release}/deps/`? Both facts must hold: the
+/// or a test binary in `.../{debug,release}/deps/` (cargo 1.99) or
+/// `.../{debug,release}/build/<package>/<hash>/out/` (cargo 1.100)? Both facts must hold: the
 /// folder layout AND cargo's own `CACHEDIR.TAG` at the target root. An installed
 /// engine (`/usr/bin`, `<install>\`, `Contents/MacOS`) is never one. Same rule as
 /// the perception sidecar's installed-layout check, plus test binaries.
@@ -92,6 +93,18 @@ pub fn is_cargo_build_exe(exe: &Path) -> bool {
     };
     if named(profile, &["deps", "examples"]) {
         let Some(up) = profile.parent() else {
+            return false;
+        };
+        profile = up;
+    } else if named(profile, &["out"]) {
+        // Cargo 1.100 puts test binaries in `{debug,release}/build/<package>/<hash>/out/`.
+        let Some(up) = profile
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .filter(|build| named(build, &["build"]))
+            .and_then(Path::parent)
+        else {
             return false;
         };
         profile = up;
@@ -161,8 +174,26 @@ pub(super) enum Step {
 /// automatic pick's own cached probes).
 pub fn ffmpeg_selection() -> FfmpegSelection {
     let (program, step) = super::choose_ffmpeg();
+    finish_selection(program, step, super::ffmpeg_candidates().len())
+}
+
+/// Same selection decision using a caller-supplied candidate probe closure so a
+/// Doctor scan can share one `FfmpegCaps` probe across `ffmpeg` and `gpu-encode`
+/// cards without forcing a duplicate `all_candidate_caps()` pass.
+pub fn ffmpeg_selection_using(
+    candidates: &[std::path::PathBuf],
+    probe_all: impl FnOnce() -> Vec<crate::hwencode::FfmpegCaps>,
+) -> FfmpegSelection {
+    let (program, step) = super::choose_ffmpeg_using(|| {
+        let caps = probe_all();
+        let best = caps.into_iter().max_by_key(|c| c.rank())?;
+        best.hw.any().then(|| OsString::from(best.path))
+    });
+    finish_selection(program, step, candidates.len())
+}
+
+fn finish_selection(program: OsString, step: Step, found: usize) -> FfmpegSelection {
     let automatic = automatic_pick();
-    let found = super::ffmpeg_candidates().len();
     let present = matches!(
         step,
         Step::Environment | Step::Chosen | Step::AutomaticHardware

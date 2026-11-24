@@ -28,8 +28,7 @@ use crate::generate_handlers;
 use crate::output_paths::{
     fence_output_path, fence_project_output_path, fenced_existing_file_under_dir,
     fenced_existing_project_export_read, make_fence, publish_output_atomic,
-    resolve_existing_project_file, temp_output_path_for_render, write_output_atomic,
-    OutputPathPolicy,
+    resolve_existing_project_file, write_output_atomic, OutputPathPolicy,
 };
 use crate::recipes;
 use crate::registry::verb_contract::DispatchTarget;
@@ -125,6 +124,12 @@ async fn dispatch_validated(
     let request_actor = actor.clone();
     let mut result: VerbResult = route_verb(state, name, dispatch_target, args, actor).await;
     if result.ok {
+        crate::chat::conversations::record_live_action_if_active(
+            state,
+            &request_actor,
+            name,
+            &result,
+        );
         if let Some(op_ids) = result.op_ids.clone() {
             let warnings = {
                 let mut project = state.project.write().await;
@@ -178,14 +183,14 @@ fn route_verb<'a>(
         // project.*
         // ------------------------------------------------------------------
         DispatchTarget::ProjectCreate => verb!(project_create(state, args, actor)),
-        DispatchTarget::ProjectOpen => verb!(project_open(state, args)),
-        DispatchTarget::ProjectList => verb!(project_list(args)),
+        DispatchTarget::ProjectOpen => verb!(project_open(state, args, actor)),
+        DispatchTarget::ProjectList => verb!(project_list(args, actor)),
         DispatchTarget::ProjectForget => verb!(project_forget(args)),
         DispatchTarget::ProjectDelete => verb!(project_delete(state, args)),
         DispatchTarget::ProjectSave => verb!(project_save(state)),
         DispatchTarget::ProjectPackagePlan => verb!(project_package_plan(state, args)),
         DispatchTarget::ProjectPackageCreate => verb!(project_package_create(state, args)),
-        DispatchTarget::ProjectState => verb!(project_state(state, args)),
+        DispatchTarget::ProjectState => verb!(project_state(state, args, actor)),
         DispatchTarget::ProjectHealth => verb!(project_health(state, args)),
         DispatchTarget::ProjectCachePreview => verb!(project_cache_preview(state)),
         DispatchTarget::ProjectCacheRebuild => verb!(project_cache_rebuild(state, args)),
@@ -333,6 +338,10 @@ fn route_verb<'a>(
             verb!(generated_assets::assets_generated_list(state, args))
         }
         DispatchTarget::AgentChat => verb!(agent_chat(state, args, actor)),
+        DispatchTarget::AgentChatList => verb!(agent_chat_list(state)),
+        DispatchTarget::AgentChatGet => verb!(agent_chat_get(state, args)),
+        DispatchTarget::AgentChatMigrate => verb!(agent_chat_migrate(state, args)),
+        DispatchTarget::AgentChatPatch => verb!(agent_chat_patch(state, args)),
         DispatchTarget::PluginsList => verb!(plugins_list(state, args, actor)),
         DispatchTarget::PluginsEnable => verb!(plugins_enable(state, args, actor)),
         DispatchTarget::PluginsCall => verb!(plugins_call(state, args, actor)),
@@ -587,12 +596,15 @@ fn route_verb<'a>(
         | DispatchTarget::ScreenRecordPolish
         | DispatchTarget::ScreenRecordCameraReset
         | DispatchTarget::ScreenRecordTakeLink
+        | DispatchTarget::ScreenRecordMakeEditable
         | DispatchTarget::ScreenRecordZoomList
         | DispatchTarget::ScreenRecordZoomSet
         | DispatchTarget::ScreenRecordZoomAdd
         | DispatchTarget::ScreenRecordZoomUpdate
         | DispatchTarget::ScreenRecordZoomRemove
         | DispatchTarget::ScreenRecordZoomAuto
+        | DispatchTarget::ScreenRecordRenderCachePreview
+        | DispatchTarget::ScreenRecordRenderCacheRemove
         | DispatchTarget::ScreenRecordTakeRefresh
         | DispatchTarget::ScreenRecordExport
         | DispatchTarget::ScreenRecordCopyRaw) => {
@@ -729,7 +741,7 @@ pub(crate) fn op_for_result(op: &OpRecord, include_legacy_inverse: bool) -> Valu
 /// (the review rail and tests read it; additive to the documented shape). A
 /// historic inverse payload is shown only when its deprecated compatibility
 /// option was requested. Unknown verbs fall back to `{op}` alone.
-fn shape_core_result(verb: &str, op: &OpRecord, include_legacy_inverse: bool) -> Value {
+pub(crate) fn shape_core_result(verb: &str, op: &OpRecord, include_legacy_inverse: bool) -> Value {
     // First effect's detail — every core edit verb records at least one
     // effect; indexing Value::Null yields Null (never panics).
     let d0 = op
@@ -1153,13 +1165,16 @@ pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<
     })
 }
 
-mod safety;
+pub(crate) mod safety;
 pub(crate) use safety::{
     guard_call, owned_job_process_control, run_blocking, run_blocking_cancellable,
     run_bounded_foreground_command,
 };
 mod motion_link_projection;
 mod project_workspace;
+pub(crate) use project_workspace::{
+    activate_project_locked, default_projects_dir, open_at_start, path_free_project_identity,
+};
 use project_workspace::{
     comment_add, comment_apply, comment_draft, comment_list, comment_resolve, library_add,
     library_add_to_project, library_favorite, library_folder_add, library_folder_remove,
@@ -1171,7 +1186,6 @@ use project_workspace::{
     project_sequence_delete, project_sequence_list, project_sequence_rename,
     project_sequence_switch, project_state, project_undo,
 };
-pub(crate) use project_workspace::{open_at_start, path_free_project_identity};
 mod project_package;
 use project_package::{project_package_create, project_package_plan};
 mod group_review;
@@ -1184,8 +1198,9 @@ mod review_handoff;
 use review_handoff::{comment_export, comment_import};
 mod media;
 pub(crate) use media::{
-    asset_info, media_import, project_paths, proxy_binding, spawn_plain_import_chain, update_asset,
-    verify_attested_media_source, PlacementTurns, ANALYSIS_MAX_RUNNING,
+    asset_info, asset_source_path, media_import, project_paths, proxy_binding,
+    spawn_plain_import_chain, update_asset, verify_attested_media_source, PlacementTurns,
+    ANALYSIS_MAX_RUNNING,
 };
 use media::{
     media_bin_delete, media_bin_list, media_bin_save, media_check, media_filmstrip,
@@ -1214,7 +1229,8 @@ mod edit_tools;
 #[cfg(test)]
 use edit_tools::resolve_slide;
 use edit_tools::{
-    agent_chat, assemble_broll, assets_fetch, assets_generate, assets_providers, assets_search,
+    agent_chat, agent_chat_get, agent_chat_list, agent_chat_migrate, agent_chat_patch,
+    assemble_broll, assets_fetch, assets_generate, assets_providers, assets_search,
     audio_add_music, audio_cleanup_voice, captions_kinetic, captions_set_range, captions_set_text,
     edit_add_marker, edit_add_mask, edit_add_shape, edit_add_track, edit_adjustment, edit_animate,
     edit_auto_balance, edit_auto_zoom, edit_blend, edit_color_match, edit_color_space, edit_crop,

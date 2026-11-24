@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callVerb, type JobRecord, type ProjectIdentity, type VerbResult } from '../../lib/client'
 import type { DoctorCard } from '../../lib/doctor'
-import { runUserVerb } from '../../lib/userActionFeedback'
+import { humanFailureMessage, runUserVerb } from '../../lib/userActionFeedback'
 import {
   sameSpeechProject,
   settleDiarization,
@@ -34,7 +34,8 @@ export interface UseSpeechServiceActionsOptions {
 const idleState: SpeechActionState = { phase: 'idle', message: '' }
 
 function errorMessage(result: VerbResult | null): string {
-  return result?.error?.message?.trim() || 'Could not read the speaker-label job status.'
+  if (result?.error?.code === 'not_found') return 'The speaker-label job is no longer available. Start speaker labels again.'
+  return humanFailureMessage(result?.error, 'Could not read the speaker-label progress')
 }
 
 type DiarizationRun = Extract<SpeechRun, { action: 'diarize' }>

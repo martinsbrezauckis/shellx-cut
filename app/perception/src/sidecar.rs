@@ -17,10 +17,14 @@ use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod attempts;
+use attempts::run_instruments_with_owner;
+pub mod captions_installation;
 #[cfg(test)]
 mod installed_layout_tests;
 mod native_runtime;
 mod owned;
+mod owned_transcribe;
 mod python_missing;
 #[cfg(test)]
 mod python_missing_tests;
@@ -39,10 +43,11 @@ pub use native_runtime::{
     PYTHONDONTWRITEBYTECODE_ENV,
 };
 pub use owned::{
-    build_contact_sheet_owned, build_qc_sheet_owned, run_instruments_owned,
-    run_instruments_owned_ephemeral, run_instruments_owned_progress, run_subject_owned,
-    transcribe_owned_progress,
+    build_contact_sheet_owned, build_contact_sheet_recorded, build_qc_sheet_owned,
+    build_qc_sheet_recorded, run_instruments_owned, run_instruments_owned_ephemeral,
+    run_instruments_owned_progress, run_subject_owned, run_subject_recorded,
 };
+pub use owned_transcribe::transcribe_owned_progress;
 pub use python_missing::{
     captions_not_installed_error, captions_setup_action, check_interpreter,
     is_captions_not_installed, is_windows_store_shortcut_run, InterpreterProblem,
@@ -700,7 +705,7 @@ pub fn run_instruments_progress(
     )
 }
 
-fn run_instruments_with_owner(
+fn run_instruments_recorded(
     media_path: &Path,
     receipts_dir: &Path,
     asset_id: &str,
@@ -710,6 +715,7 @@ fn run_instruments_with_owner(
     progress: Option<Arc<SidecarProgress>>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
     persist: bool,
+    attempts: Arc<crate::analysis_attempts::AttemptRecorder>,
 ) -> Result<PerceptionReport, CutError> {
     // Resolve the context before considering a cached report. A supplied malformed
     // locator is authoritative and must not be hidden by a legacy cache hit.
@@ -734,6 +740,7 @@ fn run_instruments_with_owner(
         }
     }
 
+    attempts.asked();
     // ---- spawn python (shared helper) ------------------------------------
     let request = serde_json::json!({
         "media_path": media_path.canonicalize().unwrap_or_else(|_| media_path.to_path_buf()),
@@ -749,6 +756,7 @@ fn run_instruments_with_owner(
         control,
         &runtime,
         &stt_selection,
+        Some(attempts.clone()),
     )?;
 
     // ---- validate --------------------------------------------------------
@@ -777,6 +785,7 @@ fn run_instruments_with_owner(
         ));
     }
     report.runtime_context = runtime_context;
+    report.analysis_attempt = Some(attempts.finish(None));
 
     // ---- persist ---------------------------------------------------------
     // ProjectStore creates receipts/ before any perception job starts. Do not
@@ -841,9 +850,25 @@ fn spawn_sidecar_streaming(
     progress: Option<Arc<SidecarProgress>>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
 ) -> Result<String, CutError> {
+    spawn_sidecar_streaming_recorded(request, progress, control, None)
+}
+
+fn spawn_sidecar_streaming_recorded(
+    request: &serde_json::Value,
+    progress: Option<Arc<SidecarProgress>>,
+    control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
+    attempts: Option<Arc<crate::analysis_attempts::AttemptRecorder>>,
+) -> Result<String, CutError> {
     let runtime = sidecar_runtime()?;
     let stt_selection = effective_stt_selection();
-    spawn_sidecar_streaming_with_runtime(request, progress, control, &runtime, &stt_selection)
+    spawn_sidecar_streaming_with_runtime(
+        request,
+        progress,
+        control,
+        &runtime,
+        &stt_selection,
+        attempts,
+    )
 }
 
 fn spawn_sidecar_streaming_with_runtime(
@@ -852,6 +877,7 @@ fn spawn_sidecar_streaming_with_runtime(
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
     runtime: &SidecarRuntime,
     stt_selection: &EffectiveSttSelection,
+    attempts: Option<Arc<crate::analysis_attempts::AttemptRecorder>>,
 ) -> Result<String, CutError> {
     // Before anything else: no Python is "captions not installed", not a spawn error.
     runtime.ensure_runnable()?;
@@ -924,9 +950,12 @@ fn spawn_sidecar_streaming_with_runtime(
             &default_control
         }
     };
-    let stderr_line = progress.map(|callback| {
+    let stderr_line = (progress.is_some() || attempts.is_some()).then(|| {
         Arc::new(move |line: &str| {
-            if let Some((fraction, label)) = parse_progress(line) {
+            if let Some(attempts) = &attempts {
+                attempts.observe(line);
+            }
+            if let (Some(callback), Some((fraction, label))) = (&progress, parse_progress(line)) {
                 callback(fraction, label);
             }
         }) as cut_media::ffmpeg::ProcessStderrLineObserver
@@ -1006,7 +1035,7 @@ pub fn run_subject(
     preset: &str,
     direction: Option<serde_json::Value>,
 ) -> Result<crate::types::SubjectTrack, CutError> {
-    owned::run_subject_with_owner(media_path, asset_hash, preset, direction, None)
+    owned::run_subject_with_owner(media_path, asset_hash, preset, direction, None, None)
 }
 
 /// Director-model: build the SPARSE per-scene contact sheet (one annotated keyframe
@@ -1019,7 +1048,7 @@ pub fn build_contact_sheet(
     out_dir: &Path,
     preset: &str,
 ) -> Result<serde_json::Value, CutError> {
-    owned::build_contact_sheet_with_owner(media_path, out_dir, preset, None)
+    owned::build_contact_sheet_with_owner(media_path, out_dir, preset, None, None)
 }
 
 /// Director-model v2 QC: review a reframed OUTPUT — per-scene frames + composition
@@ -1031,7 +1060,7 @@ pub fn build_qc_sheet(
     out_dir: &Path,
     preset: &str,
 ) -> Result<serde_json::Value, CutError> {
-    owned::build_qc_sheet_with_owner(media_path, out_dir, preset, None)
+    owned::build_qc_sheet_with_owner(media_path, out_dir, preset, None, None)
 }
 
 /// Transcribe only (public verb contract media.transcribe): runs InstrumentSet::WordsOnly
@@ -1190,6 +1219,7 @@ mod tests {
                 model: None,
                 language: None,
             },
+            None,
         )
         .unwrap_err();
         assert_eq!(error.code, error_codes::SIDECAR);
@@ -1560,6 +1590,7 @@ mod tests {
             speaker_turns: vec![],
             diarization: None,
             runtime_context: None,
+            analysis_attempt: None,
         }
     }
 

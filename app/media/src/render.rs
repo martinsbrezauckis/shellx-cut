@@ -11,11 +11,11 @@
 //! Primary callers: server render.* verbs + render jobs.
 
 use crate::ffmpeg::{
-    escape_filter_path, owned_concat_file_lines, run_ffmpeg, run_ffmpeg_with_progress,
+    escape_filter_path, owned_concat_file_lines, run_ffmpeg,
     run_ffmpeg_with_progress_atomic_output as run_progress_atomic, DETERMINISM_FLAGS,
 };
 use crate::paths::PathFence;
-use cut_core::{error_codes, CutError, Edl, EdlSegment, Project, TrackKind};
+use cut_core::{error_codes, CutError, Edl, Project, TrackKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -89,10 +89,14 @@ mod reverse_memory;
 mod window_part;
 pub use draft_preview::render_draft;
 pub use gpu_choice::{gpu_render_refusal, gpu_render_requested};
+pub use keyframe_cmd::{MAX_AUDIO_CMD_TIMESTAMPS, MAX_RENDER_CMD_BYTES};
+pub use keyframe_limit::{check_audio_command_budget, check_command_budget};
 pub use reverse_memory::{reverse_part_bytes, reverse_refusal};
 mod segment_trust;
 mod source_facts;
 pub use source_facts::{measured_for_reverse, measured_reverse_part_bytes};
+pub mod hdr;
+mod region_blocks;
 pub mod source_color;
 pub mod source_prep;
 mod stabilization;
@@ -107,10 +111,13 @@ use graph_inputs::{
     preview_geometry, segment_video_track_visible, window_alpha_path, window_input_key, GraphInput,
 };
 pub use options::{
-    apply_bitrate, format_codec_args, parse_bitrate_kbps, platform_spec, set_audio_bitrate, Fit,
-    PlatformSpec, RenderOptions, RenderPreset, Resolution, FORMAT_NAMES, PLATFORM_NAMES,
-    PRESET_NAMES,
+    apply_bitrate, format_codec_args, format_codec_args_for_color, parse_bitrate_kbps,
+    platform_spec, set_audio_bitrate, Fit, PlatformSpec, RenderColorMode, RenderOptions,
+    RenderPreset, Resolution, FORMAT_NAMES, PLATFORM_NAMES, PRESET_NAMES,
 };
+#[cfg(test)]
+use region_blocks::grade_window_block;
+use region_blocks::{adjustment_block, grade_window_block_for, mask_block};
 #[cfg(test)]
 use stabilization::{
     stab_detect_filter_for_test as stab_detect_filter,
@@ -161,6 +168,9 @@ struct Graph {
     /// TempDir holding the generated ASS file — must stay alive until the
     /// ffmpeg run finishes (the graph references a path inside it).
     _ass_dir: Option<tempfile::TempDir>,
+    /// Per-frame command files the graph reads (`sendcmd`); kept alive, like
+    /// the ASS folder, until the ffmpeg run finishes.
+    _cmd_files: Vec<tempfile::TempPath>,
 }
 
 /// Format ms as fractional seconds for filter args ("1.500").
@@ -470,6 +480,9 @@ fn base_transform_filter(t: &cut_core::ClipTransform, w: u32, h: u32) -> String 
 /// yuv420p frames, which can preserve or tint the original instead of dimming it.
 /// A keyframed opacity track overrides the static transform opacity, matching the
 /// overlay path. Empty at a constant 1.0 keeps ordinary renders byte-identical.
+/// Live graphs read a keyframed curve from a command file
+/// ([`keyframe_cmd::base_opacity_filter_cmd`]); this form serves the
+/// held-frame check, which only asks whether any opacity stage exists.
 fn base_opacity_filter(t: &cut_core::ClipTransform, keyframes: &[cut_core::Keyframe]) -> String {
     let opacity = match kf_points(keyframes, cut_core::KfParam::Opacity) {
         Some((pts, interp)) if !pts.is_empty() => {
@@ -499,13 +512,13 @@ fn base_region_transform_block(
 }
 
 mod clip_identity;
+mod keyframe_cmd;
 mod keyframe_expr;
 mod keyframe_limit;
 mod keyframe_window;
-mod mask_union;
 use keyframe_expr::kf_expr;
 mod overlay_canvas;
-use overlay_canvas::animated_overlay_canvas_block;
+mod tracked_mask;
 
 /// ffmpeg filter snippet (comma-PREFIXED, appended to a clip's chain) for a
 /// clip's visual EFFECTS (edit.effect), in order. `overlay` = is this an overlay
@@ -623,297 +636,16 @@ fn effect_filter(effects: &[cut_core::ClipEffect], overlay: bool) -> String {
     s
 }
 
-/// The ffmpeg filter (NO leading comma) that produces the EFFECTED copy of a frame
-/// for a mask region (edit.add_mask). Applied to a full-frame split copy; the
-/// `alphamerge`+`overlay` then scopes it to the shape. `strength`: blur → gaussian
-/// sigma px (default 15); pixelate → mosaic block px (default 16, even); black
-/// ignores it (a solid black fill — a hard censor).
-fn mask_effect_filter(mask: &cut_core::ClipMask) -> String {
-    use cut_core::MaskEffect as ME;
-    match mask.effect {
-        ME::Blur => {
-            let sigma = mask.strength.unwrap_or(15.0).clamp(0.5, 200.0);
-            format!("gblur=sigma={}", fnum(sigma))
-        }
-        ME::Pixelate => {
-            let b = ((mask.strength.unwrap_or(16.0).clamp(2.0, 256.0) as u32) & !1u32).max(2);
-            format!("pixelize=width={b}:height={b}")
-        }
-        ME::Black => "drawbox=x=0:y=0:w=iw:h=ih:t=fill:color=black".to_string(),
-    }
-}
+// Mask, tracked-mask, power-window, and adjustment-layer composite blocks live in `region_blocks.rs`.
 
-/// The masked-region COMPOSITE block (edit.add_mask) for a base/overlay segment.
-/// Returns the multi-line filtergraph that splits `in_label` into base + effected
-/// copies, scopes the effect to the baked shape alpha (white = inside; `,negate`
-/// when `invert`), and `overlay`s it back — producing `out_label`. `mask_idx` is the
-/// parallel mask-PNG input. Uses the proven matte `alphamerge`+`overlay` pattern
-/// (NOT `maskedmerge`, which blends per-plane and would mishandle a gray mask's
-/// chroma). `uniq` makes every intermediate label distinct. Empty when no mask.
-#[allow(clippy::too_many_arguments)]
-fn mask_block(
-    mask: &cut_core::ClipMask,
-    mask_idx: usize,
-    in_label: &str,
-    out_label: &str,
-    uniq: &str,
-    w: u32,
-    h: u32,
-    vfade: &str,
-) -> String {
-    let neg = if mask.invert { ",negate" } else { "" };
-    let fx = mask_effect_filter(mask);
-    // TIME-BOUNDING (edit.redact): gate the overlay to [start,end] (clip-local
-    // seconds, the same time base the keyframe expressions use). Outside the window
-    // the overlay is disabled, so the un-effected base copy `mb` shows through —
-    // the effect is active ONLY in the range. None = whole clip (byte-identical to
-    // the pre-range filtergraph: no `enable=` is emitted at all).
-    let enable = match mask.range_ms {
-        Some([a, b]) => format!(
-            ":enable='between(t,{},{})'",
-            fnum(a as f64 / 1000.0),
-            fnum(b as f64 / 1000.0)
-        ),
-        None => String::new(),
-    };
-    format!(
-        // overlay=shortest=1 is LOAD-BEARING: the mask PNG is a `-loop 1` still
-        // (infinite), so alphamerge yields an infinite `ma`; without `shortest=1`
-        // overlay never EOFs and the render HANGS. shortest=1 bounds the output to
-        // the finite clip `mb`.
-        "[{in_label}]split=2[mb{uniq}][mf{uniq}];\n\
-         [mf{uniq}]{fx}[mx{uniq}];\n\
-         [{mask_idx}:v]scale={w}:{h}:flags=bilinear,format=gray{neg}[mm{uniq}];\n\
-         [mx{uniq}][mm{uniq}]alphamerge[ma{uniq}];\n\
-         [mb{uniq}][ma{uniq}]overlay=shortest=1{enable},format=yuv420p{vfade}[{out_label}];"
-    )
-}
-
-/// A mask is rendered by the PROCEDURAL geq path (vs the static baked-PNG path)
-/// iff it carries a motion `track` AND is a rect/ellipse (the shapes geq paints
-/// directly). polygon+track is rejected at edit time, so this never lies. The bake
-/// loop skips these (no PNG); the render generates the moving alpha in-graph.
-/// Use the PROCEDURAL geq path when ANY region (primary or an extra) is motion-
-/// tracked — the geq paints all regions' moving alpha in one expression. (A fully-
-/// static mask, even multi-region, takes the baked-PNG union path instead.) The
-/// store-layer validation guarantees every region is rect/ellipse when any is tracked
-/// (the geq can't paint a polygon), so we don't re-check shapes here.
+/// A mask is rendered in-graph (vs the static baked-PNG path) iff ANY region
+/// (primary or an extra) carries a motion `track`: [`tracked_mask`] draws every
+/// region and moves the tracked ones from a per-frame command file. The bake loop
+/// skips these (no PNG). A fully-static mask, even multi-region, takes the
+/// baked-PNG union path. Store validation guarantees every region is rect/ellipse
+/// when any is tracked, so shapes are not re-checked here.
 pub(super) fn mask_uses_geq(m: &cut_core::ClipMask) -> bool {
     m.track.is_some() || m.regions.iter().any(|r| r.track.is_some())
-}
-
-/// The 0/255 geq INDICATOR for ONE region: its rect/ellipse painted at a centre that
-/// is either time-varying (`track` → piecewise-linear PIXEL expressions in geq's
-/// clip-local seconds `T`, like keyframes) or constant (static centre from `points`).
-/// The `points` give the SIZE (rect = half-span; ellipse = radii). Polygon → "0"
-/// (rejected at edit time when tracked / multi-region-tracked).
-fn region_indicator(
-    shape: cut_core::MaskShape,
-    points: &[[f64; 2]],
-    track: Option<&[cut_core::MaskTrackPoint]>,
-    wf: f64,
-    hf: f64,
-) -> String {
-    use cut_core::MaskShape;
-    if matches!(shape, MaskShape::Polygon) || points.len() < 2 {
-        return "0".to_string();
-    }
-    // Size (half-width/height or radii) + the STATIC centre, in pixels.
-    let (sa, sb, scx, scy) = match shape {
-        MaskShape::Rect => (
-            (points[1][0] - points[0][0]).abs() / 2.0 * wf,
-            (points[1][1] - points[0][1]).abs() / 2.0 * hf,
-            (points[0][0] + points[1][0]) / 2.0 * wf,
-            (points[0][1] + points[1][1]) / 2.0 * hf,
-        ),
-        MaskShape::Ellipse => (
-            (points[1][0] * wf).max(1.0),
-            (points[1][1] * hf).max(1.0),
-            points[0][0] * wf,
-            points[0][1] * hf,
-        ),
-        MaskShape::Polygon => unreachable!(),
-    };
-    // Centre: time-varying (track) or constant (static).
-    let (cx, cy) = match track {
-        Some(tr) if tr.len() >= 2 => {
-            let cxp: Vec<(f64, f64)> = tr
-                .iter()
-                .map(|p| (p.t_ms as f64 / 1000.0, p.cx * wf))
-                .collect();
-            let cyp: Vec<(f64, f64)> = tr
-                .iter()
-                .map(|p| (p.t_ms as f64 / 1000.0, p.cy * hf))
-                .collect();
-            (
-                kf_expr(&cxp, "T", cut_core::KfInterp::Linear),
-                kf_expr(&cyp, "T", cut_core::KfInterp::Linear),
-            )
-        }
-        _ => (fnum(scx), fnum(scy)),
-    };
-    match shape {
-        MaskShape::Rect => format!(
-            "if(between(X,({cx})-{a},({cx})+{a})*between(Y,({cy})-{b},({cy})+{b}),255,0)",
-            a = fnum(sa),
-            b = fnum(sb)
-        ),
-        // ffmpeg's expression evaluator has NO `<=` operator — use `lte(a,b)`.
-        MaskShape::Ellipse => format!(
-            "if(lte(pow((X-({cx}))/{a},2)+pow((Y-({cy}))/{b},2),1),255,0)",
-            a = fnum(sa),
-            b = fnum(sb)
-        ),
-        MaskShape::Polygon => "0".to_string(),
-    }
-}
-
-/// The PROCEDURAL moving-alpha filter for a TRACKED mask (`edit.redact{track}` /
-/// `{faces}`): a `geq` whose luma is the UNION (`max`) of every region's indicator —
-/// the primary region + each extra, each tracked or static. So N moving faces (or
-/// a moving face + a static plate) paint one alpha plane in a single pass. Optional
-/// feather = a trailing `gblur`; `invert` = a `negate`. Output is a gray alpha plane
-/// the caller `alphamerge`s. A single tracked region reduces to the old expression
-/// (byte-identical replay).
-fn tracked_alpha_geq(m: &cut_core::ClipMask, w: u32, h: u32) -> String {
-    let (wf, hf) = (w as f64, h as f64);
-    let mut inds = vec![region_indicator(
-        m.shape,
-        &m.points,
-        m.track.as_deref(),
-        wf,
-        hf,
-    )];
-    for r in &m.regions {
-        inds.push(region_indicator(
-            r.shape,
-            &r.points,
-            r.track.as_deref(),
-            wf,
-            hf,
-        ));
-    }
-    // luma = 255 if in ANY region → nested binary max (single region = no wrapper).
-    let lum = mask_union::indicators(inds);
-    let mut chain = format!("geq=lum='{lum}':cb=128:cr=128");
-    let feather_px = m.feather * hf;
-    if feather_px > 0.1 {
-        chain.push_str(&format!(",gblur=sigma={}", fnum(feather_px)));
-    }
-    if m.invert {
-        chain.push_str(",negate");
-    }
-    chain.push_str(",format=gray");
-    chain
-}
-
-/// The masked-region COMPOSITE block for a TRACKED mask — the geq analog of
-/// [`mask_block`]. Splits the conformed clip THREE ways (base / effected / the geq
-/// alpha source), paints the moving alpha procedurally, `alphamerge`s the effect
-/// into it, and `overlay`s it back (still `shortest=1`, still range-gated). No PNG
-/// input is needed, and geq runs on a finite split → no `-loop 1` hang is possible.
-fn mask_block_tracked(
-    mask: &cut_core::ClipMask,
-    in_label: &str,
-    out_label: &str,
-    uniq: &str,
-    w: u32,
-    h: u32,
-    vfade: &str,
-) -> String {
-    let fx = mask_effect_filter(mask);
-    let alpha = tracked_alpha_geq(mask, w, h);
-    let enable = match mask.range_ms {
-        Some([a, b]) => format!(
-            ":enable='between(t,{},{})'",
-            fnum(a as f64 / 1000.0),
-            fnum(b as f64 / 1000.0)
-        ),
-        None => String::new(),
-    };
-    format!(
-        "[{in_label}]split=3[mb{uniq}][mf{uniq}][mg{uniq}];\n\
-         [mf{uniq}]{fx}[mx{uniq}];\n\
-         [mg{uniq}]{alpha}[mm{uniq}];\n\
-         [mx{uniq}][mm{uniq}]alphamerge[ma{uniq}];\n\
-         [mb{uniq}][ma{uniq}]overlay=shortest=1{enable},format=yuv420p{vfade}[{out_label}];"
-    )
-}
-
-/// The POWER-WINDOW composite block (edit.grade_window) — a REGION-scoped grade on the
-/// running per-clip frame `in_label`, producing `out_label`. The geometric analog of
-/// [`adjustment_block`]: it reuses the proven mask split→effect→overlay recipe but (1) the
-/// "effect" is the window's [`grade_filter`] (run on a full-frame split copy) and (2) the
-/// region is scoped by the baked shape ALPHA (`window_idx`, the parallel grade-window PNG
-/// input) via `alphamerge`+`overlay` — NOT a time gate. Inside the shape the graded copy
-/// shows; outside, the untouched base shows through. `,negate` on the alpha when the
-/// window is inverted (grade the surround). `overlay=shortest=1` is load-bearing (the PNG
-/// is a `-loop 1` infinite still — without it the graded copy never EOFs and the render
-/// hangs). `vfade` is applied ONLY by the FINAL composite block of the clip. A grade that
-/// collapses to "" (identity) is refused at verb time, so the block is never a no-op.
-#[allow(clippy::too_many_arguments)]
-fn grade_window_block(
-    gw: &cut_core::GradeWindow,
-    window_idx: usize,
-    in_label: &str,
-    out_label: &str,
-    uniq: &str,
-    w: u32,
-    h: u32,
-    vfade: &str,
-) -> String {
-    let neg = if gw.window.invert { ",negate" } else { "" };
-    // The grade as the EXACT per-clip filter chain (leading comma). `null` heads the
-    // branch so the leading-comma chain appends to a valid filter; `format=yuv420p` pins
-    // the format so alphamerge + the overlay back onto the yuv420p base negotiate cleanly.
-    let grade = grade_filter(Some(&gw.grade));
-    format!(
-        "[{in_label}]split=2[gb{uniq}][gf{uniq}];\n\
-         [gf{uniq}]null{grade},format=yuv420p[gx{uniq}];\n\
-         [{window_idx}:v]scale={w}:{h}:flags=bilinear,format=gray{neg}[gm{uniq}];\n\
-         [gx{uniq}][gm{uniq}]alphamerge[ga{uniq}];\n\
-         [gb{uniq}][ga{uniq}]overlay=shortest=1,format=yuv420p{vfade}[{out_label}];"
-    )
-}
-
-/// The ADJUSTMENT-LAYER composite block (edit.adjustment) — a TIME-GATED non-
-/// destructive grade/effect pass on the running composite `in_label`, producing
-/// `out_label`. Mirrors the proven [`mask_block`] split→effect→gated-overlay recipe,
-/// but gates the WHOLE grade+effect chain with a SINGLE `enable=` on the overlay
-/// (not per filter): split the composite into a base copy + a graded copy, run the
-/// SAME per-clip grade + effect filters on the graded copy, then `overlay` it back
-/// gated to `between(t, start, end)`. Out of the span the overlay is disabled → the
-/// untouched base shows through; inside, the full-frame opaque graded copy replaces
-/// it → the layer affects everything beneath it ONLY within its span. Reusing
-/// [`grade_filter`] + [`effect_filter`] keeps the look identical to a per-clip grade
-/// and means any number of effect sub-filters are gated by the one overlay enable
-/// (no per-filter timeline-support assumption, no comma-splitting of filter args).
-/// `range_ms` is composition-local (window-rebased by `Edl::window`), matching the
-/// composite's `t` timebase. `uniq` makes every intermediate label distinct.
-fn adjustment_block(
-    adj: &cut_core::EdlAdjustment,
-    in_label: &str,
-    out_label: &str,
-    uniq: &str,
-) -> String {
-    // The grade + look effects, as the EXACT per-clip filter chains (leading comma).
-    // overlay=false skips chroma-key (an adjustment has no single layer below to key;
-    // the verb also refuses it). `null` heads the branch so the leading-comma chain
-    // appends to a valid filter; `format=yuv420p` pins the format so the overlay back
-    // onto the yuv420p base negotiates cleanly + deterministically.
-    let grade = grade_filter(adj.grade.as_ref());
-    let effects = effect_filter(&adj.effects, false);
-    let [a, b] = adj.range_ms;
-    let enable = format!(
-        ":enable='between(t,{},{})'",
-        fnum(a as f64 / 1000.0),
-        fnum(b as f64 / 1000.0)
-    );
-    format!(
-        "[{in_label}]split=2[jb{uniq}][jf{uniq}];\n\
-         [jf{uniq}]null{grade}{effects},format=yuv420p[jg{uniq}];\n\
-         [jb{uniq}][jg{uniq}]overlay=eof_action=pass{enable}[{out_label}];"
-    )
 }
 
 /// ffmpeg AUDIO filter snippet (comma-PREFIXED) for a clip's AUDIO effects — the
@@ -1355,26 +1087,6 @@ fn scale_kf_zoompan(
     ))
 }
 
-/// The keyframed-OPACITY filter for an overlay segment (edit.keyframe param=opacity)
-/// or "" when not keyframed. Sets the yuva alpha plane to the time-expression
-/// (Y/Cb/Cr pass through), animating the overlay's transparency. Injected right
-/// after `format=yuva420p` (so it runs on the conformed full frame, before the PiP
-/// scale/pad — the pad border keeps its alpha=0). Var = `T` (geq time).
-fn opacity_kf_filter(keyframes: &[cut_core::Keyframe]) -> String {
-    match kf_points(keyframes, cut_core::KfParam::Opacity) {
-        Some((pts, interp)) if !pts.is_empty() => format!(
-            // `clip(…,0,1)` is load-bearing: an overshoot/undershoot easing (back/
-            // elastic) can drive the eased alpha just past [0,1], and geq writes the
-            // alpha plane WITHOUT clamping — a raw -1 wraps to 255 (a full-opacity
-            // flash). Clamping keeps alpha a legal [0,1] (you cannot be more than
-            // opaque). Linear/hold never leave [0,1] so this is a no-op for them.
-            ",geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*clip(({}),0,1)'",
-            kf_expr(&pts, "T", interp)
-        ),
-        _ => String::new(),
-    }
-}
-
 /// The keyframed-VOLUME filter for an audio segment or "" when not keyframed.
 /// The clamp is load-bearing: back/elastic easings can overshoot outside the
 /// authored multiplier range; negative volume phase-inverts audio, and extreme
@@ -1394,7 +1106,7 @@ fn volume_kf_filter(keyframes: &[cut_core::Keyframe]) -> String {
 /// keyframe curve instead receives the separately carried Track Gain after the
 /// curve, so the two independent controls compose rather than one replacing
 /// the other.
-fn audio_gain_filters(seg: &EdlSegment) -> String {
+fn audio_gain_filters(seg: &cut_core::EdlSegment) -> String {
     let has_volume_keyframes = seg
         .keyframes
         .iter()
@@ -1703,6 +1415,7 @@ fn planned_video_tracks(project: &Project) -> Vec<VideoTrackPlan<'_>> {
 /// filter chains reference. Shared by the software [`build_graph`] and the GPU
 /// [`build_graph_gpu`] so both number their inputs identically. Stills are flagged
 /// (looped at the input). Errors if an asset id or its file is missing.
+#[allow(clippy::too_many_arguments)]
 fn build_graph(
     project: &Project,
     edl: &Edl,
@@ -1713,7 +1426,34 @@ fn build_graph(
     opts: RenderOptions,
     preview_height: Option<u32>,
 ) -> Result<Graph, CutError> {
-    keyframe_limit::require_bounded_keyframes(project, edl)?;
+    build_graph_with_hdr(
+        project,
+        edl,
+        project_dir,
+        with_captions,
+        with_audio,
+        with_video,
+        opts,
+        preview_height,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_graph_with_hdr(
+    project: &Project,
+    edl: &Edl,
+    project_dir: &Path,
+    with_captions: bool,
+    with_audio: bool,
+    with_video: bool,
+    opts: RenderOptions,
+    preview_height: Option<u32>,
+    hdr_target_override: Option<source_color::Hdr>,
+) -> Result<Graph, CutError> {
+    let gc = hdr::GraphColor::resolve_with(project, edl, opts.color, hdr_target_override);
+    keyframe_limit::check_command_budget_for(project, edl, with_video, with_audio, false)?;
+    let mut cmd_files: Vec<tempfile::TempPath> = Vec::new();
     let s = &project.settings;
     // Output geometry: project settings by default, or the largest source
     // (match_source). fps/audio_rate always come from project settings. The
@@ -1765,7 +1505,8 @@ fn build_graph(
         if !track_plan.visible {
             writeln!(
                 f,
-                "color=c=black:s={w}x{h}:r={fps}:d={d},format=yuv420p[v0];",
+                "color=c=black:s={w}x{h}:r={fps}:d={d},{black}[v0];",
+                black = gc.black_stage(),
                 d = secs(edl.duration_ms.max(1)),
             )
             .unwrap();
@@ -1839,10 +1580,23 @@ fn build_graph(
                         // SCALE keyframe (edit.keyframe param=scale) is the multi-point eased
                         // generalization → the same zoompan slot, mutually exclusive with
                         // edit.animate (so prefer it when present).
-                        let vanim = scale_kf_zoompan(&seg.keyframes, w, h, s.fps, seg_dur)
-                            .unwrap_or_else(|| {
-                                animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur)
-                            });
+                        // A curve the released expression could hold keeps it.
+                        let vanim = if keyframe_window::long(seg, cut_core::KfParam::Scale) {
+                            keyframe_window::scale_cmd(
+                                seg,
+                                w,
+                                h,
+                                s.fps,
+                                seg_dur,
+                                &format!("b{label}"),
+                                Some(&mut cmd_files),
+                            )?
+                        } else {
+                            scale_kf_zoompan(&seg.keyframes, w, h, s.fps, seg_dur)
+                        }
+                        .unwrap_or_else(|| {
+                            animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur)
+                        });
                         // Color grade (edit.grade): per-pixel, AFTER conform.
                         let vgrade = grade_stack_filter(seg.grade.as_ref(), &seg.grade_stack);
                         // Color management (project.color + edit.color_space): convert the
@@ -1852,14 +1606,20 @@ fn build_graph(
                         // An HDR source is tone-mapped to SDR BT.709 first (source_color).
                         // PREP: an HDR or BT.601 source becomes BT.709 right after the
                         // conform, before animation/grade/effects (source_prep).
-                        let vprep = source_prep::clip_source_prep(
+                        let sdr_fb = gc.keep_hdr() && !hdr::clip_sdr_only_features(seg).is_empty();
+                        let vprep = source_prep::clip_source_prep_for(
                             project.assets.get(asset),
                             seg.input_color_space.as_ref(),
+                            gc.hdr,
+                            sdr_fb,
                         );
-                        let vcolor = source_color::clip_color_chain(
+                        let vcolor = source_color::clip_color_chain_for(
                             project.assets.get(asset),
                             seg.input_color_space.as_ref(),
                             &s.color,
+                            gc.hdr,
+                            sdr_fb,
+                            false,
                         );
                         // Visual effects (edit.effect): after grade. overlay=false on the
                         // base (chroma key is skipped — nothing below the base to reveal).
@@ -1876,7 +1636,17 @@ fn build_graph(
                             })
                             .unwrap_or_else(cut_core::ClipTransform::identity);
                         let vtransform = base_transform_filter(&base_transform, w, h);
-                        let vopacity = base_opacity_filter(&base_transform, &seg.keyframes);
+                        let vopacity = keyframe_cmd::base_opacity_filter_cmd(
+                            &base_transform,
+                            &seg.keyframes,
+                            s.fps,
+                            seg_dur,
+                            // The released base opacity curve is clip-local.
+                            0.0,
+                            &label,
+                            gc.keep_hdr(),
+                            Some(&mut cmd_files),
+                        )?;
                         // Stabilization (edit.stabilize): vidstabtransform on the source
                         // frames (right after the PTS reset, before reverse/crop) using the
                         // detect pre-pass's .trf. Empty when not stabilized / no .trf yet.
@@ -1981,8 +1751,9 @@ fn build_graph(
                             writeln!(
                             f,
                             "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                             {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuv420p[{pre}];",
+                             {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format={pix}[{pre}];",
                             idx = input_idx[asset],
+                            pix = gc.pix,
                         )
                         .unwrap();
                             // Composite each power window in order: pre → gw0 → gw1 → … The
@@ -2001,23 +1772,27 @@ fn build_graph(
                                 let uniq = format!("{label}w{wi}");
                                 let wp = window_alpha_path(project_dir, &gw.window, w, h);
                                 let widx = input_idx[&window_input_key(&wp)];
-                                f.push_str(&grade_window_block(
-                                    gw, widx, &cur, &out, &uniq, w, h, this_vfade,
+                                f.push_str(&grade_window_block_for(
+                                    gw, widx, &cur, &out, &uniq, w, h, this_vfade, gc,
                                 ));
                                 f.push('\n');
                                 cur = out;
                             }
                             if let Some(m) = masked {
                                 if mask_uses_geq(m) {
-                                    f.push_str(&mask_block_tracked(
+                                    f.push_str(&tracked_mask::mask_block_tracked_cmd(
                                         m,
                                         &cur,
                                         &post_region,
                                         &post_region,
                                         w,
                                         h,
+                                        s.fps,
+                                        seg_dur,
                                         foreground_fade,
-                                    ));
+                                        gc,
+                                        Some(&mut cmd_files),
+                                    )?);
                                 } else {
                                     f.push_str(&mask_block(
                                         m,
@@ -2028,6 +1803,7 @@ fn build_graph(
                                         w,
                                         h,
                                         foreground_fade,
+                                        gc,
                                     ));
                                 }
                                 f.push('\n');
@@ -2049,8 +1825,9 @@ fn build_graph(
                             writeln!(
                             f,
                             "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                             {conform}{vprep}{vanim}{vgrade}{veffects}{vtransform}{foreground_opacity}{vcolor},{vfps},format=yuv420p{foreground_fade}{foreground_lock}[{matte_foreground}];",
+                             {conform}{vprep}{vanim}{vgrade}{veffects}{vtransform}{foreground_opacity}{vcolor},{vfps},format={pix}{foreground_fade}{foreground_lock}[{matte_foreground}];",
                             idx = input_idx[asset],
+                            pix = gc.pix,
                         )
                         .unwrap();
                         }
@@ -2064,8 +1841,9 @@ fn build_graph(
                                  {conform}{vanim}{vtransform},{vfps},format=gray[{alpha}];"
                             )
                             .unwrap();
-                            let bg_filter = matte::background_filter(
+                            let bg_filter = matte::background_filter_for(
                                 project, &input_idx, background, w, h, &fps, opts.fit, seg_dur,
+                                gc.hdr,
                             )?;
                             let output_suffix = format!("{vopacity}{vfade}{vlock}");
                             f.push_str(&matte::replace_block(
@@ -2075,7 +1853,7 @@ fn build_graph(
                                 &bg_filter,
                                 &bg,
                                 &label,
-                                "yuv420p",
+                                gc.pix,
                                 &output_suffix,
                             ));
                             f.push('\n');
@@ -2091,7 +1869,8 @@ fn build_graph(
                         // Gap on the video track = black (public contract: gaps occupy time).
                         writeln!(
                             f,
-                            "color=c=black:s={w}x{h}:r={fps}:d={d},format=yuv420p[{label}];",
+                            "color=c=black:s={w}x{h}:r={fps}:d={d},{black}[{label}];",
+                            black = gc.black_stage(),
                             d = secs(seg_dur),
                         )
                         .unwrap();
@@ -2116,7 +1895,8 @@ fn build_graph(
                 let pad = edl.duration_ms - base_end;
                 writeln!(
                     f,
-                    "color=c=black:s={w}x{h}:r={fps}:d={d},format=yuv420p[{label}];",
+                    "color=c=black:s={w}x{h}:r={fps}:d={d},{black}[{label}];",
+                    black = gc.black_stage(),
                     d = secs(pad),
                 )
                 .unwrap();
@@ -2142,7 +1922,8 @@ fn build_graph(
         // No video content at all → black for the whole composition (audio-only edit).
         writeln!(
             f,
-            "color=c=black:s={w}x{h}:r={fps}:d={d},format=yuv420p[vcat];",
+            "color=c=black:s={w}x{h}:r={fps}:d={d},{black}[vcat];",
+            black = gc.black_stage(),
             d = secs(edl.duration_ms.max(1))
         )
         .unwrap();
@@ -2209,36 +1990,44 @@ fn build_graph(
                     _ => None,
                 })
                 .unwrap_or_else(cut_core::ClipTransform::identity);
-            let (ow, oh, ox, oy) = overlay_shape::geometry(&t, w, h);
-            let shaped_scale = if t.shape.is_rect() {
-                None
-            } else {
-                overlay_canvas::shaped_scale_expr(
-                    &seg.keyframes,
-                    ow,
-                    w,
-                    h,
-                    keyframe_window::offset(seg, s.fps),
-                )?
-            };
-            let shape_filter =
-                overlay_shape::mask_filter(&t, ow, &format!("sh{ti}_{}", olabels.len()));
-            // Keyframed OPACITY (edit.keyframe param=opacity): a `geq` alpha
-            // expression on the yuva frame, injected after format=yuva420p (before
-            // the PiP scale/pad). When present it OVERRIDES the static opacity.
-            let vopac = keyframe_window::opacity(seg, s.fps);
-            let place = if t.is_identity() {
+            let seg_dur_ms = seg.timeline_out_ms - seg.timeline_in_ms;
+            let ov_uniq = format!("o{ti}_{}", olabels.len());
+            let source = seg
+                .crop
+                .as_ref()
+                .map(|c| (c.w, c.h))
+                .or_else(|| project.assets.get(asset).and_then(source_dims));
+            let (ow, oh, ox, oy) = overlay_shape::geometry(&t, w, h, source);
+            let shaped_scale = overlay_canvas::shaped_scale_points(
+                &seg.keyframes,
+                ow,
+                w,
+                h,
+                keyframe_window::offset(seg, s.fps),
+            )?;
+            let shape_filter = overlay_shape::mask_filter_for(
+                &t,
+                ow,
+                &format!("sh{ti}_{}", olabels.len()),
+                gc.keep_hdr(),
+            );
+            let vopac = keyframe_window::opacity_cmd(
+                seg,
+                s.fps,
+                seg_dur_ms,
+                &ov_uniq,
+                gc.keep_hdr(),
+                Some(&mut cmd_files),
+            )?;
+            let place = if t.is_identity() && !t.shape.is_rect() {
                 String::new() // full-frame, fully opaque: no extra stage
             } else {
                 // Reset SAR after even-rounded scaling: otherwise concat rejects
                 // mixed SARs (e.g. scale 0.62 gives 5344:5355).
-                let mut s = overlay_shape::place_filter(&t, w, h, &shape_filter);
+                let mut s = overlay_shape::place_filter(&t, w, h, &shape_filter, source);
                 // Multiply alpha after masking/padding; keyframed opacity overrides
                 // static opacity. Transparent pixels stay transparent.
-                if t.opacity < 1.0 && vopac.is_empty() {
-                    let o = (t.opacity.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
-                    s.push_str(&format!(",colorchannelmixer=aa={o}"));
-                }
+                s.push_str(&hdr::overlay_static_opacity(&t, &vopac, gc.keep_hdr()));
                 s
             };
             // Overlay video fades (edit.fade) ramp the ALPHA plane — the
@@ -2254,15 +2043,10 @@ fn build_graph(
             // (crop → conform → transform). An overlay clip can be both
             // cropped (remove its own bands) and PiP-placed.
             let vcrop = crop_filter(seg.crop.as_ref());
-            // Overlay conform respects the same Fit mode as the base; the
-            // `place` transform then scales/positions the conformed full-frame
-            // overlay (PiP). yuva420p keeps the alpha plane for compositing.
+            // Rectangles follow source aspect, independently of canvas fit.
             let asset_meta = project.assets.get(asset);
             let conform = if t.shape.is_rect() {
-                asset_meta
-                    .filter(|_| !inputs[input_idx[asset.as_str()]].proxy)
-                    .map(|a| conform_filter_for_asset(a, seg.crop.as_ref(), w, h, opts.fit))
-                    .unwrap_or_else(|| conform_filter(w, h, opts.fit))
+                format!("scale={ow}:{oh},setsar=1")
             } else {
                 format!(
                     "scale={ow}:{oh}:force_original_aspect_ratio=increase,crop={ow}:{oh},setsar=1"
@@ -2291,14 +2075,20 @@ fn build_graph(
             };
             // Ken Burns pan/zoom (edit.animate) applies to overlays too, after conform;
             // a SCALE keyframe takes the same slot (the eased multi-point form).
-            let seg_dur_ms = seg.timeline_out_ms - seg.timeline_in_ms;
-            // Shaped Scale multiplies bubble size, not the interior crop.
+            // Overlay Scale multiplies box size, not the interior crop.
             let vanim = if shaped_scale.is_some() {
                 String::new()
             } else {
-                keyframe_window::scale(seg, w, h, s.fps, seg_dur_ms).unwrap_or_else(|| {
-                    animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur_ms)
-                })
+                keyframe_window::scale_cmd(
+                    seg,
+                    w,
+                    h,
+                    s.fps,
+                    seg_dur_ms,
+                    &ov_uniq,
+                    Some(&mut cmd_files),
+                )?
+                .unwrap_or_else(|| animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur_ms))
             };
             // Color grade (edit.grade) applies to overlay clips too, after conform.
             let vgrade = grade_stack_filter(seg.grade.as_ref(), &seg.grade_stack);
@@ -2306,11 +2096,20 @@ fn build_graph(
             // the final per-clip pixel stage (input → working → output). "" when
             // default → byte-identical. (On the matte path it tags the FOREGROUND
             // copy only; the gray alpha matte skips all color stages.)
-            let vprep = source_prep::clip_source_prep(asset_meta, seg.input_color_space.as_ref());
-            let vcolor = source_color::clip_color_chain(
+            let sdr_fb_ov = gc.keep_hdr() && !hdr::clip_sdr_only_features(seg).is_empty();
+            let vprep = source_prep::clip_source_prep_for(
+                asset_meta,
+                seg.input_color_space.as_ref(),
+                gc.hdr,
+                sdr_fb_ov,
+            );
+            let vcolor = source_color::clip_color_chain_for(
                 asset_meta,
                 seg.input_color_space.as_ref(),
                 &s.color,
+                gc.hdr,
+                sdr_fb_ov,
+                true,
             );
             // Visual effects (edit.effect): overlay=true so chroma key keys the
             // background to transparent BEFORE format=yuva420p (revealing the
@@ -2373,14 +2172,17 @@ fn build_graph(
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format={afmt}[{fgpre}];\n\
                      [{am}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
                      {conform}{vanim},{vfps},format=gray[{amatte}];",
                     idx = input_idx[asset.as_str()],
+                    afmt = gc.alpha,
                 )
                 .unwrap();
-                let bg_filter = matte::background_filter(
-                    project, &input_idx, background, w, h, &fps, opts.fit, seg_dur_ms,
+                // The replacement plate shares the foreground's conformed box.
+                let (bw, bh) = if t.shape.is_rect() { (ow, oh) } else { (w, h) };
+                let bg_filter = matte::background_filter_for(
+                    project, &input_idx, background, bw, bh, &fps, opts.fit, seg_dur_ms, gc.hdr,
                 )?;
                 f.push_str(&matte::replace_block(
                     &fgpre,
@@ -2389,47 +2191,47 @@ fn build_graph(
                     &bg_filter,
                     &bg,
                     &replacement,
-                    "yuva420p",
+                    gc.alpha,
                     "",
                 ));
                 f.push('\n');
-                if posx.is_some() || posy.is_some() {
+                if posx.is_some() || posy.is_some() || shaped_scale.is_some() {
                     // The replacement is one opaque stream before the regular
                     // animated canvas applies its transform, alpha and fade.
-                    let xexpr = match posx {
-                        Some((pts, interp)) => format!("{w}*({})", kf_expr(&pts, "t", interp)),
-                        None => ox.to_string(),
-                    };
-                    let yexpr = match posy {
-                        Some((pts, interp)) => format!("{h}*({})", kf_expr(&pts, "t", interp)),
-                        None => oy.to_string(),
-                    };
-                    let opac = if t.opacity < 1.0 && vopac.is_empty() {
-                        let o = (t.opacity.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
-                        format!(",colorchannelmixer=aa={o}")
-                    } else {
-                        String::new()
-                    };
+                    let opac = hdr::overlay_static_opacity(&t, &vopac, gc.keep_hdr());
                     let small = format!("o{ti}_sm{}", olabels.len());
                     let canvas = format!("o{ti}_cv{}", olabels.len());
-                    f.push_str(&animated_overlay_canvas_block(
-                        &format!("[{replacement}]null"),
-                        &small,
-                        &canvas,
-                        &label,
-                        w,
-                        h,
-                        &fps,
-                        seg_dur_ms,
-                        &vopac,
-                        ow,
-                        oh,
-                        &format!("{shape_filter}{opac}"),
-                        &xexpr,
-                        &yexpr,
-                        &vfade,
-                        None,
-                    ));
+                    let (mr_uniq, static_op, src_chain) = (
+                        format!("mr{ov_uniq}"),
+                        format!("{shape_filter}{opac}"),
+                        format!("[{replacement}]null"),
+                    );
+                    f.push_str(&overlay_canvas::animated_overlay_canvas_cmd_block(
+                        overlay_canvas::CanvasCmdArgs {
+                            input_chain: &src_chain,
+                            small: &small,
+                            canvas: &canvas,
+                            output: &label,
+                            w,
+                            h,
+                            fps_s: &fps,
+                            fps: s.fps,
+                            dur_ms: seg_dur_ms,
+                            vopacity: &vopac,
+                            ow,
+                            oh,
+                            static_opacity: &static_op,
+                            x_anim: overlay_canvas::AxisAnim::from_opt(posx.as_ref(), ox),
+                            y_anim: overlay_canvas::AxisAnim::from_opt(posy.as_ref(), oy),
+                            vfade: &vfade,
+                            shaped_scale: shaped_scale
+                                .as_ref()
+                                .map(|(pts, interp)| (pts.as_slice(), *interp)),
+                            uniq: &mr_uniq,
+                            keep_hdr: gc.keep_hdr(),
+                        },
+                        Some(&mut cmd_files),
+                    )?);
                     f.push('\n');
                 } else {
                     writeln!(f, "[{replacement}]null{vopac}{place}{vfade}[{label}];").unwrap();
@@ -2437,45 +2239,75 @@ fn build_graph(
             } else if let Some(am) = matte_alpha_idx {
                 let fgpre = format!("ofp{ti}_{}", olabels.len());
                 let amatte = format!("oam{ti}_{}", olabels.len());
+                let alpha_merge_fmt = if gc.keep_hdr() {
+                    ",format=yuva420p10le"
+                } else {
+                    ""
+                };
                 // Keep the existing remove graph byte-for-byte: it is the lower-track
                 // reveal contract and remains independent from replacement handling.
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format={afmt}[{fgpre}];\n\
                      [{am}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
                      {conform}{vanim},{vfps},format=gray[{amatte}];\n\
-                     [{fgpre}][{amatte}]alphamerge{vopac}{place}{vfade}[{label}];",
+                     [{fgpre}][{amatte}]alphamerge{alpha_merge_fmt}[omerge{ti}_{}];",
+                    olabels.len(),
                     idx = input_idx[asset.as_str()],
+                    afmt = gc.alpha,
                 )
                 .unwrap();
-            } else if posx.is_some() || posy.is_some() || shaped_scale.is_some() {
-                // overlay x/y in pixels: an animated `frame_dim * fraction` when that
-                // axis is keyframed, else the static ox/oy. `t` is segment-local (the
-                // canvas and the PTS-reset clip both start at 0). Values are NOT
-                // clamped, so the overlay can slide in from / out to off-screen.
-                let xexpr = match posx {
-                    Some((pts, interp)) => format!("{w}*({})", kf_expr(&pts, "t", interp)),
-                    None => ox.to_string(),
-                };
-                let yexpr = match posy {
-                    Some((pts, interp)) => format!("{h}*({})", kf_expr(&pts, "t", interp)),
-                    None => oy.to_string(),
-                };
-                // Static opacity on the scaled overlay (same condition as the pad
-                // path; skipped when opacity is keyframed — vopac drives the alpha).
-                let opac = if t.opacity < 1.0 && vopac.is_empty() {
-                    let o = (t.opacity.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
-                    format!(",colorchannelmixer=aa={o}")
+                let merged = format!("omerge{ti}_{}", olabels.len());
+                if let Some((s_pts, s_interp)) = shaped_scale.as_ref() {
+                    // SDR keeps the exact integration graph; Keep HDR scales alpha
+                    // with a 10-bit-safe lut.
+                    let opac = if gc.keep_hdr() {
+                        hdr::overlay_static_opacity(&t, &vopac, true)
+                    } else if t.opacity < 1.0 && vopac.is_empty() {
+                        format!(",colorchannelmixer=aa={}", t.opacity)
+                    } else {
+                        String::new()
+                    };
+                    let input_chain = format!("[{merged}]null{vopac}{shape_filter}");
+                    let (small, canvas) = (format!("{merged}_small"), format!("{merged}_canvas"));
+                    f.push_str(&overlay_canvas::animated_overlay_canvas_cmd_block(
+                        overlay_canvas::CanvasCmdArgs {
+                            input_chain: &input_chain,
+                            small: &small,
+                            canvas: &canvas,
+                            output: &label,
+                            w,
+                            h,
+                            fps_s: &fps,
+                            fps: s.fps,
+                            dur_ms: seg_dur_ms,
+                            vopacity: "",
+                            ow,
+                            oh,
+                            static_opacity: &opac,
+                            x_anim: overlay_canvas::AxisAnim::from_opt(posx.as_ref(), ox),
+                            y_anim: overlay_canvas::AxisAnim::from_opt(posy.as_ref(), oy),
+                            vfade: &vfade,
+                            shaped_scale: Some((s_pts.as_slice(), *s_interp)),
+                            uniq: &format!("mm{ov_uniq}"),
+                            keep_hdr: gc.keep_hdr(),
+                        },
+                        Some(&mut cmd_files),
+                    )?);
+                    f.push('\n');
                 } else {
-                    String::new()
-                };
+                    writeln!(f, "[{merged}]null{vopac}{place}{vfade}[{label}];").unwrap();
+                }
+            } else if posx.is_some() || posy.is_some() || shaped_scale.is_some() {
+                let opac = hdr::overlay_static_opacity(&t, &vopac, gc.keep_hdr());
                 let small = format!("o{ti}_sm{}", olabels.len());
                 let canvas = format!("o{ti}_cv{}", olabels.len());
                 let input_chain = format!(
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p",
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format={afmt}",
                     idx = input_idx[asset.as_str()],
+                    afmt = gc.alpha,
                 );
                 // Mask at stable dimensions before resizing the complete RGBA
                 // bubble: geq caches its configured input width and height.
@@ -2489,31 +2321,41 @@ fn build_graph(
                 } else {
                     &shape_filter
                 };
-                f.push_str(&animated_overlay_canvas_block(
-                    &input_chain,
-                    &small,
-                    &canvas,
-                    &label,
-                    w,
-                    h,
-                    &fps,
-                    seg_dur_ms,
-                    if shaped_scale.is_some() { "" } else { &vopac },
-                    ow,
-                    oh,
-                    &format!("{placed_mask}{opac}"),
-                    &xexpr,
-                    &yexpr,
-                    &vfade,
-                    shaped_scale.as_deref(),
-                ));
+                let static_op = format!("{placed_mask}{opac}");
+                f.push_str(&overlay_canvas::animated_overlay_canvas_cmd_block(
+                    overlay_canvas::CanvasCmdArgs {
+                        input_chain: &input_chain,
+                        small: &small,
+                        canvas: &canvas,
+                        output: &label,
+                        w,
+                        h,
+                        fps_s: &fps,
+                        fps: s.fps,
+                        dur_ms: seg_dur_ms,
+                        vopacity: if shaped_scale.is_some() { "" } else { &vopac },
+                        ow,
+                        oh,
+                        static_opacity: &static_op,
+                        x_anim: overlay_canvas::AxisAnim::from_opt(posx.as_ref(), ox),
+                        y_anim: overlay_canvas::AxisAnim::from_opt(posy.as_ref(), oy),
+                        vfade: &vfade,
+                        shaped_scale: shaped_scale
+                            .as_ref()
+                            .map(|(pts, interp)| (pts.as_slice(), *interp)),
+                        uniq: &ov_uniq,
+                        keep_hdr: gc.keep_hdr(),
+                    },
+                    Some(&mut cmd_files),
+                )?);
                 f.push('\n');
             } else {
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p{vopac}{place}{vfade}{vlock}[{label}];",
+                     {conform}{vprep}{vanim}{vgrade}{veffects}{vcolor},{vfps},format={afmt}{vopac}{place}{vfade}{vlock}[{label}];",
                     idx = input_idx[asset.as_str()],
+                    afmt = gc.alpha,
                 )
                 .unwrap();
             }
@@ -2576,15 +2418,23 @@ fn build_graph(
                 // yuva input; `blend` needs both inputs the SAME format (the base is
                 // yuv420p, so drop the overlay's alpha for the color blend), then the
                 // overlay's alpha (mask) re-limits the blend to the layer's region.
+                let merge_fmt = if gc.keep_hdr() {
+                    ",format=yuva420p10le"
+                } else {
+                    ""
+                };
                 writeln!(
                     f,
                     "[{vcat}]split[{vca}][{vcb}];\n\
-                     [{ostream}]format=yuva420p,split[{osa}][{osb}];\n\
+                     [{ostream}]format={afmt},split[{osa}][{osb}];\n\
                      [{osa}]alphaextract[{mask}];\n\
-                     [{osb}]format=yuv420p[{osc}];\n\
+                     [{osb}]format={pix}[{osc}];\n\
                      [{vca}][{osc}]blend=all_mode={mode}:shortest=1[{bl}];\n\
-                     [{bl}][{mask}]alphamerge[{bla}];\n\
-                     [{vcb}][{bla}]overlay=0:0:eof_action=pass[{composed}];"
+                     [{bl}][{mask}]alphamerge{merge_fmt}[{bla}];\n\
+                     [{vcb}][{bla}]overlay=0:0:eof_action=pass{ov}[{composed}];",
+                    afmt = gc.alpha,
+                    pix = gc.pix,
+                    ov = gc.ov,
                 )
                 .unwrap();
             }
@@ -2592,7 +2442,8 @@ fn build_graph(
                 // eof_action=pass: frame-count rounding must never stall the base.
                 writeln!(
                     f,
-                    "[{vcat}][{ostream}]overlay=0:0:eof_action=pass[{composed}];"
+                    "[{vcat}][{ostream}]overlay=0:0:eof_action=pass{ov}[{composed}];",
+                    ov = gc.ov,
                 )
                 .unwrap();
             }
@@ -2609,7 +2460,7 @@ fn build_graph(
     // byte-identical to before this feature (the determinism invariant).
     for (ai, adj) in edl.adjustments.iter().enumerate() {
         let out = format!("vadj{ai}");
-        f.push_str(&adjustment_block(adj, &vcat, &out, &ai.to_string()));
+        f.push_str(&adjustment_block(adj, &vcat, &out, &ai.to_string(), gc));
         f.push('\n');
         vcat = out;
     }
@@ -2675,7 +2526,14 @@ fn build_graph(
                     // Static gain retains the legacy clip+track EDL sum. A
                     // keyframed clip volume is clip-local, followed by the
                     // independent Track Gain held in the EDL.
-                    let gain = audio_gain_filters(seg);
+                    let gain = keyframe_cmd::audio_gain_filters_cmd(
+                        seg,
+                        seg_dur,
+                        // Released volume curves are clip-local.
+                        0.0,
+                        &label,
+                        Some(&mut cmd_files),
+                    )?;
                     // Audio fades (edit.fade): linear afade in segment time.
                     let afade = fade_suffix(seg.fade.as_ref(), seg_dur, false, false);
                     // Speed retime (edit.speed): pitch-preserved tempo change
@@ -2849,6 +2707,7 @@ fn build_graph(
         video_out,
         audio_out,
         _ass_dir: ass_dir,
+        _cmd_files: cmd_files,
     })
 }
 
@@ -2966,6 +2825,9 @@ fn gpu_opt_in() -> bool {
 /// forgoes speed; a false positive (GPU on a timeline it can't render) corrupts the
 /// output. Audio is always a software single-pass, so it never affects this gate.
 fn gpu_gate_refusal(project: &Project, edl: &Edl, opts: &RenderOptions) -> Option<&'static str> {
+    if opts.color == RenderColorMode::KeepHdr {
+        return Some("Keep HDR exports use the 10-bit software color pipeline");
+    }
     // Color management (project.color working/output ≠ rec709) is a CPU `zscale`
     // conversion the v1 CUDA graph does not emit → software path (which also keeps
     // the conversion bit-exact). A non-default project.color forces software.
@@ -3146,6 +3008,7 @@ fn build_graph_gpu(
     // audio_out — exactly what a software render of this timeline would build.
     let audio = build_graph(project, edl, project_dir, false, true, false, opts, None)?;
     let mut inputs = audio.inputs;
+    let mut cmd_files = audio._cmd_files;
     // Same asset->input index map the audio graph numbered its inputs with, so the
     // CUDA video chain references the same `-i` streams.
     let (_, input_idx) = collect_graph_inputs(project, edl, project_dir, false, false, w, h)?;
@@ -3302,22 +3165,26 @@ fn build_graph_gpu(
                     _ => None,
                 })
                 .unwrap_or_else(cut_core::ClipTransform::identity);
-            let (ow, oh) = (
-                even_size_px(f64::from(w) * t.scale, w),
-                even_size_px(f64::from(h) * t.scale, h),
-            );
-            let (ox, oy) = (
-                even_pos_px(f64::from(w) * t.x, w.saturating_sub(ow)),
-                even_pos_px(f64::from(h) * t.y, h.saturating_sub(oh)),
-            );
+            let source = seg
+                .crop
+                .as_ref()
+                .map(|c| (c.w, c.h))
+                .or_else(|| project.assets.get(asset).and_then(source_dims));
+            let (ow, oh, _, _) = overlay_shape::geometry(&t, w, h, source);
             // Keyframed OPACITY (edit.keyframe param=opacity) on the GPU-path overlay
             // (CPU-built) — same geq alpha as the software overlay; overrides static.
-            let vopac = opacity_kf_filter(&seg.keyframes);
-            let place = if t.is_identity() {
-                String::new()
-            } else {
-                let mut sp =
-                    format!(",scale={ow}:{oh},setsar=1,pad={w}:{h}:{ox}:{oy}:color=black@0.0");
+            let gpu_uniq = format!("g{ti}_{}", olabels.len());
+            let vopac = keyframe_window::opacity_cmd(
+                seg,
+                s.fps,
+                seg.timeline_out_ms - seg.timeline_in_ms,
+                &gpu_uniq,
+                // The GPU graph is SDR only; Keep HDR renders on the software graph.
+                false,
+                Some(&mut cmd_files),
+            )?;
+            let place = {
+                let mut sp = overlay_shape::place_filter(&t, w, h, "", source);
                 // opacity<1 scales the alpha plane; skipped when opacity is keyframed.
                 if t.opacity < 1.0 && vopac.is_empty() {
                     let o = (t.opacity.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
@@ -3332,7 +3199,7 @@ fn build_graph_gpu(
                 true,
             );
             let vcrop = crop_filter(seg.crop.as_ref());
-            let conform = conform_filter(w, h, opts.fit);
+            let conform = format!("scale={ow}:{oh},setsar=1");
             // Speed/freeze on a GPU-path overlay (CPU-built) — kept identical to the
             // software overlay (the gate routes any reversed/frozen timeline to
             // software, so this is forward-compat today, like effects above).
@@ -3352,8 +3219,20 @@ fn build_graph_gpu(
             // kept identical to the software overlay (gate routes it to software). A
             // SCALE keyframe takes the same slot (the eased multi-point form).
             let seg_dur_ms = seg.timeline_out_ms - seg.timeline_in_ms;
-            let vanim = scale_kf_zoompan(&seg.keyframes, w, h, s.fps, seg_dur_ms)
-                .unwrap_or_else(|| animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur_ms));
+            let vanim = if keyframe_window::long(seg, cut_core::KfParam::Scale) {
+                keyframe_window::scale_cmd(
+                    seg,
+                    w,
+                    h,
+                    s.fps,
+                    seg_dur_ms,
+                    &gpu_uniq,
+                    Some(&mut cmd_files),
+                )?
+            } else {
+                scale_kf_zoompan(&seg.keyframes, w, h, s.fps, seg_dur_ms)
+            }
+            .unwrap_or_else(|| animate_filter(seg.animation.as_ref(), w, h, s.fps, seg_dur_ms));
             let vgrade = grade_stack_filter(seg.grade.as_ref(), &seg.grade_stack);
             // Effects on a GPU-path overlay (CPU-built): overlay=true. (The gate
             // currently routes any effects timeline to software, so this is a
@@ -3419,6 +3298,7 @@ fn build_graph_gpu(
         video_out,
         audio_out: audio.audio_out,
         _ass_dir: None,
+        _cmd_files: cmd_files,
     })
 }
 
@@ -3481,7 +3361,7 @@ fn render_gpu(
     run_progress_atomic(&args, out, edl.duration_ms, cb.as_ref())?;
 
     let (gw, gh) = opts.output_geometry(project, edl);
-    let non_default = opts != RenderOptions::default();
+    let non_default = opts.fit != Fit::Contain || opts.resolution != Resolution::Project;
     Ok(RenderOutput {
         pipeline: Some("gpu".into()),
         width: non_default.then_some(gw),
@@ -3518,7 +3398,12 @@ pub fn render_final(
     keyframe_limit::require_bounded_keyframes(project, edl)?;
     let measured = source_facts::measured_for_reverse(project, fence.project_dir()); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
-    tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
+    hdr::require_support_for_mode(
+        project,
+        edl,
+        opts.color,
+        resources::video_encoder(&preset.video_args).unwrap_or(""),
+    )?;
     odd_size::require_even_output(project, &opts)?; // odd project: refuse, never round quietly
     let out = fence.fence_output_path(out_path)?; // the output-fencing contract — before any work
                                                   // Clear only an abandoned empty result before graph preparation. This also
@@ -3573,7 +3458,13 @@ pub fn render_final(
     // Output color tagging (project.color output ≠ rec709): make the delivered file's
     // color space explicit in the container. Empty (no flags) on the default rec709
     // output, so a default render stays byte-identical.
-    args.extend(output_color_args(&project.settings.color));
+    if opts.color == RenderColorMode::KeepHdr {
+        if let Some(p) = hdr::analyze_hdr_plan(project, edl) {
+            hdr::apply_hdr_encode_args(&mut args, p.target, Some(&p.metadata));
+        }
+    } else {
+        args.extend(output_color_args(&project.settings.color));
+    }
     if graph.audio_out.is_some() {
         args.extend(preset.audio_args.iter().cloned());
     }
@@ -3589,7 +3480,7 @@ pub fn render_final(
     // (contain + project geometry) leaves these None so its receipt stays
     // byte-identical to an older receipt without crop metadata.
     let (gw, gh) = opts.output_geometry(project, edl);
-    let non_default = opts != RenderOptions::default();
+    let non_default = opts.fit != Fit::Contain || opts.resolution != Resolution::Project;
     Ok(RenderOutput {
         pipeline: None,
         width: non_default.then_some(gw),
@@ -3759,11 +3650,17 @@ fn window_segment_key(
     gh: u32,
     fps: f64,
     preset: &RenderPreset,
+    color: RenderColorMode,
+    hdr_target: Option<source_color::Hdr>,
 ) -> String {
     let mut h = Sha256::new();
     h.update(serde_json::to_vec(wedl).unwrap_or_default());
     clip_identity::update(&mut h, project, wedl);
     h.update(format!("{gw}x{gh}@{fps}").as_bytes());
+    h.update(color.as_str().as_bytes());
+    if let Some(t) = hdr_target {
+        h.update(t.zscale_transfer().as_bytes());
+    }
     h.update(format!("{:?}", preset.video_args).as_bytes());
     // Referenced assets by content hash (a re-imported / changed source busts it).
     let mut ids: Vec<&str> = wedl
@@ -3795,6 +3692,7 @@ fn render_window_video(
     opts: RenderOptions,
     caps: WindowCaps,
     w0: u64,
+    hdr_plan: Option<&hdr::HdrPlan>,
     on_progress: &dyn Fn(f32),
 ) -> Result<(), CutError> {
     // with_captions=true (from the EDL), with_audio=false (audio is single-pass),
@@ -3802,14 +3700,30 @@ fn render_window_video(
     // Stabilization detect for THIS window's source sub-ranges (a clip split across
     // windows has a distinct .trf per window; idempotent + cached).
     prepare_stabilization(project, wedl, project_dir)?;
-    let graph = build_graph(project, wedl, project_dir, true, false, true, opts, None)?;
+    let graph = build_graph_with_hdr(
+        project,
+        wedl,
+        project_dir,
+        true,
+        false,
+        true,
+        opts,
+        None,
+        hdr_plan.map(|p| p.target),
+    )?;
     let mut args = graph_args(&graph, &graph.video_out, None);
     args.extend(preset.video_args.iter().cloned());
     let (ww, wh) = opts.output_geometry(project, wedl);
     args.extend(resources::encoder_thread_args(&preset.video_args, ww, wh));
     // Tag each segmented-render window with the project output color space so the
     // concat (stream-copy) carries it into the final file. Empty on default rec709.
-    args.extend(output_color_args(&project.settings.color));
+    if opts.color == RenderColorMode::KeepHdr {
+        if let Some(p) = hdr_plan {
+            hdr::apply_hdr_encode_args(&mut args, p.target, Some(&p.metadata));
+        }
+    } else {
+        args.extend(output_color_args(&project.settings.color));
+    }
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     let parent = seg_path.parent().expect("segment cache path has a parent");
     require_plain_internal_dir(parent)?;
@@ -3955,7 +3869,9 @@ pub fn render_segmented(
             height: gh,
         },
         loudness_target: None,
+        color: opts.color,
     };
+    let hdr_plan = hdr::analyze_hdr_plan(project, edl);
 
     // Per-render working dir (segment cache + intermediates) under the project.
     let work = project_dir.join(".cache").join("segrender");
@@ -3976,7 +3892,16 @@ pub fn render_segmented(
         .iter()
         .map(|(w0, w1)| {
             let wedl = edl.window(*w0, *w1);
-            let key = window_segment_key(project, &wedl, gw, gh, fps, preset);
+            let key = window_segment_key(
+                project,
+                &wedl,
+                gw,
+                gh,
+                fps,
+                preset,
+                opts.color,
+                hdr_plan.as_ref().map(|p| p.target),
+            );
             work.join(format!("{key}.mp4"))
         })
         .collect();
@@ -4025,6 +3950,7 @@ pub fn render_segmented(
                         win_opts,
                         caps,
                         w0,
+                        hdr_plan.as_ref(),
                         // A serial render shows progress inside each window too.
                         &|p| {
                             if parallelism == 1 {
@@ -4123,7 +4049,7 @@ pub fn render_segmented(
 
     // --- 4. measured facts for the receipt ---------------------------------
     let (gw2, gh2) = opts.output_geometry(project, edl);
-    let non_default = opts != RenderOptions::default();
+    let non_default = opts.fit != Fit::Contain || opts.resolution != Resolution::Project;
     Ok(RenderOutput {
         pipeline: None,
         width: non_default.then_some(gw2),
@@ -4211,7 +4137,12 @@ pub fn reframe_video(
         "sendcmd=f={},crop={cw}:{ch}:{x0}:{y0},scale={out_w}:{out_h}:flags=lanczos,setsar=1",
         escape_filter_path(&cmds_path)
     );
-    let mut args: Vec<String> = vec![
+    let mut args: Vec<String> = Vec::new();
+    // Match the decoder budget used by export preflight for the baked movie.
+    if let Some(n) = resources::decoder_threads(in_w, in_h) {
+        args.extend(["-threads".into(), n.to_string()]);
+    }
+    args.extend([
         "-i".into(),
         input.display().to_string(),
         "-vf".into(),
@@ -4222,7 +4153,7 @@ pub fn reframe_video(
         "0:a?".into(),
         "-c:a".into(),
         "copy".into(), // final mix already encoded — copy, don't re-encode
-    ];
+    ]);
     args.extend(preset.video_args.iter().cloned());
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(out_path.display().to_string());
@@ -4272,6 +4203,7 @@ pub fn render_audio(
         )
         .with_suggested_action("insert at least one clip before export.audio"));
     }
+    keyframe_limit::check_command_budget_for(project, edl, false, true, false)?;
     // with_captions=false, with_audio=true, with_video=false → audio-only graph.
     let graph = build_graph(
         project,
@@ -4321,7 +4253,7 @@ pub fn render_audio(
     args.push(out.display().to_string());
 
     let cb: ProgressFn = on_progress.unwrap_or_else(|| Box::new(|_| {}));
-    run_ffmpeg_with_progress(&args, edl.duration_ms, cb.as_ref())?;
+    run_progress_atomic(&args, &out, edl.duration_ms, cb.as_ref())?;
     Ok(RenderOutput {
         pipeline: None,
         width: None,
@@ -4798,9 +4730,9 @@ pub fn render_range(
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(out.display().to_string());
     let cb: ProgressFn = on_progress.unwrap_or_else(|| Box::new(|_| {}));
-    run_ffmpeg_with_progress(&args, out_ms - in_ms, cb.as_ref())?;
+    run_progress_atomic(&args, &out, out_ms - in_ms, cb.as_ref())?;
     let (gw, gh) = opts.output_geometry(project, edl);
-    let non_default = opts != RenderOptions::default();
+    let non_default = opts.fit != Fit::Contain || opts.resolution != Resolution::Project;
     Ok(RenderOutput {
         pipeline: None,
         width: non_default.then_some(gw),
@@ -4851,7 +4783,20 @@ pub fn extract_frame(
     at_ms: u64,
     preview_height: Option<u32>,
 ) -> Result<Vec<u8>, CutError> {
-    keyframe_limit::require_bounded_keyframes(project, edl)?;
+    extract_frame_with_args(project, edl, project_dir, at_ms, preview_height)
+        .map(|(bytes, _args)| bytes)
+}
+
+/// Extract a single rendered JPEG frame and return both its encoded bytes and
+/// the exact FFmpeg CLI argument vector used to produce it.
+pub fn extract_frame_with_args(
+    project: &Project,
+    edl: &Edl,
+    project_dir: &Path,
+    at_ms: u64,
+    preview_height: Option<u32>,
+) -> Result<(Vec<u8>, Vec<String>), CutError> {
+    keyframe_limit::require_keyframe_counts_bounded(project, edl)?;
     let measured = source_facts::measured_for_reverse(project, project_dir); // reversed clips
     let project = measured.as_ref().unwrap_or(project);
     tone_map_support::require_tone_map_support(project, edl)?; // HDR needs zscale: refuse plainly
@@ -4884,6 +4829,7 @@ pub fn extract_frame(
     let windowed = ((w0, w1) != (0, edl.duration_ms)).then(|| edl.window(w0, w1));
     let render_edl = windowed.as_ref().unwrap_or(edl);
 
+    keyframe_limit::check_command_budget_for(project, render_edl, true, false, false)?;
     // Frame extraction uses default framing (project geometry) — render.frame
     // is the agent's eyes at the composition geometry, independent of the
     // final render's fit/resolution choice.
@@ -4927,7 +4873,7 @@ pub fn extract_frame(
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(out.display().to_string());
     run_ffmpeg(&args)?;
-    Ok(std::fs::read(&out)?)
+    Ok((std::fs::read(&out)?, args))
 }
 
 #[cfg(test)]

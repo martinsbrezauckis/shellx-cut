@@ -193,21 +193,23 @@ impl ScopeKind {
 /// pass, one frame. The image is for human/VLM review; the numeric receipt
 /// ([`measure`]) is the agent-readable part.
 pub fn render_scope(frame_path: &Path, kind: ScopeKind, out_path: &Path) -> Result<(), CutError> {
-    let mut command = Command::new(ffmpeg_bin());
-    command.args(["-y", "-v", "error"]);
-    crate::ffmpeg::push_ffmpeg_literal_input(&mut command, frame_path)?;
-    command
-        .args(["-frames:v", "1", "-vf", kind.filter(), "-update", "1"])
-        .arg(out_path);
-    let st = run_bounded_command(&mut command, "render video scope")?.status;
-    if !st.success() {
-        return Err(CutError::new(
-            error_codes::FFMPEG,
-            format!("scope render failed ({})", kind.key()),
-            "ffmpeg returned non-zero",
-        ));
-    }
-    Ok(())
+    crate::atomic_output::stage_and_publish(out_path, false, |staged| {
+        let mut command = Command::new(ffmpeg_bin());
+        command.args(["-y", "-v", "error"]);
+        crate::ffmpeg::push_ffmpeg_literal_input(&mut command, frame_path)?;
+        command
+            .args(["-frames:v", "1", "-vf", kind.filter(), "-update", "1"])
+            .arg(staged);
+        let st = run_bounded_command(&mut command, "render video scope")?.status;
+        if !st.success() {
+            return Err(CutError::new(
+                error_codes::FFMPEG,
+                format!("scope render failed ({})", kind.key()),
+                "ffmpeg returned non-zero",
+            ));
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

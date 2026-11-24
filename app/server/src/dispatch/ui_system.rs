@@ -276,14 +276,16 @@ pub(super) async fn ui_forward(
         ui_error.and_then(|error| error.get("message")),
         "UI did not apply the requested state change",
     );
+    let suggested_action = bounded_ui_message(
+        ui_error.and_then(|error| error.get("suggested_action")),
+        "inspect ui.state and available_surface_ids, then retry a valid visible target",
+    );
     let error = CutError::new(
         code,
         message,
         format!("the connected UI returned applied:false for {verb} request {request_id}"),
     )
-    .with_suggested_action(
-        "inspect ui.state and available_surface_ids, then retry a valid visible target",
-    );
+    .with_suggested_action(suggested_action);
     result["error"] = serde_json::to_value(&error)?;
     Ok(VerbResult {
         ok: false,
@@ -442,6 +444,12 @@ pub(super) async fn system_fetch_tool(
         .await;
         match outcome {
             Ok(install) => {
+                // If the user reached Download because a previously chosen FFmpeg
+                // went missing, clear the stale override so the newly downloaded
+                // app-data build takes effect at the re-scan below.
+                if crate::doctor::chosen_ffmpeg::missing_chosen_path().is_some() {
+                    let _ = cut_media::toolpath::write_override_setting(None);
+                }
                 // Re-scan so the doctor card flips missing→bundled-or-appdata and
                 // doctor_updated fires (the wizard updates live).
                 st.jobs
@@ -616,6 +624,7 @@ pub(super) async fn system_setup_perception(
                     .map(|c| matches!(c.status, crate::doctor::CardStatus::Ok))
                     .unwrap_or(false);
                 let model_preparation_failed = o.model_warm_error.is_some();
+                let installation_record_failed = o.installation_record_error.is_some();
                 // The full tools (beyond base transcription) failed to install or
                 // to import: a partial setup, said as such, never a plain "done".
                 let extras_missing = !o.full_perception_ready;
@@ -623,6 +632,7 @@ pub(super) async fn system_setup_perception(
                     .extras_note
                     .iter()
                     .chain(o.model_warm_error.iter().map(|e| &e.message))
+                    .chain(o.installation_record_error.iter().map(|e| &e.message))
                     .cloned()
                     .collect();
                 let result = json!({
@@ -634,6 +644,7 @@ pub(super) async fn system_setup_perception(
                     "onnx_asr_ready": o.onnx_asr_ready,
                     "model_warmed": o.model_warmed,
                     "model_warm_error": o.model_warm_error,
+                    "installation_record_error": o.installation_record_error,
                     // Extras and model readiness are distinct from successful
                     // base dependency installation.
                     "full_perception_ready": o.full_perception_ready,
@@ -641,7 +652,7 @@ pub(super) async fn system_setup_perception(
                     "perception_ok_after": sidecar_ok,
                     "warnings": warnings,
                 });
-                if model_preparation_failed || extras_missing {
+                if model_preparation_failed || extras_missing || installation_record_failed {
                     st.jobs.finish_with_warnings(&jid, result);
                 } else {
                     st.jobs.finish(&jid, result);

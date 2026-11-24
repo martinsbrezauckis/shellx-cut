@@ -1,4 +1,5 @@
 use super::*;
+use crate::screen_record::clip_markers as take_markers;
 use std::io::Read;
 
 mod camera_foundation;
@@ -376,6 +377,7 @@ async fn screen_record_stop_complete(
     let mut raw_path: Option<String> = None;
     let mut raw_has_mic = false;
     let mut raw_has_system = false;
+    let mut raw_link_note = None;
     if a.mux_raw {
         let inputs = artifacts.raw_mux_inputs(&out_dir)?;
         let raw_out = fence_output_path(
@@ -395,6 +397,7 @@ async fn screen_record_stop_complete(
         .map_err(stop_outcome::take_kept_in_project)?;
         raw_has_mic = inputs.mic.is_some();
         raw_has_system = inputs.system.is_some();
+        raw_link_note = take_markers::link_raw_take(&out_dir, &a.capture_id, &raw_out);
         raw_path = Some(raw_out.display().to_string());
     }
 
@@ -421,7 +424,8 @@ async fn screen_record_stop_complete(
         plan = ae.result.as_ref().and_then(|r| r.get("plan").cloned());
     }
 
-    let notes = stop_files::capture_notes(&out_dir);
+    let mut notes = stop_files::capture_notes(&out_dir);
+    notes.extend(raw_link_note);
     Ok(VerbResult::ok(json!({
         "capture_id": a.capture_id,
         // What is wrong with a take saved with a problem (empty when exact).
@@ -597,13 +601,12 @@ pub(super) async fn screen_record_polish(
         (false, true) => "av",
         (false, false) => "v",
     };
+    use crate::screen_record::{polish_job, render_cleanup as rc};
     let key = format!("{}_{plan_tag}_{av_tag}", src_hash.replace(':', "_"));
-    let baked = cache.join(format!("{key}.mp4"));
+    let (polish_take_id, baked) = rc::polish_destination(&dir, &cache, source_dir, &key, raw)?;
     let baked_s = baked.display().to_string();
     let cached = crate::screen_record::cache_output::reusable_bake(&baked)?;
-    // The bake is a visible `screen_record_polish` job bound to this project
-    // (see screen_record::polish_job); it ends when the clip is placed.
-    use crate::screen_record::polish_job;
+    // The bake is a visible `screen_record_polish` job bound to this project; it ends when placed.
     let input = polish_job::BakeInput {
         cached,
         raw,
@@ -617,6 +620,7 @@ pub(super) async fn screen_record_polish(
         polish.placed(Ok(reply.clone())).await;
         return Ok(VerbResult::ok(reply));
     }
+    let (cm_n, cm_note) = take_markers::for_polish(source_dir, &source, &baked, &plan_path, raw);
 
     // Auto-checkpoint: the whole polish (import + insert) reverts in one step.
     let cp = Box::pin(dispatch(
@@ -769,6 +773,7 @@ pub(super) async fn screen_record_polish(
             actor.clone(),
         )
         .await?;
+        rc::remember_polish(&dir, polish_take_id.as_deref(), &source, &baked, cached)?;
     }
 
     // Place the recording's DESKTOP/SYSTEM audio (captured to <capture>/system.wav by
@@ -984,11 +989,13 @@ pub(super) async fn screen_record_polish(
         "system_warnings": system_warnings,
         "baked": baked,
         "cached": cached,
+        "clip_markers_added": cm_n,
+        "clip_markers_notice": cm_note,
     });
     polish
         .placed(Ok(
             json!({"clip_id": reply["clip_id"], "baked": reply["baked"]}),
         ))
         .await;
-    Ok(VerbResult::ok(reply))
+    Ok(VerbResult::ok(reply).with_warnings(take_markers::notice_warnings(&cm_note)))
 }

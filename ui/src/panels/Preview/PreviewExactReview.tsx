@@ -1,4 +1,6 @@
+import { useRef } from 'react'
 import { timecode } from '../Timeline/layout'
+import { useReleasedMediaRef } from './mediaElementRelease'
 
 export interface PreviewExactReviewState {
   url: string
@@ -21,9 +23,11 @@ export default function PreviewExactReview({
   onSave,
   onExit,
 }: PreviewExactReviewProps) {
+  const exactVideoRef = useRef<HTMLVideoElement>(null)
+  const releasedExactVideoRef = useReleasedMediaRef(exactVideoRef)
   return (
     <div className="pv-exact" data-cut-exact>
-      <video className="pv-exact-video" src={exact.url} controls autoPlay data-cut-exact-video />
+      <video ref={releasedExactVideoRef} className="pv-exact-video" src={exact.url} controls autoPlay data-cut-exact-video />
       <div className="pv-exact-bar">
         <span className="pv-chip pv-exact-chip" data-cut-exact-chip>
           EXACT · {timecode(exact.rangeMs[0])}–{timecode(exact.rangeMs[1])}

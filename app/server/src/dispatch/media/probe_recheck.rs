@@ -135,7 +135,7 @@ pub(super) async fn recheck_derived(
 ) {
     for id in given_back {
         let proxy = dir.join(format!("proxies/{id}.mp4"));
-        if let Err(error) = decode_check::record_decode_check(state, id, &proxy).await {
+        if let Err(error) = decode_check::record_decode_check_or_error(state, id, &proxy).await {
             tracing::warn!(asset = %id, error = %error.message, "decode check not measured again");
         }
     }

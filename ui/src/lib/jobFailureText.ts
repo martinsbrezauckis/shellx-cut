@@ -5,15 +5,54 @@
 
 import type { JobRecord } from './jobModel'
 
-function sentence(text: string): string {
+const LEADING_TOOL_NAMES = new Set([
+  'ffmpeg', 'ffprobe', 'ffplay',
+  'python', 'python3', 'pip', 'pip3', 'uv',
+  'git', 'node', 'npm', 'npx', 'tsx',
+  'cargo', 'rustc', 'rustfmt', 'clippy',
+  'brew', 'winget', 'choco', 'apt', 'dnf', 'pacman',
+  'curl', 'wget', 'tar',
+  'whisper', 'whisperx', 'yt-dlp', 'mkvmerge',
+  'cutd', 'tauri', 'playwright', 'chromium',
+])
+
+/** Capitalize only an ordinary leading word; preserve tool names and tokens
+ *  with dots, slashes, underscores, or digits (paths, filenames, codes). */
+export function formatSentenceStart(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  const firstToken = trimmed.split(/\s/, 1)[0]
+  const bareToken = firstToken.replace(/[.,:;!?…]+$/, '')
+  if (
+    !bareToken
+    || /[/\\_.:=\d]/.test(bareToken)
+    || LEADING_TOOL_NAMES.has(bareToken.toLowerCase())
+  ) {
+    return trimmed
+  }
+  return trimmed[0].toUpperCase() + trimmed.slice(1)
+}
+
+export function formatSentence(text: string): string {
   const trimmed = text.trim().replace(/\.{2,}$/, '.')
   if (!trimmed) return ''
-  // Paths and command identifiers are case-sensitive, not sentence prose.
-  const firstWord = trimmed.split(/\s/, 1)[0].replace(/[.!?]+$/, '')
-  const capital = /[/\\_.:=]/.test(firstWord)
-    ? trimmed
-    : trimmed[0].toUpperCase() + trimmed.slice(1)
-  return /[.!?…]$/.test(capital) ? capital : capital + '.'
+  const capital = formatSentenceStart(trimmed)
+  return /[.!?…]$/.test(capital) ? capital : `${capital}.`
+}
+
+export function dedupeSentences(parts: readonly string[]): string {
+  const seen = new Set<string>()
+  return parts
+    .filter(Boolean)
+    .join(' ')
+    .split(/(?<=[.!?])\s+/)
+    .filter((part) => {
+      const key = part.trim().replace(/[.!?]+$/, '').toLocaleLowerCase()
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .join(' ')
 }
 
 export function jobFailureText(record: JobRecord, fallback: string): string {
@@ -41,13 +80,7 @@ export function errorText(
   if (captions) return captions
   const message = error?.message?.trim() ?? ''
   const action = error?.suggested_action?.trim() ?? ''
-  const reason = message ? sentence(message) : fallback
+  const reason = message ? formatSentence(message) : fallback
   if (!action) return reason
-  const seen = new Set<string>()
-  return (reason + ' ' + sentence(action)).split(/(?<=[.!?])\s+/).filter((part) => {
-    const key = part.trim().replace(/[.!?]+$/, '').toLocaleLowerCase()
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  }).join(' ')
+  return dedupeSentences([reason, formatSentence(action)])
 }

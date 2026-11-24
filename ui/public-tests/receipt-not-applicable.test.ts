@@ -8,7 +8,9 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { notApplicable } from '../src/lib/checkApplicability'
 import { renderReceiptFrom } from '../src/lib/events'
-import Receipts from '../src/panels/Review/Receipts'
+import { register } from 'node:module'
+register('./lib/css-module-loader.mjs', import.meta.url)
+const { default: Receipts } = await import('../src/panels/Review/Receipts')
 import { receiptSummary } from '../src/statusbar/receiptSummary'
 
 const na = (name: string, reason: string, applies_when: string) => ({

@@ -107,9 +107,13 @@ pub fn refresh() -> bool {
     changed
 }
 
+pub(super) fn bump_generation() {
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
 #[cfg(test)]
 pub(crate) fn advance_for_test() {
-    GENERATION.fetch_add(1, Ordering::AcqRel);
+    bump_generation();
 }
 
 #[cfg(test)]

@@ -7,7 +7,9 @@ import { strict as assert } from 'node:assert'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { renderReceiptFrom } from '../src/lib/events'
-import Receipts from '../src/panels/Review/Receipts'
+import { register } from 'node:module'
+register('./lib/css-module-loader.mjs', import.meta.url)
+const { default: Receipts } = await import('../src/panels/Review/Receipts')
 
 const SUMMARY = 'The export was written but did not pass its checks (duration_matches_edl, sources_decodable): The file is not as long as the timeline: part of the picture or sound is missing.'
 const WAY = 'The file was written but is not a correct export of the timeline. Import a complete copy of the cut-off or damaged source (or replace it on the timeline), then export again.'

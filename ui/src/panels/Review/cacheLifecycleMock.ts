@@ -12,6 +12,7 @@ const RETRY_SOURCE_JOB_ID = 'fixture-health-retry'
 let cancelledJob: string | null = null
 let rebuildStatusReads = 0
 let retryAdmitted = false
+let oldRendersRemoved = false
 
 /** The engine lists an up-to-date asset (the one counted in fresh_assets) with
  * the reason already_current next to the assets it really skipped. */
@@ -28,7 +29,40 @@ export function handleCacheLifecycleMock(
   args: Record<string, unknown>,
 ): unknown | undefined {
   switch (name) {
+    case 'screen_record.render_cache_preview': {
+      const files = [
+        ...(oldRendersRemoved
+          ? []
+          : [{ name: 'cache/screen_record/renders/mock-take/sha256_old_v.mp4', bytes: 1_500_000, reason: null, removable: true }]),
+        { name: 'cache/screen_record/renders/mock-take/sha256_used_v.mp4', bytes: 2_000_000, reason: 'still used by a clip or take', removable: false },
+      ]
+      return {
+        ok: true,
+        result: {
+          files,
+          bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+          plan_id: oldRendersRemoved ? 'old_renders_plan_empty' : 'old_renders_plan_1',
+          removable_files: oldRendersRemoved ? 0 : 1,
+          legacy: {
+            files: ['cache/screen_record/sha256_legacy_v.mp4'],
+            bytes: 3_000_000,
+            reveal_asset: 'a_legacy_mock',
+            reason: 'older or unrecorded renders; the editor does not remove them',
+          },
+        },
+      }
+    }
+    case 'screen_record.render_cache_remove':
+      if (args.confirm !== true || args.plan_id !== (oldRendersRemoved ? 'old_renders_plan_empty' : 'old_renders_plan_1')) {
+        return { ok: false, error: { code: 'invalid_args', message: 'old recording render list changed; preview again before removing' } }
+      }
+      if (!oldRendersRemoved) {
+        oldRendersRemoved = true
+        return { ok: true, result: { results: [{ status: 'removed', bytes: 1_500_000, message: 'Earlier render removed (1.5 MB)' }] } }
+      }
+      return { ok: true, result: { results: [] } }
     case 'project.cache_preview':
+      oldRendersRemoved = false
       return {
         ok: true,
         result: {

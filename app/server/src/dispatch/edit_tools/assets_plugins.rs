@@ -730,6 +730,8 @@ pub(in crate::dispatch) async fn agent_chat(
         agent: Option<String>,
         model: Option<String>,
         timeout_ms: Option<u64>,
+        #[serde(default)]
+        conversation_id: Option<String>,
     }
     let a: Args = parse_args(args)?;
     let msg = a.message.trim().to_string();
@@ -782,6 +784,87 @@ pub(in crate::dispatch) async fn agent_chat(
         "target": &timeline_target,
         "policy": ["inspect the open project", "apply only reversible editing verbs", "return op-log receipts"],
     });
+    let suffix = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static C: AtomicU64 = AtomicU64::new(0);
+        C.fetch_add(1, Ordering::Relaxed)
+    };
+    let turn_id = format!("chat-{}-{suffix}", std::process::id());
+    let target_json = timeline_target
+        .as_ref()
+        .and_then(|t| serde_json::to_value(t).ok());
+    let (chat_session, history_context) = crate::chat::conversations::begin_turn(
+        state,
+        &project_dir,
+        a.conversation_id.as_deref(),
+        &actor,
+        &turn_id,
+        &msg,
+        a.agent.as_deref(),
+        a.model.as_deref(),
+        &attachments,
+        &a.evidence_ids,
+        evidence_index_id.as_deref(),
+        target_json.as_ref(),
+    )
+    .await?;
+    let res = agent_chat_execute(
+        state,
+        actor,
+        &msg,
+        &attachments,
+        &a.evidence_ids,
+        &evidence_index_id,
+        &timeline_target,
+        a.agent.as_deref(),
+        a.model.as_deref(),
+        a.timeout_ms,
+        &plan,
+        &project_dir,
+        &turn_id,
+        history_context.as_deref(),
+    )
+    .await;
+    match res {
+        Ok(mut vr) => {
+            if let Some(body) = vr.result.as_mut() {
+                chat_session
+                    .finish(a.agent.as_deref(), a.model.as_deref(), body)
+                    .await?;
+            }
+            Ok(vr)
+        }
+        Err(err) => {
+            let mut err_body = json!({
+                "ok": false,
+                "error": err.code,
+                "reply": err.message,
+            });
+            let _ = chat_session
+                .finish(a.agent.as_deref(), a.model.as_deref(), &mut err_body)
+                .await;
+            Err(err)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn agent_chat_execute(
+    state: &AppState,
+    actor: Actor,
+    msg: &str,
+    attachments: &[String],
+    evidence_ids: &[String],
+    evidence_index_id: &Option<String>,
+    timeline_target: &Option<crate::chat::timeline_target::TimelineTarget>,
+    requested_agent: Option<&str>,
+    model: Option<&str>,
+    timeout_ms: Option<u64>,
+    plan: &Value,
+    project_dir: &Path,
+    turn_id: &str,
+    history_context: Option<&str>,
+) -> Result<VerbResult, CutError> {
     // Every non-success path is an explicit HTTP-200 result that the UI renders.
     let fail = |error: &str,
                 reason: String,
@@ -798,20 +881,20 @@ pub(in crate::dispatch) async fn agent_chat(
             "reason": reason,
             "error": error,
             "actions": actions,
-            "attachments": &attachments,
-            "evidence_ids": &a.evidence_ids,
-            "evidence_index_id": &evidence_index_id,
-            "target": &timeline_target,
+            "attachments": attachments,
+            "evidence_ids": evidence_ids,
+            "evidence_index_id": evidence_index_id,
+            "target": timeline_target,
             "agent_message": agent_message,
             "detail": detail,
-            "plan": &plan,
+            "plan": plan,
             "review": review,
             "cost_usd": Value::Null,
         })))
     };
     // Do not quietly fall through from an explicitly requested provider whose
     // Pick the first installed provider with an implemented Agent Chat route.
-    let Some(agent) = crate::chat::pick_agent(a.agent.as_deref()) else {
+    let Some(agent) = crate::chat::pick_agent(requested_agent) else {
         // Detection is resolve_agent-based (process PATH first, THEN the explicit
         // install-dir ladder incl. grok's off-PATH ~/.grok/bin / a Finder-stripped
         // .app's Homebrew dirs) — so a detected-but-off-PATH agent is NOT
@@ -821,7 +904,7 @@ pub(in crate::dispatch) async fn agent_chat(
             .copied()
             .filter(|x| crate::chat::detect(x))
             .collect();
-        let reason = if let Some(req) = a.agent.as_deref() {
+        let reason = if let Some(req) = requested_agent {
             if crate::chat::CHAT_AGENTS.contains(&req) {
                 format!(
                     "{req} is not available on this machine — install it and sign in to use it for \
@@ -846,7 +929,7 @@ pub(in crate::dispatch) async fn agent_chat(
         return fail(
             "not_available",
             reason,
-            a.agent.clone(),
+            requested_agent.map(String::from),
             vec![],
             None,
             None,
@@ -892,15 +975,7 @@ pub(in crate::dispatch) async fn agent_chat(
         .await
         .clone()
         .unwrap_or_else(crate::httpc::server_addr);
-    // Create a new, empty, disposable cwd for every turn. The CLI never runs in
-    // the project or user cwd; edits reach the project through Cut's MCP verbs.
-    let suffix = {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static C: AtomicU64 = AtomicU64::new(0);
-        C.fetch_add(1, Ordering::Relaxed)
-    };
-    let turn_id = format!("chat-{}-{suffix}", std::process::id());
-    let turn_actor_name = turn_id.clone();
+    let turn_actor_name = turn_id.to_string();
     let proxy_actor = format!("agent:{turn_actor_name}:agent.chat");
     let workspace = match crate::chat::broker::IsolatedWorkspace::create() {
         Ok(workspace) => workspace,
@@ -978,7 +1053,7 @@ pub(in crate::dispatch) async fn agent_chat(
         &cutd_exe,
         &proxy_addr,
         &proxy_actor,
-        a.model.as_deref(),
+        model,
     ) else {
         let _ = std::fs::remove_dir_all(&ws);
         return fail(
@@ -1006,15 +1081,16 @@ pub(in crate::dispatch) async fn agent_chat(
             ));
         }
     }
-    let prompt = crate::chat::build_prompt(
-        &msg,
-        &attachments,
+    let prompt = crate::chat::build_prompt_with_history(
+        msg,
+        attachments,
         evidence_index_id.as_deref(),
-        &a.evidence_ids,
+        evidence_ids,
         timeline_target.as_ref(),
+        history_context,
     );
     let timeout =
-        std::time::Duration::from_millis(a.timeout_ms.unwrap_or(180_000).clamp(10_000, 600_000));
+        std::time::Duration::from_millis(timeout_ms.unwrap_or(180_000).clamp(10_000, 600_000));
     // Claude and Codex receive the prompt on stdin. Grok reads a prompt file;
     // Antigravity's current CLI requires the prompt as the final --print value.
     let resolved_args: Vec<String> = if cmd.via_stdin {
@@ -1134,11 +1210,11 @@ pub(in crate::dispatch) async fn agent_chat(
         Err(error) => {
             let (actions, review) = agent_chat_turn_review(
                 state,
-                &project_dir,
+                project_dir,
                 ops_before,
                 &baseline,
                 &turn_actor_name,
-                &turn_id,
+                turn_id,
                 checkpoint.as_deref(),
             )
             .await?;
@@ -1178,11 +1254,11 @@ pub(in crate::dispatch) async fn agent_chat(
     let result = crate::chat::parse_result(&stdout);
     let (actions, review) = agent_chat_turn_review(
         state,
-        &project_dir,
+        project_dir,
         ops_before,
         &baseline,
         &turn_actor_name,
-        &turn_id,
+        turn_id,
         checkpoint.as_deref(),
     )
     .await?;
@@ -1198,11 +1274,11 @@ pub(in crate::dispatch) async fn agent_chat(
             "agent": agent,
             "reply": result.reply,
             "actions": actions,
-            "attachments": &attachments,
-            "evidence_ids": &a.evidence_ids,
-            "evidence_index_id": &evidence_index_id,
-            "target": &timeline_target,
-            "plan": &plan,
+            "attachments": attachments,
+            "evidence_ids": evidence_ids,
+            "evidence_index_id": evidence_index_id,
+            "target": timeline_target,
+            "plan": plan,
             "review": review,
             "cost_usd": result.cost_usd,
         })));

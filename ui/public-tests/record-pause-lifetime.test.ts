@@ -61,14 +61,18 @@ assert.match(pausedLine, /\d+:\d{2}\./, 'the time is minutes:seconds')
   assert.equal(recordedMs(polled, T0 + 92_000), 9_000)
   // Without pause facts the clock keeps counting.
   assert.equal(recordedMs(clockAfterPauseChange(startRecordingClock(T0), 'idle', null, T0 + 3_000), T0 + 4_000), 4_000)
-  // The time limit is a wall-clock deadline in the recorder (a pause does not move it), so the seconds left run
-  // on through a pause while the timer stands still: 30 s limit, paused at 5.02 s recorded, 20 s of wall time in.
-  assert.equal(limitSecondsLeft(30_000, T0, T0 + 4_100), 26)
-  assert.equal(limitSecondsLeft(30_000, T0, T0 + 20_000), 10, 'the pause does not give the limit its time back')
-  const pausedAt5 = clockAfterPauseChange(startRecordingClock(T0), 'paused', paused, T0 + 5_050)
+  // The time limit counts recorded time only (pause time excluded), so the seconds left hold during a pause
+  // while the timer stands still and resume counting down when recording continues: 30 s limit, paused at 5.02 s.
+  const activeClock = startRecordingClock(T0)
+  assert.equal(limitSecondsLeft(30_000, activeClock, T0 + 4_100), 26)
+  const pausedAt5 = clockAfterPauseChange(activeClock, 'paused', paused, T0 + 5_050)
   assert.equal(recordedMs(pausedAt5, T0 + 20_000), 5_020, 'while the recorded time stands still')
-  assert.equal(limitSecondsLeft(10_000, T0, T0 + 12_000), 0)
-  assert.equal(limitSecondsLeft(10_000, T0, T0 - 500), 10, 'a clock step back never adds seconds')
+  assert.equal(limitSecondsLeft(30_000, pausedAt5, T0 + 20_000), 25, 'paused time does not count against the length limit')
+  assert.equal(limitSecondsLeft(30_000, pausedAt5, T0 + 120_000), 25, 'a long pause still preserves remaining recorded time')
+  const resumedFrom5 = clockAfterPauseChange(pausedAt5, 'recording', null, T0 + 20_000)
+  assert.equal(limitSecondsLeft(30_000, resumedFrom5, T0 + 25_000), 20, 'the limit resumes from recorded time')
+  assert.equal(limitSecondsLeft(10_000, activeClock, T0 + 12_000), 0)
+  assert.equal(limitSecondsLeft(10_000, activeClock, T0 - 500), 10, 'a clock step back never adds seconds')
   // The last acknowledgement is outdated by a poll that shows the opposite state.
   assert.equal(boundaryAfterStatus(paused, 'recording'), null)
   assert.equal(boundaryAfterStatus(resumed, 'paused'), null)
@@ -79,15 +83,16 @@ assert.match(pausedLine, /\d+:\d{2}\./, 'the time is minutes:seconds')
 
 // The live box under the preview: a paused take says "Paused" with a pause mark and not the red recording dot.
 {
-  const live = (pauseState: 'recording' | 'paused' | 'resuming' | 'pausing') => renderToStaticMarkup(createElement(RecordingLiveControls, {
+  const live = (pauseState: 'recording' | 'paused' | 'resuming' | 'pausing', markerConfirmation: string | null = null) => renderToStaticMarkup(createElement(RecordingLiveControls, {
     elapsed: '0:05', sceneName: 'Screen', audioMeters: null, captureSafety: null,
     pauseCapability: { supported: true, detail: '', incompatible: [] }, pauseEnabled: true, pauseState, pauseMessage: '',
-    markerPending: false, stopRetry: false, onMarker: () => undefined, onPauseControl: () => undefined, onStop: () => undefined,
+    markerPending: false, markerConfirmation, stopRetry: false, onMarker: () => undefined, onPauseControl: () => undefined, onStop: () => undefined,
   }))
   const running = live('recording')
   assert.match(running, /rec__hud-dot/)
   assert.match(running, /<small>Recording · Screen<\/small>/)
-  assert.doesNotMatch(running, /Paused|rec__hud-pause/)
+  assert.doesNotMatch(running, /Paused|rec__hud-pause|data-cut-rec-marker-feedback/)
+  assert.match(live('recording', 'Marker added at 0:12'), /data-cut-rec-marker-feedback[^>]*>Marker added at 0:12</)
   for (const state of ['paused', 'resuming'] as const) {
     const html = live(state)
     assert.match(html, /<small>Paused · Screen<\/small>/, `${state}: the box says it is paused`)

@@ -1006,4 +1006,189 @@ fn screen_record_polish_subverb_failure_names_system_audio_step() {
     assert!(err.cause.contains("audio cannot be inserted"));
 }
 
+#[tokio::test]
+async fn screen_record_polish_and_twice_updated_video_keeps_earlier_renders_until_settings_removes_them(
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = dir.path().join("take_renders.cutproj");
+    let state = AppState::new();
+    let r = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"take_renders","dir": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(r.ok, "{:?}", r.error);
+    let canonical_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    let cap = canonical_dir.join("cache/screen_record/cap-1");
+    std::fs::create_dir_all(&cap).unwrap();
+    let source = cap.join("source.mp4");
+    let ff = std::process::Command::new("ffmpeg")
+        .args([
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x180:rate=30:duration=4",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(&source)
+        .status()
+        .unwrap();
+    assert!(ff.success(), "synthetic source.mp4 failed");
+    std::fs::write(cap.join("events.json"), b"{}").unwrap();
+    let mut plan = record_core::EditPlan::empty(320, 180, 4000, 30.0);
+    plan.cursor.smoothed = vec![
+        record_core::CursorSample {
+            t_ms: 0,
+            x: 80.0,
+            y: 45.0,
+        },
+        record_core::CursorSample {
+            t_ms: 1500,
+            x: 240.0,
+            y: 135.0,
+        },
+    ];
+    let plan_path = cap.join("plan.json");
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+
+    let pr = dispatch(
+        &state,
+        "screen_record.polish",
+        json!({"source": source.display().to_string(), "plan": plan_path.display().to_string()}),
+        test_actor(),
+    )
+    .await;
+    assert!(pr.ok, "polish failed: {:?}", pr.error);
+    let polish_res = pr.result.unwrap();
+    let clip_id = polish_res["clip_id"].as_str().unwrap().to_string();
+    let initial_baked = std::path::PathBuf::from(polish_res["baked"].as_str().unwrap());
+    let render_folder = initial_baked.parent().unwrap().to_path_buf();
+    assert!(
+        render_folder
+            .parent()
+            .is_some_and(|p| p.ends_with("cache/screen_record/renders")),
+        "initial polish must land inside the take's own renders folder, got {}",
+        initial_baked.display()
+    );
+
+    let add = dispatch(
+        &state,
+        "screen_record.zoom_add",
+        json!({"clip": clip_id, "at_ms": 500, "duration_ms": 1000, "scale": 2.0}),
+        test_actor(),
+    )
+    .await;
+    assert!(add.ok, "{:?}", add.error);
+    let zoom_id = add.result.unwrap()["segment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut current_baked = initial_baked.clone();
+    for scale in [2.5f64, 3.0f64] {
+        let up = dispatch(
+            &state,
+            "screen_record.zoom_update",
+            json!({"clip": clip_id, "id": zoom_id, "scale": scale}),
+            test_actor(),
+        )
+        .await;
+        assert!(up.ok, "{:?}", up.error);
+        let rf = dispatch(
+            &state,
+            "screen_record.take_refresh",
+            json!({"clip": clip_id}),
+            test_actor(),
+        )
+        .await;
+        assert!(rf.ok, "{:?}", rf.error);
+        let jid = rf.result.unwrap()["job_id"].as_str().unwrap().to_string();
+        let mut done = None;
+        for _ in 0..6_000 {
+            let job = state.jobs.get(&jid).unwrap();
+            if matches!(
+                job.state,
+                crate::jobs::JobState::Done | crate::jobs::JobState::Failed
+            ) {
+                done = Some(job);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let job = done.expect("take_refresh finishes");
+        assert_eq!(job.state, crate::jobs::JobState::Done, "{:?}", job.error);
+        let result = job.result.as_ref().unwrap();
+        assert_eq!(result["earlier_render"]["status"], "kept", "{result}");
+        assert!(
+            result["earlier_render"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Settings"),
+            "{result}"
+        );
+        assert!(
+            current_baked.exists(),
+            "previous render {} must stay for Undo",
+            current_baked.display()
+        );
+        current_baked = std::path::PathBuf::from(result["baked"].as_str().unwrap());
+    }
+
+    let mp4s_left = || {
+        std::fs::read_dir(&render_folder)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("mp4"))
+            .count()
+    };
+    assert_eq!(mp4s_left(), 3, "{}", render_folder.display());
+    assert!(initial_baked.exists());
+
+    let top_mp4s: Vec<_> = std::fs::read_dir(canonical_dir.join("cache/screen_record"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("mp4"))
+        .collect();
+    assert!(
+        top_mp4s.is_empty(),
+        "cache/screen_record should have no top-level renders: {top_mp4s:?}"
+    );
+
+    let preview = dispatch(
+        &state,
+        "screen_record.render_cache_preview",
+        json!({}),
+        test_actor(),
+    )
+    .await;
+    assert!(preview.ok, "{:?}", preview.error);
+    let pval = preview.result.unwrap();
+    assert_eq!(pval["files"].as_array().unwrap().len(), 2, "{pval}");
+    assert_eq!(pval["removable_files"], 2, "{pval}");
+    assert!(pval["files"][0]["bytes"].as_u64().unwrap() > 0, "{pval}");
+    assert_eq!(
+        pval["legacy"]["files"].as_array().unwrap().len(),
+        0,
+        "{pval}"
+    );
+    let removed = dispatch(
+        &state,
+        "screen_record.render_cache_remove",
+        json!({"plan_id": pval["plan_id"], "confirm": true}),
+        test_actor(),
+    )
+    .await;
+    assert!(removed.ok, "{:?}", removed.error);
+    assert_eq!(mp4s_left(), 1, "{}", render_folder.display());
+    assert!(!initial_baked.exists());
+    assert!(current_baked.exists());
+}
+
 include!("screen_record_camera.rs");

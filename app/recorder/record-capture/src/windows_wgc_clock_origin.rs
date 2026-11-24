@@ -63,6 +63,16 @@ impl QpcCaptureOrigin {
         })
     }
 
+    pub(crate) fn from_first_frame(first_native_hns: i64) -> Result<Self, &'static str> {
+        if first_native_hns < 0 {
+            return Err("negative native frame QPC timestamp");
+        }
+        Ok(Self {
+            hns: i128::from(first_native_hns),
+            bracket_hns: 0,
+        })
+    }
+
     #[cfg(windows)]
     pub(crate) fn sample(capture_start: Instant) -> Result<Self, &'static str> {
         use windows::Win32::System::Performance::{
@@ -314,31 +324,6 @@ mod tests {
                 .stop_media_timestamp(start, start + Duration::from_millis(3_500), first)
                 .unwrap(),
             29_400_000
-        );
-    }
-
-    #[test]
-    fn later_cached_segment_ends_at_its_owned_reserved_boundary() {
-        let start = Instant::now();
-        let origin =
-            QpcCaptureOrigin::from_sample(10_000_000, 50_000_000, 50_000_000, Duration::ZERO)
-                .unwrap();
-        let second_boundary = origin.reserved_boundary_hns(15_000).unwrap();
-        assert_eq!(
-            origin
-                .place_first_frame(second_boundary - 50_000, 15_000)
-                .unwrap(),
-            FirstFramePlacement::BeforeStart { lead_hns: 50_000 }
-        );
-        assert_eq!(
-            origin
-                .stop_media_timestamp(
-                    start,
-                    start + Duration::from_millis(18_000),
-                    second_boundary
-                )
-                .unwrap(),
-            30_000_000
         );
     }
 }

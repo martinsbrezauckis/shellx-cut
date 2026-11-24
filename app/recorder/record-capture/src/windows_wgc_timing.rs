@@ -4,14 +4,14 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde::Serialize;
 
 #[derive(Clone)]
 pub(crate) struct WgcTimingRecorder {
-    origin: Instant,
+    origin: Arc<OnceLock<Instant>>,
     sidecar: PathBuf,
     summary: Arc<Mutex<WgcTimingSummary>>,
 }
@@ -47,6 +47,24 @@ struct WgcTimingSummary {
 
 impl WgcTimingRecorder {
     pub(crate) fn new(origin: Instant, requested_fps: u32, staging: &Path) -> Self {
+        let cell = Arc::new(OnceLock::new());
+        let _ = cell.set(origin);
+        Self::with_origin_cell(cell, requested_fps, staging)
+    }
+
+    pub(crate) fn new_deferred(requested_fps: u32, staging: &Path) -> Self {
+        Self::with_origin_cell(Arc::new(OnceLock::new()), requested_fps, staging)
+    }
+
+    pub(crate) fn set_origin(&self, origin: Instant) {
+        let _ = self.origin.set(origin);
+    }
+
+    fn with_origin_cell(
+        origin: Arc<OnceLock<Instant>>,
+        requested_fps: u32,
+        staging: &Path,
+    ) -> Self {
         // The native `s.mp4` lives in a random private staging directory that
         // publication removes. Keep the observation in its owning capture root.
         let stage_dir = staging.parent().expect("WGC stage has an owning directory");
@@ -79,7 +97,9 @@ impl WgcTimingRecorder {
     }
 
     fn elapsed_ns(&self, at: Instant) -> u64 {
-        u64::try_from(at.saturating_duration_since(self.origin).as_nanos()).unwrap_or(u64::MAX)
+        self.origin.get().map_or(0, |origin| {
+            u64::try_from(at.saturating_duration_since(*origin).as_nanos()).unwrap_or(u64::MAX)
+        })
     }
 
     pub(crate) fn accepted_frame(&self, native_timestamp_100ns: i64, at: Instant) {

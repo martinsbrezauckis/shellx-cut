@@ -7,16 +7,10 @@ use std::process::{Child, Command};
 pub(super) fn configure(command: &mut Command) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    // The render leader is also its process-group leader, so every descendant
-    // is owned before its executable begins running.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // Claim the process group via posix_spawn attributes rather than
+    // pre_exec/fork, so busy multi-threaded macOS processes never run
+    // libSystem atfork handlers before exec.
+    command.process_group(0);
     Ok(())
 }
 

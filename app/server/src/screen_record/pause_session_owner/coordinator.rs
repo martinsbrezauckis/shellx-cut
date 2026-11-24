@@ -250,6 +250,9 @@ where
     pub(crate) fn phase(&self) -> PauseSessionOwnerPhase {
         self.phase
     }
+    pub(crate) fn active_duration_exhausted_at(&self, at: Instant) -> bool {
+        self.seal.active_duration_exhausted_at(at)
+    }
     pub(crate) fn block(&mut self) {
         if self.phase != PauseSessionOwnerPhase::Stopped {
             self.phase = PauseSessionOwnerPhase::Blocked;
@@ -305,7 +308,6 @@ where
             .dispatch(&command)
             .map_err(PauseSessionOwnerError::WorkerDispatch)
     }
-
     fn match_generation(
         &self,
         expected: u64,
@@ -318,7 +320,6 @@ where
             .then_some(())
             .ok_or(PauseSessionOwnerError::MismatchedGeneration { expected, received })
     }
-
     fn require_phase(
         &self,
         action: &'static str,
@@ -328,21 +329,18 @@ where
             .then_some(())
             .ok_or_else(|| self.wrong_phase(action))
     }
-
     fn wrong_phase(&self, action: &'static str) -> PauseSessionOwnerError {
         PauseSessionOwnerError::WrongPhase {
             action,
             actual: self.phase,
         }
     }
-
     fn blocked_worker_command(
         &mut self,
         error: super::super::pause_worker_protocol::PauseWorkerCommandRejection,
     ) -> PauseSessionOwnerError {
         self.blocked(PauseSessionOwnerError::WorkerCommand(error))
     }
-
     fn blocked(&mut self, error: PauseSessionOwnerError) -> PauseSessionOwnerError {
         self.phase = PauseSessionOwnerPhase::Blocked;
         error

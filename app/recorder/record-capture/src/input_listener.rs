@@ -3,8 +3,29 @@
 //! A failed platform stop must never wedge the recording worker or release the
 //! process-global admission guard while a native hook might still be live.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+enum InputClock {
+    Immediate(Instant),
+    #[cfg_attr(not(all(windows, feature = "capture-windows")), allow(dead_code))]
+    Deferred(Arc<OnceLock<Instant>>),
+}
+
+impl InputClock {
+    fn elapsed_ms(&self, now: Instant) -> Option<u64> {
+        let origin = match self {
+            Self::Immediate(start) => Some(*start),
+            Self::Deferred(cell) => cell.get().copied(),
+        }?;
+        let elapsed = match self {
+            Self::Immediate(_) => now.saturating_duration_since(origin),
+            Self::Deferred(_) => now.checked_duration_since(origin)?,
+        };
+        Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+    }
+}
 
 use record_core::{error_codes, ClickPositionQuality, RecordError, Result};
 
@@ -46,8 +67,15 @@ pub(crate) struct InputListener<L: NativeInputListener = rdevin::OwnedListener> 
 }
 
 impl InputListener<rdevin::OwnedListener> {
+    #[cfg_attr(
+        all(windows, feature = "capture-windows"),
+        allow(
+            dead_code,
+            reason = "macOS, Linux, and pause pilot start input immediately"
+        )
+    )]
     pub(crate) fn start(start: Instant, capture_keys: bool) -> Result<Self> {
-        Self::start_with_policy(start, capture_keys, false, None)
+        Self::start_with_policy(InputClock::Immediate(start), capture_keys, false, None)
     }
 
     /// Start a listener that is mandatory for the caller's immutable stream
@@ -55,20 +83,38 @@ impl InputListener<rdevin::OwnedListener> {
     /// native hook into an empty successful input stream.
     #[cfg(all(windows, feature = "capture-windows"))]
     pub(crate) fn start_required(start: Instant, capture_keys: bool) -> Result<Self> {
-        Self::start_with_policy(start, capture_keys, true, None)
+        Self::start_with_policy(InputClock::Immediate(start), capture_keys, true, None)
     }
 
     #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(
+        all(windows, feature = "capture-windows"),
+        allow(dead_code, reason = "macOS starts observed input immediately")
+    )]
     pub(crate) fn start_observed(
         start: Instant,
         capture_keys: bool,
         observer: impl FnMut(&rdevin::Event, u64) + Send + 'static,
     ) -> Result<Self> {
-        Self::start_with_policy(start, capture_keys, false, Some(Box::new(observer)))
+        Self::start_with_policy(
+            InputClock::Immediate(start),
+            capture_keys,
+            false,
+            Some(Box::new(observer)),
+        )
+    }
+
+    #[cfg(all(windows, feature = "capture-windows"))]
+    pub(crate) fn start_deferred(
+        origin: Arc<OnceLock<Instant>>,
+        capture_keys: bool,
+        observer: Option<InputObserver>,
+    ) -> Result<Self> {
+        Self::start_with_policy(InputClock::Deferred(origin), capture_keys, false, observer)
     }
 
     fn start_with_policy(
-        start: Instant,
+        clock: InputClock,
         capture_keys: bool,
         required: bool,
         mut observer: Option<InputObserver>,
@@ -78,8 +124,11 @@ impl InputListener<rdevin::OwnedListener> {
             input: Input::default(),
         }));
         let callback_state = state.clone();
+        let callback_clock = clock.clone();
         let native = rdevin::listen_owned(move |event| {
-            let timestamp_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let Some(timestamp_ms) = callback_clock.elapsed_ms(Instant::now()) else {
+                return;
+            };
             append_if_accepting(&callback_state, |input| {
                 if let Some(observer) = observer.as_mut() {
                     observer(&event, timestamp_ms);
@@ -149,11 +198,11 @@ impl InputListener<rdevin::OwnedListener> {
                 None
             }
         };
-        if native.is_some() {
+        if native.is_some() && matches!(clock, InputClock::Immediate(_)) {
             // Admission precedes the OS read. A callback that already supplied a
             // position wins; the initial sample is a passive read, never an event.
             let point = rdevin::current_pointer_position();
-            let timestamp_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let timestamp_ms = clock.elapsed_ms(Instant::now()).unwrap_or(0);
             append_if_accepting(&state, |input| {
                 seed_initial_position(input, timestamp_ms, point)
             });
@@ -162,7 +211,32 @@ impl InputListener<rdevin::OwnedListener> {
     }
 }
 
+#[cfg(all(windows, feature = "capture-windows"))]
+#[derive(Clone)]
+pub(crate) struct InputSeedHandle {
+    state: Arc<Mutex<InputState>>,
+    has_native: bool,
+}
+
+#[cfg(all(windows, feature = "capture-windows"))]
+impl InputSeedHandle {
+    pub(crate) fn seed_at_origin(&self) {
+        if self.has_native {
+            let point = rdevin::current_pointer_position();
+            append_if_accepting(&self.state, |input| seed_initial_position(input, 0, point));
+        }
+    }
+}
+
 impl<L: NativeInputListener> InputListener<L> {
+    #[cfg(all(windows, feature = "capture-windows"))]
+    pub(crate) fn seed_handle(&self) -> InputSeedHandle {
+        InputSeedHandle {
+            state: self.state.clone(),
+            has_native: self.native.is_some(),
+        }
+    }
+
     /// The owned listener has acknowledged startup; event count is not evidence.
     pub(crate) fn startup_observation(&self, capture_keys: bool) -> crate::InputHookStartup {
         crate::InputHookStartup::rdevin(self.native.is_some(), capture_keys)

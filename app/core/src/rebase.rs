@@ -458,6 +458,9 @@ pub struct PinnedIds {
     pub added_markers: Vec<String>,
     /// Read cursor into `added_markers`.
     marker_cursor: usize,
+    /// Allocated clip marker ids (effect `added_clip_markers`) in order.
+    pub added_clip_markers: Vec<String>,
+    clip_marker_cursor: usize,
 }
 
 impl PinnedIds {
@@ -494,6 +497,15 @@ impl PinnedIds {
             {
                 p.added_markers.push(m.to_string());
             }
+            if let Some(arr) = e
+                .detail
+                .get("added_clip_markers")
+                .and_then(|v| v.as_array())
+            {
+                for id in arr.iter().filter_map(|v| v.as_str()) {
+                    p.added_clip_markers.push(id.to_string());
+                }
+            }
         }
         p
     }
@@ -504,6 +516,17 @@ impl PinnedIds {
         let id = self.added_markers.get(self.marker_cursor).cloned();
         if id.is_some() {
             self.marker_cursor += 1;
+        }
+        id
+    }
+
+    pub fn next_clip_marker(&mut self) -> Option<String> {
+        let id = self
+            .added_clip_markers
+            .get(self.clip_marker_cursor)
+            .cloned();
+        if id.is_some() {
+            self.clip_marker_cursor += 1;
         }
         id
     }
@@ -566,6 +589,7 @@ impl PinnedIds {
             && self.added_track.is_none()
             && self.added_tracks.is_empty()
             && self.added_markers.is_empty()
+            && self.added_clip_markers.is_empty()
     }
 }
 

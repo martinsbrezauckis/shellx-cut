@@ -14,19 +14,22 @@ pub(super) fn write_thumbnail(
 ) -> Result<(), cut_core::CutError> {
     cut_core::matte_cache::plain_file_exists(thumbnail)?;
     let mid_s = (duration_ms as f64 / 2000.0).max(0.0);
-    cut_media::ffmpeg::run_ffmpeg(&[
-        "-ss".into(),
-        format!("{mid_s:.3}"),
-        "-i".into(),
-        media.display().to_string(),
-        "-frames:v".into(),
-        "1".into(),
-        "-q:v".into(),
-        "3".into(),
-        "-update".into(),
-        "1".into(),
-        thumbnail.display().to_string(),
-    ])
+    cut_media::ffmpeg::run_ffmpeg_atomic_output(
+        &[
+            "-ss".into(),
+            format!("{mid_s:.3}"),
+            "-i".into(),
+            media.display().to_string(),
+            "-frames:v".into(),
+            "1".into(),
+            "-q:v".into(),
+            "3".into(),
+            "-update".into(),
+            "1".into(),
+            thumbnail.display().to_string(),
+        ],
+        thumbnail,
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]

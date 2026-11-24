@@ -79,6 +79,23 @@ pub(in crate::dispatch) async fn edit_insert_linked_at(
                 "ripple": false,
             }),
         });
+        let video_markers = crate::screen_record::clip_markers::resolve_markers_for_asset(
+            Some(&store.dir),
+            &store.project,
+            &a.asset,
+        );
+        if !video_markers.is_empty() {
+            let video_clip_id = cut_core::edit::new_clip_id(&store.project);
+            let with_ids = crate::screen_record::clip_markers::marker_inputs_with_ids(
+                &store.project,
+                &video_markers,
+                0,
+            );
+            steps.push(crate::screen_record::clip_markers::set_clip_markers_step(
+                &video_clip_id,
+                with_ids,
+            ));
+        }
         steps.push(InverseOp {
             verb: "edit.insert".into(),
             args: json!({

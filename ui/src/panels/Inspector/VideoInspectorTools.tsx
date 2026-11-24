@@ -7,6 +7,7 @@ import { runUserVerb } from '../../lib/userActionFeedback'
 import EffectChainControls, { type EffectOption } from './EffectChainControls'
 import VideoColorSection from './VideoColorSection'
 import RecordingZoomSection from './RecordingZoomSection'
+import { OldRecordingZoomSection } from './OldRecordingZoomSection'
 import { layoutTrack } from '../Timeline/layout'
 import {
   BLEND_MODES,
@@ -138,6 +139,7 @@ export default function VideoInspectorTools({
   return (
     <>
       {clip.recording && !clip.recording.camera && <RecordingZoomSection key={clip.id} clip={clip.id} revision={projectRevision} timelineAtPlayhead={timelineAtPlayhead} />}
+      {!clip.recording && clip.old_recording && <OldRecordingZoomSection key={clip.id} clip={clip.id} revision={projectRevision} />}
       <InspectorSection
         title="Stabilization & auto zoom"
         sectionKey="video-motion"

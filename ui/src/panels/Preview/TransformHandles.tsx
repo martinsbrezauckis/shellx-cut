@@ -36,7 +36,7 @@ function clampT(t: T, aspect: number): T {
   return {
     ...t,
     x: Math.min(max, Math.max(0, t.x)),
-    y: Math.min(Math.max(0, 1 - scale * (shaped ? aspect : 1)), Math.max(0, t.y)),
+    y: Math.min(Math.max(0, 1 - scale * aspect), Math.max(0, t.y)),
     scale,
     opacity: t.opacity,
   }
@@ -57,10 +57,12 @@ export function TransformHandles({
   onLive,
   onCommit,
   pinResizePosition = false,
+  sourceAspect,
   onCancel,
 }: {
   clipId: string
   transform: T
+  sourceAspect?: number
   stageRef: RefObject<HTMLDivElement | null>
   onLive: (t: T) => void
   onCommit: (t: T, resize: boolean) => void
@@ -89,7 +91,8 @@ export function TransformHandles({
       const rect = stageRef.current?.getBoundingClientRect()
       if (!d || !rect || rect.width <= 0 || rect.height <= 0) return
       const s = d.start
-      const aspect = s.shape && s.shape !== 'rect' ? rect.width / rect.height : 1
+      const aspect = s.shape && s.shape !== 'rect' ? rect.width / rect.height
+        : sourceAspect ? rect.width / rect.height / sourceAspect : 1
       let next: T
       if (d.mode === 'move') {
         const dxN = (ev.clientX - d.startX) / rect.width
@@ -135,7 +138,8 @@ export function TransformHandles({
     width: `${(transform.scale * 100).toFixed(3)}%`,
     ...(transform.shape && transform.shape !== 'rect'
       ? { height: 'auto', aspectRatio: '1' }
-      : { height: `${(transform.scale * 100).toFixed(3)}%` }),
+      : sourceAspect ? { height: 'auto', aspectRatio: String(sourceAspect) }
+        : { height: `${(transform.scale * 100).toFixed(3)}%` }),
   }
   const corners: { c: Corner; cursor: string; style: React.CSSProperties }[] = [
     { c: 'tl', cursor: 'nwse-resize', style: { left: 0, top: 0 } },

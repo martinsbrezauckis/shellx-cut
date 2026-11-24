@@ -428,6 +428,7 @@ fn timeline_range(edl: &cut_core::Edl, clip: &str, start: u64, end: u64) -> Valu
 pub(crate) fn annotate(project: &cut_core::Project, value: &mut Value) {
     if let Some(tracks) = value["tracks"].as_array_mut() {
         for track in tracks {
+            let is_video = track["kind"].as_str() == Some("video");
             if let Some(clips) = track["clips"].as_array_mut() {
                 for clip in clips {
                     if let Some(take) = clip["asset"].as_str().and_then(|asset| {
@@ -448,11 +449,32 @@ pub(crate) fn annotate(project: &cut_core::Project, value: &mut Value) {
                         });
                         video_status(project, take, &mut recording);
                         clip["recording"] = recording;
+                    } else if is_video {
+                        if let Some(asset) =
+                            clip["asset"].as_str().and_then(|id| project.assets.get(id))
+                        {
+                            if super::make_editable::looks_like_old_polished_asset(&asset.path) {
+                                clip["old_recording"] = json!(true);
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+pub(crate) fn take_id_for_capture(dir: &Path, capture: &Path) -> Result<String, CutError> {
+    use sha2::{Digest, Sha256};
+    let dir = super::strip_verbatim_prefix(dir);
+    let capture = super::strip_verbatim_prefix(capture);
+    let relative = capture
+        .strip_prefix(&dir)
+        .map_err(|_| bad("capture folder is outside the project"))?;
+    Ok(format!(
+        "take-{:x}",
+        Sha256::digest(relative.to_string_lossy().as_bytes())
+    ))
 }
 
 pub(crate) async fn link_polished(
@@ -467,7 +489,6 @@ pub(crate) async fn link_polished(
     camera_look: Option<cut_core::recording::CameraLook>,
     actor: Actor,
 ) -> Result<(), CutError> {
-    use sha2::{Digest, Sha256};
     let capture = source
         .parent()
         .ok_or_else(|| bad("recording capture folder is missing"))?;
@@ -480,13 +501,7 @@ pub(crate) async fn link_polished(
     let events = file(dir, &events.display().to_string())?;
     let original = super::polish::load_plan(plan_path)?;
     let segments = zoom_segments::keys_to_segments(&original.zoom).map_err(record_error)?;
-    let relative = capture
-        .strip_prefix(dir)
-        .map_err(|_| bad("capture folder is outside the project"))?;
-    let id = format!(
-        "take-{:x}",
-        Sha256::digest(relative.to_string_lossy().as_bytes())
-    );
+    let id = take_id_for_capture(dir, capture)?;
     let mut guard = state.project.write().await;
     let store = guard.as_mut().ok_or_else(crate::dispatch::no_project)?;
     if store.dir != dir {

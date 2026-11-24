@@ -8,7 +8,7 @@
 // Any failure → diagnostic on stderr, exit 1. cutd's own logs go to ITS
 // stderr (passed through) so a hung probe is debuggable.
 //
-// Usage: node scripts/mcp-probe.mjs [--cutd /absolute/path/to/cutd]
+// Usage: node scripts/mcp-probe.mjs [--cutd /absolute/path/to/cutd] [--budget] [--max-percent 80]
 // Use this helper to inspect the generated MCP surface of a running engine.
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
@@ -18,18 +18,39 @@ import { safeJsonParse } from "./lib/safe-data.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CUTD_REL = "./app/target/debug/cutd";
+const MAX_TOOLS_LIST_BYTES = 384 * 1024;
 let cutdPath = resolve(root, CUTD_REL);
+let checkBudget = false;
+let maxPercent = 80;
 
 function fail(message) {
   process.stderr.write(`mcp-probe: ${message}\n`);
   process.exit(1);
 }
 
-if (process.argv.length !== 2) {
-  if (process.argv.length !== 4 || process.argv[2] !== "--cutd" || !isAbsolute(process.argv[3])) {
-    fail("expected --cutd with an absolute executable path");
+for (let i = 2; i < process.argv.length; i += 1) {
+  const arg = process.argv[i];
+  if (arg === "--cutd") {
+    const value = process.argv[i + 1];
+    if (!value || !isAbsolute(value)) {
+      fail("expected --cutd with an absolute executable path");
+    }
+    cutdPath = value;
+    i += 1;
+  } else if (arg === "--budget") {
+    checkBudget = true;
+  } else if (arg === "--max-percent") {
+    const raw = process.argv[i + 1];
+    const parsed = Number(raw);
+    if (!raw || !Number.isFinite(parsed) || parsed <= 0 || parsed > 100) {
+      fail("expected --max-percent between 1 and 100");
+    }
+    maxPercent = parsed;
+    checkBudget = true;
+    i += 1;
+  } else {
+    fail(`unknown argument '${arg}'`);
   }
-  cutdPath = process.argv[3];
 }
 if (!existsSync(cutdPath) || !statSync(cutdPath).isFile()) {
   fail("selected cutd binary does not exist; build first with cargo build -p server");
@@ -53,7 +74,18 @@ child.stdout.on("data", (chunk) => {
     if (msg.id === 2) {
       clearTimeout(timer); child.kill();
       if (!msg.result?.tools) { fail(`tools/list errored: ${JSON.stringify(msg.error ?? msg)}`); }
-      process.stdout.write(`${JSON.stringify({ tools: msg.result.tools.map((t) => t.name) })}\n`);
+      const tools = msg.result.tools.map((t) => t.name);
+      if (checkBudget) {
+        const bytes = Buffer.byteLength(line, "utf8");
+        const percent = Number(((bytes * 100) / MAX_TOOLS_LIST_BYTES).toFixed(2));
+        const ok = bytes * 100 < MAX_TOOLS_LIST_BYTES * maxPercent;
+        process.stderr.write(
+          `mcp-probe: tools/list is ${bytes}/${MAX_TOOLS_LIST_BYTES} bytes (${percent.toFixed(2)}%, target < ${maxPercent}%)\n`,
+        );
+        process.stdout.write(`${JSON.stringify({ tools, bytes, maxBytes: MAX_TOOLS_LIST_BYTES, percent, maxPercent, ok })}\n`);
+        process.exit(ok ? 0 : 1);
+      }
+      process.stdout.write(`${JSON.stringify({ tools })}\n`);
       process.exit(0);
     }
   }

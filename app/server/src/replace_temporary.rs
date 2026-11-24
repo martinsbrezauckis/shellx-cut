@@ -3,6 +3,7 @@ use std::{io, path::Path, time::Duration};
 use tempfile::{NamedTempFile, PersistError};
 
 const RETRIES: u32 = 200;
+const READ_RETRIES: u32 = 40;
 const PAUSE: Duration = Duration::from_millis(5);
 
 pub(crate) fn replace_temporary(file: NamedTempFile, path: &Path) -> io::Result<()> {
@@ -13,6 +14,41 @@ pub(crate) fn replace_temporary(file: NamedTempFile, path: &Path) -> io::Result<
         |file, path| file.persist(path).map(|_| ()),
         std::thread::sleep,
     )
+}
+
+/// Read an existing UTF-8 file, retrying short-lived Windows handle/replacement
+/// races before believing `NotFound` or failing with sharing/access errors.
+pub(crate) fn read_optional_text(path: &Path) -> io::Result<Option<String>> {
+    read_optional_text_with(
+        path,
+        cfg!(windows),
+        |path| std::fs::read_to_string(path),
+        std::thread::sleep,
+    )
+}
+
+pub(crate) fn read_optional_text_with(
+    path: &Path,
+    windows: bool,
+    mut read: impl FnMut(&Path) -> io::Result<String>,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<Option<String>> {
+    for attempt in 0..=READ_RETRIES {
+        match read(path) {
+            Ok(text) => return Ok(Some(text)),
+            Err(error)
+                if windows
+                    && (error.kind() == io::ErrorKind::NotFound
+                        || matches!(error.raw_os_error(), Some(5 | 32)))
+                    && attempt < READ_RETRIES =>
+            {
+                sleep(PAUSE);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("final read attempt always returns")
 }
 
 fn replace_with(
@@ -120,5 +156,100 @@ mod tests {
             assert_eq!(std::fs::read(path).unwrap(), b"old");
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         }
+    }
+
+    #[test]
+    fn retries_windows_transient_read_errors_and_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        let transient_errors = [
+            || io::Error::new(io::ErrorKind::NotFound, "replacement gap"),
+            || io::Error::from_raw_os_error(5),
+            || io::Error::from_raw_os_error(32),
+        ];
+        for make_err in transient_errors {
+            let mut attempts = 0;
+            let mut pauses = 0;
+            let text = read_optional_text_with(
+                &path,
+                true,
+                |_| {
+                    attempts += 1;
+                    if attempts <= 3 {
+                        Err(make_err())
+                    } else {
+                        Ok("{\"ok\":true}".to_string())
+                    }
+                },
+                |pause| {
+                    assert_eq!(pause, PAUSE);
+                    pauses += 1;
+                },
+            )
+            .unwrap();
+            assert_eq!((attempts, pauses), (4, 3));
+            assert_eq!(text.as_deref(), Some("{\"ok\":true}"));
+        }
+    }
+
+    #[test]
+    fn confirms_windows_not_found_and_preserves_exhausted_or_non_windows_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+
+        let mut attempts = 0;
+        let mut pauses = 0;
+        let missing = read_optional_text_with(
+            &path,
+            true,
+            |_| {
+                attempts += 1;
+                Err(io::Error::new(io::ErrorKind::NotFound, "absent"))
+            },
+            |_| pauses += 1,
+        )
+        .unwrap();
+        assert_eq!(missing, None);
+        assert_eq!((attempts, pauses), (READ_RETRIES + 1, READ_RETRIES));
+
+        for (windows, code, expected) in [
+            (true, 5, READ_RETRIES + 1),
+            (true, 32, READ_RETRIES + 1),
+            (true, 13, 1),
+            (false, 5, 1),
+        ] {
+            let mut attempts = 0;
+            let mut pauses = 0;
+            let err = read_optional_text_with(
+                &path,
+                windows,
+                |_| {
+                    attempts += 1;
+                    Err(io::Error::from_raw_os_error(code))
+                },
+                |_| pauses += 1,
+            )
+            .unwrap_err();
+            assert_eq!(attempts, expected);
+            assert_eq!(pauses, expected - 1);
+            assert_eq!(err.raw_os_error(), Some(code));
+        }
+
+        let mut non_win_attempts = 0;
+        let mut non_win_pauses = 0;
+        assert_eq!(
+            read_optional_text_with(
+                &path,
+                false,
+                |_| {
+                    non_win_attempts += 1;
+                    Err(io::Error::new(io::ErrorKind::NotFound, "absent"))
+                },
+                |_| non_win_pauses += 1,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!((non_win_attempts, non_win_pauses), (1, 0));
     }
 }

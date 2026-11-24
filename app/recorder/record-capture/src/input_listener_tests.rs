@@ -435,3 +435,19 @@ fn registered_listener_without_events_is_not_reported_as_failed() {
     let (cursor, clicks, scrolls, keys) = listener.seal(1).unwrap();
     assert!(cursor.is_empty() && clicks.is_empty() && scrolls.is_empty() && keys.is_empty());
 }
+
+#[test]
+fn deferred_input_clock_ignores_pre_origin_instants_and_tracks_origin_elapsed() {
+    let origin = Arc::new(OnceLock::new());
+    let clock = InputClock::Deferred(origin.clone());
+    let before = Instant::now();
+    assert_eq!(clock.elapsed_ms(before), None);
+    let armed = Instant::now();
+    let _ = origin.set(armed);
+    assert_eq!(clock.elapsed_ms(before), None);
+    assert_eq!(clock.elapsed_ms(armed), Some(0));
+    assert_eq!(
+        clock.elapsed_ms(armed + Duration::from_millis(42)),
+        Some(42)
+    );
+}

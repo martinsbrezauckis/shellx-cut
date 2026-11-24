@@ -65,6 +65,6 @@ export function clockAfterPauseChange(
  * this counts wall-clock time since the start of the take, through any pause,
  * while the timer beside it shows the recorded time.
  */
-export function limitSecondsLeft(capMs: number, startedAt: number, now: number): number {
-  return Math.max(0, Math.ceil((capMs - Math.max(0, now - startedAt)) / 1000))
+export function limitSecondsLeft(capMs: number, clock: RecordingClock, now: number): number {
+  return Math.max(0, Math.ceil((capMs - recordedMs(clock, now)) / 1000))
 }

@@ -51,7 +51,28 @@ pub(crate) fn finalize_windows_no_replace(
         timescale::video_timescale(&mut timing_file, timing_bytes).map_err(|error| {
             finalization_error("read Windows camera track timebase", &error.to_string())
         })?;
-    let measured = measure_mp4(&stage, timescale)?;
+    let track_timing =
+        timescale::video_track_timing(&mut timing_file, timing_bytes).map_err(|error| {
+            finalization_error("read Windows camera track timing table", &error.to_string())
+        })?;
+    let mut measured = measure_mp4(&stage, timescale)?;
+    let (reconciled_ticks, reconciled_hns) = clock::reconcile_track_span(
+        clock::MeasuredTrackSpan {
+            frame_count: measured.frame_count,
+            duration_hns: measured.duration_hns,
+            duration_ticks: measured.duration_ticks,
+            final_pts_duration_ticks: measured.final_pts_duration_ticks,
+        },
+        &track_timing,
+    )
+    .map_err(|cause| {
+        finalization_error(
+            "anchored Windows camera MP4 has inconsistent track timing",
+            &cause,
+        )
+    })?;
+    measured.duration_ticks = reconciled_ticks;
+    measured.duration_hns = reconciled_hns;
     if measured.frame_count != expected_frame_count
         || (measured.duration_hns != expected_duration_hns
             && !measured
@@ -177,6 +198,7 @@ struct MeasuredMp4 {
     frame_count: u64,
     duration_hns: i64,
     duration_ticks: Option<u64>,
+    final_pts_duration_ticks: Option<u64>,
 }
 
 /// Decode the closed MP4 from a byte stream over the retained leaf. The span
@@ -222,6 +244,7 @@ fn measure_mp4(stage: &WindowsNoReplaceCameraStage, timescale: u32) -> Result<Me
         let mut final_end_hns: Option<i64> = None;
         let mut first_start_ticks: Option<u64> = None;
         let mut final_end_ticks: Option<u64> = None;
+        let mut highest_start_ticks: Option<(u64, u64)> = None;
         loop {
             let mut flags = 0_u32;
             let mut timestamp_hns = 0_i64;
@@ -258,18 +281,22 @@ fn measure_mp4(stage: &WindowsNoReplaceCameraStage, timescale: u32) -> Result<Me
                     )
                 })?;
                 if timescale <= 10_000_000 {
-                    let ticks = clock::sample_ticks(timestamp_hns, timescale)
+                    let (start, duration, end) = clock::sample_ticks(timestamp_hns, timescale)
                         .zip(clock::sample_ticks(duration_hns, timescale))
                         .filter(|(_, duration)| *duration != 0)
-                        .and_then(|(start, duration)| start.checked_add(duration).map(|end| (start, end)))
+                        .and_then(|(start, duration)| {
+                            start.checked_add(duration).map(|end| (start, duration, end))
+                        })
                         .ok_or_else(|| finalization_error(
                             "anchored Windows camera MP4 has invalid track timing",
                             "sample timestamp or duration does not represent an exact container track tick",
                         ))?;
                     first_start_ticks =
-                        Some(first_start_ticks.map_or(ticks.0, |first| first.min(ticks.0)));
-                    final_end_ticks =
-                        Some(final_end_ticks.map_or(ticks.1, |last| last.max(ticks.1)));
+                        Some(first_start_ticks.map_or(start, |first| first.min(start)));
+                    final_end_ticks = Some(final_end_ticks.map_or(end, |last| last.max(end)));
+                    if highest_start_ticks.is_none_or(|(best_start, _)| start > best_start) {
+                        highest_start_ticks = Some((start, duration));
+                    }
                 }
                 first_start_hns =
                     Some(first_start_hns.map_or(timestamp_hns, |first| first.min(timestamp_hns)));
@@ -306,6 +333,7 @@ fn measure_mp4(stage: &WindowsNoReplaceCameraStage, timescale: u32) -> Result<Me
                 .zip(final_end_ticks)
                 .and_then(|(first, last)| last.checked_sub(first))
                 .filter(|duration| *duration != 0),
+            final_pts_duration_ticks: highest_start_ticks.map(|(_, dur)| dur),
         })
     }
 }

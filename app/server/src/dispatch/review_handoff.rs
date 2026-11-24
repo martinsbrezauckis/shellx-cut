@@ -139,23 +139,18 @@ fn require_current_render(
 }
 
 fn copy_file_atomic(verified_render: &Path, destination: &Path) -> Result<(), CutError> {
-    let tmp = temp_output_path_for_render(destination);
-    let result = (|| {
-        let mut input = std::fs::File::open(verified_render)?;
-        let mut output = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp)?;
-        std::io::copy(&mut input, &mut output)?;
-        output.flush()?;
-        output.sync_all()?;
-        drop(output);
-        publish_output_atomic(&tmp, destination)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    let stage = cut_media::PrivateStageDir::new()?;
+    let staged = stage.reserve_named_file("review-media")?;
+    let mut input = std::fs::File::open(verified_render)?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&staged)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.flush()?;
+    output.sync_all()?;
+    drop(output);
+    cut_media::publish_staged_file(&staged, destination, false)
 }
 
 fn embedded_json(value: &Value) -> Result<String, CutError> {

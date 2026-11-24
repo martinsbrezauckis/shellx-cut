@@ -84,3 +84,47 @@ async fn rejected_or_noop_ui_command_is_not_a_success_envelope() {
     assert_eq!(payload["request_id"], request_id);
     assert_eq!(payload["error"]["code"], "conflict");
 }
+
+#[tokio::test]
+async fn rejected_ui_command_forwards_error_suggested_action() {
+    let state = AppState::new();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let client_id = state.ui_bridge.register(tx);
+    let worker_state = state.clone();
+    let worker = tokio::spawn(async move {
+        dispatch(
+            &worker_state,
+            "ui.open",
+            json!({"panel":"preview"}),
+            test_actor(),
+        )
+        .await
+    });
+
+    let outbound: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+    let request_id = outbound["request_id"].as_u64().unwrap();
+    let hint =
+        "Close the open Music bed drawer with Escape or its Close button, then retry ui.open.";
+    assert!(state.ui_bridge.resolve(
+        client_id,
+        json!({
+            "type":"ui_command_result",
+            "request_id":request_id,
+            "verb":"ui.open",
+            "applied":false,
+            "requested":{"panel":"preview"},
+            "state":{"schema":"shellx-cut/ui-state/2","state_revision":11},
+            "error":{
+                "code":"conflict",
+                "message":"cannot open 'preview' while blocking drawer 'music' (Music bed) is open",
+                "suggested_action":hint
+            }
+        }),
+    ));
+
+    let result = worker.await.unwrap();
+    assert!(!result.ok, "{result:?}");
+    let err = result.error.as_ref().expect("CutError on applied:false");
+    assert_eq!(err.code, error_codes::CONFLICT);
+    assert_eq!(err.suggested_action.as_deref(), Some(hint));
+}

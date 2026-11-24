@@ -22,11 +22,20 @@ impl CaptureClock {
     /// Open the clock once after the backend has obtained its real capture
     /// session. Repeated calls keep the original origin.
     pub fn start(&self) -> Instant {
+        self.start_with(Instant::now)
+    }
+
+    /// Open the clock once anchored at an already-sampled capture instant.
+    pub fn start_at(&self, at: Instant) -> Instant {
+        self.start_with(|| at)
+    }
+
+    fn start_with(&self, make_origin: impl FnOnce() -> Instant) -> Instant {
         let (lock, wake) = &*self.state;
         let mut started = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let origin = *started.get_or_insert_with(Instant::now);
+        let origin = *started.get_or_insert_with(make_origin);
         wake.notify_all();
         origin
     }

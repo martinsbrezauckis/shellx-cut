@@ -72,8 +72,8 @@ shellx_cut_ui_prune_done:
 ; (tools), the captions Python and its environment and cache
 ; (perception\python, perception\.venv, perception\uv-cache), speech models,
 ; the premium background-removal environment and model, the work folder,
-; engine.addr and tools-doctor.json. uninstall-owned-files.ps1 lists them and
-; removes them; with "Delete the application data" ticked it also removes the
+; engine.addr, tools-doctor.json and the temporary folder's shellx-cut-engine.log.
+; uninstall-owned-files.ps1 lists them and removes them; with "Delete the application data" ticked it also removes the
 ; settings, the project list and the remembered export folder. Projects, Library copies and recordings stay,
 ; and so does Microsoft's Visual C++ runtime: it belongs to Windows.
 ; The script is embedded and called by path: an inline -Command longer than

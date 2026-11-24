@@ -6,6 +6,11 @@ import {
 import { usePublishedUiNotices, type UiNotice } from '../lib/uiNotices'
 
 const DISPLAY_MS = 8_000
+const PERSISTENT_FEEDBACK_CODES = new Set(['project_list_rebuilt'])
+
+function isPersistentFeedback(detail: UserActionFeedbackDetail): boolean {
+  return detail.persistent === true || (typeof detail.code === 'string' && PERSISTENT_FEEDBACK_CODES.has(detail.code))
+}
 
 /** The `ui.state.notices` entry for the shown message (path-free: no text). */
 export function actionFeedbackNotice(feedback: UserActionFeedbackDetail | null): UiNotice[] {
@@ -49,7 +54,8 @@ export function UserActionFeedbackNotice({ feedback, onOpenSetup, onDismiss }: U
 }
 
 export default function UserActionFeedback() {
-  const [feedback, setFeedback] = useState<UserActionFeedbackDetail | null>(null)
+  const [persistent, setPersistent] = useState<UserActionFeedbackDetail | null>(null)
+  const [transient, setTransient] = useState<UserActionFeedbackDetail | null>(null)
   const timer = useRef<number | null>(null)
 
   useEffect(() => {
@@ -59,9 +65,16 @@ export default function UserActionFeedback() {
     }
     const onFeedback = (event: Event) => {
       if (!(event instanceof CustomEvent) || !event.detail?.message) return
+      const detail = event.detail as UserActionFeedbackDetail
+      if (isPersistentFeedback(detail)) {
+        setPersistent((current) =>
+          current?.code === detail.code && current?.message === detail.message ? current : detail,
+        )
+        return
+      }
       clearTimer()
-      setFeedback(event.detail as UserActionFeedbackDetail)
-      timer.current = window.setTimeout(() => setFeedback(null), DISPLAY_MS)
+      setTransient(detail)
+      timer.current = window.setTimeout(() => setTransient(null), DISPLAY_MS)
     }
     document.addEventListener(USER_ACTION_FEEDBACK_EVENT, onFeedback)
     return () => {
@@ -70,20 +83,43 @@ export default function UserActionFeedback() {
     }
   }, [])
 
-  usePublishedUiNotices('action-feedback', actionFeedbackNotice(feedback))
+  usePublishedUiNotices('action-feedback', [
+    ...actionFeedbackNotice(persistent),
+    ...actionFeedbackNotice(transient),
+  ])
 
-  if (!feedback) return null
-  const openSetup = () => {
-    if (!feedback.setupSurface) return
+  if (!persistent && !transient) return null
+  const openSetup = (item: UserActionFeedbackDetail, dismissItem: () => void) => {
+    if (!item.setupSurface) return
     document.dispatchEvent(new CustomEvent('cut:open-ui-surface', {
-      detail: { id: feedback.setupSurface },
+      detail: { id: item.setupSurface },
     }))
-    setFeedback(null)
+    dismissItem()
+  }
+  const dismissTransient = () => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current)
+      timer.current = null
+    }
+    setTransient(null)
   }
 
-  return <UserActionFeedbackNotice
-    feedback={feedback}
-    onOpenSetup={openSetup}
-    onDismiss={() => setFeedback(null)}
-  />
+  return (
+    <div className="user-action-feedback-stack">
+      {persistent && (
+        <UserActionFeedbackNotice
+          feedback={persistent}
+          onOpenSetup={() => openSetup(persistent, () => setPersistent(null))}
+          onDismiss={() => setPersistent(null)}
+        />
+      )}
+      {transient && (
+        <UserActionFeedbackNotice
+          feedback={transient}
+          onOpenSetup={() => openSetup(transient, dismissTransient)}
+          onDismiss={dismissTransient}
+        />
+      )}
+    </div>
+  )
 }

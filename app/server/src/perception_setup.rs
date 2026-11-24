@@ -36,7 +36,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod pe_imports;
+mod source_archive;
 mod windows_runtime;
+
+#[cfg(all(test, target_os = "linux"))]
+use source_archive::{FETCH_SRC_PY, MATANYONE_SRC_ROOT};
 
 #[cfg(all(test, unix))]
 mod cancel_tests;
@@ -160,6 +164,8 @@ pub struct SetupOutcome {
     /// Optional model preparation failure, preserved separately from successful
     /// package installation. None when warming was skipped or succeeded.
     pub model_warm_error: Option<CutError>,
+    /// Supplemental metadata failure; never invalidates the installed tools.
+    pub installation_record_error: Option<CutError>,
     /// Whether the direct base STT modules import in the new venv. This does not
     /// prove model loading or transcription; those can still fail independently.
     pub onnx_asr_ready: bool,
@@ -404,6 +410,12 @@ pub fn setup_perception(
     }
     check_cancelled()?;
     partial_venv.armed = false;
+    let installation_record_error =
+        cut_perception::captions_installation::remember_captions_installation(
+            &sidecar_dir,
+            &python_version,
+        )
+        .err();
 
     progress(
         1.0,
@@ -420,6 +432,7 @@ pub fn setup_perception(
         uv_version,
         model_warmed,
         model_warm_error,
+        installation_record_error,
         onnx_asr_ready,
         full_perception_ready,
         extras_note,
@@ -510,96 +523,13 @@ const MATANYONE_DEPS: &[&str] = &[
     "easydict",
 ];
 
-/// The matanyone2 source, pinned to a validated commit. We install it EDITABLE
-/// from a local extraction (NOT `git+`): the upstream wheel build hits a hatchling
-/// `force-include` bug (it duplicates `matanyone2/config/__init__.py`), and an
-/// editable install from a local dir skips the wheel build entirely.
-const MATANYONE_SRC_URL: &str =
-    "https://github.com/pq-yang/MatAnyone2/archive/e3370127319c63a6dc8a49c69de2d41d90137f91.tar.gz";
-const MATANYONE_SRC_SHA256: &str =
-    "2dc341b915d8cc887e3b889fa9d03f950f6de7c13cee800bee9748d5aa3c7e18";
-const MATANYONE_SRC_ROOT: &str = "MatAnyone2-e3370127319c63a6dc8a49c69de2d41d90137f91";
-const MATANYONE_SRC_MAX_BYTES: &str = "33554432";
-
-/// Check the pinned source before extraction with the venv's Python stdlib.
-const FETCH_SRC_PY: &str = r#"
-import hashlib, os, shutil, sys, tarfile, tempfile, urllib.request
-url, dest, expected, archive_limit, source_limit, root = sys.argv[1:]
-archive_limit, source_limit = int(archive_limit), int(source_limit)
-
-def reject(reason):
-    raise SystemExit('MatAnyone2 source rejected: ' + reason)
-
-parent = os.path.dirname(os.path.abspath(dest))
-os.makedirs(parent, exist_ok=True)
-with tempfile.TemporaryDirectory(prefix='.matanyone-source-', dir=parent) as td:
-    tgz = os.path.join(td, 'source.tar.gz')
-    size = 0
-    with urllib.request.urlopen(url, timeout=60) as response, open(tgz, 'xb') as output:
-        while chunk := response.read(65536):
-            size += len(chunk)
-            if size > archive_limit:
-                reject('compressed download exceeds the size limit')
-            output.write(chunk)
-
-    records, seen, members = [], set(), []
-    extracted = 0
-    with tarfile.open(tgz, 'r:gz') as archive:
-        for member in archive:
-            if len(members) >= 1000:
-                reject('archive has too many entries')
-            members.append(member)
-            name = member.name.rstrip('/') if member.isdir() else member.name
-            if name == root and member.isdir():
-                relative = ''
-            else:
-                parts = name.split('/')
-                if (len(parts) < 2 or parts[0] != root or
-                        any(part in ('', '.', '..') for part in parts[1:]) or
-                        '\\' in name or ':' in name):
-                    reject('unexpected archive layout: ' + name)
-                relative = '/'.join(parts[1:])
-            if relative.casefold() in seen:
-                reject('duplicate archive path: ' + (relative or root))
-            seen.add(relative.casefold())
-            if member.isdir():
-                continue
-            if not member.isfile():
-                reject('unexpected archive member type: ' + relative)
-            if member.size > source_limit - extracted:
-                reject('extracted source exceeds the size limit')
-            file_hash = hashlib.sha256()
-            actual = 0
-            with archive.extractfile(member) as source:
-                while chunk := source.read(65536):
-                    actual += len(chunk)
-                    if actual > member.size:
-                        reject('archive member exceeds its declared size')
-                    file_hash.update(chunk)
-            if actual != member.size:
-                reject('archive member is incomplete')
-            extracted += actual
-            records.append((relative, file_hash.digest()))
-        tree = hashlib.sha256()
-        for relative, digest in sorted(records):
-            tree.update(relative.encode('utf-8') + b'\0' + digest)
-        if tree.hexdigest() != expected:
-            reject('source SHA-256 mismatch: expected ' + expected + ', got ' + tree.hexdigest())
-        archive.extractall(td, members=members, filter='data')
-    if os.path.lexists(dest):
-        shutil.rmtree(dest)
-    shutil.move(os.path.join(td, root), dest)
-print('extracted', dest)
-"#;
+use source_archive::{
+    fetch_verified_source_archive, install_sam2_from_spec, MATANYONE_SRC, SAM2_SRC,
+};
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "matte_source_archive_tests.rs"]
 mod matte_source_archive_tests;
-
-/// SAM2 (Apache-2.0) — the click-to-pick-subject seed for the premium matte.
-/// Pinned to a validated commit and installed with the perception environment.
-const SAM2_GIT: &str =
-    "git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4";
 
 /// The SAM2 weights (HF, 323 MB .pt + 323 MB safetensors, Apache-2.0), pre-fetched into `<matanyone>/hf` at
 /// a pinned revision so `sam2_runner.py` loads them offline deterministically.
@@ -690,42 +620,17 @@ pub fn setup_matanyone(
 
     let vpy = venv_python.to_str().unwrap_or_default();
 
-    let src_dir = crate::matte::matanyone_dir()
-        .map(|d| d.join("src"))
-        .ok_or_else(|| {
-            CutError::new(
-                error_codes::IO,
-                "no matanyone dir",
-                "HOME/LOCALAPPDATA unset",
-            )
-        })?;
+    let matanyone_dir = crate::matte::matanyone_dir().ok_or_else(|| {
+        CutError::new(
+            error_codes::IO,
+            "no matanyone dir",
+            "HOME/LOCALAPPDATA unset",
+        )
+    })?;
+    let src_dir = matanyone_dir.join("src");
     let src_str = src_dir.to_str().unwrap_or_default();
     progress(0.21, "verifying MatAnyone2 source");
-    run_streaming(
-        &venv_python,
-        &[
-            "-c",
-            FETCH_SRC_PY,
-            MATANYONE_SRC_URL,
-            src_str,
-            MATANYONE_SRC_SHA256,
-            MATANYONE_SRC_MAX_BYTES,
-            MATANYONE_SRC_MAX_BYTES,
-            MATANYONE_SRC_ROOT,
-        ],
-        "verify matanyone2 source",
-        progress,
-        0.21,
-        0.22,
-    )
-    .map_err(|e| {
-        CutError::new(
-            error_codes::JOB_FAILED,
-            "Premium background removal could not verify its source; nothing was installed",
-            format!("{}: {}", e.message, e.cause),
-        )
-        .with_suggested_action("Try installing premium background removal again")
-    })?;
+    fetch_verified_source_archive(&venv_python, &MATANYONE_SRC, &src_dir, progress, 0.21, 0.22)?;
 
     // ---- 4. platform-selected torch (the big one, ~3 GB on CUDA) ------------
     // macOS must use its platform build from uv's default index. The cu132
@@ -793,22 +698,7 @@ pub fn setup_matanyone(
     check_cancelled()?;
 
     // ---- 7b. SAM2 (Apache-2.0) — the click-to-pick-subject seed ---------------
-    progress(0.88, "installing SAM2 (pick-which-subject)");
-    run_streaming(
-        &uv,
-        &[
-            "pip",
-            "install",
-            "--python",
-            vpy,
-            "--no-build-isolation",
-            SAM2_GIT,
-        ],
-        "uv pip install sam2",
-        progress,
-        0.88,
-        0.92,
-    )?;
+    install_sam2_from_spec(&venv_python, &uv, vpy, &matanyone_dir, &SAM2_SRC, progress)?;
     let hf_dir = crate::matte::matanyone_dir().map(|d| d.join("hf"));
     if let Some(hf) = hf_dir.as_ref().and_then(|p| p.to_str()) {
         progress(0.93, "downloading the SAM2 weights (323 MB + 323 MB)");

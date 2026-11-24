@@ -224,20 +224,44 @@ pub(crate) fn dismiss(key: &str) -> bool {
     }
 }
 
-/// `.cut-ffmpeg-<random>.tmp.<ext>` (ffmpeg staging) and
-/// `.<stem>.<pid>.<n>.tmp[.<ext>]` (other atomic writes), the two staging
-/// names the engine gives a file it has not published yet.
-fn is_staging_temp(name: &str) -> bool {
-    if name.starts_with(".cut-ffmpeg-") && name.contains(".tmp.") {
-        return true;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StagingTempKind {
+    WithPid(u32),
+    WithoutPid,
+}
+
+fn parse_u32_pid(part: &str) -> Option<u32> {
+    (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| part.parse::<u32>().ok())
+        .flatten()
+}
+
+/// `.cut-pub-<pid>.<n>.tmp`, exactly the name the cross-volume publish step
+/// generates (digits only); any other `.cut-pub-*` name is not Cut's.
+fn classify_cut_pub_temp(name: &str) -> Option<u32> {
+    let rest = name
+        .strip_prefix(".cut-pub-")
+        .and_then(|rest| rest.strip_suffix(".tmp"))?;
+    let mut parts = rest.split('.');
+    let pid = parse_u32_pid(parts.next()?)?;
+    let seq = parts.next()?;
+    let seq_ok = !seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit());
+    (seq_ok && parts.next().is_none()).then_some(pid)
+}
+
+/// `.cut-ffmpeg-<random>.tmp.<ext>` (ffmpeg staging), `.cut-pub-<pid>.<n>.tmp`
+/// (cross-volume publish) and `.<stem>.<pid>.<n>.tmp[.<ext>]` (other atomic
+/// writes), the staging names the engine gives a file it has not published yet.
+fn classify_staging_temp(name: &str) -> Option<StagingTempKind> {
+    if name.starts_with(".cut-pub-") {
+        return classify_cut_pub_temp(name).map(StagingTempKind::WithPid);
     }
-    let Some(rest) = name.strip_prefix('.') else {
-        return false;
-    };
+    if name.starts_with(".cut-ffmpeg-") && name.contains(".tmp.") {
+        return Some(StagingTempKind::WithoutPid);
+    }
+    let rest = name.strip_prefix('.')?;
     let parts: Vec<&str> = rest.split('.').collect();
-    let Some(tmp_at) = parts.iter().rposition(|part| *part == "tmp") else {
-        return false;
-    };
+    let tmp_at = parts.iter().rposition(|part| *part == "tmp")?;
     let ext_ok = match parts.len() - tmp_at {
         1 => true,
         2 => {
@@ -246,8 +270,13 @@ fn is_staging_temp(name: &str) -> bool {
         }
         _ => false,
     };
-    let digits = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit());
-    ext_ok && tmp_at >= 3 && digits(parts[tmp_at - 1]) && digits(parts[tmp_at - 2])
+    if !ext_ok || tmp_at < 3 {
+        return None;
+    }
+    let seq = parts[tmp_at - 1];
+    let seq_ok = !seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit());
+    let pid = parse_u32_pid(parts[tmp_at - 2])?;
+    seq_ok.then_some(StagingTempKind::WithPid(pid))
 }
 
 fn is_reservation_file(name: &str) -> bool {
@@ -288,17 +317,11 @@ fn export_folders(project_dir: &Path) -> Vec<PathBuf> {
     folders
 }
 
-/// A `.<stem>.<pid>.<n>.tmp` name written by this very process: its own work.
-fn written_by_this_process(name: &str) -> bool {
-    let own = format!(".{}.", std::process::id());
-    name.contains(&own) && is_staging_temp(name) && !name.starts_with(".cut-ffmpeg-")
-}
-
 /// Remove the staging files an interrupted export left in `folder`, by the
 /// names the engine writes. Nothing is removed while any reservation in the
-/// folder is still locked (an export is running there), nothing this process
-/// wrote, and only files last changed before `before`. Returns the removed
-/// names.
+/// folder is still locked (an export is running there), nothing owned by
+/// another user or a still-running engine process, and only files last changed
+/// before `before`. Returns the removed names.
 pub(crate) fn sweep_export_leftovers(folder: &Path, before: SystemTime) -> Vec<String> {
     if !record_recovery::is_plain_dir(folder).unwrap_or(false) {
         return Vec::new();
@@ -306,26 +329,41 @@ pub(crate) fn sweep_export_leftovers(folder: &Path, before: SystemTime) -> Vec<S
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
-    let candidates: Vec<(String, PathBuf)> = entries
+    let plain_matches: Vec<(String, PathBuf, Option<u32>)> = entries
         .flatten()
         .take(4_096)
         .filter_map(|entry| {
             let name = entry.file_name().to_str()?.to_string();
-            ((is_staging_temp(&name) || is_reservation_file(&name))
-                && !written_by_this_process(&name))
-            .then(|| (name, entry.path()))
+            let kind = classify_staging_temp(&name);
+            (kind.is_some() || is_reservation_file(&name)).then(|| {
+                let pid = match kind {
+                    Some(StagingTempKind::WithPid(pid)) => Some(pid),
+                    _ => None,
+                };
+                (name, entry.path(), pid)
+            })
         })
-        .filter(|(_, path)| plain(path))
+        .filter(|(_, path, _)| plain(path))
         .collect();
-    let reservations_free = candidates
+    let reservations_free = plain_matches
         .iter()
-        .filter(|(name, _)| name.ends_with(".shellx-cut-reservation.lock"))
-        .all(|(_, path)| lock_is_free(path));
+        .filter(|(name, _, _)| name.ends_with(".shellx-cut-reservation.lock"))
+        .all(|(_, path, _)| lock_is_free(path));
     if !reservations_free {
         return Vec::new();
     }
     let mut removed = Vec::new();
-    for (name, path) in candidates {
+    for (name, path, pid) in plain_matches {
+        // Another live Cut engine (e.g., the desktop app and an agent engine
+        // running concurrently) may still be writing this temp file.
+        if pid.is_some_and(|p| p == std::process::id() || cut_media::process_is_running(p)) {
+            continue;
+        }
+        // In a shared chosen folder, only delete files owned by the current
+        // user (owner unreadable: keep).
+        if !cut_media::is_plain_file_owned_by_current_user(&path) {
+            continue;
+        }
         let old_enough = std::fs::symlink_metadata(&path)
             .and_then(|meta| meta.modified())
             .is_ok_and(|modified| modified < before);
@@ -341,6 +379,7 @@ pub(crate) fn sweep_export_leftovers(folder: &Path, before: SystemTime) -> Vec<S
 /// unfinished files from each folder it could write to. The engine runs this
 /// once at start, before any work of its own; counts are kept in the note.
 pub(crate) fn interrupted_after_cleanup() -> Vec<(String, Note)> {
+    cut_media::sweep_stale_export_staging(std::time::Duration::from_secs(12 * 3600));
     let listed = cleanup(true);
     // Then whatever else a dead run left running (work no one is told about).
     let others = crate::engine_lifeline::stop_dead_runs();

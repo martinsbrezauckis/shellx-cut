@@ -46,14 +46,52 @@ pub fn limit_with(encoder: &str, supports: impl Fn(&str, u32, u32) -> bool) -> E
 
 /// The ladder result for every working hardware encoder of the ffmpeg renders
 /// use. Each probe answer is cached per tools generation, so only the first
-/// call pays for the test encodes.
+/// call pays for the test encodes. Working codec families (`h264`, `hevc`, `av1`)
+/// run concurrently (at most 3 sessions) instead of multiplying 4K/8K setup latency.
 pub fn size_limits() -> Vec<EncoderSizeLimit> {
     let caps = hw_caps();
-    [&caps.h264, &caps.hevc, &caps.av1]
-        .into_iter()
-        .flatten()
-        .map(|enc| limit_with(enc, encoder_supports_size))
-        .collect()
+    probe_encoders_parallel(&[&caps.h264, &caps.hevc, &caps.av1], encoder_supports_size)
+}
+
+/// Compute resolution ceilings for a caller-supplied ffmpeg binary and its
+/// already-probed [`crate::hwencode::HwCaps`], avoiding a redundant 256x256
+/// encoder probe and supporting cooperative cancellation for background Doctor checks.
+pub fn size_limits_for_cancelable(
+    ffmpeg: &std::path::Path,
+    caps: &crate::hwencode::HwCaps,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Vec<EncoderSizeLimit> {
+    let osff = ffmpeg.as_os_str();
+    probe_encoders_parallel(&[&caps.h264, &caps.hevc, &caps.av1], |enc, w, h| {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return false;
+        }
+        crate::hwencode::encoder_works_at_size_cancelable(osff, enc, w, h, cancel.clone())
+    })
+}
+
+fn probe_encoders_parallel(
+    slots: &[&Option<String>],
+    supports: impl Fn(&str, u32, u32) -> bool + Sync,
+) -> Vec<EncoderSizeLimit> {
+    let encoders: Vec<&str> = slots.iter().filter_map(|slot| slot.as_deref()).collect();
+    if encoders.len() <= 1 {
+        return encoders
+            .into_iter()
+            .map(|enc| limit_with(enc, &supports))
+            .collect();
+    }
+    let supports_ref = &supports;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = encoders
+            .into_iter()
+            .map(|enc| scope.spawn(move || limit_with(enc, supports_ref)))
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    })
 }
 
 /// A plain phrase for the size limit of an encoder that refused `(w, h)`:

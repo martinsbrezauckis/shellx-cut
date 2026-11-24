@@ -17,6 +17,7 @@ interface AppSurfaceEventsArgs {
   setWizardOpen: Dispatch<SetStateAction<boolean>>
   setEnvOpen: Dispatch<SetStateAction<boolean>>
   setEnvCategory: Dispatch<SetStateAction<SettingsCategoryId>>
+  onReadDoctor?: () => void | Promise<unknown>
   onRefreshDoctor: () => void | Promise<unknown>
   onOpenManual?: (featureId?: string) => void
   agentChatPromptSeq: MutableRefObject<number>
@@ -35,6 +36,7 @@ export function useAppSurfaceEvents({
   setWizardOpen,
   setEnvOpen,
   setEnvCategory,
+  onReadDoctor,
   onRefreshDoctor,
   onOpenManual,
   agentChatPromptSeq,
@@ -123,14 +125,18 @@ export function useAppSurfaceEvents({
         return true
       case 'settings':
         if (!isSettingsCategoryId(action.category)) return false
+        leaveMaskDrawer()
         setWizardOpen(false)
         setEnvCategory(action.category)
         setEnvOpen(true)
+        void onReadDoctor?.()
         return true
       case 'overlay':
         if (action.overlay === 'wizard') {
+          leaveMaskDrawer()
           setEnvOpen(false)
           setWizardOpen(true)
+          void onReadDoctor?.()
         } else {
           if (!showEditor()) return false
           leaveMaskDrawer()
@@ -143,6 +149,7 @@ export function useAppSurfaceEvents({
         return true
     }
   }, [
+    onReadDoctor,
     setActiveDrawer,
     setCommentsOpen,
     setEnvCategory,

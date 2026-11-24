@@ -110,6 +110,9 @@ function compactHint(card: DoctorCard): string | null {
   if (card.id === 'ffmpeg' && status === 'degraded' && unavailableFeatures(card).length > 0) {
     return `Works for editing and export. Not available with this build: ${unavailableFeatures(card).join(', ')}.`
   }
+  if (card.id === 'ffmpeg' && card.details?.chosen_missing === true && typeof card.hint === 'string' && card.hint.trim().length > 0) {
+    return card.hint
+  }
   if (card.id === 'ffmpeg' && needsManualFfmpegSetup(card)) {
     return ffmpegDownloadOffer(card)
       ? 'Needed to import, preview, and export. Download it, or use another way below.'
@@ -196,6 +199,7 @@ export default function EnvCardRow({
   const { job, runJob } = useEnvironmentSetupJob(onChanged)
   const overrideSetting =
     card.id === 'gpu-encode' ? ((card.details?.override_setting as string | null) ?? null) : null
+  const chosenMissing = card.id === 'gpu-encode' && card.details?.chosen_missing === true
   const [ffBusy, setFfBusy] = useState(false)
   const [ffNote, setFfNote] = useState<string | null>(null)
   const [serviceSetupOpen, setServiceSetupOpen] = useState(false)
@@ -205,14 +209,10 @@ export default function EnvCardRow({
   const details = advancedRows(card)
 
   const setFfmpeg = async (path: string | null) => {
-    setFfBusy(true)
-    setFfNote(null)
+    setFfBusy(true); setFfNote(null)
     const r = await callVerb('system.set_ffmpeg', { path })
     setFfBusy(false)
-    if (!r.ok) {
-      setFfNote(r.error?.message ?? 'Could not change the video tool.')
-      return
-    }
+    if (!r.ok) { setFfNote(r.error?.message ?? 'Could not change the video tool.'); return }
     if (path && (r.result as { restart_required?: boolean })?.restart_required) {
       setFfNote('Set — restart ShellX Cut to apply.')
     }
@@ -368,32 +368,21 @@ export default function EnvCardRow({
             </details>
           )}
           <div className="env-ff-row">
-            {overrideSetting ? (
-              <>
-                <span className="env-ff-label">Custom video tool selected</span>
-                <button
-                  className="env-btn env-btn--sm"
-                  data-cut-env-ffmpeg-auto
-                  onClick={() => void setFfmpeg(null)}
-                  disabled={ffBusy}
-                >
-                  Use automatic
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="env-ff-label">Video tool: automatic</span>
-                <Availability rule="shell.desktop">
-                  <button className="env-btn env-btn--sm" data-cut-action="settings-video-tool-change" data-cut-env-ffmpeg-change
-                    onClick={() => void onChangeFfmpeg()} disabled={ffBusy}
-                    title="Choose a different video-processing tool">Choose tool…</button>
-                </Availability>
-              </>
+            <span className="env-ff-label">
+              {overrideSetting ? (chosenMissing ? 'Chosen video tool missing' : 'Custom video tool selected') : 'Video tool: automatic'}
+            </span>
+            {(!overrideSetting || chosenMissing) && (
+              <Availability rule="shell.desktop">
+                <button className="env-btn env-btn--sm" data-cut-action="settings-video-tool-change" data-cut-env-ffmpeg-change
+                  onClick={() => void onChangeFfmpeg()} disabled={ffBusy}
+                  title="Choose a different video-processing tool">Choose tool…</button>
+              </Availability>
+            )}
+            {overrideSetting && (
+              <button className="env-btn env-btn--sm" data-cut-env-ffmpeg-auto onClick={() => void setFfmpeg(null)} disabled={ffBusy}>Use automatic</button>
             )}
           </div>
-          {ffNote && (
-            <div className="env-ff-note" data-cut-env-ffmpeg-note>{ffNote}</div>
-          )}
+          {ffNote && <div className="env-ff-note" data-cut-env-ffmpeg-note>{ffNote}</div>}
         </div>
       )}
 

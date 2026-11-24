@@ -78,16 +78,47 @@ pub(super) fn clip_source_prep(
     asset: Option<&cut_core::Asset>,
     input: Option<&cut_core::ColorSpace>,
 ) -> String {
+    clip_source_prep_for(asset, input, None, false)
+}
+
+/// Color-mode-aware PREP stage:
+/// - `hdr_target = None`: SDR default (`clip_source_prep`), byte-identical.
+/// - `hdr_target = Some(target)`: Keep HDR.
+///   * HDR source with SDR-only grade/effect: tone-map to SDR BT.709 here so its
+///     grade/effect runs honestly in SDR before `clip_color_chain_for` converts back at 203 nits.
+///   * HDR source without SDR-only grade/effect: normalize/convert directly in HDR (`hdr_to_hdr_filter`).
+///   * SDR BT.601 source: normalize to BT.709 here before grade/effects, then `clip_color_chain_for` places in HDR at 203 nits.
+pub(super) fn clip_source_prep_for(
+    asset: Option<&cut_core::Asset>,
+    input: Option<&cut_core::ColorSpace>,
+    hdr_target: Option<super::source_color::Hdr>,
+    sdr_fallback_needed: bool,
+) -> String {
     if input.is_some() {
         return String::new();
     }
     let Some(c) = asset.map(source_color) else {
         return String::new();
     };
-    if c.hdr.is_some() {
-        hdr_to_sdr_filter(&c)
-    } else {
-        bt601_to_bt709_filter(&c)
+    match hdr_target {
+        None => {
+            if c.hdr.is_some() {
+                hdr_to_sdr_filter(&c)
+            } else {
+                bt601_to_bt709_filter(&c)
+            }
+        }
+        Some(target) => {
+            if c.hdr.is_some() {
+                if sdr_fallback_needed {
+                    hdr_to_sdr_filter(&c)
+                } else {
+                    super::hdr::hdr_to_hdr_filter(&c, target)
+                }
+            } else {
+                bt601_to_bt709_filter(&c)
+            }
+        }
     }
 }
 
@@ -193,6 +224,7 @@ mod tests {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             }));
         p
     }
@@ -203,7 +235,7 @@ mod tests {
     fn the_prep_runs_before_the_grade_in_the_render_graph() {
         let tmp = tempfile::tempdir().unwrap();
         let media = tmp.path().join("clip.mp4");
-        std::fs::write(&media, b"x").unwrap();
+        super::super::tests::graph_fixture(&media);
         for (stream, marker) in [
             (
                 json!({"codec_type": "video", "pix_fmt": "yuv420p10le",

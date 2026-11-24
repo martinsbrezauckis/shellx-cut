@@ -309,6 +309,10 @@ impl<J: RecordingSessionJournalSink> RunSealCoordinator<J> {
         self.logical.phase()
     }
 
+    pub(crate) fn active_duration_exhausted_at(&self, at: Instant) -> bool {
+        self.logical.active_duration_exhausted_at(at)
+    }
+
     pub(crate) fn sealed_evidence(&self) -> &[SealedRunEvidence] {
         &self.sealed_evidence
     }

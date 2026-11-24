@@ -221,20 +221,121 @@ jobs:
         if: matrix.platform == 'windows-2025-vs2026'
         shell: bash
         run: |
-          # The package manager can report success without installing anything
-          # when its feed is down, so each try is judged by whether ffmpeg is there.
+          set -euo pipefail
+          # Download the same pinned Windows FFmpeg build the product uses, reading
+          # its URL, byte size, SHA-256 and bin path from app/media/src/tool_setup/download.rs
+          # so CI and the product cannot drift.
+          pins_file="app/media/src/tool_setup/download.rs"
+          if [ ! -f "$pins_file" ]; then
+            echo "::error::Pinned FFmpeg source file is missing: $pins_file" >&2
+            exit 1
+          fi
+
+          pinned=$(awk -f scripts/release/windows-ffmpeg-pin.awk "$pins_file")
+
+          {
+            IFS= read -r base
+            IFS= read -r file
+            IFS= read -r expected_size
+            IFS= read -r expected_sha256
+            IFS= read -r bin_rel
+          } <<<"$pinned"
+
+          if [[ "$base" != https://* ]] || [ -z "$file" ] || [[ "$file" == */* ]] || [[ "$file" == *..* ]] \
+            || [[ ! "$expected_size" =~ ^[0-9]+$ ]] || [ "$expected_size" -le 0 ] \
+            || [[ ! "$expected_sha256" =~ ^[0-9a-f]{64}$ ]] \
+            || [ -z "$bin_rel" ] || [[ "$bin_rel" == /* ]] || [[ "$bin_rel" == *..* ]] || [[ "$bin_rel" == *\\* ]]; then
+            echo "::error::Invalid pinned Windows FFmpeg metadata parsed from $pins_file" >&2
+            exit 1
+          fi
+
+          if [ -z "${GITHUB_PATH:-}" ]; then
+            echo "::error::GITHUB_PATH is not set" >&2
+            exit 1
+          fi
+
+          base_tmp="${RUNNER_TEMP:-/tmp}"
+          if command -v cygpath >/dev/null 2>&1; then
+            base_tmp=$(cygpath -u -- "$base_tmp")
+          fi
+          work_dir=$(mktemp -d "${base_tmp%/}/ffmpeg-pinned-XXXXXX")
+          archive="$work_dir/$file"
+          unpack_dir="$work_dir/unpack"
+          mkdir -p "$unpack_dir"
+
+          url="${base%/}/$file"
+          echo "Downloading pinned Windows FFmpeg from $url ($expected_size bytes)"
+          downloaded=0
           for attempt in 1 2 3; do
-            choco install ffmpeg --no-progress -y || true
-            if command -v ffmpeg >/dev/null 2>&1; then
-              exit 0
+            rm -f "$archive"
+            if (
+              cd "$work_dir"
+              curl --fail --location --proto '=https' --proto-redir '=https' \
+                --silent --show-error --connect-timeout 30 --max-time 600 \
+                --output "$file" "$url"
+            ); then
+              downloaded=1
+              break
             fi
             if [ "$attempt" -lt 3 ]; then
-              echo "FFmpeg install attempt $attempt left no ffmpeg; retrying in 30 seconds"
-              sleep 30
+              echo "FFmpeg download attempt $attempt failed; retrying in 15 seconds"
+              sleep 15
             fi
           done
-          echo "FFmpeg could not be installed after three attempts"
-          exit 1
+          if [ "$downloaded" -ne 1 ]; then
+            echo "::error::Failed to download pinned FFmpeg archive after three attempts: $url" >&2
+            exit 1
+          fi
+
+          actual_size=$(wc -c < "$archive" | tr -d '[:space:]')
+          if [ "$actual_size" != "$expected_size" ]; then
+            echo "::error::Downloaded FFmpeg archive size mismatch: expected $expected_size bytes, got $actual_size bytes" >&2
+            rm -f "$archive"
+            exit 1
+          fi
+          actual_sha256=$(sha256sum -b "$archive" | awk '{print tolower($1)}')
+          if [ "$actual_sha256" != "$expected_sha256" ]; then
+            echo "::error::Downloaded FFmpeg archive SHA-256 mismatch: expected $expected_sha256, got $actual_sha256" >&2
+            rm -f "$archive"
+            exit 1
+          fi
+          echo "Verified $file ($actual_size bytes, sha256 $actual_sha256)"
+
+          (
+            cd "$work_dir"
+            sys_root="${SYSTEMROOT:-${SystemRoot:-C:/Windows}}"
+            if command -v cygpath >/dev/null 2>&1; then
+              sys_tar="$(cygpath -u -- "$sys_root")/System32/tar.exe"
+            else
+              sys_tar="$sys_root/System32/tar.exe"
+            fi
+            if command -v 7z >/dev/null 2>&1; then
+              7z x -y -ounpack "$file" >/dev/null
+            elif [ -x "$sys_tar" ]; then
+              "$sys_tar" -xf "$file" -C unpack
+            elif command -v pwsh >/dev/null 2>&1; then
+              FFMPEG_ARCHIVE="$file" pwsh -NoProfile -NonInteractive -Command \
+                'Expand-Archive -LiteralPath $env:FFMPEG_ARCHIVE -DestinationPath unpack -Force'
+            else
+              echo "::error::No archive tool (7z, tar.exe, or pwsh) available to unpack $file" >&2
+              exit 1
+            fi
+          )
+          rm -f "$archive"
+
+          bin_dir="$unpack_dir/$bin_rel"
+          if [ ! -f "$bin_dir/ffmpeg.exe" ] || [ ! -f "$bin_dir/ffprobe.exe" ]; then
+            echo "::error::Unpacked FFmpeg archive is missing ffmpeg.exe or ffprobe.exe under $bin_dir" >&2
+            exit 1
+          fi
+
+          if command -v cygpath >/dev/null 2>&1; then
+            bin_path=$(cygpath -w -- "$bin_dir")
+          else
+            bin_path="$bin_dir"
+          fi
+          echo "$bin_path" >> "$GITHUB_PATH"
+          echo "Added $bin_path to GITHUB_PATH"
 
       # Cut's render path uses ass (subtitles), vidstab (stabilisation) and zscale
       # (colour). An ffmpeg built without them does not fail honestly: tests die

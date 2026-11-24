@@ -153,6 +153,119 @@ export function startsInPlace(paused: boolean, seeking: boolean, readyState: num
  * is asked to resynchronize. It leads again once it is advancing close to the
  * timeline. The timeline therefore never waits indefinitely, never rewinds and
  * never jumps ahead because of the element. */
+export const PLAYBACK_PUBLISH_CADENCE_MS = 32
+
+/** Continuous wall-clock transport clock for an active playback session.
+ *
+ * Cuts, gaps, asset swaps, and slow decoders never stop or rewind the timeline
+ * clock. Only rate changes and explicit seeks (`seekRevision`) re-anchor it. */
+export class PlaybackSessionClock {
+  private anchorMs: number
+  private anchorAt: number
+  private currentRate: number
+  private seekRevision: number
+  private lastPublishedMs = Number.NEGATIVE_INFINITY
+  private lastDispatchAt = Number.NEGATIVE_INFINITY
+  constructor(positionMs: number, now: number, rate = 1, seekRevision = 0) {
+    this.anchorMs = positionMs
+    this.anchorAt = now
+    this.currentRate = rate
+    this.seekRevision = seekRevision
+  }
+  /** Live timeline position at `now`. */
+  position(now: number): number {
+    return this.anchorMs + Math.max(0, now - this.anchorAt) * this.currentRate
+  }
+  /** Re-anchor immediately when an explicit seek or rate change commits. */
+  reanchor(positionMs: number, now: number, rate = this.currentRate, seekRevision = this.seekRevision) {
+    this.anchorMs = positionMs
+    this.anchorAt = now
+    this.currentRate = rate
+    this.seekRevision = seekRevision
+    this.lastPublishedMs = normalizePlayheadMs(positionMs)
+    this.lastDispatchAt = now
+  }
+  /** Idempotently align to a new `seekRevision`, returning the live position. */
+  syncExternal(positionMs: number, seekRevision: number, now: number, rate = this.currentRate): number {
+    if (seekRevision !== this.seekRevision || rate !== this.currentRate) {
+      this.reanchor(positionMs, now, rate, seekRevision)
+      return positionMs
+    }
+    return this.position(now)
+  }
+  /** Publish on boundary crossings or cadence, skipping duplicate whole-ms ticks. */
+  shouldPublish(now: number, positionMs: number, boundaryMs: number | null, cadenceMs = PLAYBACK_PUBLISH_CADENCE_MS): boolean {
+    const normalized = normalizePlayheadMs(positionMs)
+    if (normalized === this.lastPublishedMs) return false
+    if (boundaryMs !== null) {
+      if (this.currentRate > 0 && this.lastPublishedMs < boundaryMs && normalized >= boundaryMs) return true
+      if (this.currentRate < 0 && this.lastPublishedMs > boundaryMs && normalized <= boundaryMs) return true
+    }
+    return now - this.lastDispatchAt >= cadenceMs
+  }
+  markPublished(now: number, positionMs: number) {
+    this.lastPublishedMs = normalizePlayheadMs(positionMs)
+    this.lastDispatchAt = now
+  }
+}
+
+export function nextPlaybackBoundaryMs(
+  rate: number,
+  video: Pick<ActiveVideo, 'startMs' | 'durMs'> | null,
+  nextVideoStartMs: number | null,
+): number | null {
+  if (rate > 0) return video ? video.startMs + video.durMs : nextVideoStartMs
+  if (rate < 0) return video ? video.startMs : null
+  return null
+}
+
+/** Tracks whether an active media element is advancing close to the live clock
+ * so stalls, errors, or unrequested jumps trigger seek/reload recovery while the
+ * session clock keeps moving uninterrupted. */
+export class MediaProgressMonitor {
+  private mode: 'tracking' | 'resyncing' = 'tracking'
+  private progressAt: number
+  private mediaMs = -Infinity
+  private resyncAt = -Infinity
+  constructor(now: number) {
+    this.progressAt = now
+  }
+  get following(): 'media' | 'timeline' { return this.mode === 'tracking' ? 'media' : 'timeline' }
+  get lastProgressAt(): number { return this.progressAt }
+  restart(now: number) {
+    this.mode = 'tracking'
+    this.progressAt = now
+    this.resyncAt = -Infinity
+    this.awaitMedia()
+  }
+  awaitMedia() {
+    this.mediaMs = -Infinity
+  }
+  sample(timelineMs: number, clockMs: number, now: number, seeking: boolean, paused: boolean) {
+    if (timelineMs > this.mediaMs) {
+      if (this.mediaMs !== -Infinity) this.progressAt = now
+      this.mediaMs = timelineMs
+    }
+    const drifted = timelineMs - clockMs > MEDIA_LEAD_MS || (!seeking && !paused && clockMs - timelineMs > MEDIA_LEAD_MS)
+    if (drifted) {
+      this.mode = 'resyncing'
+      return
+    }
+    if (this.mode === 'resyncing' && now - this.progressAt <= MEDIA_STALL_MS && Math.abs(timelineMs - clockMs) <= MEDIA_REJOIN_MS) {
+      this.mode = 'tracking'
+    }
+  }
+  resyncDue(now: number, hasError = false): boolean {
+    if (hasError || (this.mode === 'tracking' && now - this.progressAt > MEDIA_STALL_MS)) {
+      this.mode = 'resyncing'
+    }
+    if (this.mode !== 'resyncing' || now - this.resyncAt < MEDIA_RESYNC_INTERVAL_MS) return false
+    this.resyncAt = now
+    return true
+  }
+}
+
+/** @deprecated Kept for direct unit compatibility; Preview uses PlaybackSessionClock + MediaProgressMonitor. */
 export class TimelineMediaClock {
   private mode: 'media' | 'timeline' = 'media'
   private positionMs: number

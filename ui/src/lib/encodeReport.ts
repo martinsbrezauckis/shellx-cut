@@ -25,13 +25,23 @@ export interface EncodeReport {
   pipeline_reason?: string
 }
 
+export interface Hdr10StaticMetadataReport {
+  present_in_sources: boolean
+  carried: boolean
+  mastering_display?: string
+  max_cll?: string
+}
+
 /** Mirrors ColorReport in schema/receipts.schema.json. */
 export interface ColorReport {
-  /** The delivered picture, e.g. "SDR BT.709". */
+  /** The delivered picture, e.g. "SDR BT.709" or "HDR BT.2020 (HLG)". */
   output: string
+  /** Output transfer function when Keep HDR is used (arib-std-b67 or smpte2084). */
+  transfer?: string
   processing_bit_depth: number
   file_bit_depth: number
+  hdr10_metadata?: Hdr10StaticMetadataReport
   sources: Array<{ asset: string; file: string; transfer?: string; bit_depth?: number; handling: string }>
-  /** Plain sentences when a source was converted, reduced in bit depth or not converted. */
+  /** Plain sentences when a source was converted, reduced in bit depth or graded in SDR. */
   note?: string
 }

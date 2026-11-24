@@ -21,12 +21,28 @@ pub(crate) const ENV_AGENT_DOCS_DIR: &str = "SHELLX_CUT_AGENT_DOCS_DIR";
 const AGENT_DOCS_MARKER: &str = "skill/shellx-cut/SKILL.md";
 const THIRD_PARTY_NOTICES: &str = "THIRD-PARTY-NOTICES.txt";
 
-/// True when `exe` is unknown or runs from inside this source workspace, the
-/// only case where compile-time checkout paths describe the running program.
+/// First line cargo writes into the `CACHEDIR.TAG` of every target folder.
+const CARGO_CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+
+/// Is `exe` somewhere under a cargo target folder (the folder holding cargo's own
+/// `CACHEDIR.TAG`)? A target folder may sit anywhere (`CARGO_TARGET_DIR`, a shared
+/// folder above the checkout) and cargo puts test binaries in `deps/` or, in the
+/// newer layout, in `build/<crate>/<hash>/out/`, so every folder above is checked.
+fn runs_from_cargo_target(exe: &Path) -> bool {
+    exe.ancestors().skip(1).any(|dir| {
+        std::fs::read(dir.join("CACHEDIR.TAG"))
+            .map(|bytes| bytes.starts_with(CARGO_CACHEDIR_SIGNATURE.as_bytes()))
+            .unwrap_or(false)
+    })
+}
+
+/// True when `exe` is unknown, runs from inside this source workspace, or is a
+/// cargo build of any target folder: the cases where compile-time checkout paths
+/// describe the running program. An installed engine is none of these.
 fn runs_from_workspace(exe: Option<&Path>) -> bool {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent();
     match (exe, workspace) {
-        (Some(exe), Some(workspace)) => exe.starts_with(workspace),
+        (Some(exe), Some(workspace)) => exe.starts_with(workspace) || runs_from_cargo_target(exe),
         _ => true,
     }
 }
@@ -174,6 +190,39 @@ mod tests {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let dev_exe = manifest.join("../../app/target/debug/cutd");
         assert!(agent_docs_root_for(None, Some(&dev_exe)).is_some());
+    }
+
+    #[test]
+    fn a_source_build_with_its_target_folder_outside_the_workspace_still_reaches_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        // A shared target folder (CARGO_TARGET_DIR) above or beside the checkout, test binary
+        // in the newer `build/<crate>/<hash>/out` layout.
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            target.join("CACHEDIR.TAG"),
+            format!("{CARGO_CACHEDIR_SIGNATURE}\n# tag\n"),
+        )
+        .unwrap();
+        for exe in [
+            target.join("debug/build/server/0123abcd/out/cutd-0123abcd"),
+            target.join("debug/deps/cutd-0123abcd"),
+            target.join("x86_64-pc-windows-msvc/release/cutd"),
+        ] {
+            touch(&exe);
+            let docs = agent_docs_root_for(None, Some(&exe));
+            assert!(
+                docs.is_some_and(|root| root.join(AGENT_DOCS_MARKER).is_file()),
+                "{}",
+                exe.display()
+            );
+            assert!(third_party_notices_for(Some(&exe)).is_some());
+        }
+        // The same folders without cargo's tag are an installed or copied engine: no checkout.
+        let untagged = dir.path().join("plain/debug/deps/cutd");
+        touch(&untagged);
+        assert_eq!(agent_docs_root_for(None, Some(&untagged)), None);
+        assert_eq!(third_party_notices_for(Some(&untagged)), None);
     }
 
     #[test]

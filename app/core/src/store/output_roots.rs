@@ -7,6 +7,8 @@ pub(super) fn validate_internal_output_roots(dir: &Path) -> Result<(), CutError>
     // These names belong to Cut's generated project state, not the user's
     // selected media source paths. Check parents too, before create_dir_all can
     // follow a linked parent while opening an untrusted project.
+    // `exports` is deliberately not here: a person may link a project's export folder to another
+    // drive; export publication checks that folder itself (own links followed, others refused).
     const ROOTS: &[&str] = &[
         "receipts",
         "dub",
@@ -24,10 +26,18 @@ pub(super) fn validate_internal_output_roots(dir: &Path) -> Result<(), CutError>
         "cache/matte",
         "cache/mask",
         "cache/gwindow",
+        "cache/screen_record",
+        "cache/screen_record/renders",
+        "cache/gen",
+        "cache/gen/runs",
         "stab",
         "assets",
         "assets/generated",
         "assets/placeholders",
+        "titles",
+        ".scratch",
+        ".scratch/judge",
+        "chat",
     ];
     validate_roots(dir, ROOTS)?;
     validate_job_output_roots(dir)

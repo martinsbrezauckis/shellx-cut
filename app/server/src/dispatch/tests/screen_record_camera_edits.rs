@@ -1,5 +1,12 @@
-fn edit_camera_rgb(project: &cut_core::Project, dir: &Path, at: u64) -> Vec<u8> {
-    let bytes = cut_media::render::extract_frame(
+struct EditCameraFrame {
+    rgb: Vec<u8>,
+    jpeg: Vec<u8>,
+    ffmpeg_args: Vec<String>,
+    project_json: String,
+}
+
+fn edit_camera_frame(project: &cut_core::Project, dir: &Path, at: u64) -> EditCameraFrame {
+    let (jpeg, ffmpeg_args) = cut_media::render::extract_frame_with_args(
         project,
         &cut_core::edl_from_project(project),
         dir,
@@ -8,8 +15,77 @@ fn edit_camera_rgb(project: &cut_core::Project, dir: &Path, at: u64) -> Vec<u8> 
     )
     .unwrap();
     let path = dir.join("edit-camera-frame.jpg");
-    std::fs::write(&path, bytes).unwrap();
-    camera_test_rgb(&path, 0.0)
+    std::fs::write(&path, &jpeg).unwrap();
+    let rgb = camera_test_rgb(&path, 0.0);
+    let project_json = serde_json::to_string(project).unwrap();
+    EditCameraFrame {
+        rgb,
+        jpeg,
+        ffmpeg_args,
+        project_json,
+    }
+}
+
+fn edit_camera_rgb(project: &cut_core::Project, dir: &Path, at: u64) -> Vec<u8> {
+    edit_camera_frame(project, dir, at).rgb
+}
+
+fn camera_test_cpu_model() -> String {
+    if cfg!(windows) {
+        std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| std::env::consts::ARCH.to_owned())
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| std::env::consts::ARCH.to_owned())
+    } else {
+        std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix("model name"))
+                    .and_then(|rest| rest.split_once(':'))
+                    .map(|(_, val)| val.trim().to_owned())
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| std::env::consts::ARCH.to_owned())
+    }
+}
+
+fn dump_camera_undo_failure(before: &EditCameraFrame, restored: &EditCameraFrame) -> String {
+    let diff = edit_camera_difference(&restored.rgb, &before.rgb);
+    let out_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(std::env::temp_dir);
+    let pid = std::process::id();
+    let before_path = out_dir.join(format!("camera-hand-placement-{pid}-before.jpg"));
+    let restored_path = out_dir.join(format!("camera-hand-placement-{pid}-restored.jpg"));
+    let report_path = out_dir.join(format!("camera-hand-placement-{pid}-report.txt"));
+    let _ = std::fs::write(&before_path, &before.jpeg);
+    let _ = std::fs::write(&restored_path, &restored.jpeg);
+    let full = format!(
+        "{diff}\n\
+saved frames:\n\
+  before_move: {}\n\
+  restored: {}\n\
+ffmpeg args (before_move): {:?}\n\
+ffmpeg args (restored): {:?}\n\
+project state (before_move): {}\n\
+project state (restored): {}",
+        before_path.display(),
+        restored_path.display(),
+        before.ffmpeg_args,
+        restored.ffmpeg_args,
+        before.project_json,
+        restored.project_json,
+    );
+    let _ = std::fs::write(&report_path, &full);
+    full
 }
 fn edit_camera_bounds(rgb: &[u8]) -> [usize; 4] {
     let mut b = [640, 360, 0, 0];
@@ -36,8 +112,11 @@ fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
         restored_camera[3].max(before_camera[3]),
     ];
     let mut max_channel_diff = 0_u8;
+    let mut any_diff_pixels = 0_usize;
+    let mut over_4_pixels = 0_usize;
     let mut over_4 = 0_usize;
     let mut over_16 = 0_usize;
+    let mut any_bounds = [640, 360, 0, 0];
     let mut bounds = [640, 360, 0, 0];
     let mut restored_sums = [0_u64; 3];
     let mut before_sums = [0_u64; 3];
@@ -51,11 +130,15 @@ fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
         let y = pixel / 640;
         let in_camera = x >= camera[0] && x <= camera[2] && y >= camera[1] && y <= camera[3];
         let mut differs = false;
+        let mut any_diff = false;
         for channel in 0..3 {
             restored_sums[channel] += u64::from(a[channel]);
             before_sums[channel] += u64::from(b[channel]);
             let difference = a[channel].abs_diff(b[channel]);
             max_channel_diff = max_channel_diff.max(difference);
+            if difference > 0 {
+                any_diff = true;
+            }
             if difference > 4 {
                 over_4 += 1;
                 differs = true;
@@ -67,7 +150,15 @@ fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
             region.0 += u64::from(difference);
             region.1 += 1;
         }
+        if any_diff {
+            any_diff_pixels += 1;
+            any_bounds[0] = any_bounds[0].min(x);
+            any_bounds[1] = any_bounds[1].min(y);
+            any_bounds[2] = any_bounds[2].max(x);
+            any_bounds[3] = any_bounds[3].max(y);
+        }
         if differs {
+            over_4_pixels += 1;
             bounds[0] = bounds[0].min(x);
             bounds[1] = bounds[1].min(y);
             bounds[2] = bounds[2].max(x);
@@ -77,6 +168,16 @@ fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
             }
         }
     }
+    let diff_size = if bounds[2] >= bounds[0] && bounds[3] >= bounds[1] {
+        (bounds[2] - bounds[0] + 1, bounds[3] - bounds[1] + 1)
+    } else if any_bounds[2] >= any_bounds[0] && any_bounds[3] >= any_bounds[1] {
+        (
+            any_bounds[2] - any_bounds[0] + 1,
+            any_bounds[3] - any_bounds[1] + 1,
+        )
+    } else {
+        (0, 0)
+    };
     let pixels = (640 * 360) as f64;
     let restored_mean = restored_sums.map(|sum| sum as f64 / pixels);
     let before_mean = before_sums.map(|sum| sum as f64 / pixels);
@@ -88,6 +189,7 @@ fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
         }
     };
     let processors = std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get);
+    let cpu_model = camera_test_cpu_model();
     let version = std::process::Command::new("ffmpeg")
         .arg("-version")
         .output()
@@ -96,7 +198,9 @@ fn edit_camera_difference(restored: &[u8], before: &[u8]) -> String {
         .and_then(|text| text.lines().next().map(str::to_owned))
         .unwrap_or_else(|| "unavailable".to_owned());
     format!(
-        "undo frame difference (RGB, 640x360):\nmax channel difference: {max_channel_diff}; channels >4: {over_4}; >16: {over_16}\ndiffering pixel bounds: {bounds:?}; camera bounds restored: {restored_camera:?}, before: {before_camera:?}\nmean RGB restored: {restored_mean:?}, before: {before_mean:?}\nmean absolute difference inside camera: {:.4}, outside: {:.4}\nfirst differing pixels (restored -> before): {}\nlogical processors: {processors}; ffmpeg: {version}",
+        "undo frame difference (RGB, 640x360):\nmax channel difference: {max_channel_diff}; differing pixels (>0): {any_diff_pixels}, (>4): {over_4_pixels} (channels >4: {over_4}, >16: {over_16})\ndiffering area size: {}x{}; (>4) bounds: {bounds:?}; (>0) bounds: {any_bounds:?}; camera bounds restored: {restored_camera:?}, before: {before_camera:?}\nmean RGB restored: {restored_mean:?}, before: {before_mean:?}\nmean absolute difference inside camera: {:.4}, outside: {:.4}\nfirst differing pixels (restored -> before): {}\ncpu: {cpu_model}; logical processors: {processors}; ffmpeg: {version}",
+        diff_size.0,
+        diff_size.1,
         region_mean(inside),
         region_mean(outside),
         first_pixels.join("; ")
@@ -147,7 +251,7 @@ async fn camera_manual_placement_case() {
                 "size at {at}: bounds {b:?}, original widths {before_widths:?}"
             );
         }
-        edit_camera_rgb(&s.project, &s.dir, 1750)
+        edit_camera_frame(&s.project, &s.dir, 1750)
     };
     transform.x = 0.5;
     transform.y = 0.4;
@@ -196,28 +300,36 @@ async fn camera_manual_placement_case() {
             panic!()
         };
         assert_eq!(m.keyframes, keys);
-        let restored = edit_camera_rgb(&s.project, &s.dir, 1750);
+        let restored = edit_camera_frame(&s.project, &s.dir, 1750);
         assert_eq!(
-            edit_camera_bounds(&restored),
-            edit_camera_bounds(&before_move)
+            edit_camera_bounds(&restored.rgb),
+            edit_camera_bounds(&before_move.rgb),
+            "camera bounds mismatch after undo:\n{}",
+            dump_camera_undo_failure(&before_move, &restored)
         );
         // Repeated JPEG/source decoding can round a few channels differently.
         // Require identical placement and tight pixel agreement, not byte identity.
         assert!(
             restored
+                .rgb
                 .iter()
-                .zip(&before_move)
+                .zip(&before_move.rgb)
                 .all(|(a, b)| a.abs_diff(*b) <= 4),
             "{}",
-            edit_camera_difference(&restored, &before_move)
+            dump_camera_undo_failure(&before_move, &restored)
         );
         let mean = restored
+            .rgb
             .iter()
-            .zip(&before_move)
+            .zip(&before_move.rgb)
             .map(|(a, b)| a.abs_diff(*b) as f64)
             .sum::<f64>()
-            / restored.len() as f64;
-        assert!(mean < 0.01, "undo mean pixel difference {mean}");
+            / restored.rgb.len() as f64;
+        assert!(
+            mean < 0.01,
+            "undo mean pixel difference {mean}\n{}",
+            dump_camera_undo_failure(&before_move, &restored)
+        );
     }
     assert!(
         dispatch(&state, "project.redo", json!({}), test_actor())

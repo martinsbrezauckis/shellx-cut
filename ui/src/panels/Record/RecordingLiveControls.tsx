@@ -15,6 +15,7 @@ interface RecordingLiveControlsProps {
   pauseState: RecordingPauseState
   pauseMessage: string
   markerPending: boolean
+  markerConfirmation?: string | null
   /** The capture remains owned after an unacknowledged Stop; the next Stop retries it. */
   stopRetry: boolean
   onMarker: () => void
@@ -37,6 +38,7 @@ export function RecordingLiveControls({
   pauseState,
   pauseMessage,
   markerPending,
+  markerConfirmation = null,
   stopRetry,
   onMarker,
   onPauseControl,
@@ -68,6 +70,16 @@ export function RecordingLiveControls({
           >
             {markerPending ? 'Saving marker…' : 'Flag marker (F12)'}
           </button>
+          {markerConfirmation && (
+            <span
+              className="rec-live-controls__marker-feedback"
+              data-cut-rec-marker-feedback
+              role="status"
+              aria-live="polite"
+            >
+              {markerConfirmation}
+            </span>
+          )}
           <button type="button" className="rec__stop" data-cut-action="record-stop"
             data-cut-rec-stop-retry={stopRetry ? 'true' : undefined} onClick={onStop}>
             ■ {stopRetry ? 'Retry Stop' : 'Stop'} (F9)

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { shouldPublishPlaybackTick, playbackBindingKey } from '../src/panels/Preview/playbackClock'
 import { activeVideo } from '../src/panels/Preview/model'
-import { PlaybackHandoff, PlaybackSeekTracker, acceptPlaybackFrame, canStartPreviewMedia, normalizePlayheadMs, forwardPlaybackPosition, playbackVideoKey } from '../src/panels/Preview/playbackClock'
+import { PlaybackHandoff, PlaybackSeekTracker, PlaybackSessionClock, MediaProgressMonitor, acceptPlaybackFrame, canStartPreviewMedia, nextPlaybackBoundaryMs, normalizePlayheadMs, forwardPlaybackPosition, playbackVideoKey } from '../src/panels/Preview/playbackClock'
+import { shouldSeekMonitorAudio } from '../src/panels/Preview/audioSync'
 import { resolveOverlays } from '../src/panels/Preview/composite'
 import { previewPlaybackClockPosition } from '../src/panels/Preview/useVoiceoverPlayback'
 const clip = (id: string, a: number, b: number, speed = 1) => ({ id, asset: 'a', src_in_ms: a, src_out_ms: b, speed })
@@ -108,3 +109,46 @@ const debugHandoff = new PlaybackHandoff(debugTracker)
 debugHandoff.begin()
 debugTracker.published(29500)
 assert.equal(debugHandoff.observe(29500, 8), 'seek', 'debug seek matching pending clock value cancels handoff')
+
+// PlaybackSessionClock stays continuous across cuts/gaps, skips duplicate ms ticks,
+// crosses cut boundaries immediately, and re-anchors cleanly on explicit seeks.
+{
+  const session = new PlaybackSessionClock(0, 1000, 1, 0)
+  assert.equal(session.position(1016), 16)
+  assert.equal(session.shouldPublish(1000, 0.2, 200, 33), true)
+  session.markPublished(1000, 0.2)
+  assert.equal(session.shouldPublish(1040, 0.4, 200, 33), false, 'duplicate normalized ms tick is suppressed without updating dispatch')
+  assert.equal(session.shouldPublish(1016, 200, 200, 33), true, 'boundary crossing publishes ahead of cadence')
+  session.markPublished(1016, 200)
+  assert.equal(session.syncExternal(200, 0, 1200, 1), 200, 'unrelated render keeps elapsed wall clock')
+  assert.equal(session.syncExternal(500, 1, 1200, 1), 500, 'new seekRevision re-anchors session clock immediately')
+  assert.equal(session.position(1250), 550)
+  assert.equal(nextPlaybackBoundaryMs(1, { startMs: 200, durMs: 200 }, 600), 400)
+  assert.equal(nextPlaybackBoundaryMs(1, null, 2400), 2400)
+  assert.equal(nextPlaybackBoundaryMs(-1, { startMs: 200, durMs: 200 }, 2400), 200)
+}
+
+// MediaProgressMonitor tolerates normal cut spin-up without stalling the clock,
+// and requests resync when a decoder stops advancing or jumps far ahead.
+{
+  const mon = new MediaProgressMonitor(1000)
+  assert.equal(mon.resyncDue(1045), false)
+  mon.sample(100, 145, 1045, false, false)
+  mon.sample(116, 161, 1061, false, false)
+  assert.equal(mon.following, 'media')
+  assert.equal(mon.resyncDue(1700), true, '600 ms with no media progress triggers resync')
+  assert.equal(mon.following, 'timeline')
+}
+
+// Monitor audio avoids redundant seeks within 20 ms (0 -> 0 startup seek).
+assert.equal(shouldSeekMonitorAudio(0, 0), false)
+assert.equal(shouldSeekMonitorAudio(0.015, 0), false)
+assert.equal(shouldSeekMonitorAudio(0.3, 0), true)
+
+// Forward play starting at 0 (even when rAF timestamp precedes performance.now)
+// and reverse play starting at durationMs must not stop on frame 0.
+assert.deepEqual(previewPlaybackClockPosition(0, 12000, null, 1), { positionMs: 0, stop: false })
+assert.deepEqual(previewPlaybackClockPosition(12000, 12000, null, -1), { positionMs: 12000, stop: false })
+assert.deepEqual(previewPlaybackClockPosition(12000, 12000, null, 1), { positionMs: 12000, stop: true })
+assert.deepEqual(previewPlaybackClockPosition(0, 12000, null, -1), { positionMs: 0, stop: true })
+assert.deepEqual(previewPlaybackClockPosition(0, 0, null, 1), { positionMs: 0, stop: true })

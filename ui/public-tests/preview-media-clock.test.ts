@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { activeVideo } from '../src/panels/Preview/model'
 import { runFreeRunClock, type FreeRunState, type FreeRunVideo } from '../src/panels/Preview/freeRunClock'
-import { overlayResyncDriftS, PlaybackSeekTracker, playbackVideoKey, playbackBindingKey } from '../src/panels/Preview/playbackClock'
+import { overlayResyncDriftS, nextPlaybackBoundaryMs, PlaybackSeekTracker, PlaybackSessionClock, playbackVideoKey, playbackBindingKey } from '../src/panels/Preview/playbackClock'
 
 // Forward playback of a clip whose <video> element was just mounted, driven
 // through the media event orders observed on the three desktop webviews. The
@@ -35,6 +35,8 @@ interface Behaviour {
   parkedAtS?: number
   /** Already loaded and PLAYING at this media time (a cut inside one recording). */
   playingAtS?: number
+  /** Delay between play() and the first advancing media frame. */
+  playDelayMs?: number
 }
 
 class FakeVideo implements FreeRunVideo {
@@ -50,6 +52,7 @@ class FakeVideo implements FreeRunVideo {
   private listeners = new Map<string, Set<() => void>>()
   private pendingSeek: { doneAt: number } | null = null
   private loadAt: number
+  private playingAt = 0
   private frozen = false
   constructor(private readonly sim: Sim, readonly b: Behaviour) {
     this.loadAt = sim.now + (b.loadMs ?? 160)
@@ -67,7 +70,15 @@ class FakeVideo implements FreeRunVideo {
     if (this.b.freezeUntilReloadAtS === undefined || this.reloads > 0) this.frozen = false
     this.emit('seeking')
   }
-  play() { this.paused = false; this.emit('play'); return Promise.resolve() }
+  parkAt(s: number) { this.paused = true; this.seeking = false; this.pendingSeek = null; this.readyState = 4; this.time = s }
+  play() {
+    if (this.paused) {
+      this.playingAt = this.sim.now + (this.b.playDelayMs ?? 0)
+      this.paused = false
+      this.emit('play')
+    }
+    return Promise.resolve()
+  }
   pause() { this.paused = true }
   load() {
     this.reloads += 1
@@ -98,7 +109,7 @@ class FakeVideo implements FreeRunVideo {
       this.seeking = false
       this.emit('seeked')
     }
-    if (this.error || this.paused || this.seeking || this.readyState < 2 || this.frozen) return false
+    if (this.error || this.paused || this.seeking || this.readyState < 2 || this.frozen || this.sim.now < this.playingAt) return false
     this.time += (dt / 1000) * this.playbackRate
     const { freezeAtS, freezeUntilReloadAtS, errorAt, jumpAt } = this.b
     if (freezeAtS !== undefined && this.time >= freezeAtS && this.seeks.length <= 1) { this.time = freezeAtS; this.frozen = true }
@@ -412,6 +423,194 @@ for (const reason of ['seek', 'jump', 'element', 'stop'] as const) {
   if (reason === 'stop') state.current.rate = 0
   cleanup()
   assert.equal(video.paused, true, `${reason} still pauses the old element`)
+}
+
+// A slow cut whose next element takes 480 ms (load + seek) or 860 ms (slow
+// cold seek) to present its first frame must keep advancing the playhead at
+// real time while the picture holds and then catches up.
+for (const [label, b] of [
+  ['480ms slow load+seek', { loadMs: 360, seekMs: () => 120, frameCallbacks: true }],
+  ['860ms slow first seek', { loadMs: 160, seekMs: (i: number) => (i === 0 ? 700 : 12), frameCallbacks: true }],
+] as const) {
+  const o = play(b, 60000, 2000)
+  const loss = 2000 - (o.samples[o.samples.length - 1] - 60000)
+  if (o.plateauMs > 100 || loss > 100) {
+    failures.push(`slow cut (${label}) held/lost clock time: plateau=${o.plateauMs} ms, loss=${loss} ms`)
+  } else if (Math.abs(o.video.currentTime * 1000 - o.samples[o.samples.length - 1]) > 300) {
+    failures.push(`slow cut (${label}) picture did not catch up: ${o.video.currentTime * 1000} vs ${o.samples[o.samples.length - 1]}`)
+  } else {
+    console.log(`PASS slow cut (${label}) keeps real time (plateau ${o.plateauMs} ms, loss ${loss} ms)`)
+  }
+}
+
+// Discontinuous 200 ms cuts across alternating assets (a/b) where each newly
+// activated decoder takes 45 ms after play() to advance frames.
+{
+  const altClips = Array.from({ length: 60 }, (_, i) => ({
+    id: `alt${i}`, asset: i % 2 === 0 ? 'a' : 'b', src_in_ms: i * 200, src_out_ms: (i + 1) * 200,
+  }))
+  const altProject: any = { assets: { a: { proxy: '/a.mp4' }, b: { proxy: '/b.mp4' } }, tracks: [{ id: 'v1', kind: 'video', clips: altClips }] }
+  const sim = new Sim()
+  const videos: Record<string, FakeVideo> = {
+    a: new FakeVideo(sim, { parkedAtS: 0, frameCallbacks: true, playDelayMs: 45 }),
+    b: new FakeVideo(sim, { parkedAtS: 0.2, frameCallbacks: true, playDelayMs: 45 }),
+  }
+  const state: { current: FreeRunState } = { current: {
+    rate: 1, playheadMs: 0, durationMs: 12000, frameMs: 1000 / 30, seekRevision: 0,
+    video: activeVideo(altProject, 0, new Set()), voiceoverPlayback: null,
+  } }
+  const arm = () => {
+    const vid = state.current.video
+    if (!vid) return () => {}
+    const el = videos[vid.assetId]
+    const tracker = new PlaybackSeekTracker(state.current.playheadMs, state.current.seekRevision)
+    return runFreeRunClock({
+      video: el, callbacks: sim.callbacks, expectedKey: playbackVideoKey(vid), state,
+      tracker, scheduler: sim.scheduler, stop: () => { state.current.rate = 0 },
+      isCurrentVideo: () => state.current.video?.assetId === vid.assetId,
+      publish: (positionMs) => {
+        const playheadMs = tracker.published(positionMs)
+        const nextVid = activeVideo(altProject, playheadMs, new Set())
+        state.current = { ...state.current, playheadMs, video: nextVid }
+      },
+    })
+  }
+  let binding = playbackBindingKey(state.current.video, state.current.video?.assetId === 'a' ? 0 : 1)
+  let cleanup = arm()
+  let swaps = 0
+  const began = sim.now
+  while (sim.now - began < 5000 && state.current.rate === 1) {
+    const activeAsset = state.current.video?.assetId ?? 'a'
+    const otherAsset = activeAsset === 'a' ? 'b' : 'a'
+    const nextCut = altClips.find((_, idx) => idx * 200 > state.current.playheadMs && (idx % 2 === 0 ? 'a' : 'b') === otherAsset)
+    if (nextCut && videos[otherAsset].paused) videos[otherAsset].parkAt(nextCut.src_in_ms / 1000)
+    sim.runFrame(videos[activeAsset], 16)
+    const nextBinding = playbackBindingKey(state.current.video, state.current.video?.assetId === 'a' ? 0 : 1)
+    if (nextBinding !== binding) {
+      cleanup()
+      swaps += 1
+      binding = nextBinding
+      cleanup = arm()
+    }
+  }
+  const lossMs = sim.now - began - state.current.playheadMs
+  if (swaps < 20) failures.push(`alternating cuts only swapped ${swaps} times (playhead=${state.current.playheadMs})`)
+  if (lossMs >= 100) failures.push(`alternating 200 ms cuts lost ${lossMs} ms in five seconds`)
+  else console.log(`PASS alternating 200 ms cuts: ${swaps} swaps, ${lossMs} ms lost`)
+  state.current.rate = 0
+  cleanup()
+}
+
+// Canonical c5-long-real60 60 x 200 ms layout (reordered head + 2 gaps in 5 s)
+// driven by a shared PlaybackSessionClock + runFreeRunClock across gaps/swaps.
+{
+  const initial = Array.from({ length: 60 }, (_, i) => clip(`r${i}`, i * 200, (i + 1) * 200))
+  const moved: typeof initial = []
+  for (const idx of [20, 40, 10]) moved.push(initial.splice(idx, 1)[0])
+  const placed = [...moved.reverse(), ...initial]
+  const clips: any[] = []
+  let timelineMs = 0
+  for (const c of placed) {
+    if (timelineMs === 2200 || timelineMs === 4600) { clips.push({ kind: 'gap', duration_ms: 200 }); timelineMs += 200 }
+    clips.push(c)
+    timelineMs += 200
+  }
+  const c5Project: any = { assets: { a: { proxy: '/a.mp4' } }, tracks: [{ id: 'v1', kind: 'video', clips }] }
+  const sim = new Sim()
+  const video = new FakeVideo(sim, { parkedAtS: clips[0].src_in_ms / 1000, frameCallbacks: true, playDelayMs: 45 })
+  const state: { current: FreeRunState } = { current: {
+    rate: 1, playheadMs: 0, durationMs: timelineMs, frameMs: 1000 / 30, seekRevision: 0,
+    video: activeVideo(c5Project, 0, new Set()), voiceoverPlayback: null,
+  } }
+  const tracker = new PlaybackSeekTracker(0, 0)
+  const session = new PlaybackSessionClock(0, sim.now, 1, 0)
+  const render = (positionMs: number) => {
+    const playheadMs = tracker.published(positionMs)
+    const nextVid = activeVideo(c5Project, playheadMs, new Set())
+    state.current = { ...state.current, playheadMs, video: nextVid }
+  }
+  let binding = playbackBindingKey(state.current.video, 0)
+  let cleanup = binding ? runFreeRunClock({
+    video, callbacks: sim.callbacks, expectedKey: playbackVideoKey(state.current.video), state,
+    tracker, sessionClock: session, scheduler: sim.scheduler,
+    isCurrentVideo: () => state.current.video !== null, publish: () => {}, stop: () => {},
+  }) : () => {}
+  const began = sim.now
+  while (sim.now - began < 5000) {
+    sim.runFrame(video, 16)
+    const now = sim.now
+    if (tracker.external(state.current.playheadMs, state.current.seekRevision)) session.reanchor(state.current.playheadMs, now, 1, state.current.seekRevision)
+    const pos = session.position(now)
+    const boundary = nextPlaybackBoundaryMs(1, state.current.video, state.current.playheadMs >= 2200 && state.current.playheadMs < 2400 ? 2400 : state.current.playheadMs >= 4600 && state.current.playheadMs < 4800 ? 4800 : null)
+    if (session.shouldPublish(now, pos, boundary, 33)) { session.markPublished(now, pos); render(pos) }
+    const nextBinding = playbackBindingKey(state.current.video, 0)
+    if (nextBinding !== binding) {
+      cleanup()
+      binding = nextBinding
+      if (binding && state.current.video) {
+        cleanup = runFreeRunClock({
+          video, callbacks: sim.callbacks, expectedKey: playbackVideoKey(state.current.video), state,
+          tracker, sessionClock: session, scheduler: sim.scheduler,
+          isCurrentVideo: () => state.current.video !== null, publish: () => {}, stop: () => {},
+        })
+      } else {
+        cleanup = () => {}
+      }
+    }
+  }
+  cleanup()
+  const lossMs = sim.now - began - state.current.playheadMs
+  if (lossMs >= 100) failures.push(`c5-long-real60 lost ${lossMs} ms across cuts and gaps`)
+  else console.log(`PASS c5-long-real60 cuts+gaps: reached ${state.current.playheadMs} ms, loss ${lossMs} ms`)
+}
+
+{
+  // Promoted standby whose park seek is still in flight within MEDIA_START_IN_PLACE_MS
+  // must play from its in-flight seek instead of cancelling it with another currentTime write.
+  const project: any = {
+    assets: { a: { id: 'a', path: 'a.mp4', proxy: '/proxies/a.mp4', duration_ms: 20000 } },
+    tracks: [{ id: 'v1', kind: 'video', clips: [
+      { id: 'c0', asset: 'a', src_in_ms: 0, src_out_ms: 200 },
+      { id: 'c1', asset: 'a', src_in_ms: 8000, src_out_ms: 9000 },
+    ] }],
+  }
+  const clip = activeVideo(project, 240, new Set())!
+  let currentTimeSets = 0
+  let currentTime = 8.0
+  let paused = true
+  let playCalls = 0
+  const video: FreeRunVideo = {
+    readyState: 2,
+    seeking: true,
+    ended: false,
+    playbackRate: 1,
+    error: null,
+    get currentTime() { return currentTime },
+    set currentTime(val: number) { currentTime = val; currentTimeSets += 1 },
+    get paused() { return paused },
+    play: () => { paused = false; playCalls += 1; return Promise.resolve() },
+    pause: () => { paused = true },
+    load: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }
+  const state: { current: FreeRunState } = {
+    current: { rate: 1, playheadMs: 240, durationMs: 1200, frameMs: 1000 / 30, seekRevision: 0, video: clip, continuousEndMs: 1200, voiceoverPlayback: null },
+  }
+  const cleanup = runFreeRunClock({
+    video,
+    callbacks: { request: () => 1, cancel: () => {} },
+    expectedKey: playbackVideoKey(clip),
+    state,
+    tracker: new PlaybackSeekTracker(240, 0),
+    scheduler: { now: () => 0, requestFrame: () => 1, cancelFrame: () => {} },
+    publish: () => {},
+    stop: () => {},
+  })
+  cleanup()
+  if (currentTimeSets !== 0 || playCalls !== 1) {
+    failures.push(`promoted in-flight standby seek cancelled: currentTimeSets=${currentTimeSets} playCalls=${playCalls}`)
+  }
 }
 
 assert.deepEqual(failures, [], `\n${failures.join('\n')}`)

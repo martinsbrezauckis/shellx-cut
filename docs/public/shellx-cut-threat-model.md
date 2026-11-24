@@ -1,10 +1,10 @@
 # ShellX Cut local-machine trust threat model
 
-<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
+<!-- shellx-cut-release-truth: published; version=0.6.122; published=0.6.122 -->
 
 ## Executive summary
 
-This v0.6.121 published contract covers the current source and the local
+This v0.6.122 published contract covers the current source and the local
 Debug API, WebSocket endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under
@@ -145,19 +145,25 @@ A program running under the person's own account while Cut works (for example
 one that changes a file between Cut's check and its use, or inside a review's
 run folder) is outside this model: it already has every right Cut has.
 
-An export is written to a private staging file in the export folder and moved
-into place when it is finished. On Linux and macOS a chosen export folder that
-everyone on the computer can write to is refused unless its sticky bit is set;
-a group-writable folder is accepted. Cut records the staging file's identity
-and refuses to publish it if it was replaced while the render ran. Residual
-risk: another member of a group-writable export folder could redirect that
-single write before FFmpeg opens the staging file. Two more limits apply on a
-computer shared with another user account: a user who may rename a parent
-folder of the export folder can redirect an export, and on Windows a user with
-rights in the export folder can replace the finished staging file before it is
-published (the replacement check above is made on Linux and macOS only). Use an
-export folder that only you can change, parents included. Writing exports in a
-private folder first is planned.
+Every export is written into a private staging folder that only the current
+user can use (`0700` in Cut's data folder on Linux and macOS; a folder whose
+access list grants only the current user on Windows). When it is finished, Cut
+checks that it is still the plain file it wrote, then moves it into the export
+folder without following a link at the file name. Cut opens the export folder
+before writing starts and checks again just before the move that the folder
+chain is still the one it opened; if it is not, nothing is published. That check
+is made just before the move, not during it: on Windows, another user who is
+able to rename a parent folder of a shared export folder could still swap it in
+that short moment, and this is not excluded. Cut resolves a
+chosen export folder and the project folder to their real folders. A link above
+the export folder is followed only when the current user owns it (Linux and
+macOS; on Windows any link or junction left in the path is refused); a link
+owned by another user, or an export folder that is itself a link, is refused. When Cut's data folder is on another drive, the file is copied into
+a new temporary name next to the target, written to disk, and renamed into
+place. A failed or cancelled export leaves nothing in the export folder and its
+staging folder is removed. On Linux and macOS a chosen export folder that
+everyone on the computer can write to is still refused unless its sticky bit is
+set; a group-writable folder is accepted.
 
 A transcript and visual-search data that come inside a project made by someone
 else are used as they came: Cut does not check that they match the footage, so

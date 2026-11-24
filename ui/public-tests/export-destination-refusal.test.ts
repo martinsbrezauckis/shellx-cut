@@ -153,17 +153,20 @@ for (const changed of [agentChose, projectExports]) {
   assert.equal(getStoredOutputDir(), changed.dir)
 }
 
-for (const reason of ['export folder not found: /gone', 'output folder is not writable: /locked']) {
+for (const [reason, expected] of [
+  ['export folder not found: /gone', 'Export folder not found: /gone. Choose an existing export folder, then try again.'],
+  ['output folder is not writable: /locked', 'Output folder is not writable: /locked. Choose a writable export folder, then try again.'],
+]) {
   installation('/old/exports')
   refused = reason
   assert.deepEqual(await refreshOutputFolder(), projectExports)
   assert.deepEqual(applies, ['/old/exports'])
-  assert.deepEqual(notices, [reason], 'the engine refusal is shown once in plain words')
+  assert.deepEqual(notices, [expected], 'the engine refusal is shown once in plain words')
   assert.equal(getStoredOutputDir(), null, 'a refused folder stays project exports')
   values.set('cut.outputDir', '/old/exports') // stale storage after another start
   await refreshOutputFolder()
   assert.deepEqual(applies, ['/old/exports'], 'refusal never loops or retries on restart')
-  assert.deepEqual(notices, [reason])
+  assert.deepEqual(notices, [expected])
 }
 
 installation(null)

@@ -1,5 +1,16 @@
 import type { PregateReport, PregateRisk } from '../lib/client'
 import { errorText } from '../lib/jobFailureText'
+import { exportChecksOpenWarning } from '../components/exportChecks/model'
+
+/** The risk kinds the pregate itself reports; with the check list they are rows of it. */
+export const PREGATE_RISK_KINDS: ReadonlySet<string> = new Set(['empty_tail', 'black_or_frozen', 'slideshow_risk', 'silent_output', 'tiny_or_zero_clips', 'uniform_border'])
+
+/** A fresh pregate report with the risks the pregate does not report (the render plan's memory and disk warnings) kept from the one on screen. */
+export function refreshedReport(fresh: PregateReport, current: PregateReport): PregateReport {
+  const carried = (current.risks ?? []).filter((risk) => !PREGATE_RISK_KINDS.has(risk.kind))
+  if (carried.length === 0) return { ...fresh, risks: fresh.risks ?? [] }
+  return { ...fresh, pass: false, risks: [...(fresh.risks ?? []), ...carried] }
+}
 
 /** The TopBar owns this gate for single renders, video exports, and queue submission. */
 export type VideoPreflightStatus = 'blocked' | 'warning' | 'started'
@@ -35,7 +46,13 @@ export async function runVideoPreflightAction(
     }
     if (r.ok && r.result) {
       const report = r.result
-      if (report.pass === false || (report.risks ?? []).length > 0 || (report.uninstrumented_assets ?? []).length > 0) {
+      // With the list, only something found or a check that failed opens the
+      // warning; a check that was not made (tools not installed, not run yet) is
+      // a quiet line in the list and never stops the export on its own.
+      const opens = report.export_checks
+        ? exportChecksOpenWarning(report.export_checks)
+        : (report.uninstrumented_assets ?? []).length > 0
+      if (report.pass === false || (report.risks ?? []).length > 0 || opens) {
         deps.showWarning(report, actionLabel, action)
         return 'warning'
       }

@@ -1,8 +1,10 @@
 use super::super::RollingAudioLevel;
 use super::activation::{
     trace_windows_loopback, windows_error, ComApartment, ProcessLoopbackActivation, WindowsEvent,
-    PROCESS_LOOPBACK_BITS_PER_SAMPLE, PROCESS_LOOPBACK_BLOCK_ALIGN, PROCESS_LOOPBACK_CHANNELS,
-    PROCESS_LOOPBACK_SAMPLE_RATE,
+};
+use super::keepalive::{
+    open_staging_wav, packet_byte_len, query_qpc_freq, write_timed_packet, LoopbackPacketMeta,
+    SilentRenderKeepalive,
 };
 use crate::system_audio_timing::{SystemAudioCapture, SystemAudioTimingTracker};
 use record_core::{error_codes, RecordError, Result};
@@ -47,7 +49,8 @@ fn capture_process_loopback(
     use std::mem::{size_of, ManuallyDrop};
     use windows::core::Interface;
     use windows::Win32::Media::Audio::{
-        ActivateAudioInterfaceAsync, IAudioCaptureClient, IAudioClient, AUDCLNT_BUFFERFLAGS_SILENT,
+        ActivateAudioInterfaceAsync, IAudioCaptureClient, IAudioClient,
+        AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
         AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
         AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
@@ -147,47 +150,15 @@ fn capture_process_loopback(
         let capture: IAudioCaptureClient = audio_client
             .GetService()
             .map_err(|e| windows_error("open system audio capture client", e))?;
-        let output_path = std::path::Path::new(path);
-        let parent = output_path.parent().ok_or_else(|| {
-            RecordError::new(
-                error_codes::IO,
-                "reserve system audio staging",
-                "system audio path has no parent",
-            )
-        })?;
-        let (temp_path, staging) = record_recovery::create_staging_file(parent, "system-wav")
-            .map_err(|error| {
-                RecordError::new(
-                    error_codes::IO,
-                    "reserve system audio staging",
-                    error.to_string(),
-                )
-            })?;
-        let spec = hound::WavSpec {
-            channels: PROCESS_LOOPBACK_CHANNELS,
-            sample_rate: PROCESS_LOOPBACK_SAMPLE_RATE,
-            bits_per_sample: PROCESS_LOOPBACK_BITS_PER_SAMPLE,
-            sample_format: hound::SampleFormat::Int,
-        };
-        // Buffered (one write call per 16-bit sample cost CPU and Stop time);
-        // a crash loses at most the buffer, about 40 ms of system sound.
-        let mut writer = match hound::WavWriter::new(std::io::BufWriter::new(staging), spec) {
-            Ok(writer) => writer,
-            Err(error) => {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(RecordError::new(
-                    error_codes::IO,
-                    "create system audio",
-                    error.to_string(),
-                ));
-            }
-        };
+        let (temp_path, mut writer) = open_staging_wav(path)?;
+        let _keepalive = SilentRenderKeepalive::start();
         if let Err(error) = audio_client.Start() {
             drop(writer);
             let _ = std::fs::remove_file(&temp_path);
             return Err(windows_error("start system audio loopback", error));
         }
         trace_windows_loopback("process-loopback audio client started");
+        let qpc_freq = query_qpc_freq();
 
         let capture_result = (|| -> Result<SystemAudioTimingTracker> {
             let mut timing = SystemAudioTimingTracker::default();
@@ -227,34 +198,28 @@ fn capture_process_loopback(
                         ));
                     }
                     let mut data = std::ptr::null_mut();
-                    let mut frames = 0;
-                    let mut flags = 0;
+                    let (mut frames, mut flags, mut dev_pos, mut qpc_pos) = (0, 0, 0_u64, 0_u64);
                     if packets == 0 {
                         trace_windows_loopback("process-loopback acquiring first packet");
                     }
                     capture
-                        .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+                        .GetBuffer(
+                            &mut data,
+                            &mut frames,
+                            &mut flags,
+                            Some(&mut dev_pos),
+                            Some(&mut qpc_pos),
+                        )
                         .map_err(|e| windows_error("read system audio packet", e))?;
-                    // Timestamp the real packet at acquisition, before decoding or
-                    // disk I/O can add scheduler delay to the timeline offset.
                     let packet_received_at = capture_started.elapsed();
+                    let discontinuity =
+                        flags & (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0;
                     if packets == 0 {
                         trace_windows_loopback(format_args!(
                             "process-loopback first packet acquired: {frames} frames, flags {flags:#x}"
                         ));
                     }
-                    let byte_len = usize::try_from(frames)
-                        .ok()
-                        .and_then(|count| {
-                            count.checked_mul(usize::from(PROCESS_LOOPBACK_BLOCK_ALIGN))
-                        })
-                        .ok_or_else(|| {
-                            RecordError::new(
-                                error_codes::CAPTURE,
-                                "read system audio packet",
-                                "WASAPI packet byte size overflowed",
-                            )
-                        });
+                    let byte_len = packet_byte_len(frames);
                     let silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
                     packets += 1;
                     if silent {
@@ -276,15 +241,19 @@ fn capture_process_loopback(
                     if packets == 1 {
                         trace_windows_loopback("process-loopback first packet released");
                     }
-                    timing.record_packet(decoded.len(), packet_received_at)?;
-                    if let Some(level) = level.as_deref() {
-                        level.observe_i16(&decoded);
-                    }
-                    for sample in decoded {
-                        writer.write_sample(sample).map_err(|e| {
-                            RecordError::new(error_codes::IO, "write system audio", e.to_string())
-                        })?;
-                    }
+                    write_timed_packet(
+                        &mut writer,
+                        &mut timing,
+                        level.as_deref(),
+                        &decoded,
+                        LoopbackPacketMeta {
+                            qpc_freq,
+                            qpc_pos_100ns: qpc_pos,
+                            silent,
+                            discontinuity,
+                            received_at: packet_received_at,
+                        },
+                    )?;
                 }
             }
             let elapsed = capture_started.elapsed().min(limit);
@@ -319,7 +288,9 @@ fn capture_process_loopback(
             ));
         }
         trace_windows_loopback("process-loopback WAV finalized");
-        if let Err(error) = record_recovery::publish_new_synced(&temp_path, output_path) {
+        if let Err(error) =
+            record_recovery::publish_new_synced(&temp_path, std::path::Path::new(path))
+        {
             let _ = std::fs::remove_file(&temp_path);
             return Err(RecordError::new(
                 error_codes::IO,

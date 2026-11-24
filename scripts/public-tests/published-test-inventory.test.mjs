@@ -63,7 +63,7 @@ function fixture(t, { tests = ['scripts/public-tests/fixture.test.mjs'], resourc
 test('published test inventory names the exact public CI scope and every declared resource', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
   assert.equal(inventory.version, JSON.parse(readFileSync(resolve(ROOT, 'ui/package.json'), 'utf8')).version)
-  assert.deepEqual(inventory.contract, { node_test_count: 17, python_test_count: 10, ui_library_test_count: inventory.uiLibraryTests.tests.length })
+  assert.deepEqual(inventory.contract, { node_test_count: 18, python_test_count: 11, ui_library_test_count: inventory.uiLibraryTests.tests.length })
   assert.deepEqual(inventory.tests.map((entry) => entry.path), [
     'scripts/public-tests/cross-host-media.test.mjs',
     'scripts/public-tests/dependency-audit.test.mjs',
@@ -71,6 +71,7 @@ test('published test inventory names the exact public CI scope and every declare
     'scripts/public-tests/grok-judge-tool-policy.test.mjs',
     'scripts/public-tests/judge-adapter.test.mjs',
     'scripts/public-tests/judge-provider-admission.test.mjs',
+    'scripts/public-tests/manual-asset-version.test.mjs',
     'scripts/public-tests/manual-publication-browser-receipt.test.mjs',
     'scripts/public-tests/manual-publication-package.test.mjs',
     'scripts/public-tests/published-test-inventory.test.mjs',
@@ -86,9 +87,9 @@ test('published test inventory names the exact public CI scope and every declare
   verifyPublishedTestResources(inventory)
 })
 
-test('published inventory lists ten Python tests with available resources', () => {
+test('published inventory lists eleven Python tests with available resources', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
-  assert.equal(inventory.pythonTests?.length, 10)
+  assert.equal(inventory.pythonTests?.length, 11)
   verifyPublishedTestResources(inventory)
 })
 

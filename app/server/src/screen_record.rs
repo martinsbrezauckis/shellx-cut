@@ -43,7 +43,10 @@ mod cadence;
 mod camera_capture_sidecar;
 mod camera_public;
 mod capture_artifacts;
+pub(crate) mod make_editable;
 mod plan_output;
+pub(crate) mod render_cleanup;
+mod render_files;
 pub(crate) mod take_edit;
 pub(crate) mod take_refresh_job;
 // REC-CAMERA-01d is the private Windows server/project owner. It is not
@@ -57,7 +60,9 @@ mod capture_files;
 mod capture_registry;
 mod capture_session_control;
 mod capture_terminal;
+pub(crate) mod clip_markers;
 mod containment;
+pub(crate) mod created_project_rollback;
 mod doctor_projection;
 mod export_audio;
 mod export_job;
@@ -273,7 +278,11 @@ pub(crate) use source_preview_handlers::{
     start_handler as source_preview_start_handler, status_handler as source_preview_status_handler,
     stop_handler as source_preview_stop_handler,
 };
-pub(crate) use start_handler::{readiness_status_handler, screen_record_start};
+pub(crate) use start_handler::{readiness_status_handler, screen_record_start_with_actor};
+#[cfg(test)]
+pub(crate) use start_handler::{
+    screen_record_start, screen_record_start_for_rollback_test, TestFallbackStartBehavior,
+};
 
 const CAPTURE_FPS_RANGE: std::ops::RangeInclusive<f64> = 1.0..=240.0;
 
@@ -392,7 +401,7 @@ pub(crate) fn screen_record_cache_dir(project_dir: &Path) -> Result<PathBuf, Cut
 /// Strip `\\?\` before passing an otherwise-valid path to the Windows capture
 /// backend or ffmpeg; `std::fs::canonicalize` returns that prefix on Windows.
 /// This is a no-op for ordinary and Unix paths.
-fn strip_verbatim_prefix(p: &Path) -> PathBuf {
+pub(crate) fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{rest}"))

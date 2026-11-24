@@ -230,6 +230,7 @@ esac
     // Make sure no stray ffmpeg env override interferes with the rung check.
     std::env::remove_var(cut_media::toolpath::ENV_FFMPEG);
     std::env::remove_var(cut_media::toolpath::ENV_FFPROBE);
+    std::env::remove_var("SHELLX_CUT_HOME");
 
     let state = AppState::new();
     // Subscribe to events to catch doctor_updated.
@@ -296,6 +297,64 @@ esac
         saw_doctor_event,
         "expected a doctor_updated event after install"
     );
+
+    // If a manually chosen FFmpeg was removed, using the app's own download
+    // (system.fetch_tool) clears the stale missing override and restores Ready.
+    let stale_chosen = tmp.path().join("stale_chosen_ffmpeg");
+    std::fs::copy(bin.join("ffmpeg"), &stale_chosen).unwrap();
+    let set_stale = dispatch(
+        &state,
+        "system.set_ffmpeg",
+        json!({"path": stale_chosen}),
+        test_actor(),
+    )
+    .await;
+    assert!(set_stale.ok, "{:?}", set_stale.error);
+    std::fs::remove_file(&stale_chosen).unwrap();
+    let before_repair = dispatch(&state, "system.doctor", json!({}), test_actor())
+        .await
+        .result
+        .unwrap();
+    assert_eq!(before_repair["essential_ok"], false);
+    let repair_req = dispatch(
+        &state,
+        "system.fetch_tool",
+        json!({"tool": "ffmpeg", "rationale": "repair missing chosen ffmpeg", "accept_license": true}),
+        test_actor(),
+    )
+    .await;
+    assert!(repair_req.ok, "{:?}", repair_req.error);
+    let repair_job_id = repair_req.result.unwrap()["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let repair_deadline = tokio::time::Instant::now() + FETCH_FIXTURE_FULL_SUITE_TIMEOUT;
+    loop {
+        let j = state.jobs.get(&repair_job_id).unwrap();
+        match j.state {
+            crate::jobs::JobState::Done => {
+                assert_eq!(j.result.unwrap()["ffmpeg_ok_after"], json!(true));
+                break;
+            }
+            crate::jobs::JobState::Failed => panic!("repair fetch failed: {:?}", j.error),
+            _ if tokio::time::Instant::now() >= repair_deadline => {
+                panic!("repair fetch timed out: {:?}", j.state)
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+        }
+    }
+    let after_repair = dispatch(&state, "system.doctor", json!({}), test_actor())
+        .await
+        .result
+        .unwrap();
+    assert_eq!(after_repair["essential_ok"], true);
+    let repair_gpu = after_repair["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "gpu-encode")
+        .unwrap();
+    assert!(repair_gpu["details"]["override_setting"].is_null());
 
     // A different file at the pinned address (a tampered or replaced archive)
     // must fail before replacing the already verified binaries.
@@ -443,14 +502,19 @@ async fn missing_tool_refusal_refreshes_cached_doctor() {
     let install = || {
         for stem in ["ffmpeg", "ffprobe"] {
             let path = bin.join(stem);
+            // Write a fresh file and rename it into place: a background doctor probe from the
+            // previous round may still be running the old fixture, and writing into a file that
+            // is being executed fails with "Text file busy" on Linux.
+            let staged = bin.join(format!(".{stem}.new"));
             std::fs::write(
-                &path,
+                &staged,
                 format!(
                     "#!/bin/sh\ncase \"$*\" in\n  *-filters*) printf ' T.. subtitles V->V fixture\\n T.. vidstabtransform V->V fixture\\n T.. zscale V->V fixture\\n';;\n  *-encoders*) printf ' V....D libx265 fixture\\n V....D libvpx-vp9 fixture\\n V....D libsvtav1 fixture\\n';;\n  *) echo '{stem} version 9.9-fixture';;\nesac\n"
                 ),
             )
             .unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::rename(&staged, &path).unwrap();
         }
         cut_media::toolpath::refresh_media_tools();
     };
@@ -578,4 +642,363 @@ async fn missing_tool_refusal_refreshes_cached_doctor() {
         }
         eprintln!("PASS {missing} background={background} wrapped={wrapped}: present -> ready -> removed -> tool_missing -> cached missing + doctor_updated");
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn chosen_ffmpeg_removed_is_not_ready_on_next_doctor_read() {
+    const CHILD: &str = "SHELLX_CUT_CHOSEN_FFMPEG_REMOVED_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // The isolated run normally takes seconds. A run that never ends must
+        // fail the test (with the child's thread states), not stall the whole
+        // check until the runner's own time limit.
+        const CHILD_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "dispatch::tests::system_tools::chosen_ffmpeg_removed_is_not_ready_on_next_doctor_read",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() > CHILD_LIMIT {
+                let threads = std::fs::read_dir(format!("/proc/{}/task", child.id()))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|task| {
+                        let read = |name: &str| {
+                            std::fs::read_to_string(task.path().join(name))
+                                .unwrap_or_default()
+                                .trim()
+                                .replace('\n', " ")
+                        };
+                        format!(
+                            "{} {} wchan={}",
+                            task.file_name().to_string_lossy(),
+                            read("comm"),
+                            read("wchan")
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!(
+                    "isolated chosen-ffmpeg test did not finish within {CHILD_LIMIT:?}; child threads: {threads:?}"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(status.success(), "isolated chosen-ffmpeg test failed");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let custom_dir = tmp.path().join("custom");
+    let path_dir = tmp.path().join("path_bin");
+    let calls_log = tmp.path().join("calls.log");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+    std::fs::create_dir_all(&path_dir).unwrap();
+
+    std::env::set_var("HOME", tmp.path().join("home"));
+    std::env::set_var("XDG_DATA_HOME", tmp.path().join("data"));
+    std::env::set_var("SHELLX_CUT_HOME", tmp.path().join("state"));
+    std::env::set_var("PATH", &path_dir);
+    std::env::set_var("SHELLX_CUT_FFMPEG_AUTO", "0");
+    std::env::remove_var("SHELLX_CUT_FFMPEG");
+    std::env::remove_var("SHELLX_CUT_FFPROBE");
+    std::env::remove_var("SHELLX_CUT_FFMPEG_DIR");
+
+    let write_fake = |dir: &std::path::Path, stem: &str, log: Option<&std::path::Path>| {
+        let p = dir.join(stem);
+        let log_line = log
+            .map(|l| format!("echo \"{stem}:$*\" >> '{}'\n", l.display()))
+            .unwrap_or_default();
+        let script = format!(
+            "#!/bin/sh\n{log_line}case \"$*\" in\n  *-filters*) printf ' .. ass V->V x\\n .. vidstabtransform V->V x\\n .S zscale V->V x\\n';;\n  *-encoders*) printf ' V....D libx265 x\\n V....D libvpx-vp9 x\\n V....D libsvtav1 x\\n';;\n  *) echo '{stem} version 9.0.2-chosen-fixture';;\nesac\n"
+        );
+        std::fs::write(&p, script).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+
+    // Provide a fallback ffmpeg+ffprobe on PATH too, so we verify a deleted
+    // manual choice is NOT silently hidden by a fallback binary.
+    write_fake(&path_dir, "ffmpeg", Some(&calls_log));
+    write_fake(&path_dir, "ffprobe", Some(&calls_log));
+    let chosen_ffmpeg = write_fake(&custom_dir, "ffmpeg", Some(&calls_log));
+    let _chosen_ffprobe = write_fake(&custom_dir, "ffprobe", None);
+
+    let state = AppState::new();
+    // Cold start: system.set_ffmpeg before any system.doctor call updates the
+    // toolpath cache immediately and takes effect on the returned doctor report.
+    let cold_set = dispatch(
+        &state,
+        "system.set_ffmpeg",
+        json!({"path": chosen_ffmpeg}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        cold_set.ok,
+        "cold system.set_ffmpeg failed: {:?}",
+        cold_set.error
+    );
+    assert_eq!(
+        cold_set.result.as_ref().unwrap()["doctor"]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "ffmpeg")
+            .unwrap()["details"]["resolved"],
+        chosen_ffmpeg.display().to_string()
+    );
+
+    let clear_cold = dispatch(
+        &state,
+        "system.set_ffmpeg",
+        json!({"path": null}),
+        test_actor(),
+    )
+    .await;
+    assert!(clear_cold.ok, "{:?}", clear_cold.error);
+
+    // Simulate normal app startup having populated the doctor cache first.
+    let init_doc = dispatch(&state, "system.doctor", json!({}), test_actor()).await;
+    assert!(init_doc.ok, "{:?}", init_doc.error);
+
+    let set = dispatch(
+        &state,
+        "system.set_ffmpeg",
+        json!({"path": chosen_ffmpeg}),
+        test_actor(),
+    )
+    .await;
+    assert!(set.ok, "system.set_ffmpeg failed: {:?}", set.error);
+
+    // 1. Chosen path exists -> ready as today.
+    let before = dispatch(&state, "system.doctor", json!({}), test_actor()).await;
+    assert!(before.ok, "{:?}", before.error);
+    let before_rep = before.result.unwrap();
+    assert_eq!(before_rep["essential_ok"], true);
+    let before_ffmpeg = before_rep["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "ffmpeg")
+        .unwrap();
+    assert_eq!(before_ffmpeg["status"], "ok");
+    assert_eq!(before_ffmpeg["details"]["runnable"], true);
+    assert_eq!(
+        before_ffmpeg["details"]["resolved"],
+        chosen_ffmpeg.display().to_string()
+    );
+    assert_eq!(before_ffmpeg["details"]["selection"]["reason"], "chosen");
+
+    // 2. Remove the chosen FFmpeg file -> next cached read (NO refresh) notices
+    // without spawning any binary probe.
+    let mut events = state.events.subscribe();
+    std::fs::remove_file(&chosen_ffmpeg).unwrap();
+    let calls_before_read = std::fs::read_to_string(&calls_log)
+        .unwrap_or_default()
+        .lines()
+        .count();
+
+    let (after, concurrent_second) = tokio::join!(
+        dispatch(&state, "system.doctor", json!({}), test_actor()),
+        dispatch(&state, "system.doctor", json!({}), test_actor()),
+    );
+    assert!(after.ok, "{:?}", after.error);
+    assert!(concurrent_second.ok, "{:?}", concurrent_second.error);
+    let after_rep = after.result.unwrap();
+    let second_rep = concurrent_second.result.unwrap();
+    assert_eq!(
+        second_rep["essential_ok"], false,
+        "concurrent second doctor read must also see missing chosen ffmpeg"
+    );
+
+    let calls_after_read = std::fs::read_to_string(&calls_log)
+        .unwrap_or_default()
+        .lines()
+        .count();
+    assert_eq!(
+        calls_after_read, calls_before_read,
+        "cached system.doctor read must NOT probe binaries"
+    );
+
+    assert_eq!(
+        after_rep["essential_ok"], false,
+        "missing chosen ffmpeg must make essential_ok false: {after_rep}"
+    );
+    let after_ffmpeg = after_rep["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "ffmpeg")
+        .unwrap();
+    assert_eq!(after_ffmpeg["status"], "missing");
+    assert_eq!(after_ffmpeg["source"], "missing");
+    assert_eq!(after_ffmpeg["details"]["runnable"], false);
+    assert_eq!(after_ffmpeg["details"]["chosen_missing"], true);
+    let hint = after_ffmpeg["hint"].as_str().unwrap_or("");
+    assert!(
+        hint.contains(
+            "The chosen video tool file is missing; choose it again or use the app's own download"
+        ),
+        "unexpected person hint: {hint}"
+    );
+    let reason = after_ffmpeg["details"]["reason"].as_str().unwrap_or("");
+    assert!(!reason.is_empty(), "agent reason must be present");
+    let action = after_ffmpeg["details"]["action"]
+        .as_str()
+        .or_else(|| after_ffmpeg["details"]["suggested_action"].as_str())
+        .unwrap_or("");
+    assert!(
+        action.contains("system.set_ffmpeg"),
+        "agent action must name system.set_ffmpeg: {action}"
+    );
+
+    let req_ffmpeg = after_rep["requirements"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "ffmpeg")
+        .unwrap();
+    assert_eq!(req_ffmpeg["state"], "missing");
+    assert!(req_ffmpeg["reason"]
+        .as_str()
+        .unwrap_or("")
+        .contains("chosen video tool file is missing"));
+
+    let feature_check = dispatch(
+        &state,
+        "system.doctor",
+        json!({"feature": "render.final"}),
+        test_actor(),
+    )
+    .await;
+    assert_eq!(feature_check.result.unwrap()["can_run"], "no");
+
+    let gpu = after_rep["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "gpu-encode")
+        .unwrap();
+    assert_eq!(gpu["details"]["ffmpeg_missing"], true);
+    assert_eq!(
+        gpu["details"]["override_setting"],
+        chosen_ffmpeg.display().to_string()
+    );
+
+    // doctor_updated event fires on the transition.
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let crate::events::Event::DoctorUpdated { report } = events.recv().await.unwrap() {
+                break report;
+            }
+        }
+    })
+    .await
+    .expect("doctor_updated should fire when chosen ffmpeg goes missing");
+    assert!(!ev.essential_ok);
+
+    // A second cached read does not fire a duplicate event and stays missing without probing.
+    let second = dispatch(&state, "system.doctor", json!({}), test_actor()).await;
+    assert_eq!(second.result.unwrap()["essential_ok"], false);
+    assert!(
+        events.try_recv().is_err(),
+        "second cached read must not emit duplicate doctor_updated"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&calls_log)
+            .unwrap_or_default()
+            .lines()
+            .count(),
+        calls_before_read
+    );
+
+    // A full re-scan while the chosen file is still missing also reports it missing
+    // (must not silently fall back to PATH ffmpeg and say Ready).
+    let rescanned = dispatch(
+        &state,
+        "system.doctor",
+        json!({"refresh": true}),
+        test_actor(),
+    )
+    .await;
+    let rescan_rep = rescanned.result.unwrap();
+    assert_eq!(rescan_rep["essential_ok"], false);
+    let rescan_ffmpeg = rescan_rep["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "ffmpeg")
+        .unwrap();
+    assert_eq!(rescan_ffmpeg["status"], "missing");
+    assert_eq!(rescan_ffmpeg["details"]["chosen_missing"], true);
+
+    // Restoring the chosen file makes the next cached read notice and recover.
+    write_fake(&custom_dir, "ffmpeg", Some(&calls_log));
+    let restored = dispatch(&state, "system.doctor", json!({}), test_actor()).await;
+    let restored_rep = restored.result.unwrap();
+    assert_eq!(restored_rep["essential_ok"], true);
+    let restored_ffmpeg = restored_rep["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "ffmpeg")
+        .unwrap();
+    assert_eq!(restored_ffmpeg["status"], "ok");
+
+    // Replacing the chosen file with a directory is also treated as missing.
+    std::fs::remove_file(&chosen_ffmpeg).unwrap();
+    std::fs::create_dir_all(&chosen_ffmpeg).unwrap();
+    let dir_rep = dispatch(&state, "system.doctor", json!({}), test_actor())
+        .await
+        .result
+        .unwrap();
+    assert_eq!(dir_rep["essential_ok"], false);
+
+    // Restart while chosen FFmpeg is still missing (directory or deleted file):
+    // a cold AppState startup scan also reports chosen_missing instead of falling back.
+    let restarted = AppState::new();
+    let restarted_rep = dispatch(&restarted, "system.doctor", json!({}), test_actor())
+        .await
+        .result
+        .unwrap();
+    assert_eq!(restarted_rep["essential_ok"], false);
+    assert_eq!(
+        restarted_rep["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "ffmpeg")
+            .unwrap()["details"]["chosen_missing"],
+        true
+    );
+
+    std::fs::remove_dir_all(&chosen_ffmpeg).unwrap();
+
+    // Clearing the choice via system.set_ffmpeg {path: null} returns to automatic/PATH.
+    let cleared = dispatch(
+        &state,
+        "system.set_ffmpeg",
+        json!({"path": null}),
+        test_actor(),
+    )
+    .await;
+    assert!(cleared.ok, "{:?}", cleared.error);
+    let after_clear = dispatch(&state, "system.doctor", json!({}), test_actor())
+        .await
+        .result
+        .unwrap();
+    assert_eq!(after_clear["essential_ok"], true);
 }

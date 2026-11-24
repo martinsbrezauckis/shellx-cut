@@ -4,12 +4,12 @@
 //! path-fence helpers used by file-writing verbs. Dispatch remains the verb
 //! router and export/render handlers call this module for output resolution.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs::File,
-    io::Write,
     ops::Deref,
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use cut_core::{error_codes, CutError, VerbResult};
@@ -131,6 +131,7 @@ thread_local! {
     static SESSION_OUTPUT_DIR: std::cell::RefCell<TestFolderStore> =
         std::cell::RefCell::new(TestFolderStore::default());
 }
+#[cfg(test)]
 static OUTPUT_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
@@ -339,12 +340,11 @@ pub(crate) fn authorized_export_read_roots(project_dir: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// The render stages every export beside its final file and refuses a folder
-/// that EVERYONE can write to (any user could swap the staged file) unless it
-/// has the sticky bit; a folder only the group can write to is fine. The
-/// chosen-folder check applies the same rule through
-/// `cut_media::check_output_dir_policy`, so the folder is refused when it is
-/// chosen, in plain words, and not at the end of an export.
+/// The render stages exports privately first, then moves them into the final
+/// folder (or copies via a brief destination temp on cross-volume moves), and
+/// still refuses a folder that EVERYONE can write to unless its sticky bit is
+/// set; a folder only the group can write to is fine. The chosen-folder check
+/// applies the same rule through `cut_media::check_output_dir_policy`.
 fn shared_folder_refusal(error: CutError) -> CutError {
     if !error
         .message
@@ -360,7 +360,7 @@ fn shared_folder_refusal(error: CutError) -> CutError {
     CutError::new(
         error_codes::IO,
         format!("export folder can be written by anyone on this computer: {folder}"),
-        "exports are written through a staging file in the folder, and in a folder everyone can write to, any user on this computer could replace that file; a folder with the sticky bit set (like /tmp) is allowed",
+        "exports stage in a private user-only folder first, and a cross-volume export briefly places a verified copy in the folder; a folder everyone on this computer can write to without the sticky bit is refused",
     )
 }
 
@@ -738,20 +738,10 @@ fn output_directory_error(path: &Path, error: impl std::fmt::Display) -> CutErro
     )
 }
 
-fn atomic_write_tmp_path(path: &Path) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("export.out");
-    let n = OUTPUT_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), n))
-}
-
 /// Build a sibling temp path for renderers such as ffmpeg that infer the output
-/// container from the file extension. Unlike `atomic_write_tmp_path`, this keeps
-/// the final extension last: `.range_0_4000.<pid>.<n>.tmp.mp4`.
+/// container from the file extension. Retained for naming tests; production
+/// exports stage inside `cut_media::PrivateStageDir`.
+#[cfg(test)]
 pub(crate) fn temp_output_path_for_render(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = path
@@ -771,83 +761,18 @@ pub(crate) fn temp_output_path_for_render(path: &Path) -> PathBuf {
     parent.join(name)
 }
 
-/// Publish a completed sibling temp output to its final fenced path. The caller
-/// owns creating/flushing the temp file; this helper only does the final replace.
+/// Verify an already-written staged file and move it atomically into its
+/// parent-pinned destination directory without following links at the target or
+/// its ancestors.
 pub(crate) fn publish_output_atomic(tmp: &Path, path: &Path) -> Result<(), CutError> {
-    match std::fs::rename(tmp, path) {
-        Ok(()) => Ok(()),
-        Err(first_err) => {
-            // Windows does not replace an existing destination with rename().
-            // Re-check the path entry, remove only a file/symlink, then retry.
-            // Unix normally never reaches this branch for existing files.
-            let removable = std::fs::symlink_metadata(path)
-                .map(|m| m.file_type().is_file() || m.file_type().is_symlink())
-                .unwrap_or(false);
-            if removable {
-                if let Err(remove_err) = std::fs::remove_file(path) {
-                    let _ = std::fs::remove_file(tmp);
-                    return Err(CutError::new(
-                        error_codes::IO,
-                        format!("could not replace output {}", path.display()),
-                        format!("rename failed: {first_err}; remove failed: {remove_err}"),
-                    ));
-                }
-                if let Err(rename_err) = std::fs::rename(tmp, path) {
-                    let _ = std::fs::remove_file(tmp);
-                    return Err(CutError::new(
-                        error_codes::IO,
-                        format!("could not publish output {}", path.display()),
-                        rename_err.to_string(),
-                    ));
-                }
-                Ok(())
-            } else {
-                let _ = std::fs::remove_file(tmp);
-                Err(CutError::new(
-                    error_codes::IO,
-                    format!("could not publish output {}", path.display()),
-                    first_err.to_string(),
-                ))
-            }
-        }
-    }
+    cut_media::publish_staged_file(tmp, path, true)
 }
 
-/// Write a fenced export/sidecar file through a sibling temp file, then publish
-/// it with rename. This closes the late-symlink race left by a separate
-/// `fence_output_path()` validation followed by direct `std::fs::write()`: the
-/// final publish replaces a path entry instead of opening the final path for
-/// writing. Callers must pass a path already resolved by `fence_output_path`.
+/// Write a fenced export/sidecar file into Cut's private user-only staging
+/// directory, flush to disk, and publish atomically into its parent-pinned
+/// destination directory without following links at the target or ancestors.
 pub(crate) fn write_output_atomic(path: &Path, bytes: impl AsRef<[u8]>) -> Result<(), CutError> {
-    let tmp = atomic_write_tmp_path(path);
-    let mut file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&tmp)
-        .map_err(|e| {
-            CutError::new(
-                error_codes::IO,
-                format!("could not create temp output {}", tmp.display()),
-                e.to_string(),
-            )
-        })?;
-    file.write_all(bytes.as_ref()).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("could not write temp output {}", tmp.display()),
-            e.to_string(),
-        )
-    })?;
-    file.sync_all().map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("could not flush temp output {}", tmp.display()),
-            e.to_string(),
-        )
-    })?;
-    drop(file);
-
-    publish_output_atomic(&tmp, path)
+    cut_media::write_bytes_privately_and_publish(path, bytes.as_ref())
 }
 
 fn reserve_next_available_output_path(
@@ -1021,7 +946,7 @@ fn lock_named_lease(
             std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::StorageFull
         ) {
             let folder = lease_path.parent().unwrap_or(lease_path);
-            return cut_media::paths::output_folder_error(folder, &error);
+            return cut_media::folder_access::folder_error("output folder", folder, &error);
         }
         CutError::new(
             error_codes::IO,

@@ -54,61 +54,6 @@ pub struct PathFence {
     extra_roots: Vec<PathBuf>,
 }
 
-/// The output folder as the person typed it, without the Windows
-/// extended-length prefix.
-fn shown_folder(folder: &Path) -> String {
-    let text = folder.display().to_string();
-    text.strip_prefix(r"\\?\")
-        .map(str::to_string)
-        .unwrap_or(text)
-}
-
-/// Say what is really wrong with the folder a render or export should write
-/// into: missing, a file, full, or not writable. Access denied is never
-/// reported as "does not exist". Wording follows the recording lane's
-/// `folder_access::folder_error`; after both branches are merged the render
-/// path should call that helper and this function should be removed.
-pub fn output_folder_error(folder: &Path, error: &std::io::Error) -> CutError {
-    use std::io::ErrorKind;
-    let shown = shown_folder(folder);
-    match error.kind() {
-        ErrorKind::NotFound => CutError::new(
-            error_codes::NOT_FOUND,
-            format!("output folder not found: {shown}"),
-            error.to_string(),
-        )
-        .with_suggested_action("create the folder first, or choose an existing folder"),
-        ErrorKind::NotADirectory => CutError::new(
-            error_codes::INVALID_ARGS,
-            format!("output folder is a file, not a folder: {shown}"),
-            "an export cannot be written inside a file",
-        )
-        .with_suggested_action("choose a folder, or a different name for the output path"),
-        ErrorKind::PermissionDenied => CutError::new(
-            error_codes::IO,
-            format!("output folder cannot be written: {shown} (access is denied)"),
-            error.to_string(),
-        )
-        .with_suggested_action(
-            "choose a folder you can write to, or give your user account write access to this folder",
-        ),
-        ErrorKind::StorageFull => CutError::new(
-            error_codes::IO,
-            format!("output folder is full: {shown} (the disk has no free space)"),
-            error.to_string(),
-        )
-        .with_suggested_action("free up disk space, or choose a folder on another drive"),
-        _ => CutError::new(
-            error_codes::IO,
-            format!("output folder cannot be used: {shown}"),
-            error.to_string(),
-        )
-        .with_suggested_action(
-            "check that the folder is on a connected drive you can write to, or choose another folder",
-        ),
-    }
-}
-
 impl PathFence {
     /// Build a fence rooted at `project_dir`. Errors if the dir does not
     /// exist — a fence over a nonexistent root would canonicalize to nothing.
@@ -226,13 +171,14 @@ impl PathFence {
                 .chain(self.extra_roots.iter())
                 .any(|root| would_be.starts_with(root));
             if named_inside {
-                output_folder_error(parent, &e)
+                crate::folder_access::folder_error("output folder", parent, &e)
             } else {
                 self.outside_fence_error(&absolute)
             }
         })?;
         if !canonical_parent.is_dir() {
-            return Err(output_folder_error(
+            return Err(crate::folder_access::folder_error(
+                "output folder",
                 parent,
                 &std::io::Error::from(std::io::ErrorKind::NotADirectory),
             ));
@@ -523,7 +469,8 @@ mod tests {
     fn access_denied_and_full_disk_are_never_reported_as_missing() {
         use std::io::{Error, ErrorKind};
         let folder = Path::new(r"\\?\C:\work\readonly");
-        let denied = output_folder_error(
+        let denied = crate::folder_access::folder_error(
+            "output folder",
             folder,
             &Error::new(ErrorKind::PermissionDenied, "Access is denied."),
         );
@@ -534,7 +481,11 @@ mod tests {
         );
         assert!(denied.cause.contains("Access is denied"));
         assert!(!denied.suggested_action.unwrap().contains("create"));
-        let full = output_folder_error(folder, &Error::new(ErrorKind::StorageFull, "disk full"));
+        let full = crate::folder_access::folder_error(
+            "output folder",
+            folder,
+            &Error::new(ErrorKind::StorageFull, "disk full"),
+        );
         assert!(full.message.contains("is full"), "{}", full.message);
         assert!(full
             .suggested_action

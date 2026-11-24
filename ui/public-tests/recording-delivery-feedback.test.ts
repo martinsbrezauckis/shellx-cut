@@ -28,7 +28,7 @@ test('all human delivery verbs share persistent refusal feedback, but dry-run pl
     assert.equal(notices.length,routes.length,'internal preview audio is not a human export')
     globalThis.fetch = async () => new Response(JSON.stringify({ok:false,error:{code:'conflict',message:'Output is read-only.'}}))
     await callVerb('render.final',{})
-    assert.equal(notices.at(-1),'export failed: Output is read-only.')
+    assert.equal(notices.at(-1),'Export failed: the export folder is read-only. Choose a writable export folder, then try again.')
     assert.equal(reveals,routes.length)
     const noticeCount=notices.length
     let release!: (response: Response) => void

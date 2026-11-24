@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "shellx-cut://export-checks.schema.json",
+  "$ref": "#/$defs/ExportChecks",
+  "$defs": {
+    "ExportCheckAction": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "seek",
+            "open_tools",
+            "copy_details",
+            "command"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tool_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "verb": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "ExportCheckFinding": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "asset_id": {
+          "type": "string"
+        },
+        "clip_id": {
+          "type": "string"
+        },
+        "range_ms": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "evidence": {}
+      },
+      "required": [
+        "reason",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "ExportCheckProvider": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "installation_id": {
+          "type": "string"
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "missing",
+            "damaged",
+            "unknown"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_reason": {
+          "type": "string"
+        },
+        "attempted": {
+          "type": "boolean"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "finished_at": {
+          "type": "string"
+        },
+        "error": {}
+      },
+      "required": [
+        "id",
+        "configured",
+        "status",
+        "version",
+        "attempted"
+      ],
+      "additionalProperties": false
+    },
+    "ExportCheckCoverage": {
+      "type": "object",
+      "properties": {
+        "applicable_assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "measured_assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unchecked_assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "type": "string"
+              },
+              "provider_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "error": {}
+            },
+            "required": [
+              "provider_id",
+              "reason",
+              "error"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "applicable_assets",
+        "measured_assets",
+        "unchecked_assets",
+        "errors"
+      ],
+      "additionalProperties": false
+    },
+    "ExportCheckReportDetails": {
+      "type": "object",
+      "properties": {
+        "check_id": {
+          "type": "string"
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExportCheckProvider"
+          }
+        },
+        "error": {},
+        "app_version": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "at_op": {
+          "type": "string"
+        },
+        "render_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "check_id",
+        "providers",
+        "error",
+        "app_version",
+        "os",
+        "arch",
+        "at_op"
+      ],
+      "additionalProperties": false
+    },
+    "ExportCheckEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "when": {
+          "type": "string",
+          "enum": [
+            "before_export",
+            "finished_file",
+            "both"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "automatic",
+            "on_request"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "checked",
+            "found",
+            "not_checked",
+            "error",
+            "not_applicable"
+          ]
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "clear",
+            "finding",
+            "optional_tool_missing",
+            "not_run_yet",
+            "unknown_older_analysis",
+            "after_export",
+            "on_request",
+            "check_failed",
+            "not_applicable"
+          ]
+        },
+        "result": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "suggested_action": {
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/ExportCheckAction"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExportCheckFinding"
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/ExportCheckCoverage"
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExportCheckProvider"
+          }
+        },
+        "report_details": {
+          "$ref": "#/$defs/ExportCheckReportDetails"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "when",
+        "mode",
+        "state",
+        "reason_code",
+        "result",
+        "reason",
+        "suggested_action",
+        "findings",
+        "coverage",
+        "providers"
+      ],
+      "additionalProperties": false
+    },
+    "ExportChecks": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "type": "integer"
+        },
+        "catalog_version": {
+          "const": 1,
+          "type": "integer"
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "before_export",
+            "finished_file"
+          ]
+        },
+        "at_op": {
+          "type": "string"
+        },
+        "render_id": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExportCheckEntry"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "catalog_version",
+        "phase",
+        "at_op",
+        "entries"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

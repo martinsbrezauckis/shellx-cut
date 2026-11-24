@@ -18,6 +18,17 @@ pub(super) async fn dispatch(
     actor: Actor,
 ) -> VerbResult {
     match target {
+        DispatchTarget::ScreenRecordRenderCachePreview
+        | DispatchTarget::ScreenRecordRenderCacheRemove => {
+            crate::screen_record::render_cleanup::handle(
+                state,
+                args,
+                matches!(target, DispatchTarget::ScreenRecordRenderCacheRemove),
+                actor,
+            )
+            .await
+            .into()
+        }
         DispatchTarget::ScreenRecordCameraReset => {
             crate::screen_record::camera_look::reset(state, args, actor)
                 .await
@@ -27,6 +38,11 @@ pub(super) async fn dispatch(
             "take_link is internal to polish",
         ))
         .into(),
+        DispatchTarget::ScreenRecordMakeEditable => {
+            crate::screen_record::make_editable::handle(state, args, actor)
+                .await
+                .into()
+        }
         DispatchTarget::ScreenRecordTakeRefresh => {
             crate::screen_record::take_refresh_job::start(state, args, actor)
                 .await
@@ -55,7 +71,7 @@ pub(super) async fn dispatch(
         DispatchTarget::ScreenRecordSystemAudioProbe => system_audio_probe(args).await,
         DispatchTarget::ScreenRecordRehearsalStart => rehearsal_start(args).await,
         DispatchTarget::ScreenRecordRehearsalDiscard => rehearsal_discard(args).await,
-        DispatchTarget::ScreenRecordStart => start(state, args).await,
+        DispatchTarget::ScreenRecordStart => start(state, args, actor).await,
         DispatchTarget::ScreenRecordSceneActivate => scene_activate(state, args).await,
         DispatchTarget::ScreenRecordSceneTimer => scene_timer(state, args).await,
         DispatchTarget::ScreenRecordPause => pause(args).await,
@@ -127,8 +143,8 @@ pub(super) async fn rehearsal_discard(args: Value) -> VerbResult {
     crate::screen_record::rehearsal::discard(args).into()
 }
 
-pub(super) async fn start(state: &AppState, args: Value) -> VerbResult {
-    crate::screen_record::screen_record_start(state, args)
+pub(super) async fn start(state: &AppState, args: Value, actor: Actor) -> VerbResult {
+    crate::screen_record::screen_record_start_with_actor(state, args, actor)
         .await
         .into()
 }

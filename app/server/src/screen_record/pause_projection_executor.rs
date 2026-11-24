@@ -56,13 +56,14 @@ where
     let paths = output::OutputPaths::new(root, capture_id)?;
     let audio =
         PreparedPauseProjectionAudio::prepare(paths.capture_dir(), root, capture_id, journal)?;
-    let payloads = output::ProjectionPayloads::from_plan(&plan, &audio)?;
+    let existing_media = verified_existing_source(&paths, verifier);
+    let completed_payloads = output::ProjectionPayloads::from_plan(&plan, &audio, existing_media)?;
     let sources =
         artifacts::verify_sources(paths.capture_dir(), journal, plan.source_stitch(), verifier)?;
     if let Some(result) = output::completed(
         &paths,
         journal,
-        &payloads,
+        &completed_payloads,
         plan.source_stitch().duration_ms,
         &input_pins,
         audio.contract(),
@@ -80,6 +81,7 @@ where
         staged_media,
         plan.source_stitch().duration_ms,
     )?;
+    let payloads = output::ProjectionPayloads::from_plan(&plan, &audio, Some(staged_media))?;
     audio.publish(paths.capture_dir())?;
     output::publish(
         &paths,
@@ -133,7 +135,9 @@ where
     let paths = output::OutputPaths::new(root, capture_id)?;
     let audio =
         PreparedPauseProjectionAudio::prepare(paths.capture_dir(), root, capture_id, journal)?;
-    let payloads = output::ProjectionPayloads::from_plan(qualified.legacy(), &audio)?;
+    let existing_media = verified_existing_source(&paths, verifier);
+    let completed_payloads =
+        output::ProjectionPayloads::from_plan(qualified.legacy(), &audio, existing_media)?;
     let sources = artifacts::verify_sources(
         paths.capture_dir(),
         journal,
@@ -144,13 +148,16 @@ where
     if let Some(result) = output::completed(
         &paths,
         journal,
-        &payloads,
+        &completed_payloads,
         logical_duration_ms,
         &input_pins,
         audio.contract(),
     )? {
         audio.verify_published(paths.capture_dir())?;
-        let media = verifier.verify(paths.source())?;
+        let media = match existing_media {
+            Some(media) => media,
+            None => verifier.verify(paths.source())?,
+        };
         artifacts::validate_frame_grid_staged_source(
             paths.source(),
             media,
@@ -172,6 +179,8 @@ where
         staged_media,
         qualified.source_grid(),
     )?;
+    let payloads =
+        output::ProjectionPayloads::from_plan(qualified.legacy(), &audio, Some(staged_media))?;
     audio.publish(paths.capture_dir())?;
     output::publish(
         &paths,
@@ -182,6 +191,17 @@ where
         &input_pins,
         audio.contract(),
     )
+}
+
+fn verified_existing_source<V: PauseProjectionArtifactVerifier>(
+    paths: &output::OutputPaths<'_>,
+    verifier: &V,
+) -> Option<types::ProjectionMediaFacts> {
+    paths
+        .source()
+        .is_file()
+        .then(|| verifier.verify(paths.source()).ok())
+        .flatten()
 }
 
 fn journal_error(error: record_recovery::SessionJournalError) -> CutError {

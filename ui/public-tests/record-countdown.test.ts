@@ -46,7 +46,7 @@ assert.match(overlay, /onToggle\(\)/, 'overlay F9 uses the same stamped transpor
 assert.match(session, /if \(busyRef\.current \|\| captureRef\.current \|\| unknownStartRef\.current\) return/, 'a synchronous in-flight guard rejects duplicate Start')
 assert.match(session, /countdownGuardRef\.current\.handoff\(generation,[\s\S]*void start\(draft\)/, 'only the current countdown can hand off once')
 assert.match(session, /validateRecordingPreset\(preset, doctor\.result\)/, 'zero rechecks current source and device admission before native Start')
-assert.match(session, /sameProjectIdentity\(currentProject\.project_identity, projectRef\.current\?\.project_identity\)/, 'zero rejects a project change during admission')
+assert.match(session, /sameProjectIdentity\(initialProjectIdentity, projectRef\.current\?\.project_identity\)/, 'zero rejects a project change during admission')
 assert.match(panel, /if \(startAllowed === false\)/, 'the visible Start retains its source-admission guard')
 assert.match(panel, /data-cut-rec-starting-transport/, 'the UI visibly remains busy while the start request is pending')
 assert.match(session, /if \(countdownRef\.current !== null\) window\.clearInterval/, 'a zero-valued interval handle is cleaned up')

@@ -47,7 +47,10 @@ For new polished recordings, select the screen clip in Edit and use the Inspecto
 Zoom card to select, add or delete zooms and change strength, target, timing or
 speed. Redo automatic zooms keeps your own zooms. Update video applies the changes
 to the picture; playback keeps the previous zooms until the update finishes.
-Old recordings stay as they are.
+Earlier polished recordings (0.6.116–0.6.118) stay unchanged on open and can be
+turned into editable takes on demand via Zoom -> Make editable
+(`screen_record.make_editable`) when their recording files still exist; one Undo
+goes back and the original video stays.
 
 A separate camera track is on by default for new polished recordings. Select the
 Camera track clip for the Inspector Camera section: corner and centre presets,

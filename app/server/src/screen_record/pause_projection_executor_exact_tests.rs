@@ -238,3 +238,74 @@ fn publishes_only_after_strict_grid_output_proof_and_retries_idempotently() {
         b"strict compact source"
     );
 }
+
+#[test]
+fn frame_grid_projection_records_probed_media_cadence_and_roundtrips_through_private_capture_output(
+) {
+    let fixture = fixture();
+    let mut stager = StrictFakeStager::default();
+    let first = execute_frame_grid_pause_projection(
+        &fixture.root,
+        CAPTURE_ID,
+        &fixture.journal,
+        &fixture.event_runs,
+        &StrictFakeVerifier,
+        &mut stager,
+    )
+    .unwrap();
+    assert_eq!(first.execution, PauseProjectionExecution::Published);
+
+    let project_bytes = std::fs::read(fixture.capture.join("project.json")).unwrap();
+    let project: record_core::RecordingProject = serde_json::from_slice(&project_bytes).unwrap();
+    let probed = project
+        .capture_cadence
+        .as_ref()
+        .and_then(|cadence| cadence.probed_media.as_ref())
+        .expect(
+            "paused take project.json must record probed_media cadence so Result shows its length",
+        );
+    assert_eq!(probed.duration_ms, Some(200));
+    assert_eq!(probed.decoded_video_frames, Some(6));
+    assert_eq!(probed.avg_frame_rate, Some(rate()));
+    assert_eq!(probed.r_frame_rate, Some(rate()));
+
+    let capture_output = record_capture::CaptureOutput {
+        source_video: project.source_video.clone(),
+        events: project.events.clone(),
+        camera_artifact: None,
+        webcam_video: None,
+        audio: None,
+        microphone_outcome: record_capture::MicrophoneCaptureOutcome::NotRequested,
+        settings: project.settings,
+        capture_quality: None,
+        verified_media: Some(record_recovery::MediaFacts {
+            duration_ms: probed.duration_ms.unwrap(),
+            decoded_video_frames: probed.decoded_video_frames.unwrap(),
+            has_audio: false,
+            width: None,
+            height: None,
+            codec_name: None,
+            avg_frame_rate: probed.avg_frame_rate,
+            r_frame_rate: probed.r_frame_rate,
+        }),
+    };
+    let prepublished_check = capture_output
+        .into_project_with_capture_cadence(CaptureCadence::from_server_fps(30.0).unwrap());
+    assert_eq!(
+        serde_json::to_vec_pretty(&prepublished_check).unwrap(),
+        project_bytes,
+        "CaptureOutput round-trip must match prepublished project.json byte-for-byte"
+    );
+
+    let second = execute_frame_grid_pause_projection(
+        &fixture.root,
+        CAPTURE_ID,
+        &fixture.journal,
+        &fixture.event_runs,
+        &StrictFakeVerifier,
+        &mut stager,
+    )
+    .unwrap();
+    assert_eq!(second.execution, PauseProjectionExecution::AlreadyComplete);
+    assert_eq!(stager.calls, 1);
+}

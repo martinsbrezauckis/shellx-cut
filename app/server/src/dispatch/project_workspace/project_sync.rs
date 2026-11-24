@@ -67,7 +67,20 @@ pub(super) async fn project_ops(state: &AppState, args: Value) -> Result<VerbRes
     })))
 }
 
-pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+pub(super) async fn project_state(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+) -> Result<VerbResult, CutError> {
+    let result = project_state_inner(state, args).await?;
+    Ok(if crate::projects_index::is_ui_window_actor(&actor) {
+        crate::projects_index::with_rebuilt_notice_for(result, &actor)
+    } else {
+        result
+    })
+}
+
+async fn project_state_inner(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
     let args: StateArgs = parse_args(args)?;
     let limit = bounded_limit(args.limit)?;
     let guard = state.project.read().await;

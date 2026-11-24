@@ -8,10 +8,51 @@ use cut_core::VerbResult;
 /// Start a live, bounded or open-ended screen recording. A selected camera is
 /// an explicit Use-camera action; passive Doctor discovery never reaches the
 /// native camera owner.
+#[cfg(test)]
 pub(crate) async fn screen_record_start(
     state: &AppState,
     args: Value,
 ) -> Result<VerbResult, CutError> {
+    screen_record_start_with_actor(state, args, cut_core::Actor::system()).await
+}
+
+pub(crate) async fn screen_record_start_with_actor(
+    state: &AppState,
+    args: Value,
+    actor: cut_core::Actor,
+) -> Result<VerbResult, CutError> {
+    screen_record_start_inner(state, args, actor, None).await
+}
+
+#[cfg(not(test))]
+struct TestFallbackStartBehavior;
+
+#[cfg(test)]
+pub(crate) struct TestFallbackStartBehavior {
+    pub(crate) capture_result:
+        Box<dyn FnOnce(&std::path::Path, &std::path::Path) -> Result<(), CutError> + Send>,
+}
+
+#[cfg(test)]
+pub(crate) async fn screen_record_start_for_rollback_test(
+    state: &AppState,
+    args: Value,
+    actor: cut_core::Actor,
+    behavior: TestFallbackStartBehavior,
+) -> Result<VerbResult, CutError> {
+    screen_record_start_inner(state, args, actor, Some(behavior)).await
+}
+
+async fn screen_record_start_inner(
+    state: &AppState,
+    args: Value,
+    actor: cut_core::Actor,
+    test_behavior: Option<TestFallbackStartBehavior>,
+) -> Result<VerbResult, CutError> {
+    use super::created_project_rollback::{
+        refused_fallback_reply, running_take_failure_reply, FallbackProjectTransaction,
+        RollbackOutcome,
+    };
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
     struct Args {
@@ -44,40 +85,156 @@ pub(crate) async fn screen_record_start(
     };
     // Project replacement and native-capture admission share one linearization
     // order. Hold this before selecting the project directory and retain it
-    // through reservation/worker admission, so a switch cannot retarget a
-    // capture between snapshot and its native owner becoming visible.
+    // through reservation/worker/fallback admission, so a switch cannot retarget
+    // a capture between snapshot and its native owner becoming visible.
     let _project_transition = state.project_transition.lock().await;
-    start_project_identity::admit(state, a.expected_project_identity.as_ref()).await?;
+    let needs_fallback =
+        if a.expected_project_identity.is_some() || state.project.read().await.is_some() {
+            start_project_identity::admit(state, a.expected_project_identity.as_ref()).await?;
+            false
+        } else {
+            true
+        };
+    let finish_pre_creation_err = |error: CutError| -> Result<VerbResult, CutError> {
+        if needs_fallback {
+            Ok(refused_fallback_reply(error, RollbackOutcome::NotCreated))
+        } else {
+            Err(error)
+        }
+    };
+
     let duration_ms = a.duration_ms;
     let fps = a.fps.unwrap_or(30.0);
-    validate_capture_settings(duration_ms, fps)?;
+    if let Err(error) = validate_capture_settings(duration_ms, fps) {
+        return finish_pre_creation_err(error);
+    }
     // A completed rehearsal is process-local disposable media, never project
     // material.  Discard it before this ordinary start path creates recovery
     // state or reserves native devices.  A rehearsal still stopping reports a
     // clear conflict instead of racing two capture sessions.
-    rehearsal::discard_for_recording()?;
+    if let Err(error) = rehearsal::discard_for_recording() {
+        return finish_pre_creation_err(error);
+    }
     let quality_requested = a.quality.is_some();
-    let capture_quality = record_capture::admit_capture_quality(a.quality).map_err(record_err)?;
-    let cadence = cadence::from_server_fps(fps)?;
-    let (_project, _edl, dir, _at) = snapshot(state).await?;
+    let capture_quality = match record_capture::admit_capture_quality(a.quality).map_err(record_err)
+    {
+        Ok(quality) => quality,
+        Err(error) => return finish_pre_creation_err(error),
+    };
+    let cadence = match cadence::from_server_fps(fps) {
+        Ok(cadence) => cadence,
+        Err(error) => return finish_pre_creation_err(error),
+    };
     #[cfg(target_os = "linux")]
-    let microphone_source = microphone::source_for_recording_start_linux(a.audio, linux_readiness)?;
+    let microphone_source =
+        match microphone::source_for_recording_start_linux(a.audio, linux_readiness) {
+            Ok(source) => source,
+            Err(error) => return finish_pre_creation_err(error),
+        };
     #[cfg(not(target_os = "linux"))]
-    let microphone_source = microphone::source_for_recording_start(a.audio)?;
+    let microphone_source = match microphone::source_for_recording_start(a.audio) {
+        Ok(source) => source,
+        Err(error) => return finish_pre_creation_err(error),
+    };
     let recorder_doctor = doctor();
-    start_readiness::ensure_start_ready(&recorder_doctor.cards, a.keys)?;
-    let monitor_target = monitor_start_admission::admit(
+    #[cfg(not(test))]
+    let _ = test_behavior;
+    #[cfg(test)]
+    if let Some(custom_capture) = test_behavior {
+        let mut fallback_tx = if needs_fallback {
+            match FallbackProjectTransaction::create(actor) {
+                Ok(tx) => Some(tx),
+                Err(failure) => return Ok(failure.into_reply()),
+            }
+        } else {
+            None
+        };
+        let dir = if let Some(tx) = fallback_tx.as_ref() {
+            tx.project_dir_path().to_path_buf()
+        } else {
+            match snapshot(state).await {
+                Ok((_p, _e, dir, _at)) => dir,
+                Err(error) => return finish_pre_creation_err(error),
+            }
+        };
+        let capture_id = new_capture_id();
+        let out_dir = match create_capture_dir(&dir, &capture_id) {
+            Ok(out_dir) => {
+                if let Some(tx) = fallback_tx.as_mut() {
+                    tx.note_capture_dir_created(capture_id.clone());
+                }
+                out_dir
+            }
+            Err(error) => {
+                return if let Some(tx) = fallback_tx {
+                    let outcome = tx.rollback(state).await;
+                    Ok(refused_fallback_reply(error, outcome))
+                } else {
+                    Err(error)
+                };
+            }
+        };
+        if let Err(error) = recovery::begin(&out_dir, &capture_id, &cadence)
+            .and_then(|()| {
+                publish_marker(
+                    &dir,
+                    &capture_id,
+                    &serde_json::to_vec_pretty(&json!({"pid": std::process::id()}))
+                        .unwrap_or_default(),
+                )
+            })
+            .and_then(|_marker_path| (custom_capture.capture_result)(&dir, &out_dir))
+        {
+            return if let Some(tx) = fallback_tx {
+                let outcome = tx.rollback(state).await;
+                Ok(refused_fallback_reply(error, outcome))
+            } else {
+                let _ = std::fs::remove_dir_all(&out_dir);
+                Err(error)
+            };
+        }
+        let mut payload = json!({
+            "capture_id": capture_id,
+            "out_dir": out_dir,
+            "status": "recording",
+            "duration_ms": duration_ms,
+            "open_ended": duration_ms.is_none(),
+            "cadence": cadence,
+        });
+        if let Some(tx) = fallback_tx {
+            let committed = match tx.commit_after_start_success(state).await {
+                Ok(committed) => committed,
+                Err(error) => {
+                    return Ok(running_take_failure_reply(error, &capture_id, duration_ms))
+                }
+            };
+            payload["created_project"] = json!(true);
+            payload["project_name"] = json!(committed.name);
+            payload["project_identity"] = committed.identity;
+        }
+        return Ok(VerbResult::ok(payload));
+    }
+
+    if let Err(error) = start_readiness::ensure_start_ready(&recorder_doctor.cards, a.keys) {
+        return finish_pre_creation_err(error);
+    }
+    let monitor_target = match monitor_start_admission::admit(
         a.monitor,
         a.monitor_id.as_deref(),
         a.window.is_some(),
         &recorder_doctor.monitors,
-    )?;
-    monitor_start_admission::admit_window(
+    ) {
+        Ok(target) => target,
+        Err(error) => return finish_pre_creation_err(error),
+    };
+    if let Err(error) = monitor_start_admission::admit_window(
         a.window.as_deref(),
         recorder_doctor.window_capture_supported,
         &recorder_doctor.windows,
-    )?;
-    let pause_enabled = recording_controls::admit_public_start(
+    ) {
+        return finish_pre_creation_err(error);
+    }
+    let pause_enabled = match recording_controls::admit_public_start(
         a.pause,
         fps,
         quality_requested,
@@ -86,33 +243,112 @@ pub(crate) async fn screen_record_start(
         a.window.is_some(),
         a.camera_id.is_some(),
         a.scenes.is_some(),
-    )?;
+    ) {
+        Ok(enabled) => enabled,
+        Err(error) => return finish_pre_creation_err(error),
+    };
     if let Some(camera_id) = a.camera_id.as_deref() {
-        camera_public::admit_selected(camera_id)?;
+        if let Err(error) = camera_public::admit_selected(camera_id) {
+            return finish_pre_creation_err(error);
+        }
     }
     let recording_scene_camera_admitted = a.camera_id.is_some();
-    let recording_scene_snapshot = (!pause_enabled)
+    let recording_scene_snapshot = match (!pause_enabled)
         .then(|| recording_scenes::admit_start_config(a.scenes, recording_scene_camera_admitted))
-        .transpose()?;
+        .transpose()
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => return finish_pre_creation_err(error),
+    };
     let recording_scene_start = recording_scene_snapshot
         .as_ref()
         .map(recording_scenes::start_projection);
 
-    video_encoder_readiness::admit(record_capture::VideoEncoderRequest {
+    if let Err(error) = video_encoder_readiness::admit(record_capture::VideoEncoderRequest {
         fps,
         monitor: monitor_target.legacy_index,
         monitor_id: monitor_target.exact_id.clone(),
         window: a.window.clone(),
-    })?;
+    }) {
+        return finish_pre_creation_err(error);
+    }
+
+    let mut fallback_tx = if needs_fallback {
+        match FallbackProjectTransaction::create(actor) {
+            Ok(tx) => Some(tx),
+            Err(failure) => return Ok(failure.into_reply()),
+        }
+    } else {
+        None
+    };
+    let dir = if let Some(tx) = fallback_tx.as_ref() {
+        tx.project_dir_path().to_path_buf()
+    } else {
+        match snapshot(state).await {
+            Ok((_project, _edl, dir, _at)) => dir,
+            Err(error) => return finish_pre_creation_err(error),
+        }
+    };
 
     let capture_id = new_capture_id();
-    windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
+    if let Err(error) = windows_path::ensure_pre_marker_path(&dir, &capture_id) {
+        return if let Some(tx) = fallback_tx {
+            let outcome = tx.rollback(state).await;
+            Ok(refused_fallback_reply(error, outcome))
+        } else {
+            Err(error)
+        };
+    }
     // Earlier interrupted captures are prepared in the background; a new
     // recording never waits for that work.
-    let recovery_job = recovery::background::start(state, &dir)?;
-    let out_dir = create_capture_dir(&dir, &capture_id)?;
-    recovery::begin(&out_dir, &capture_id, &cadence)?;
-    let project_path = capture_file(&dir, &capture_id, "project.json")?;
+    let recovery_job = match recovery::background::start(state, &dir) {
+        Ok(job) => job,
+        Err(error) => {
+            return if let Some(tx) = fallback_tx {
+                let outcome = tx.rollback(state).await;
+                Ok(refused_fallback_reply(error, outcome))
+            } else {
+                Err(error)
+            };
+        }
+    };
+    let out_dir = match create_capture_dir(&dir, &capture_id) {
+        Ok(out_dir) => {
+            if let Some(tx) = fallback_tx.as_mut() {
+                tx.note_capture_dir_created(capture_id.clone());
+            }
+            out_dir
+        }
+        Err(error) => {
+            return if let Some(tx) = fallback_tx {
+                let outcome = tx.rollback(state).await;
+                Ok(refused_fallback_reply(error, outcome))
+            } else {
+                Err(error)
+            };
+        }
+    };
+    if let Err(error) = recovery::begin(&out_dir, &capture_id, &cadence) {
+        return if let Some(tx) = fallback_tx {
+            let outcome = tx.rollback(state).await;
+            Ok(refused_fallback_reply(error, outcome))
+        } else {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            Err(error)
+        };
+    }
+    let project_path = match capture_file(&dir, &capture_id, "project.json") {
+        Ok(path) => path,
+        Err(error) => {
+            return if let Some(tx) = fallback_tx {
+                let outcome = tx.rollback(state).await;
+                Ok(refused_fallback_reply(error, outcome))
+            } else {
+                let _ = std::fs::remove_dir_all(&out_dir);
+                Err(error)
+            };
+        }
+    };
     let marker_body = json!({
         "pid": std::process::id(),
         "duration_ms": duration_ms,
@@ -128,11 +364,19 @@ pub(crate) async fn screen_record_start(
         "scenes": recording_scene_start.clone(),
         "pause": pause_enabled.then(|| json!({ "mode": "enabled" })),
     });
-    publish_marker(
+    if let Err(error) = publish_marker(
         &dir,
         &capture_id,
         &serde_json::to_vec_pretty(&marker_body).unwrap_or_default(),
-    )?;
+    ) {
+        return if let Some(tx) = fallback_tx {
+            let outcome = tx.rollback(state).await;
+            Ok(refused_fallback_reply(error, outcome))
+        } else {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            Err(error)
+        };
+    }
 
     let record_log = out_dir.join("record.log");
     let start_result = if pause_enabled {
@@ -181,11 +425,16 @@ pub(crate) async fn screen_record_start(
         )
     };
     if let Err(error) = start_result {
-        let _ = std::fs::remove_dir_all(&out_dir);
-        return Err(error);
+        return if let Some(tx) = fallback_tx {
+            let outcome = tx.rollback(state).await;
+            Ok(refused_fallback_reply(error, outcome))
+        } else {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            Err(error)
+        };
     }
 
-    Ok(VerbResult::ok(json!({
+    let mut payload = json!({
         "capture_id": capture_id,
         "out_dir": out_dir,
         "status": "recording",
@@ -201,7 +450,18 @@ pub(crate) async fn screen_record_start(
         } else {
             "capture runs up to duration_ms (or until screen_record.stop). The platform may show its one-time screen or camera permission prompt on the desktop."
         },
-    })))
+    });
+    if let Some(tx) = fallback_tx {
+        let committed = match tx.commit_after_start_success(state).await {
+            Ok(committed) => committed,
+            Err(error) => return Ok(running_take_failure_reply(error, &capture_id, duration_ms)),
+        };
+        payload["created_project"] = json!(true);
+        payload["project_name"] = json!(committed.name);
+        payload["project_identity"] = committed.identity;
+    }
+
+    Ok(VerbResult::ok(payload))
 }
 
 /// `screen_record.status{capture_id}` — report only the live first-frame

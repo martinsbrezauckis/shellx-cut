@@ -95,7 +95,7 @@ mod tests {
     fn the_cuda_graph_uses_the_software_trims_rates_and_frame_locks() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("src.mp4");
-        std::fs::write(&src, b"").unwrap();
+        super::super::tests::graph_fixture(&src);
         let p = project(&src);
         let edl = edl_from_project(&p);
         let dir = tmp.path();

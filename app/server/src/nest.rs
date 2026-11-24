@@ -103,7 +103,7 @@ fn sub_project(parent: &Project, nest: &Nest) -> Project {
 /// tag changes iff the bake would change, so a warm cache is always safe to reuse.
 fn nest_cache_tag(sub: &Project, edl: &Edl) -> String {
     let mut h = Sha256::new();
-    h.update(b"window-time-v3-published-rect");
+    h.update(b"source-rect-v4");
     h.update(serde_json::to_vec(&sub.settings).unwrap_or_default());
     // Clip transforms live outside the EDL. Whole records include every look
     // field and keyframe, including fields introduced by future renderers.

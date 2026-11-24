@@ -40,9 +40,18 @@ fn record_path(segment: &Path) -> Option<PathBuf> {
     Some(index_dir()?.join(format!("{:x}", h.finalize())))
 }
 
+// Counts file hashes on this test thread: a test asserts that a candidate
+// without an engine record is never read.
+#[cfg(test)]
+thread_local! {
+    static HASH_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// SHA-256 of the file's bytes, read without following a link at the name
 /// (the caller has already refused links via `plain_internal_file_exists`).
 fn content_hash(path: &Path) -> Option<String> {
+    #[cfg(test)]
+    HASH_READS.with(|n| n.set(n.get() + 1));
     let mut file = std::fs::File::open(path).ok()?;
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
@@ -100,7 +109,15 @@ pub fn trusted_hash(path: &Path, sha256_hex: &str) -> bool {
 
 /// True when the cached window is one this engine wrote and is unchanged.
 pub fn trusted(segment: &Path) -> bool {
-    recorded(segment).is_some_and(|(hash, current, _)| hash == current)
+    trusted_up_to(segment, MAX_HASHED_BYTES)
+}
+
+/// The most this module reads to check one derived file (64 GiB): a file
+/// larger than anything the engine writes is encoded again, never hashed.
+const MAX_HASHED_BYTES: u64 = 64 << 30;
+
+fn trusted_up_to(segment: &Path, max_bytes: u64) -> bool {
+    recorded(segment, max_bytes).is_some_and(|(hash, current, _)| hash == current)
 }
 
 /// [`remember`] bound to what the file was made FOR (an asset id and its
@@ -120,7 +137,7 @@ pub fn forget(file: &Path) {
 
 /// True when this engine made the file for exactly `binding` and it is unchanged.
 pub fn trusted_bound(file: &Path, binding: &str) -> bool {
-    recorded(file).is_some_and(|(hash, current, bound)| {
+    recorded(file, MAX_HASHED_BYTES).is_some_and(|(hash, current, bound)| {
         hash == current && bound.as_deref() == Some(binding_digest(binding).as_str())
     })
 }
@@ -178,10 +195,15 @@ fn source_stat(source: &Path) -> Option<String> {
     Some(format!("stat:{}:{modified}", meta.len()))
 }
 
-/// (recorded hash, current hash, recorded binding digest).
-fn recorded(file: &Path) -> Option<(String, String, Option<String>)> {
-    let (record, current) = (record_path(file)?, content_hash(file)?);
-    let text = std::fs::read_to_string(record).ok()?;
+/// (recorded hash, current hash, recorded binding digest). The engine's record
+/// is read FIRST: a file nobody recorded (a planted one of any size) is never
+/// read, and neither is one above `max_bytes`.
+fn recorded(file: &Path, max_bytes: u64) -> Option<(String, String, Option<String>)> {
+    let text = std::fs::read_to_string(record_path(file)?).ok()?;
+    if std::fs::metadata(file).ok()?.len() > max_bytes {
+        return None;
+    }
+    let current = content_hash(file)?;
     let mut lines = text.lines();
     let hash = lines.next()?.trim().to_string();
     let bound = lines.next().map(|line| line.trim().to_string());
@@ -284,5 +306,35 @@ mod tests {
             std::os::unix::fs::symlink(&proxy, &link).unwrap();
             assert!(!trusted_bound(&link, "proxy a1 sha256:aa"));
         }
+    }
+
+    #[test]
+    fn a_file_without_an_engine_record_is_never_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let planted = dir.path().join("sha256_planted_v.mp4");
+        std::fs::write(&planted, vec![7u8; 4 << 20]).unwrap();
+        let before = HASH_READS.with(|n| n.get());
+        assert!(!trusted(&planted));
+        assert_eq!(
+            HASH_READS.with(|n| n.get()),
+            before,
+            "no record means no content read"
+        );
+    }
+
+    #[test]
+    fn a_recorded_file_above_the_size_bound_is_not_read_and_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("sha256_big_v.mp4");
+        std::fs::write(&big, vec![1u8; 4096]).unwrap();
+        remember(&big);
+        assert!(trusted_up_to(&big, 4096), "at the bound it is checked");
+        let before = HASH_READS.with(|n| n.get());
+        assert!(!trusted_up_to(&big, 4095));
+        assert_eq!(
+            HASH_READS.with(|n| n.get()),
+            before,
+            "over the bound: no read"
+        );
     }
 }

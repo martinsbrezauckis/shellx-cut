@@ -112,28 +112,31 @@ pub(crate) fn mux_raw_sources(
             ]);
         }
     }
-    cmd.arg(out);
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    let control = record_render::ffmpeg::ProcessControl::bounded(
-        std::time::Duration::from_secs(30 * 60),
-        || false,
-    );
-    let output = record_render::ffmpeg::command_output_with_control(
-        &mut cmd,
-        &control,
-        "raw mux ffmpeg spawn",
-    )
-    .map_err(super::record_err)?;
-    if !output.status.success() {
-        let tail = String::from_utf8_lossy(&output.stderr);
-        let last = tail.lines().last().unwrap_or("ffmpeg failed").to_string();
-        return Err(CutError::new(
-            error_codes::FFMPEG,
-            format!("raw mux failed: {last}"),
-            "ffmpeg combine of the raw recording's sound sources failed",
-        ));
-    }
+    cut_media::stage_and_publish(out, false, |staged_out| {
+        cmd.arg(staged_out);
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let control = record_render::ffmpeg::ProcessControl::bounded(
+            std::time::Duration::from_secs(30 * 60),
+            || false,
+        );
+        let output = record_render::ffmpeg::command_output_with_control(
+            &mut cmd,
+            &control,
+            "raw mux ffmpeg spawn",
+        )
+        .map_err(super::record_err)?;
+        if !output.status.success() {
+            let tail = String::from_utf8_lossy(&output.stderr);
+            let last = tail.lines().last().unwrap_or("ffmpeg failed").to_string();
+            return Err(CutError::new(
+                error_codes::FFMPEG,
+                format!("raw mux failed: {last}"),
+                "ffmpeg combine of the raw recording's sound sources failed",
+            ));
+        }
+        Ok(())
+    })?;
     Ok(())
 }

@@ -68,12 +68,12 @@ Example: "FFmpeg is missing. It is free software under the GNU GPL version 3
 (https://www.gnu.org/licenses/gpl-3.0.html). May I download it and accept that
 licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
 
-<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
-> **Engine v0.6.121 published.** v0.6.121 is the latest published release.
+<!-- shellx-cut-release-truth: published; version=0.6.122; published=0.6.122 -->
+> **Engine v0.6.122 published.** v0.6.122 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **326 verbs across 34 domains** under the public verb contract.
-> **`reference.md` is the full 326-verb table —
+> the file): **333 verbs across 34 domains** under the public verb contract.
+> **`reference.md` is the full 333-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -682,9 +682,10 @@ licence?"; on yes, `system.fetch_tool {"tool":"ffmpeg","accept_license":true}`.
     reports subject-in-frame %, the device it analyzed on, and that reframe is a
     LOSSY crop. Prefer this when the framing should track a person/subject.
   - **`render.final{aspect:"9:16"}`** (or `"1:1"`/`"4:5"`/explicit `width`+`height`,
-    defaults `fit:cover`) is the STATIC centre-crop — deterministic, no analysis,
-    byte-identical replay. Use it when you want an exact fixed geometry and don't
-    need subject tracking. `render.final{dry_run:true}` returns the plan (geometry,
+    defaults `fit:contain`) keeps the whole picture with bars, matching preview.
+    Pass `fit:cover` for a STATIC centre-crop without subject tracking.
+    Rectangle camera overlays keep their source aspect and saved width in both
+    preview and export, without internal bars or crop; circles stay square. `render.final{dry_run:true}` returns the plan (geometry,
     duration, checks) before a slow encode. Text deliverables: `export.vtt` (web
   captions), `export.chapters` (YouTube/podcast markers — pair with
   `edit.mark_scenes`), `export.transcript` (readable script of the final cut,
@@ -771,7 +772,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 326 tools, and same-engine
+the final proof of protocol negotiation, ping, all 333 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -816,7 +817,7 @@ read `GET /api/verbs` and correct the JSON value/type rather than retrying with
 string coercions. Handler semantic checks still run after structural validation.
 
 Live events: WebSocket `GET /api/events` →
-`{type: op_applied | job_progress | render_done | receipt_ready | project_changed | ui_state | doctor_updated | output_folder_changed, ...}`. `job_progress` carries `{job_id, kind, progress, message?, terminal?}`: `terminal:true` marks the event that ENDS the job (done, failed or cancelled), and an ended job keeps the progress it really reached, because progress 1.0 means finished work. Decide that a job ended from `terminal` or the job's `state`, never from the progress value. `op_applied` additionally carries `{revision, from_revision, delta:{kind:"op",count:1}}`; treat events as best effort and pull `project.state{since_revision:last_applied}`. The server returns a bounded applicable delta or an explicit snapshot fallback, so reconnects and missed frames do not require replaying an unbounded log.
+`{type: op_applied | job_progress | render_done | receipt_ready | project_changed | ui_state | doctor_updated | output_folder_changed | chat_updated, ...}`. `job_progress` carries `{job_id, kind, progress, message?, terminal?}`: `terminal:true` marks the event that ENDS the job (done, failed or cancelled), and an ended job keeps the progress it really reached, because progress 1.0 means finished work. Decide that a job ended from `terminal` or the job's `state`, never from the progress value. `op_applied` additionally carries `{revision, from_revision, delta:{kind:"op",count:1}}`; treat events as best effort and pull `project.state{since_revision:last_applied}`. The server returns a bounded applicable delta or an explicit snapshot fallback, so reconnects and missed frames do not require replaying an unbounded log.
 `project_changed` means a REST, CLI, MCP, or UI client created, opened, or
 closed the active project; visible clients refresh their workspace from it.
 After a reconnect, `project.state` returning `no_project` is authoritative
@@ -828,6 +829,14 @@ setup guidance instead of polling stale tool/runtime state.
 Prefer subscribing to events over tight polling.
 
 ## Operational environment
+
+All video export kinds, including range, GIF, direct, reframe and bundle, check
+memory before encoding and return `out_of_memory` with a cause and suggested
+action when the plan cannot fit. Read `resources` for estimates, warnings and
+any slower encoder-thread choice; GIF/reframe also report `post_pass`, and bundle
+reports each delivery separately. macOS keeps final export's physical-memory
+ceiling. The renderer measures source kind, size and colour from the actual file,
+not received project metadata, including on reopen and after a file changes.
 
 Runtime knobs (env vars on the `cutd` process — not verb args). Sensible
 defaults; you rarely set these, but know they exist when a render is slow, a
@@ -1324,19 +1333,28 @@ the same notice; `export.frame` refuses a still beyond the limit. A variable-fra
 (`probe.variable_frame_rate`, `probe.nominal_fps`) gives the timeline its
 nominal standard rate (a phone's 60, not its 58.59 average), and renders place
 its frames by their real timestamps.
-Colour: every export is SDR BT.709 processed in 8 bits. `render.final` (plan,
-job result and receipt) carries `encode.color` = `{output, processing_bit_depth,
-file_bit_depth, sources:[{asset, file, transfer, bit_depth, handling}], note?}`;
-an HDR source (transfer `arib-std-b67` HLG or `smpte2084` PQ) has handling
-`tone_mapped_to_sdr` and the file is tagged BT.709. Keeping HDR in the export is
-not available. The conversion runs before grades and effects. An SD source
-tagged BT.601 (`smpte170m`/`bt470bg`) is converted to BT.709 too (handling
-`converted_bt601_to_bt709`). The tone map needs ffmpeg's zscale (zimg); without
-it every verb that composes the picture (render.final/queue/bundle/direct/
-reframe/preview, export.range/gif/frame/publish, verify.scopes, render.frame and
-render.storyboard with `compose:true`) refuses up front with `tool_missing`
-naming the HDR clips (tagging a clip `rec709` with `edit.color_space` exports it
-unconverted, handling `hdr_tagged_not_converted`). Relay `note` to the person.
+Colour: default exports are SDR BT.709 processed in 8 bits, while
+`color:"keep_hdr"` exports 10-bit `yuv420p10le` BT.2020 (HLG `arib-std-b67` or
+PQ `smpte2084` taken from the first active timeline HDR clip; defaults to `hevc`
+Main 10 and also supports `av1` 10-bit). `render.final` (and `render.queue`,
+across plan, job result and receipt) carries `encode.color` = `{output,
+transfer?, processing_bit_depth, file_bit_depth, hdr10_metadata?,
+sources:[{asset, file, transfer, bit_depth, handling}], note?}`. In SDR exports
+(`color:"sdr"`, default), an HDR source has handling `tone_mapped_to_sdr` and the
+file is tagged BT.709; in `keep_hdr`, matching HDR sources keep native transfer
+(`kept_hdr`), mismatched HDR clips convert via `zscale` (`converted_hdr_transfer`),
+SDR clips place at 203 nits BT.2408 (`sdr_to_hdr`), PQ HDR10 mastering-display /
+MaxCLL static metadata is carried when present, and clips with SDR-only grades or
+effects (`grade`, `grade_stack`, `grade_window`, `vignette`, `sepia`, `auto_color`,
+`posterize`) run in SDR and convert back (`hdr_graded_in_sdr`) while naming
+affected clips in `note`. Incompatible formats (`h264`, `vp9`, `prores`),
+SDR-only timelines, missing `zscale`, or missing 10-bit encoders are refused up
+front with the reason and way forward. An SD source tagged BT.601 (`smpte170m`/
+`bt470bg`) is converted to BT.709 too (handling `converted_bt601_to_bt709`).
+The preview stays tone-mapped SDR, and without zscale every verb that composes
+an HDR picture refuses up front with `tool_missing` naming the HDR clips
+(tagging a clip `rec709` with `edit.color_space` exports it unconverted,
+handling `hdr_tagged_not_converted`). Relay `note` to the person.
 An older project with an odd size (e.g. 641x361) cannot be exported as video
 at that size: `render.final` (and its dry run) at the project size,
 `render.queue` entries without their own size, `render.direct`,
@@ -1415,6 +1433,19 @@ manual article `cut.export.preflight`; it does not open the preflight UI or
 start output. The stable online manual remains available while the compiled
 real-frontend manual is staged separately for interactive review.
 
+`verify.pregate` and the finished receipt (`verify.checks`) also carry
+`export_checks`: every check Cut knows with its state. `checked` ran and found
+nothing; `found` has the finding and, when it has a place, a `seek` action;
+`not_checked` is a quiet suggestion (`optional_tool_missing`: the optional
+captions tools are not installed, action `open_tools`; `not_run_yet` or
+`unknown_older_analysis`: nothing measured this yet, action `command` runs the one
+check that does, e.g. `media.perception {asset}`; `after_export`: waits for the
+file; `on_request`: runs only when asked); `error` (`check_failed`) is a check or
+tool that failed, with its raw error and a `copy_details` text a person can send
+when reporting it; `not_applicable` says why. A state never changes `pass`, `risks`
+or `outcome`, and nothing refuses an export because of it: show the person what
+was not checked and why, and let them choose.
+
 Results land in the project: word-level timestamps (`receipts/<asset>.words.json`)
 and instrument facts — silence, scenes, beats, loudness, and `content_bbox`
 (`receipts/<asset>.perception.json`).
@@ -1460,7 +1491,10 @@ reverse. Do not copy that mapping into clients.
 | `screen_record.zoom_update` | `{clip,id,target?:"pointer",start_ms?,end_ms?,scale?,cx?,cy?,ramp_in_ms?,ramp_out_ms?}` | `{segment,stale}`; pins manual |
 | `screen_record.zoom_remove` | `{clip,id? or ids?}` | `{removed,stale}` |
 | `screen_record.zoom_auto` | `{clip,keep_manual?=true,config?}` | `{segments,stale}`; autoedit config, keeps manual segments |
-| `screen_record.take_refresh` | `{clip}` | `{job_id,clip,asset,baked,cached,applied_plan}`; initial asset may be null, poll jobs.status |
+| `screen_record.make_editable` | `{clip,rationale?}` | `{clip,take,stale,segments,camera_clip,camera_asset}`; explicit opt-in for 0.6.116–0.6.118 polished recordings when capture files exist (one Undo reverts) |
+| `screen_record.take_refresh` | `{clip}` | `{job_id,clip,asset,baked,cached,applied_plan,earlier_render?}`; initial asset may be null, poll jobs.status (`earlier_render` reports `{status,bytes?,reason?,message}`) |
+| `screen_record.render_cache_preview` | `{}` | `{files:[{name,bytes,size_is_recorded?,reason,removable}],bytes,plan_id,removable_files,legacy:{files,bytes,reveal_asset,reason}}` — list old recording renders (project-relative names, never absolute paths) and older or unrecorded files before removal; a render recorded for another project at the same folder is kept |
+| `screen_record.render_cache_remove` | `{plan_id,confirm:true}` | `{results:[{status,bytes?,reason?,message}],warning?}` — remove only the independently owned unreferenced renders in the previewed `plan_id` |
 | `screen_record.take_link` | Internal only | Polish provenance op; direct calls refuse |
 
 For zoom_add send EXACTLY ONE of recording `at_ms` or absolute project
@@ -1493,9 +1527,17 @@ over one frame, then swaps the source behind EVERY split/trimmed take clip witho
 resetting trim, timing, speed/ramp/freeze/reverse, effects, transform or fades.
 For a missing old file the duration reference is its stored probe; otherwise the
 old file is probed if present, then recording plan/source duration is the fallback.
-A cached target also repairs a missing current asset reference. Earlier renders
-stay in the project's recording cache until the cache is cleared. An unchanged
-take reuses the original plan bytes and cache filename.
+A cached target also repairs a missing current asset reference. After a new render
+is verified complete, `screen_record.take_refresh` KEEPS the previous render
+and its asset, so `project.undo` right after Update video plays the earlier
+picture at once and `project.redo` the new one, like any other undo. The
+reply says so (`earlier_render.status` `"kept"`, `earlier_render.message`:
+`"Earlier video kept so Undo brings it back at once. To remove older recording videos, open Settings > Old recording renders."`).
+Older recording videos that no clip uses are listed with their size and removed
+only when the person confirms, under Settings > Old recording renders
+(`screen_record.render_cache_preview` / `screen_record.render_cache_remove` for
+confirmed owned cleanup). An unchanged take reuses the original plan bytes and
+cache filename.
 
 `render.final` refuses stale takes with **Update video first** unless the caller
 explicitly passes `allow_stale_recordings:true` to export the old baked picture.
@@ -2100,7 +2142,7 @@ omit the field: missing means unknown, never unsupported. Do not query recorder 
 | Color management in FFmpeg (zimg) `ffmpeg_zimg` | Project color management (optional); Preview frames, comparisons, timeline contact sheets and scopes (optional); Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); a complete FFmpeg build is needed; the steps are in system.doctor's ffmpeg card, details.setup |
 | Faster exports (GPU encoder) `gpu_encoder` | Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); needs a supported graphics card, its driver and an FFmpeg built with its encoder; the steps are in system.doctor's gpu-encode card, details.enable_help |
 | GPU render path (CUDA) `cuda_render` | Export and render (optional) | `system.set_ffmpeg`; Choose ffmpeg (`ui.open {panel:"settings-video-performance"}`); needs an NVIDIA GPU with its driver and an FFmpeg with CUDA filters |
-| Captions and transcription `captions_runtime` | Transcription; Silences, scenes, beats and loudness; Translation of captions and transcripts; Speaker labels; Dubbing; Motion tracking and the visual search index; Smart reframe and directed cuts; Output checks; Import and relink media (optional); Redaction (blur or cover a region, faces, text) (optional); Visual search (optional); Export and render (optional) | `system.setup_perception`; Install captions (`ui.open {panel:"settings-ai-transcription"}`); a download of several hundred MB that needs no Python of the person's own. On macOS and Linux it needs no administrator permission; on Windows Microsoft's Visual C++ runtime must be installed first (its own Install in the same Settings page), and Windows asks for administrator permission for that step |
+| Captions and transcription `captions_runtime` | Transcription; Silences, scenes, beats and loudness; Translation of captions and transcripts; Speaker labels; Dubbing; Motion tracking and the visual search index; Smart reframe and directed cuts; Output checks; Import and relink media (optional); Redaction (blur or cover a region, faces, text) (optional); Visual search (optional); Export and render (optional) | `system.setup_perception`; Install captions (`ui.open {panel:"settings-ai-transcription"}`); a download of several hundred MB that needs no Python of the person's own. On macOS and Linux it needs no administrator permission; on Windows Microsoft's Visual C++ runtime must be installed first (its own Install in the same Settings page), and Windows asks for administrator permission for that step. Tools that were already set up but could not run need repair; read the original reason in the tools report instead of treating them as a missing optional install |
 | Speech-to-text model `speech_model` | Transcription | `system.setup_perception`; Install captions (`ui.open {panel:"settings-ai-transcription"}`); comes with Install captions; system.set_stt_model chooses the model |
 | Microsoft Visual C++ Redistributable `vc_runtime` (windows) | Transcription; Silences, scenes, beats and loudness; Motion tracking and the visual search index; Smart reframe and directed cuts; Setup and environment | `system.fetch_tool {"tool":"vc-runtime"}`; Install (`ui.open {panel:"settings-ai-transcription"}`); Microsoft's own installer from Microsoft (aka.ms/vc14), checked for Microsoft's signature; Windows asks for administrator permission; or install it from https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist; licence: Microsoft Software License Terms for the Microsoft Visual C++ Redistributable (https://aka.ms/VCRedistLicense) |
 | Background removal `matte_runtime` | Remove background | `system.setup_matte`; Install (`ui.open {panel:"settings-ai-transcription"}`) |
@@ -2111,7 +2153,7 @@ omit the field: missing means unknown, never unsupported. Do not query recorder 
 | Dubbing service `dub_service` | Dubbing | start the dubbing service and set its address (CUT_DUB_ENDPOINT); see system.doctor's dub card |
 | Speaker labelling service `diarize_service` | Speaker labels | start the speaker labelling service and set its address (CUT_DIARIZE_ENDPOINT); see system.doctor's diarize card |
 | ShellX Motion `motion_runtime` | ShellX Motion templates and tracking | `system.motion_status`; ShellX Motion is installed separately |
-| An open project `open_project` | Project, sequences, history and timeline edits; Project color management; Import and relink media; Transcription; Silences, scenes, beats and loudness; Edits from the analysis (scenes, beats, silences, emphasis, speaker energy); Word edits, transcript search, chapters and generated captions; Translation of captions and transcripts; Speaker labels; Dubbing; Motion tracking and the visual search index; Redaction (blur or cover a region, faces, text); Visual search; Remove background; Color match, auto balance and multicam audio sync; Stabilize; Titles, shapes and Generate templates on the timeline; Generate templates, previews and plans; Preview frames, comparisons, timeline contact sheets and scopes; Export and render; Smart reframe and directed cuts; Output checks; Render review; Stock media and b-roll; ShellX Motion templates and tracking; Screen recording; Recording results and recovery; Voiceover | `project.open`; open or create a project (project.open {path} or project.create {name}) |
+| An open project `open_project` | Project, sequences, history and timeline edits; Project color management; Import and relink media; Transcription; Silences, scenes, beats and loudness; Edits from the analysis (scenes, beats, silences, emphasis, speaker energy); Word edits, transcript search, chapters and generated captions; Translation of captions and transcripts; Speaker labels; Dubbing; Motion tracking and the visual search index; Redaction (blur or cover a region, faces, text); Visual search; Remove background; Color match, auto balance and multicam audio sync; Stabilize; Titles, shapes and Generate templates on the timeline; Generate templates, previews and plans; Preview frames, comparisons, timeline contact sheets and scopes; Export and render; Smart reframe and directed cuts; Output checks; Render review; Agent Chat conversation history; Stock media and b-roll; ShellX Motion templates and tracking; Screen recording; Recording results and recovery; Voiceover | `project.open`; open or create a project (project.open {path} or project.create {name}) |
 | A usable export folder `export_folder` | Export and render; Recording results and recovery | `project.set_output_dir`; choose another export folder, or clear the choice to use the project's exports folder |
 | Free disk space `disk_space` | Setup and environment; Export and render (optional) | `project.cache_purge`; free space on the drive; Settings > Health & recovery can preview and remove Cut's aged cache files (Preview cache cleanup) |
 | A transcript of the asset `transcript` | Word edits, transcript search, chapters and generated captions; Translation of captions and transcripts; Dubbing; Output checks | `media.transcribe`; a transcript is made after a clip is imported while Captions and transcription is installed. A person can select a clip and use Transcript Tools > Transcribe clip or Transcribe again. Repeating transcription replaces the previous transcript after confirmation in the app. |

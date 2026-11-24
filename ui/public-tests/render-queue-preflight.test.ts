@@ -5,8 +5,10 @@ import { fileURLToPath } from 'node:url'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PregateReport } from '../src/lib/client'
-import PreflightWarning from '../src/topbar/PreflightWarning'
-import { resourceRisks, runVideoPreflightAction, withResourceRisks } from '../src/topbar/videoPreflight'
+import { register } from 'node:module'
+register('./lib/css-module-loader.mjs', import.meta.url)
+const { default: PreflightWarning } = await import('../src/topbar/PreflightWarning')
+const { resourceRisks, runVideoPreflightAction, withResourceRisks } = await import('../src/topbar/videoPreflight')
 
 const here = dirname(fileURLToPath(import.meta.url))
 const topbar = readFileSync(resolve(here, '../src/topbar/index.tsx'), 'utf8')

@@ -19,18 +19,24 @@ use cut_core::{Actor, ActorKind};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
+mod resources;
 mod self_test;
 pub(crate) use self_test::run as self_test;
 
 /// Protocol version we advertise (matches the office-suite implementation era).
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_TOOLS_LIST_BYTES: usize = 384 * 1024;
-// Keep tools/list below the client ceiling as the public registry grows. The
-// tool name, argument names, types, enums, required fields, and output schema
-// remain intact; only explanatory prose is compacted for the list response.
-const MAX_TOOL_DESCRIPTION_CHARS: usize = 400;
-const MAX_TOOL_RESULT_DESCRIPTION_CHARS: usize = 180;
-const MAX_INPUT_SCHEMA_DESCRIPTION_CHARS: usize = 80;
+#[cfg(test)]
+const TARGET_TOOLS_LIST_PERCENT: usize = 80;
+// Keep tools/list well below the client ceiling as the public registry grows.
+// Tool names, argument names, types, enums, required fields, shared mutation
+// constraints, and inline outputSchemas remain intact; long prose lives in
+// skill/reference docs and the MCP resources (`shellx-cut://verbs`,
+// `shellx-cut://verb/{name}`).
+const MAX_TOOL_DESCRIPTION_CHARS: usize = 120;
+const MAX_TOOL_RESULT_DESCRIPTION_CHARS: usize = 55;
+const MAX_INPUT_SCHEMA_DESCRIPTION_CHARS: usize = 50;
+const MAX_DEPRECATED_SCHEMA_DESCRIPTION_CHARS: usize = 35;
 const SHARED_MUTATION_CONTROL_NAMES: [&str; 2] = ["request_id", "expected_revision"];
 
 /// How tools/call executes a verb (the public single-state-holder contract: one state holder).
@@ -70,133 +76,247 @@ pub async fn run_stdio(state: AppState, mode: McpMode) -> anyhow::Result<()> {
             }
         };
         let id = msg.get("id").cloned();
-        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
         // Notifications (no id) get no reply per JSON-RPC 2.0.
         let Some(id) = id else { continue };
-        let reply = match method {
-            "initialize" => {
-                // ECHO the client's requested protocolVersion when it sends one
-                // (MCP version negotiation): a modern client (e.g. Claude Code,
-                // which requests 2025-06-18) can drop a server that answers with
-                // an OLDER hardcoded version it didn't ask for — the server then
-                // shows as "connecting" and exposes no tools. Falling back to our
-                // own MCP_PROTOCOL_VERSION when the client omits it keeps older
-                // clients working. cutd is
-                // returning 2024-11-05, so the agent-chat MCP handshake hung.)
-                let pv = msg
-                    .get("params")
-                    .and_then(|p| p.get("protocolVersion"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(MCP_PROTOCOL_VERSION);
-                rpc_result(
-                    id,
-                    json!({
-                        "protocolVersion": pv,
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "shellx-cut", "version": env!("CARGO_PKG_VERSION")}
-                    }),
-                )
-            }
-            "ping" => rpc_result(id, json!({})),
-            "tools/list" => rpc_result(
-                id,
-                json!({"tools": list_tools_for_agent_environment(&state)}),
-            ),
-            "tools/call" => {
-                let params = msg.get("params").cloned().unwrap_or(Value::Null);
-                let tool = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match state.registry.verb_for_tool(tool) {
-                    None => rpc_error(id, -32602, &format!("unknown tool '{tool}'")),
-                    Some(spec) => {
-                        let verb_name = spec.name.clone();
-                        if denied_by_restricted_mcp_policy(
-                            spec,
-                            crate::chat::capabilities::active_broker_environment(),
-                        ) {
-                            // A contained agent must not regain a dangerous Cut
-                            // capability merely by guessing its generated tool
-                            // name. Return an ordinary MCP tool error so the
-                            // agent sees an actionable, typed rejection.
-                            rpc_result(id, denied_agent_chat_tool_call(&verb_name))
-                        } else {
-                            // Envelope JSON regardless of execution path; isError
-                            // mirrors envelope.ok so clients can branch.
-                            let envelope_json = match mode {
-                                McpMode::Proxy => {
-                                    match crate::httpc::post_verb(&verb_name, &args) {
-                                        Ok(v) => v,
-                                        // Server unreachable → actionable envelope, not
-                                        // a protocol error (agents read envelopes).
-                                        Err(e) => json!({"ok": false, "error": e}),
-                                    }
-                                }
-                                McpMode::Standalone => {
-                                    let actor = Actor {
-                                        kind: ActorKind::Agent,
-                                        name: "mcp-client".into(),
-                                        via: "mcp".into(),
-                                        request: None,
-                                    };
-                                    serde_json::to_value(
-                                        dispatch(&state, &verb_name, args, actor).await,
-                                    )
-                                    .unwrap_or_default()
-                                }
-                            };
-                            rpc_result(id, tool_call_result(envelope_json))
-                        }
-                    }
-                }
-            }
-            other => rpc_error(id, -32601, &format!("method '{other}' not found")),
+        let restricted_mcp = crate::chat::capabilities::active_broker_environment();
+        let reply = match handle_sync_method(&state, mode, &msg, restricted_mcp) {
+            Some(reply) => reply,
+            None => handle_tools_call(&state, mode, id, &msg, restricted_mcp).await,
         };
         write_msg(&mut out, &reply)?;
     }
     Ok(())
 }
 
+/// Handle synchronous, read-only JSON-RPC MCP methods (`initialize`, `ping`,
+/// `tools/list`, `resources/list`, `resources/templates/list`, `resources/read`).
+/// Returns `None` for `tools/call`, which dispatches asynchronously.
+pub(super) fn handle_sync_method(
+    state: &AppState,
+    _mode: McpMode,
+    msg: &Value,
+    restricted_mcp: bool,
+) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    match method {
+        "initialize" => {
+            // ECHO the client's requested protocolVersion when it sends one
+            // (MCP version negotiation): a modern client (e.g. Claude Code,
+            // which requests 2025-06-18) can drop a server that answers with
+            // an OLDER hardcoded version it didn't ask for — the server then
+            // shows as "connecting" and exposes no tools. Falling back to our
+            // own MCP_PROTOCOL_VERSION when the client omits it keeps older
+            // clients working.
+            let pv = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or(MCP_PROTOCOL_VERSION);
+            Some(rpc_result(
+                id,
+                json!({
+                    "protocolVersion": pv,
+                    "capabilities": {"tools": {}, "resources": {}},
+                    "serverInfo": {"name": "shellx-cut", "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": resources::INITIALIZE_INSTRUCTIONS,
+                }),
+            ))
+        }
+        "ping" => Some(rpc_result(id, json!({}))),
+        "tools/list" => Some(rpc_result(
+            id,
+            json!({"tools": list_tools_for_mcp_environment(state, restricted_mcp)}),
+        )),
+        "resources/list" => Some(rpc_result(id, resources::list_resources(restricted_mcp))),
+        "resources/templates/list" => Some(rpc_result(id, resources::list_resource_templates())),
+        "resources/read" => {
+            let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+                return Some(rpc_error(
+                    id,
+                    -32602,
+                    "invalid params: expected string 'uri'",
+                ));
+            };
+            match resources::read_resource(state, uri, restricted_mcp) {
+                Ok(res) => Some(rpc_result(id, res)),
+                Err((code, message)) => Some(rpc_error(id, code, &message)),
+            }
+        }
+        "tools/call" => None,
+        other => Some(rpc_error(
+            id,
+            -32601,
+            &format!("method '{other}' not found"),
+        )),
+    }
+}
+
+async fn handle_tools_call(
+    state: &AppState,
+    mode: McpMode,
+    id: Value,
+    msg: &Value,
+    restricted_mcp: bool,
+) -> Value {
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let tool = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    match state.registry.verb_for_tool(tool) {
+        None => rpc_error(id, -32602, &format!("unknown tool '{tool}'")),
+        Some(spec) => {
+            let verb_name = spec.name.clone();
+            if denied_by_restricted_mcp_policy(spec, restricted_mcp) {
+                // A contained agent must not regain a dangerous Cut
+                // capability merely by guessing its generated tool
+                // name. Return an ordinary MCP tool error so the
+                // agent sees an actionable, typed rejection.
+                rpc_result(id, denied_agent_chat_tool_call(&verb_name))
+            } else {
+                // Envelope JSON regardless of execution path; isError
+                // mirrors envelope.ok so clients can branch.
+                let envelope_json = match mode {
+                    McpMode::Proxy => match crate::httpc::post_verb(&verb_name, &args) {
+                        Ok(v) => v,
+                        // Server unreachable → actionable envelope, not
+                        // a protocol error (agents read envelopes).
+                        Err(e) => json!({"ok": false, "error": e}),
+                    },
+                    McpMode::Standalone => {
+                        let actor = Actor {
+                            kind: ActorKind::Agent,
+                            name: "mcp-client".into(),
+                            via: "mcp".into(),
+                            request: None,
+                        };
+                        serde_json::to_value(dispatch(state, &verb_name, args, actor).await)
+                            .unwrap_or_default()
+                    }
+                };
+                rpc_result(id, tool_call_result(envelope_json))
+            }
+        }
+    }
+}
+
+fn is_abbreviation_dot(s: &str, dot_byte: usize) -> bool {
+    let before = &s[..=dot_byte];
+    ["e.g.", "i.e.", "etc.", "vs."].iter().any(|abbr| {
+        if before.len() < abbr.len() {
+            return false;
+        }
+        let start = before.len() - abbr.len();
+        before.is_char_boundary(start)
+            && before[start..].eq_ignore_ascii_case(abbr)
+            && (start == 0
+                || before[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| !ch.is_alphanumeric()))
+    })
+}
+
+fn first_sentence_break(s: &str) -> Option<usize> {
+    for (idx, _) in s.match_indices(". ") {
+        if !is_abbreviation_dot(s, idx) {
+            return Some(idx + 1);
+        }
+    }
+    None
+}
+
+fn last_sentence_break(s: &str, min_bytes: usize) -> Option<usize> {
+    for (idx, _) in s.rmatch_indices(". ") {
+        if idx >= min_bytes && !is_abbreviation_dot(s, idx) {
+            return Some(idx + 1);
+        }
+    }
+    None
+}
+
 /// Trim a long verb description to a concise MCP tool description at a sentence/
-/// word boundary (char-safe). The full prose lives in verbs.json / the registry;
-/// the MCP `tools/list` only needs enough for the agent to pick the tool (name +
-/// args schema carry the rest). cutd's full
-/// descriptions made the 168-tool `tools/list` ~234 KB, and Claude Code's stdio
-/// MCP transport reported "Connected · tools fetch failed" on it (the agent-chat
-/// MCP handshake then exposed no tools). Concise descriptions cut it to a size
-/// the client accepts, with no loss the agent can't recover from the schema.
+/// word boundary (char-safe). The full prose lives in verbs.json / MCP resources
+/// (`shellx-cut://verbs`, `shellx-cut://verb/{name}`) and `skill/shellx-cut/`.
 fn concise(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
-    let truncated: String = s.chars().take(max).collect();
-    let cut = truncated
-        .rfind(". ")
-        .map(|i| i + 1)
+    let limit = max.saturating_sub(1);
+    let end_byte = s
+        .char_indices()
+        .nth(limit)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let truncated = &s[..end_byte];
+    let cut = last_sentence_break(truncated, 12)
         .or_else(|| truncated.rfind(' '))
         .unwrap_or(truncated.len());
     format!("{}…", truncated[..cut].trim_end())
+}
+
+fn summarize_tool_description(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if let Some(end) = first_sentence_break(s) {
+        let first = &s[..end];
+        if (24..=max).contains(&first.chars().count()) {
+            return first.to_string();
+        }
+    }
+    concise(s, max)
+}
+
+fn summarize_result_shape(s: &str, max: usize) -> String {
+    let base = s.split(" — ").next().unwrap_or(s);
+    concise(base, max)
+}
+
+fn summarize_arg_description(s: &str, max: usize, deprecated: bool) -> String {
+    if deprecated {
+        return concise(s, MAX_DEPRECATED_SCHEMA_DESCRIPTION_CHARS);
+    }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if let Some(end) = first_sentence_break(s) {
+        let first = &s[..end];
+        if (20..=max).contains(&first.chars().count()) {
+            return first.to_string();
+        }
+    }
+    if let Some(semi) = s.find("; ") {
+        let clause = &s[..semi];
+        if (20..=max).contains(&clause.chars().count()) {
+            return clause.to_string();
+        }
+    }
+    concise(s, max)
 }
 
 /// Recursively trim every `description` string inside a JSON Schema to `max`
 /// chars (char-safe), preserving structure (types, enums, required, items,
 /// nesting). Keeps the args schema USABLE (the agent still sees arg names,
 /// types, enums, and which are required) while cutting the `tools/list` payload
-/// to a size stdio MCP clients accept (see [`concise`] / the fix).
+/// to a size stdio MCP clients accept.
 fn trim_schema_descriptions(v: &Value, max: usize) -> Value {
     match v {
         Value::Object(map) => {
+            let deprecated = map.get("deprecated").and_then(Value::as_bool) == Some(true);
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, val) in map {
                 if k == "description" && val.is_string() {
-                    // max == 0 → DROP the nested arg-description entirely (the
-                    // arg name + type + enum + required already tell the agent
-                    // how to call it, and verb errors guide the rest); a positive
-                    // max truncates instead. This is what brings tools/list under
-                    // the stdio client's size ceiling.
                     if max == 0 {
                         continue;
                     }
-                    out.insert(k.clone(), json!(concise(val.as_str().unwrap_or(""), max)));
+                    out.insert(
+                        k.clone(),
+                        json!(summarize_arg_description(
+                            val.as_str().unwrap_or(""),
+                            max,
+                            deprecated
+                        )),
+                    );
                     continue;
                 }
                 out.insert(k.clone(), trim_schema_descriptions(val, max));
@@ -241,9 +361,9 @@ fn json_contains_ref(v: &Value) -> bool {
 }
 
 /// Generate the MCP tool list from the registry (public verb contract: "MCP tools are
-/// generated from it"). The description is the verb's purpose (concise) + the
-/// success shape so agents know it without a second lookup; arg-schema prose is
-/// trimmed so the whole `tools/list` stays within stdio MCP client limits.
+/// generated from it"). The description is a concise purpose summary (+ shape
+/// when no inline `outputSchema` is attached); full docs live in MCP resources
+/// and `skill/shellx-cut/`.
 pub fn list_tools(state: &AppState) -> Vec<Value> {
     list_tools_matching(state, |_| true)
 }
@@ -254,13 +374,6 @@ pub(crate) fn list_agent_chat_tools(state: &AppState) -> Vec<Value> {
     list_tools_matching(state, crate::chat::capabilities::allows)
 }
 
-fn list_tools_for_agent_environment(state: &AppState) -> Vec<Value> {
-    list_tools_for_mcp_environment(
-        state,
-        crate::chat::capabilities::active_broker_environment(),
-    )
-}
-
 fn list_tools_for_mcp_environment(state: &AppState, restricted_mcp: bool) -> Vec<Value> {
     if restricted_mcp {
         list_agent_chat_tools(state)
@@ -269,7 +382,10 @@ fn list_tools_for_mcp_environment(state: &AppState, restricted_mcp: bool) -> Vec
     }
 }
 
-fn denied_by_restricted_mcp_policy(spec: &crate::registry::VerbSpec, restricted_mcp: bool) -> bool {
+pub(super) fn denied_by_restricted_mcp_policy(
+    spec: &crate::registry::VerbSpec,
+    restricted_mcp: bool,
+) -> bool {
     restricted_mcp && !crate::chat::capabilities::allows(spec)
 }
 
@@ -283,13 +399,20 @@ where
         .iter()
         .filter(|v| include(v))
         .map(|v| {
+            let inline_output_schema = v.result_schema.as_ref().filter(|rs| !json_contains_ref(rs));
+            let summary = summarize_tool_description(&v.description, MAX_TOOL_DESCRIPTION_CHARS);
+            let description = if inline_output_schema.is_some() {
+                summary
+            } else {
+                format!(
+                    "{} Returns: {}",
+                    summary,
+                    summarize_result_shape(&v.result, MAX_TOOL_RESULT_DESCRIPTION_CHARS),
+                )
+            };
             let mut tool = json!({
                 "name": VerbRegistry::mcp_tool_name(&v.name),
-                "description": format!(
-                    "{} Returns: {}",
-                    concise(&v.description, MAX_TOOL_DESCRIPTION_CHARS),
-                    concise(&v.result, MAX_TOOL_RESULT_DESCRIPTION_CHARS),
-                ),
+                "description": description,
                 "inputSchema": compact_mcp_input_schema(&v.args),
             });
             // Forward the machine-readable result contract as MCP outputSchema
@@ -299,10 +422,8 @@ where
             // Claude Code rejects the ENTIRE tools/list on it ("Connected · tools
             // fetch failed"), which silently broke agent.chat. Inline schemas are
             // fine.
-            if let Some(rs) = &v.result_schema {
-                if !json_contains_ref(rs) {
-                    tool["outputSchema"] = rs.clone();
-                }
+            if let Some(rs) = inline_output_schema {
+                tool["outputSchema"] = rs.clone();
             }
             tool
         })
@@ -386,6 +507,33 @@ mod tests {
         assert!(
             bytes <= MAX_TOOLS_LIST_BYTES,
             "MCP tools/list reply is {bytes} bytes; supported client budget is {MAX_TOOLS_LIST_BYTES}"
+        );
+    }
+
+    #[test]
+    fn tools_list_reply_stays_under_eighty_percent_of_budget() {
+        let state = AppState::new();
+        let reply = rpc_result(json!(3), json!({"tools": list_tools(&state)}));
+        let bytes = reply.to_string().len();
+        let pct = (bytes as f64 / MAX_TOOLS_LIST_BYTES as f64) * 100.0;
+        println!("MCP tools/list budget usage: {bytes}/{MAX_TOOLS_LIST_BYTES} bytes ({pct:.2}%)");
+        assert!(
+            bytes * 100 < MAX_TOOLS_LIST_BYTES * TARGET_TOOLS_LIST_PERCENT,
+            "MCP tools/list reply is {bytes} bytes ({pct:.2}% of {MAX_TOOLS_LIST_BYTES}); target is under {TARGET_TOOLS_LIST_PERCENT}%"
+        );
+    }
+
+    #[test]
+    fn render_final_tool_summary_leads_with_full_render() {
+        let state = AppState::new();
+        let tool = list_tools(&state)
+            .into_iter()
+            .find(|tool| tool["name"] == "render_final")
+            .expect("render.final must be exposed through MCP");
+        let desc = tool["description"].as_str().unwrap_or("");
+        assert!(
+            desc.starts_with("Full render"),
+            "render_final summary must lead with what it does, got: {desc}"
         );
     }
 
@@ -574,5 +722,34 @@ mod tests {
         let env = json!({"ok": false, "error": {"code": "no_project", "message": "x"}});
         let r = tool_call_result(env);
         assert_eq!(r["isError"], json!(true));
+    }
+
+    #[test]
+    fn summarizer_handles_abbreviations_and_multibyte_boundaries_cleanly() {
+        let sample = "List workflows (e.g. podcast-repurpose, screen-demo) across the open project. Detailed notes continue.";
+        let summarized = summarize_tool_description(sample, 100);
+        assert_eq!(
+            summarized,
+            "List workflows (e.g. podcast-repurpose, screen-demo) across the open project."
+        );
+        let utf8 =
+            "Trim clip — keep first boundary cleanly at 0–100 ms (e.g. fade, zoom) without panic.";
+        assert!(concise(utf8, 45).ends_with('…'));
+    }
+
+    #[test]
+    fn agent_chat_tools_and_all_summaries_stay_bounded_and_non_empty() {
+        let state = AppState::new();
+        let chat_reply = rpc_result(json!(3), json!({"tools": list_agent_chat_tools(&state)}));
+        let chat_bytes = chat_reply.to_string().len();
+        assert!(chat_bytes * 100 < MAX_TOOLS_LIST_BYTES * 40);
+        for tool in list_tools(&state) {
+            let desc = tool["description"].as_str().unwrap_or("");
+            assert!(
+                desc.chars().count() >= 20,
+                "{} summary unexpectedly short: {desc}",
+                tool["name"]
+            );
+        }
     }
 }

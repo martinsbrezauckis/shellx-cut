@@ -2086,6 +2086,8 @@ pub struct MediaClip {
     /// replaying byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nest: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<crate::clip_markers::ClipMarker>,
 }
 
 impl MediaClip {
@@ -3906,35 +3908,9 @@ mod speed_tests {
 
     /// Local test constructor (edit::make_media_clip is in another module).
     fn make_media_clip_speed(id: &str, asset: &str, si: u64, so: u64, speed: f64) -> MediaClip {
-        MediaClip {
-            id: id.into(),
-            asset: asset.into(),
-            src_in_ms: si,
-            src_out_ms: so,
-            effects: vec![],
-            gain_db: 0.0,
-            transform: None,
-            crop: None,
-            fade: None,
-            xfade_in_ms: 0,
-            xfade_kind: None,
-            speed,
-            grade: None,
-            matte: None,
-            mask: None,
-            reverse: false,
-            freeze: None,
-            animation: None,
-            keyframes: vec![],
-            eq: None,
-            mute_ranges: vec![],
-            stabilize: None,
-            speed_ramp: None,
-            input_color_space: None,
-            nest: None,
-            grade_stack: vec![],
-            grade_windows: vec![],
-        }
+        let mut c = crate::edit::make_media_clip(id, asset, si, so);
+        c.speed = speed;
+        c
     }
 
     /// Build a SpeedRamp from `(at_ms, factor)` pairs with a given segment count.

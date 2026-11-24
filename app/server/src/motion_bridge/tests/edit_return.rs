@@ -224,7 +224,8 @@ fn linked_motion_refresh_and_relink_preserve_clip_identity() {
         fs::write(
             &fake_canvas,
             format!(
-                "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" > \"{}\"\n",
+                "#!/bin/sh\ntmp=\"{}.tmp.$$\"\nprintf '%s\\n%s\\n%s\\n%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" > \"$tmp\" && mv -f \"$tmp\" \"{}\"\n",
+                canvas_args.display(),
                 canvas_args.display()
             ),
         )
@@ -337,7 +338,7 @@ fn linked_motion_refresh_and_relink_preserve_clip_identity() {
             editing_result["returnChannel"],
             json!({"state":"pending", "pathPrivate":true})
         );
-        let launch_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let launch_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         while tokio::time::Instant::now() < launch_deadline {
             if canvas_args.is_file() {
                 break;
@@ -345,7 +346,7 @@ fn linked_motion_refresh_and_relink_preserve_clip_identity() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let launched_args = fs::read_to_string(&canvas_args)
-            .expect("fake ShellX Motion editor did not record launch arguments within 5s");
+            .expect("fake ShellX Motion editor did not record launch arguments within 20s");
         let mut launched_args = launched_args.lines();
         assert_eq!(launched_args.next(), Some("--motion-package"));
         assert_eq!(

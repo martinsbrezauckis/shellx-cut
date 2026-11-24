@@ -36,7 +36,7 @@ import {
   // ── review / qc / agent ──
   MessageSquare, ListChecks, BadgeCheck, GitCompare, ReceiptText, Bot,
   // ── status / feedback ──
-  Check, X, CircleCheck, CircleAlert, TriangleAlert, Info, Loader,
+  Check, X, CircleCheck, CircleAlert, CircleX, TriangleAlert, Info, Loader,
   // ── ui chrome / nav ──
   Plus, Minus, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   ChevronsLeft, ChevronsRight, MoreHorizontal, MoreVertical, Settings,
@@ -85,7 +85,7 @@ export const REGISTRY = {
   comment: MessageSquare, qc: ListChecks, verified: BadgeCheck, diff: GitCompare,
   receipt: ReceiptText, agent: Bot,
   // status / feedback
-  check: Check, close: X, success: CircleCheck, error: CircleAlert,
+  check: Check, close: X, success: CircleCheck, error: CircleAlert, errorRing: CircleX,
   warning: TriangleAlert, info: Info, spinner: Loader,
   // ui chrome / nav
   plus: Plus, minus: Minus,

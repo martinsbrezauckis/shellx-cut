@@ -2197,6 +2197,78 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "external",
     "facets": []
   },
+  "agent.chat_list": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "agent_chat_list",
+    "project_state": "required",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "agent.chat_get": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "agent_chat_get",
+    "project_state": "required",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "agent.chat_migrate": {
+    "mutation_class": "project_metadata",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "agent_chat_migrate",
+    "project_state": "required",
+    "idempotency": "natural",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "agent.chat_patch": {
+    "mutation_class": "project_metadata",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "agent_chat_patch",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
   "assets.generate": {
     "mutation_class": "external_side_effect",
     "side_effects": {
@@ -4464,7 +4536,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
       "ui": false
     },
     "dispatch": "screen_record_start",
-    "project_state": "required",
+    "project_state": "optional",
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
@@ -5715,6 +5787,42 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "reversible",
     "facets": []
   },
+  "screen_record.render_cache_preview": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_render_cache_preview",
+    "project_state": "required",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "inspect",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.render_cache_remove": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_render_cache_remove",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "destructive",
+    "facets": []
+  },
   "screen_record.camera_reset": {
     "mutation_class": "timeline",
     "side_effects": {
@@ -5855,6 +5963,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "replayability": "replayable",
     "async_job": "none",
     "ui_exposure": "agent_only",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.make_editable": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_make_editable",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
     "agent_chat": "edit",
     "risk": "reversible",
     "facets": []

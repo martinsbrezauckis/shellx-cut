@@ -524,6 +524,7 @@ fn still_project(asset_path: &Path, w: u32, h: u32, with_probe: bool) -> Project
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     p
 }

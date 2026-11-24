@@ -67,6 +67,7 @@ export const EXECUTED_PROGRAMS = {
   'cmd.exe': { kind: 'other-os' },
   'compact.exe': { kind: 'other-os' },
   'explorer.exe': { kind: 'other-os' },
+  icacls: { kind: 'other-os', why: 'Windows-only test of the file-owner check (atomic_output/windows_acl.rs)' },
   open: { kind: 'other-os' },
   powershell: { kind: 'other-os' },
   ps: { kind: 'other-os' },

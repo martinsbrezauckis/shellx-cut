@@ -50,6 +50,13 @@ pub const ENV_SIDECAR_DIR: &str = "SHELLX_CUT_SIDECAR_DIR";
 #[cfg(test)]
 static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+pub(super) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The desktop's independent observation of the Runner-provided runtime.
 /// The shell retains it with its normal tool resolution so it can refuse a
 /// present but malformed locator before spawning cutd.
@@ -251,8 +258,11 @@ fn tools_doctor_root(
 /// the file lives beside the app-data tools dir. The engine reads this file
 /// itself at startup — the shell only consults it so `ffmpeg_ok` reports the
 /// truth about what the engine will resolve.
-fn manual_override_ffmpeg() -> Option<PathBuf> {
-    let file = std::env::var_os("SHELLX_CUT_HOME")
+fn manual_override_ffmpeg_in(
+    cut_home: Option<&std::ffi::OsStr>,
+    appdata_tools: Option<&Path>,
+) -> Option<PathBuf> {
+    let file = cut_home
         .filter(|v| !v.is_empty())
         .map(|home| {
             PathBuf::from(home)
@@ -260,8 +270,7 @@ fn manual_override_ffmpeg() -> Option<PathBuf> {
                 .join("ffmpeg-override")
         })
         .or_else(|| {
-            appdata_tools_dir()
-                .and_then(|tools| tools.parent().map(|root| root.join("ffmpeg-override")))
+            appdata_tools.and_then(|tools| tools.parent().map(|root| root.join("ffmpeg-override")))
         })?;
     let s = std::fs::read_to_string(file).ok()?;
     let p = PathBuf::from(s.trim());
@@ -446,6 +455,73 @@ pub struct ToolResolution {
     pub pinned_executable_bundle: PinnedExecutableBundleResolution,
 }
 
+#[derive(Debug, Clone)]
+enum RunnerContextLookup {
+    SystemEnv,
+    #[cfg(test)]
+    Fixed {
+        native_runtime: NativeRuntimeResolution,
+        pinned_executable_bundle: PinnedExecutableBundleResolution,
+    },
+}
+
+/// Injectable environment and filesystem lookup for `ToolResolution`.
+/// Production uses [`ToolLookup::system`]; unit tests inject a clean
+/// [`ToolLookup::isolated`] so detection never depends on host FFmpeg installs,
+/// Homebrew directories, user AppData, or ambient environment variables.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolLookup {
+    runner_context: RunnerContextLookup,
+    pub(crate) ffmpeg_exe: Option<std::ffi::OsString>,
+    pub(crate) ffmpeg_dir: Option<std::ffi::OsString>,
+    pub(crate) cut_home: Option<std::ffi::OsString>,
+    pub(crate) appdata_tools_dir: Option<PathBuf>,
+    pub(crate) appdata_sidecar_dir: Option<PathBuf>,
+    pub(crate) system_tool_dirs: Vec<PathBuf>,
+    pub(crate) path_ffmpeg_ok: Option<bool>,
+    pub(crate) macos_sidecar_rules: bool,
+}
+
+impl ToolLookup {
+    /// Capture the live machine lookup from environment variables, app-data
+    /// folders, platform system directories, and `PATH`.
+    pub(crate) fn system() -> Self {
+        #[cfg(target_os = "macos")]
+        let system_tool_dirs = macos_system_tool_dirs();
+        #[cfg(not(target_os = "macos"))]
+        let system_tool_dirs = Vec::new();
+        Self {
+            runner_context: RunnerContextLookup::SystemEnv,
+            ffmpeg_exe: std::env::var_os(ENV_FFMPEG_EXE),
+            ffmpeg_dir: std::env::var_os(ENV_FFMPEG_DIR),
+            cut_home: std::env::var_os("SHELLX_CUT_HOME"),
+            appdata_tools_dir: appdata_tools_dir(),
+            appdata_sidecar_dir: appdata_sidecar_dir(),
+            system_tool_dirs,
+            path_ffmpeg_ok: None,
+            macos_sidecar_rules: cfg!(target_os = "macos"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn isolated(appdata_root: &Path) -> Self {
+        Self {
+            runner_context: RunnerContextLookup::Fixed {
+                native_runtime: NativeRuntimeResolution::Absent,
+                pinned_executable_bundle: PinnedExecutableBundleResolution::Absent,
+            },
+            ffmpeg_exe: None,
+            ffmpeg_dir: None,
+            cut_home: None,
+            appdata_tools_dir: Some(appdata_root.join("tools")),
+            appdata_sidecar_dir: Some(appdata_root.join("perception")),
+            system_tool_dirs: Vec::new(),
+            path_ffmpeg_ok: Some(false),
+            macos_sidecar_rules: cfg!(target_os = "macos"),
+        }
+    }
+}
+
 impl ToolResolution {
     /// Resolve both deps against the installed layout. `exe_dir` is the
     /// directory of the running shell exe (cutd.exe sits beside it).
@@ -459,17 +535,35 @@ impl ToolResolution {
     /// executables live under `Contents/MacOS`; checking only `exe_dir` makes the
     /// packaged `perception/` payload invisible on fresh installs.
     pub fn detect_with_resources(exe_dir: &Path, resource_dir: &Path) -> Self {
-        // One fixed Runner locator can carry either the historical Python v1
-        // context or the selected generic executable bundle. Discriminate the
-        // bounded envelope before invoking a typed parser so either supported
-        // schema does not make the other consumer reject it.
-        let context_schema = context_schema_from_env();
-        // Set members are selected from one typed read so the Python and media
-        // consumers observe the same sealed envelope for this desktop launch.
-        let context_set = runtime_context_set_from_env(&context_schema);
-        let native_runtime = native_runtime_resolution(&context_schema, context_set.as_ref());
-        let pinned_executable_bundle =
-            pinned_executable_bundle_resolution(&context_schema, context_set.as_ref());
+        Self::detect_with_lookup(exe_dir, resource_dir, &ToolLookup::system())
+    }
+
+    pub(crate) fn detect_with_lookup(
+        exe_dir: &Path,
+        resource_dir: &Path,
+        lookup: &ToolLookup,
+    ) -> Self {
+        let (native_runtime, pinned_executable_bundle) = match &lookup.runner_context {
+            RunnerContextLookup::SystemEnv => {
+                // One fixed Runner locator can carry either the historical Python v1
+                // context or the selected generic executable bundle. Discriminate the
+                // bounded envelope before invoking a typed parser so either supported
+                // schema does not make the other consumer reject it.
+                let context_schema = context_schema_from_env();
+                // Set members are selected from one typed read so the Python and media
+                // consumers observe the same sealed envelope for this desktop launch.
+                let context_set = runtime_context_set_from_env(&context_schema);
+                (
+                    native_runtime_resolution(&context_schema, context_set.as_ref()),
+                    pinned_executable_bundle_resolution(&context_schema, context_set.as_ref()),
+                )
+            }
+            #[cfg(test)]
+            RunnerContextLookup::Fixed {
+                native_runtime,
+                pinned_executable_bundle,
+            } => (native_runtime.clone(), pinned_executable_bundle.clone()),
+        };
         // ── ffmpeg — MIRRORS the engine ladder (cut-media::toolpath), same
         // precedence, so ffmpeg_ok never contradicts what the engine resolves:
         //   1a. SHELLX_CUT_FFMPEG (full path)  1b. SHELLX_CUT_FFMPEG_DIR
@@ -488,11 +582,15 @@ impl ToolResolution {
                 // not inspect env/app-data/PATH if it fails validation.
                 PinnedExecutableBundleResolution::Rejected { .. } => (false, None, "missing"),
                 PinnedExecutableBundleResolution::Absent => {
-                    let env_exe_ok = std::env::var_os(ENV_FFMPEG_EXE)
+                    let env_exe_ok = lookup
+                        .ffmpeg_exe
+                        .as_deref()
                         .filter(|v| !v.is_empty())
                         .map(PathBuf::from)
                         .is_some_and(|p| p.is_file());
-                    let env_dir_hit = std::env::var_os(ENV_FFMPEG_DIR)
+                    let env_dir_hit = lookup
+                        .ffmpeg_dir
+                        .as_deref()
                         .filter(|v| !v.is_empty())
                         .map(PathBuf::from)
                         .and_then(|d| find_tool_dir("ffmpeg", std::slice::from_ref(&d)));
@@ -501,27 +599,31 @@ impl ToolResolution {
                     if resource_dir != exe_dir {
                         ff_dirs.push(resource_dir.join("ffmpeg"));
                     }
-                    if let Some(t) = appdata_tools_dir() {
+                    if let Some(t) = &lookup.appdata_tools_dir {
                         ff_dirs.push(t.join("ffmpeg"));
                     }
                     let bundled_hit = find_tool_dir("ffmpeg", &ff_dirs);
-
-                    #[cfg(target_os = "macos")]
-                    let system_hit = find_tool_dir("ffmpeg", &macos_system_tool_dirs());
-                    #[cfg(not(target_os = "macos"))]
-                    let system_hit: Option<PathBuf> = None;
+                    let system_hit = find_tool_dir("ffmpeg", &lookup.system_tool_dirs);
 
                     if env_exe_ok {
                         (true, None, "env")
                     } else if let Some(d) = env_dir_hit {
                         (true, Some(d), "env")
-                    } else if manual_override_ffmpeg().is_some() {
+                    } else if manual_override_ffmpeg_in(
+                        lookup.cut_home.as_deref(),
+                        lookup.appdata_tools_dir.as_deref(),
+                    )
+                    .is_some()
+                    {
                         (true, None, "manual-override")
                     } else if let Some(d) = bundled_hit {
                         (true, Some(d), "bundled-or-appdata")
                     } else if let Some(d) = system_hit {
                         (true, Some(d), "system-dir")
-                    } else if runnable_on_path("ffmpeg", "-version") {
+                    } else if lookup
+                        .path_ffmpeg_ok
+                        .unwrap_or_else(|| runnable_on_path("ffmpeg", "-version"))
+                    {
                         (true, None, "path")
                     } else {
                         (false, None, "missing")
@@ -541,8 +643,8 @@ impl ToolResolution {
             .find(|dir| dir.join("instruments.py").is_file())
             .cloned();
         let mut sc_dirs = bundled_sc_dirs;
-        if let Some(s) = appdata_sidecar_dir() {
-            sc_dirs.push(s);
+        if let Some(s) = &lookup.appdata_sidecar_dir {
+            sc_dirs.push(s.clone());
         }
         let legacy_sidecar_dir = sc_dirs
             .iter()
@@ -553,7 +655,7 @@ impl ToolResolution {
             .find(|d| {
                 sidecar_venv_python_usable_for_platform(
                     &sidecar_venv_python(d),
-                    cfg!(target_os = "macos"),
+                    lookup.macos_sidecar_rules,
                 )
             })
             .cloned();
@@ -759,7 +861,7 @@ mod tests {
 
     #[test]
     fn native_runtime_resolution_accepts_pins_and_rejects_a_present_bad_locator() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let _restore = EnvRestore::capture(&[CONTEXT_ENV]);
         let temp = std::env::temp_dir().join(format!(
             "scut-native-runtime-resolution-{}",
@@ -849,30 +951,22 @@ mod tests {
 
     #[test]
     fn detect_in_empty_dir_reports_no_bundled_ffmpeg() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
-        // A temp dir with nothing in it: ffmpeg_dir must be None (no beside-exe
-        // ffmpeg); ffmpeg_ok then reflects whatever PATH has on the build box.
+        // Isolated lookup with empty app-data/system dirs and no PATH ffmpeg:
+        // result must be missing on every OS regardless of host FFmpeg or env.
         let tmp = std::env::temp_dir().join(format!("scut-tools-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::create_dir_all(&tmp);
-        let old_xdg = std::env::var_os("XDG_DATA_HOME");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("XDG_DATA_HOME", tmp.join("data"));
-        std::env::set_var("HOME", tmp.join("home"));
-        let r = ToolResolution::detect(&tmp);
+        let lookup = ToolLookup::isolated(&tmp.join("data"));
+        let r = ToolResolution::detect_with_lookup(&tmp, &tmp, &lookup);
         assert!(
             r.ffmpeg_dir.is_none(),
             "no ffmpeg should be found beside an empty dir"
         );
+        assert!(!r.ffmpeg_ok, "empty isolated lookup must report no ffmpeg");
+        assert_eq!(r.ffmpeg_source, "missing");
         // sidecar venv absent in a clean temp dir.
         assert!(!r.sidecar_ok, "no venv beside an empty dir");
-        match old_xdg {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => std::env::remove_var("XDG_DATA_HOME"),
-        }
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        assert!(r.sidecar_dir.is_none());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -908,7 +1002,7 @@ mod tests {
 
     #[test]
     fn tools_doctor_writes_to_attempt_home_and_preserves_normal_appdata_destination() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let _restore =
             EnvRestore::capture(&["SHELLX_CUT_HOME", "LOCALAPPDATA", "XDG_DATA_HOME", "HOME"]);
         let tmp =
@@ -951,13 +1045,15 @@ mod tests {
     /// env rung, which detection previously ignored entirely.
     #[test]
     fn detect_env_dir_override_reports_env_source() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
         let tmp = std::env::temp_dir().join(format!("scut-envdir-test-{}", std::process::id()));
         let ffdir = tmp.join("ff");
         std::fs::create_dir_all(&ffdir).unwrap();
         std::fs::write(ffdir.join(exe_name("ffmpeg")), "").unwrap();
+        std::env::remove_var(CONTEXT_ENV);
         std::env::remove_var(ENV_FFMPEG_EXE);
+        std::env::remove_var(ENV_FFPROBE_EXE);
         std::env::set_var(ENV_FFMPEG_DIR, &ffdir);
         std::env::set_var("SHELLX_CUT_HOME", tmp.join("home"));
         std::env::set_var("XDG_DATA_HOME", tmp.join("data"));
@@ -977,7 +1073,7 @@ mod tests {
     /// contradicts actual product behavior.
     #[test]
     fn detect_manual_override_file_reports_manual_source() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
         let tmp = std::env::temp_dir().join(format!("scut-override-test-{}", std::process::id()));
         let home = tmp.join("cut-home");
@@ -990,7 +1086,9 @@ mod tests {
             format!("{}\n", chosen.display()),
         )
         .unwrap();
+        std::env::remove_var(CONTEXT_ENV);
         std::env::remove_var(ENV_FFMPEG_EXE);
+        std::env::remove_var(ENV_FFPROBE_EXE);
         std::env::remove_var(ENV_FFMPEG_DIR);
         std::env::set_var("SHELLX_CUT_HOME", &home);
         std::env::set_var("XDG_DATA_HOME", tmp.join("data"));
@@ -1014,7 +1112,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn rejected_pinned_bundle_blocks_ambient_ffmpeg_discovery() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
         let temp = std::env::temp_dir().join(format!(
             "scut-rejected-pinned-tool-bundle-{}",
@@ -1130,13 +1228,15 @@ mod tests {
     #[test]
     fn detect_finds_packaged_resource_sidecar_payload() {
         let tmp = std::env::temp_dir().join(format!("scut-resource-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
         let exe_dir = tmp.join("Contents").join("MacOS");
         let resource_dir = tmp.join("Contents").join("Resources");
         let perception = resource_dir.join("perception");
         let _ = std::fs::create_dir_all(&perception);
         std::fs::write(perception.join("instruments.py"), "# test payload").unwrap();
 
-        let r = ToolResolution::detect_with_resources(&exe_dir, &resource_dir);
+        let lookup = ToolLookup::isolated(&tmp.join("data"));
+        let r = ToolResolution::detect_with_lookup(&exe_dir, &resource_dir, &lookup);
         assert_eq!(r.sidecar_dir.as_deref(), Some(perception.as_path()));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1144,21 +1244,17 @@ mod tests {
 
     #[test]
     fn detect_does_not_report_venv_only_sidecar_ready() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("scut-venv-only-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
         let exe_dir = tmp.join("app");
         let appdata = tmp.join("data");
-        let perception = appdata.join("shellx-cut").join("perception");
+        let perception = appdata.join("perception");
         let py = sidecar_venv_python(&perception);
         std::fs::create_dir_all(py.parent().unwrap()).unwrap();
         std::fs::write(&py, "").unwrap();
 
-        let old_xdg = std::env::var_os("XDG_DATA_HOME");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("XDG_DATA_HOME", &appdata);
-        std::env::set_var("HOME", tmp.join("home"));
-
-        let r = ToolResolution::detect(&exe_dir);
+        let lookup = ToolLookup::isolated(&appdata);
+        let r = ToolResolution::detect_with_lookup(&exe_dir, &exe_dir, &lookup);
         assert!(
             !r.sidecar_ok,
             "a venv without instruments.py is not a runnable sidecar"
@@ -1168,14 +1264,158 @@ mod tests {
             "do not export a venv-only dir as a payload dir"
         );
 
-        match old_xdg {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => std::env::remove_var("XDG_DATA_HOME"),
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_with_isolated_lookup_ignores_host_env_and_appdata_installs() {
+        let _guard = lock_test_env();
+        let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
+        let tmp = std::env::temp_dir().join(format!("scut-isolated-lookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let host_exe = tmp.join("host-env").join(exe_name("ffmpeg"));
+        let host_dir = tmp.join("host-dir");
+        let host_home = tmp.join("host-home");
+        let host_appdata = tmp.join("host-appdata");
+        for path in [
+            host_exe.clone(),
+            host_dir.join(exe_name("ffmpeg")),
+            host_appdata
+                .join("ShellX Cut")
+                .join("tools")
+                .join("ffmpeg")
+                .join("bin")
+                .join(exe_name("ffmpeg")),
+            host_appdata
+                .join("shellx-cut")
+                .join("tools")
+                .join("ffmpeg")
+                .join("bin")
+                .join(exe_name("ffmpeg")),
+            host_home
+                .join("Library/Application Support/ShellX Cut/tools/ffmpeg/bin")
+                .join(exe_name("ffmpeg")),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
         }
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        std::env::set_var(ENV_FFMPEG_EXE, &host_exe);
+        std::env::set_var(ENV_FFMPEG_DIR, &host_dir);
+        std::env::set_var("LOCALAPPDATA", &host_appdata);
+        std::env::set_var("XDG_DATA_HOME", &host_appdata);
+        std::env::set_var("HOME", &host_home);
+        std::env::set_var("SHELLX_CUT_HOME", &host_home);
+
+        let isolated_root = tmp.join("clean-appdata");
+        let r = ToolResolution::detect_with_lookup(
+            &tmp.join("empty-exe"),
+            &tmp.join("empty-res"),
+            &ToolLookup::isolated(&isolated_root),
+        );
+        assert!(!r.ffmpeg_ok);
+        assert!(r.ffmpeg_dir.is_none());
+        assert_eq!(r.ffmpeg_source, "missing");
+        assert!(!r.sidecar_ok);
+        assert!(r.sidecar_dir.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_with_lookup_exercises_system_dir_appdata_and_path_rungs() {
+        let tmp = std::env::temp_dir().join(format!("scut-rungs-lookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let exe_dir = tmp.join("exe");
+        let res_dir = tmp.join("res");
+        let appdata = tmp.join("appdata");
+        let sys_dir = tmp.join("homebrew").join("bin");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::create_dir_all(&res_dir).unwrap();
+        std::fs::create_dir_all(&sys_dir).unwrap();
+
+        // Empty / non-existent inputs and None appdata dirs report missing.
+        let mut empty_lookup = ToolLookup::isolated(&appdata);
+        empty_lookup.appdata_tools_dir = None;
+        empty_lookup.appdata_sidecar_dir = None;
+        empty_lookup.ffmpeg_exe = Some(std::ffi::OsString::new());
+        empty_lookup.ffmpeg_dir = Some(std::ffi::OsString::new());
+        empty_lookup.cut_home = Some(std::ffi::OsString::new());
+        let r_empty = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &empty_lookup);
+        assert!(!r_empty.ffmpeg_ok);
+        assert_eq!(r_empty.ffmpeg_source, "missing");
+        assert!(!r_empty.sidecar_ok);
+
+        // PATH-only fallback via injected lookup.
+        let mut lookup = ToolLookup::isolated(&appdata);
+        lookup.path_ffmpeg_ok = Some(true);
+        let r_path = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &lookup);
+        assert!(r_path.ffmpeg_ok);
+        assert_eq!(r_path.ffmpeg_source, "path");
+        assert!(r_path.ffmpeg_dir.is_none());
+
+        // Injected system dir (mirrors macOS Homebrew dirs) beats PATH.
+        std::fs::write(sys_dir.join(exe_name("ffmpeg")), "").unwrap();
+        lookup.system_tool_dirs = vec![sys_dir.clone()];
+        let r_sys = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &lookup);
+        assert!(r_sys.ffmpeg_ok);
+        assert_eq!(r_sys.ffmpeg_source, "system-dir");
+        assert_eq!(r_sys.ffmpeg_dir.as_deref(), Some(sys_dir.as_path()));
+
+        // Injected appdata tools dir beats system dir.
+        let app_ff_bin = appdata.join("tools").join("ffmpeg").join("bin");
+        std::fs::create_dir_all(&app_ff_bin).unwrap();
+        std::fs::write(app_ff_bin.join(exe_name("ffmpeg")), "").unwrap();
+        let r_app = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &lookup);
+        assert!(r_app.ffmpeg_ok);
+        assert_eq!(r_app.ffmpeg_source, "bundled-or-appdata");
+        assert_eq!(r_app.ffmpeg_dir.as_deref(), Some(app_ff_bin.as_path()));
+
+        // Stale manual override file falls back to appdata; valid manual wins.
+        let home = tmp.join("home");
+        std::fs::create_dir_all(home.join("preferences")).unwrap();
+        let override_file = home.join("preferences").join("ffmpeg-override");
+        std::fs::write(
+            &override_file,
+            format!("{}\n", tmp.join("missing-ffmpeg").display()),
+        )
+        .unwrap();
+        lookup.cut_home = Some(home.clone().into_os_string());
+        let r_stale_man = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &lookup);
+        assert_eq!(r_stale_man.ffmpeg_source, "bundled-or-appdata");
+        let chosen = tmp.join("chosen-ffmpeg");
+        std::fs::write(&chosen, "").unwrap();
+        std::fs::write(&override_file, format!("{}\n", chosen.display())).unwrap();
+        let r_man = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &lookup);
+        assert_eq!(r_man.ffmpeg_source, "manual-override");
+        assert!(r_man.ffmpeg_dir.is_none());
+
+        // Injected ENV_FFMPEG_EXE beats manual override.
+        let env_exe = tmp.join("env-ffmpeg");
+        std::fs::write(&env_exe, "").unwrap();
+        lookup.ffmpeg_exe = Some(env_exe.into_os_string());
+        let r_exe = ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &lookup);
+        assert_eq!(r_exe.ffmpeg_source, "env");
+        assert!(r_exe.ffmpeg_dir.is_none());
+
+        // macOS sidecar rule via injected lookup: Apple-stub venv rejected when enabled.
+        let stub_sc = tmp.join("stub-sc");
+        let stub_py = sidecar_venv_python(&stub_sc);
+        std::fs::create_dir_all(stub_py.parent().unwrap()).unwrap();
+        std::fs::write(stub_sc.join("instruments.py"), "# payload").unwrap();
+        std::fs::write(&stub_py, "").unwrap();
+        std::fs::write(
+            stub_sc.join(".venv").join("pyvenv.cfg"),
+            "home = /usr/bin\nexecutable = /usr/bin/python3.12\n",
+        )
+        .unwrap();
+        let mut sc_lookup = ToolLookup::isolated(&appdata);
+        sc_lookup.appdata_sidecar_dir = Some(stub_sc);
+        sc_lookup.macos_sidecar_rules = false;
+        assert!(ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &sc_lookup).sidecar_ok);
+        sc_lookup.macos_sidecar_rules = true;
+        assert!(!ToolResolution::detect_with_lookup(&exe_dir, &res_dir, &sc_lookup).sidecar_ok);
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -86,6 +86,7 @@ fn span_clip(id: &str, asset: &str, duration_ms: u64) -> Clip {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })
 }
 

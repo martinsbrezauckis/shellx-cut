@@ -6,14 +6,25 @@ use std::path::{Path, PathBuf};
 
 fn checked_destination(path: &Path) -> Result<(), CutError> {
     let dir = path.parent().ok_or_else(|| unsafe_leaf("missing parent"))?;
-    let project = dir
+    let root = if dir.parent().is_some_and(|p| p.ends_with("renders"))
+        && dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        dir.parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| unsafe_leaf("missing recorder cache"))?
+    } else {
+        dir
+    };
+    let project = root
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| unsafe_leaf("missing project"))?;
-    if crate::output_paths::ensure_plain_project_relative_dir(
-        project,
-        Path::new("cache/screen_record"),
-    )? != dir
+    let relative = dir.strip_prefix(project).map_err(unsafe_leaf)?;
+    if !root.ends_with("cache/screen_record")
+        || crate::output_paths::ensure_plain_project_relative_dir(project, relative)? != dir
     {
         return Err(unsafe_leaf("destination is outside cache/screen_record"));
     }

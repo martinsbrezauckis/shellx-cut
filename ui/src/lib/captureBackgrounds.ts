@@ -22,6 +22,7 @@
 // repair is named in the notes.
 
 import { sameOriginMediaPath } from './mediaUrl'
+import { OpaqueMediaCovers } from './captureOpaque'
 
 /** Most distinct images one capture will load for the repair. */
 export const MAX_IMAGES = 24
@@ -47,6 +48,8 @@ export interface BackgroundLayer {
 }
 
 export interface BackgroundElement {
+  /** Live node for opaque cover clipping; synthetic layer tests omit it. */
+  element?: Element
   x: number
   y: number
   w: number
@@ -117,6 +120,7 @@ export function collectBackgrounds(root: HTMLElement, deadlineAt = performance.n
     if (performance.now() >= deadlineAt) return { elements: found, partial: 'deadline' }
     const at = (list: string[], i: number, fallback: string) => list.length ? list[i % list.length] : fallback
     found.push({
+      element: el,
       x: rect.x,
       y: rect.y,
       w: rect.width,
@@ -323,6 +327,7 @@ export interface BackgroundReport {
 }
 
 export interface RepairOptions {
+  covers?: OpaqueMediaCovers
   budgetMs?: number
   maxImages?: number
   imageTimeoutMs?: number
@@ -357,6 +362,7 @@ export async function repairBackgrounds(
   const report: BackgroundReport = { redrawn: [], missing: [], skipped: [] }
   if (options.collectionPartial) report.partial = options.collectionPartial
   const budget: RepairBudget = { deadlineAt: options.deadlineAt ?? performance.now() + budgetMs, draws: 0 }
+  const covers = options.covers ?? new OpaqueMediaCovers(budget.deadlineAt)
   const images = new Map<string, HTMLImageElement | null>()
   const skip = (url: string, reason: SkipReason) => {
     if (!report.skipped.some((s) => s.url === url)) report.skipped.push({ url, reason })
@@ -419,6 +425,7 @@ export async function repairBackgrounds(
       // A dark overlay lowers the luminance to 54 % at most; far below that is blank.
       if (gotLuma >= wantLuma * 0.45) continue
       ctx.save()
+      if (el.element) covers.clip(ctx, el.element, { x: el.x, y: el.y, w: el.w, h: el.h }, origin, scale)
       ctx.beginPath()
       ctx.rect(dx, dy, dw, dh)
       ctx.clip()
@@ -442,6 +449,13 @@ export async function repairBackgrounds(
   } finally {
     clearTimeout(deadline)
     pending?.cancel()
+    for (const img of images.values()) {
+      if (!img) continue
+      img.onload = null
+      img.onerror = null
+      img.src = ''
+    }
+    images.clear()
   }
   timeUp(budget)
   report.partial = budget.partial ?? report.partial

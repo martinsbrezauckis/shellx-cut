@@ -115,7 +115,7 @@ export function PreviewOfflineOverlays({
       key={overlay.clipId}
       asset={asset}
       overlay
-      style={overlayBoxStyle(overlay.transform)}
+      style={overlayBoxStyle(overlay.transform, overlay.sourceAspect)}
       relinking={relinkingAssetId === asset.id}
       onRelink={onRelink}
     />

@@ -19,8 +19,8 @@ mod tests;
 
 pub use audio_level::{AudioLevelLifecycle, AudioLevelSnapshot, RollingAudioLevel};
 pub(crate) use device::{
-    join_bounded, reserve_microphone_capture, spawn_device_mic, spawn_device_mic_reserved,
-    spawn_device_mic_reserved_unpadded, spawn_device_mic_with_level, CapturedMicrophone,
+    join_bounded, reserve_microphone_capture, spawn_device_mic_reserved,
+    spawn_device_mic_reserved_unpadded, spawn_device_mic_with_level_and_gate, CapturedMicrophone,
     MicRecordingGate, MicrophoneCaptureReservation,
 };
 #[allow(unused_imports)]

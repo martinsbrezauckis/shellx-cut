@@ -62,8 +62,8 @@ pub use program_path::{
     harden_process_search_path, not_installed as not_installed_program,
 };
 pub use selection::{
-    automatic_pick, automatic_pick_for, ffmpeg_selection, is_cargo_build_exe, AutomaticPick,
-    FfmpegSelection, SelectionReason,
+    automatic_pick, automatic_pick_for, ffmpeg_selection, ffmpeg_selection_using,
+    is_cargo_build_exe, AutomaticPick, FfmpegSelection, SelectionReason,
 };
 
 /// Env var: explicit full path to the ffmpeg executable (highest precedence).
@@ -181,7 +181,7 @@ pub fn write_override_setting(path: Option<&str>) -> std::io::Result<()> {
     let Some(p) = override_file() else {
         return Ok(()); // no app-data dir (unusual) — nothing to persist
     };
-    match path {
+    let result = match path {
         Some(v) if !v.trim().is_empty() => {
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -192,7 +192,11 @@ pub fn write_override_setting(path: Option<&str>) -> std::io::Result<()> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()), // already absent = already "no override"
         },
+    };
+    if result.is_ok() {
+        cache::bump_generation();
     }
+    result
 }
 
 /// The manual override in effect for the current tools generation.
@@ -310,6 +314,12 @@ pub fn ffmpeg() -> OsString {
 /// that decided it, so the doctor's "why" can never disagree with the build
 /// actually used.
 fn choose_ffmpeg() -> (OsString, selection::Step) {
+    choose_ffmpeg_using(auto_best_ffmpeg)
+}
+
+pub(in crate::toolpath) fn choose_ffmpeg_using(
+    auto_pick: impl FnOnce() -> Option<OsString>,
+) -> (OsString, selection::Step) {
     use selection::Step;
     let has_env = std::env::var_os(ENV_FFMPEG).is_some_and(|p| !p.is_empty());
     if has_env {
@@ -321,7 +331,7 @@ fn choose_ffmpeg() -> (OsString, selection::Step) {
     }
     // 3. auto best-hardware.
     if auto_enabled() {
-        if let Some(best) = auto_best_ffmpeg() {
+        if let Some(best) = auto_pick() {
             return (best, Step::AutomaticHardware);
         }
     }
@@ -378,10 +388,21 @@ pub enum FfmpegFeature {
 fn all_candidate_caps() -> &'static [crate::hwencode::FfmpegCaps] {
     static CAPS: ToolCache<&'static [crate::hwencode::FfmpegCaps]> = ToolCache::new();
     CAPS.get_or_init(|| {
-        let caps: Vec<_> = ffmpeg_candidates()
-            .iter()
-            .map(|p| crate::hwencode::probe_ffmpeg_caps(p))
-            .collect();
+        let candidates = ffmpeg_candidates();
+        let caps: Vec<_> = if candidates.len() <= 1 {
+            candidates
+                .iter()
+                .map(|p| crate::hwencode::probe_ffmpeg_caps(p))
+                .collect()
+        } else {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = candidates
+                    .iter()
+                    .map(|p| scope.spawn(|| crate::hwencode::probe_ffmpeg_caps(p)))
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok()).collect()
+            })
+        };
         Box::leak(caps.into_boxed_slice())
     })
 }

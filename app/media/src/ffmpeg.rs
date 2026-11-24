@@ -935,13 +935,108 @@ pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         ));
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| {
+    let mut raw: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| {
         CutError::new(
             error_codes::FFMPEG,
             "ffprobe emitted unparseable JSON",
             e.to_string(),
         )
-    })
+    })?;
+    maybe_enrich_hdr10_frame_side_data(path, &mut raw);
+    Ok(raw)
+}
+
+/// FFmpeg writes HEVC/AV1 HDR10 static metadata into frame SEI even when the
+/// container stream header omits `side_data_list`. For PQ (`smpte2084`) video
+/// streams without stream-level mastering/MaxCLL side data, inspect only the
+/// first video frame (`%+#1`) and merge those two HDR10 entries onto the stream.
+/// Non-PQ files pay zero extra cost.
+fn maybe_enrich_hdr10_frame_side_data(path: &Path, raw: &mut serde_json::Value) {
+    let Some(streams) = raw.get_mut("streams").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let Some(video) = streams.iter_mut().find(|s| {
+        s["codec_type"] == "video" && s["disposition"]["attached_pic"].as_i64().unwrap_or(0) == 0
+    }) else {
+        return;
+    };
+    if video["color_transfer"].as_str() != Some("smpte2084") {
+        return;
+    }
+    let has_type = |list: &serde_json::Value, kind: &str| {
+        list.as_array()
+            .is_some_and(|arr| arr.iter().any(|item| item["side_data_type"] == kind))
+    };
+    let existing = &video["side_data_list"];
+    let need_md = !has_type(existing, "Mastering display metadata");
+    let need_cll = !has_type(existing, "Content light level metadata");
+    if !need_md && !need_cll {
+        return;
+    }
+    let mut cmd = Command::new(ffprobe_bin());
+    cmd.args([
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        LOCAL_INPUT_PROTOCOLS,
+        "-format_whitelist",
+        LOCAL_INPUT_FORMATS,
+        "-select_streams",
+        "v:0",
+        "-show_frames",
+        "-read_intervals",
+        "%+#1",
+        "-show_entries",
+        "frame=side_data_list",
+        "-print_format",
+        "json",
+    ]);
+    push_ffprobe_input(&mut cmd, path);
+    let Ok(out) = run_bounded_command(&mut cmd, "ffprobe hdr10 side data") else {
+        return;
+    };
+    if !out.status.success() {
+        return;
+    }
+    let Ok(frame_json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return;
+    };
+    let Some(frame_sd) = frame_json["frames"]
+        .as_array()
+        .and_then(|f| f.first())
+        .and_then(|f| f["side_data_list"].as_array())
+    else {
+        return;
+    };
+    let mut merged = video
+        .get("side_data_list")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for item in frame_sd {
+        match item["side_data_type"].as_str() {
+            Some("Mastering display metadata")
+                if !merged
+                    .iter()
+                    .any(|m| m["side_data_type"] == "Mastering display metadata") =>
+            {
+                merged.push(item.clone());
+            }
+            Some("Content light level metadata")
+                if !merged
+                    .iter()
+                    .any(|m| m["side_data_type"] == "Content light level metadata") =>
+            {
+                merged.push(item.clone());
+            }
+            _ => {}
+        }
+    }
+    if !merged.is_empty() {
+        if let Some(obj) = video.as_object_mut() {
+            obj.insert("side_data_list".into(), serde_json::Value::Array(merged));
+        }
+    }
 }
 
 /// Count each stream's packets by reading the file (demux only, no decode):

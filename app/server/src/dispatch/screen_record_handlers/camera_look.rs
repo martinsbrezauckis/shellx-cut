@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 // legitimately contain more independent changes than that recording budget.
 const MAX_CAMERA_TIMELINE_KEYS: usize = 50_000;
 
-fn validate_camera_timeline(plan: &EditPlan) -> Result<(), CutError> {
+pub(crate) fn validate_camera_timeline(plan: &EditPlan) -> Result<(), CutError> {
     if plan
         .webcam
         .as_ref()

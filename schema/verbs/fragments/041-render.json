@@ -5,7 +5,7 @@
     {
       "name": "render.bundle",
       "domain": "render",
-      "description": "Export ONE timeline window into a local export package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, quality checks, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
+      "description": "Export a local video/captions/thumbnail/receipt package per platform, bound by a manifest and brand checks. Defaults: 9:16, 1:1, 16:9 and -14 LUFS. Checks every delivery's memory before starting the job using render.final's out_of_memory refusal and memory_short warning. See resources.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -110,7 +110,7 @@
           }
         }
       },
-      "result": "{job_id, bundle_id} — package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Each platform receipt carries encode:{encoder, hardware_requested:false, hardware_used:false} because render.bundle always encodes in software. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
+      "result": "{job_id, bundle_id, resources} — resources lists each delivery's memory admission; package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Each platform receipt carries encode:{encoder, hardware_requested:false, hardware_used:false} because render.bundle always encodes in software. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
       "result_schema": {
         "type": "object",
         "required": [
@@ -251,6 +251,13 @@
                   "type": "integer",
                   "minimum": -40,
                   "maximum": -5
+                },
+                "color": {
+                  "type": "string",
+                  "enum": [
+                    "sdr",
+                    "keep_hdr"
+                  ]
                 }
               }
             }

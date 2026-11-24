@@ -4,6 +4,7 @@ import type { JobRecord } from '../../lib/clientModel'
 import type { ProjectCachePreviewResult, ProjectCacheRebuildResult } from '../../lib/clientResults'
 import { purgeReconciliation } from './cacheLifecyclePresentation'
 import CacheRebuildLifecycle from './CacheRebuildLifecycle'
+import OldRecordingRenders from './OldRecordingRenders'
 
 interface CacheLifecycleProps {
   assetPaths?: Readonly<Record<string, string>>
@@ -276,6 +277,7 @@ export default function CacheLifecycle({ assetPaths = {}, hasProject, projectSes
 
   return (
     <aside className="settings-cache-lifecycle" data-cut-cache-lifecycle>
+      <OldRecordingRenders key={projectSession} hasProject={hasProject} />
       <CacheRebuildLifecycle
         assetPaths={assetPaths}
         hasProject={hasProject}

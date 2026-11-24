@@ -47,6 +47,13 @@ fn engines_and_test_binaries_in_a_cargo_target_folder_are_source_builds() {
         target.join("release").join("cutd"),
         target.join("debug").join("deps").join("cut_media-0123abcd"),
         target
+            .join("debug")
+            .join("build")
+            .join("cut-media")
+            .join("5268c2ebaf19c7ed")
+            .join("out")
+            .join("cut_media-5268c2ebaf19c7ed"),
+        target
             .join("x86_64-unknown-linux-gnu")
             .join("release")
             .join("cutd"),
@@ -66,6 +73,21 @@ fn engines_and_test_binaries_in_a_cargo_target_folder_are_source_builds() {
             .join("MacOS")
             .join("cutd"),
         target.join("cutd"),
+        // An `out` folder that is not cargo's build/<package>/<hash>/out.
+        target.join("debug").join("out").join("cutd"),
+        target
+            .join("debug")
+            .join("x")
+            .join("y")
+            .join("out")
+            .join("cutd"),
+        dir.path()
+            .join("usr")
+            .join("build")
+            .join("p")
+            .join("h")
+            .join("out")
+            .join("cutd"),
     ] {
         assert!(!is_cargo_build_exe(&exe), "{}", exe.display());
     }

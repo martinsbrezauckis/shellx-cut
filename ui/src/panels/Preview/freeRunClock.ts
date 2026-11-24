@@ -4,12 +4,14 @@ import { continuesInPlace } from './baseDeckPlan'
 import {
   acceptPlaybackFrame,
   canStartPreviewMedia,
+  MediaProgressMonitor,
+  nextPlaybackBoundaryMs,
   PlaybackHandoff,
+  PlaybackSessionClock,
   mediaTimingCapability,
   playbackVideoKey,
   playbackBindingKey,
   startsInPlace,
-  TimelineMediaClock,
   type PlaybackSeekTracker,
 } from './playbackClock'
 import { previewPlaybackClockPosition } from './useVoiceoverPlayback'
@@ -42,6 +44,7 @@ export interface FreeRunState {
   video: ActiveVideo | null
   /** End of the uninterrupted source run, before a gap or different mapping. */
   continuousEndMs?: number
+  nextVideoStartMs?: number | null
   voiceoverPlayback: { outMs: number | null } | null
 }
 
@@ -60,6 +63,8 @@ export interface FreeRunArgs {
   /** The deck still shows this element after the next render. */
   isCurrentVideo?: () => boolean
   scheduler?: FreeRunScheduler
+  /** Shared continuous session clock across cuts and gaps when owned by Preview. */
+  sessionClock?: PlaybackSessionClock
 }
 
 const browserScheduler: FreeRunScheduler = {
@@ -68,29 +73,30 @@ const browserScheduler: FreeRunScheduler = {
   cancelFrame: (handle) => cancelAnimationFrame(handle),
 }
 
-/** FREE-RUN clock for forward 1x play of a mounted <video>: the element plays
- * itself and its presented media time is mapped back to a timeline position.
- * The timeline stays the authority (see TimelineMediaClock): an element that
- * does not start, stops advancing, fails or jumps ahead is resynchronized while
- * the timeline keeps playing, so no media event order can hold playback.
- * Cleanup detaches every listener. Contiguous cuts keep their decoder playing. */
+/** FREE-RUN sync for forward 1x play of a mounted <video>. A continuous
+ * PlaybackSessionClock owns wall-clock timeline progression across cuts and
+ * gaps while MediaProgressMonitor tracks element progress and issues
+ * seek/reload recovery when an element stalls, errors, or jumps. Contiguous
+ * cuts keep their decoder playing without pausing. */
 export function runFreeRunClock(args: FreeRunArgs): () => void {
   const { video: v, callbacks, state: cfg, tracker, publish, stop } = args
   let expectedKey = args.expectedKey
   let clockVideo = cfg.current.video
   const scheduler = args.scheduler ?? browserScheduler
   const initialSeekRevision = cfg.current.seekRevision
+  const ownsPublish = !args.sessionClock
+  const clock = args.sessionClock ?? new PlaybackSessionClock(cfg.current.playheadMs, scheduler.now(), cfg.current.rate, initialSeekRevision)
+  const monitor = new MediaProgressMonitor(scheduler.now())
+  let lastSeekRevision = initialSeekRevision
   let rafId = 0
   let fallbackRaf = 0
   let stopped = false
   const handoff = new PlaybackHandoff(tracker)
-  let lastDispatch = 0
   let lastFrameAt = scheduler.now()
   let ready = false
   let initialised = false
   let seekTargetMs = 0
   let progressAtResync = Number.NaN
-  const clock = new TimelineMediaClock(cfg.current.playheadMs, scheduler.now())
   // Ask the element to show the frame for a timeline position and play.
   // `force` re-issues the seek even at the same position (unsticks a stalled element).
   // An element already parked or playing right at the target (see
@@ -103,9 +109,19 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
     const sourceOutMs = c.video.srcInMs + (end - c.video.startMs) * c.video.speed
     seekTargetMs = sourceMsAtTimelinePosition({ ...c.video, srcOutMs: sourceOutMs }, positionMs)
     ready = false
-    const inPlace = !force && !userSeek && startsInPlace(v.paused, v.seeking, v.readyState, seekTargetMs - v.currentTime * 1000, c.video.speed)
-    if (inPlace) seekTargetMs = v.currentTime * 1000
-    if (force || (!inPlace && Math.abs(v.currentTime * 1000 - seekTargetMs) > c.frameMs / 2)) {
+    const behindMs = seekTargetMs - v.currentTime * 1000
+    const clipStartInPlace = !force && !userSeek && v.paused && !v.seeking
+      && canStartPreviewMedia(v.readyState)
+      && Math.abs(seekTargetMs - c.video.srcInMs) <= c.frameMs * 2
+      && behindMs >= -Math.max(120, c.frameMs * 3)
+      && behindMs <= 250 * Math.max(1, c.video.speed)
+    const inPlace = clipStartInPlace
+      || (!force && !userSeek && startsInPlace(v.paused, v.seeking, v.readyState, behindMs, c.video.speed))
+    // Preserve an in-flight standby park seek already within MEDIA_START_IN_PLACE_MS
+    // instead of cancelling it with another currentTime write.
+    const inFlightInPlace = !force && !userSeek && v.seeking && startsInPlace(v.paused, false, v.readyState, behindMs, c.video.speed)
+    if (inPlace || inFlightInPlace) seekTargetMs = v.currentTime * 1000
+    if (force || (!inPlace && !inFlightInPlace && Math.abs(v.currentTime * 1000 - seekTargetMs) > c.frameMs / 2)) {
       v.currentTime = seekTargetMs / 1000
     }
     ready = !v.seeking && Math.abs(v.currentTime * 1000 - seekTargetMs) <= c.frameMs
@@ -117,22 +133,24 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
     const c = cfg.current
     if (!c.video || playbackVideoKey(c.video) !== expectedKey) return
     const now = scheduler.now()
-    if (explicit) clock.restart(c.playheadMs, now)
+    if (explicit && ownsPublish) clock.reanchor(c.playheadMs, now, c.rate, c.seekRevision)
+    const targetMs = clock.syncExternal(c.playheadMs, c.seekRevision, now, c.rate)
     if (!canStartPreviewMedia(v.readyState)) {
       initialised = false
       ready = false
       return
     }
     initialised = true
-    clock.awaitMedia()
-    seekMedia(clock.position, false, explicit)
+    monitor.restart(now)
+    seekMedia(targetMs, false, explicit)
   }
   // The element stopped advancing or failed while the timeline kept playing.
   // First ask it to seek again; if it still has not advanced by the next
   // attempt, or it failed, reload it (canplay then restarts it at the timeline).
   const resync = () => {
-    const stillStuck = clock.lastProgressAt === progressAtResync
-    progressAtResync = clock.lastProgressAt
+    const now = scheduler.now()
+    const stillStuck = monitor.lastProgressAt === progressAtResync
+    progressAtResync = monitor.lastProgressAt
     if (v.error || (initialised && stillStuck)) {
       progressAtResync = Number.NaN
       initialised = false
@@ -141,44 +159,34 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
       return
     }
     if (!initialised) return
-    clock.awaitMedia()
-    seekMedia(clock.position, true)
+    monitor.awaitMedia()
+    seekMedia(clock.syncExternal(cfg.current.playheadMs, cfg.current.seekRevision, now, cfg.current.rate), true)
   }
   const onSeeked = () => {
     if (!stopped && initialised && !v.seeking && Math.abs(v.currentTime * 1000 - seekTargetMs) <= cfg.current.frameMs * 2) ready = true
   }
-  // Publish the next placement at its boundary. A different source re-arms
-  // the clock; a continuous piece keeps this frame subscription and clock.
-  const advance = (toMs: number) => {
-    if (!handoff.begin()) return
-    const c = cfg.current
-    publish(previewPlaybackClockPosition(toMs, c.durationMs, c.voiceoverPlayback).positionMs)
-  }
-  const emit = (now: number, timelineMs: number) => {
+  // Standalone runner only: publish boundary transitions and cadence ticks.
+  const emitTick = (now: number, timelineMs: number) => {
     const c = cfg.current
     const vid = c.video
     if (!vid) return
-    const clipEndMs = vid.startMs + vid.durMs
-    if (timelineMs >= c.durationMs - 1) {
-      publish(previewPlaybackClockPosition(c.durationMs, c.durationMs, c.voiceoverPlayback).positionMs)
+    const position = previewPlaybackClockPosition(timelineMs, c.durationMs, c.voiceoverPlayback, c.rate)
+    if (position.stop) {
+      clock.markPublished(now, position.positionMs)
+      publish(position.positionMs)
       if (!c.voiceoverPlayback) stop()
       return
     }
-    if (timelineMs >= clipEndMs - 1) {
-      const runEnd = Math.max(clipEndMs, c.continuousEndMs ?? clipEndMs)
-      advance(Math.min(c.durationMs, runEnd, Math.max(clipEndMs, timelineMs)))
-    }
-    // Keep the readout close to the presented frame between cut publications.
-    else if (now - lastDispatch >= 50) {
-      lastDispatch = now
-      publish(previewPlaybackClockPosition(timelineMs, c.durationMs, c.voiceoverPlayback).positionMs)
-    }
+    const boundary = nextPlaybackBoundaryMs(c.rate, vid, c.nextVideoStartMs ?? null)
+    if (!clock.shouldPublish(now, position.positionMs, boundary)) return
+    if (boundary !== null && position.positionMs >= boundary && !handoff.begin()) return
+    clock.markPublished(now, position.positionMs)
+    publish(position.positionMs)
   }
   // 'continue' when this clock may run: no handoff pending and no user seek.
   const observe = (): boolean => {
     const c = cfg.current
     if (c.rate !== 1 || !(args.isCurrentVideo?.() ?? true)) return false
-    const state = handoff.observe(c.playheadMs, c.seekRevision)
     const key = playbackVideoKey(c.video)
     const changed = key !== expectedKey
     if (changed) {
@@ -187,6 +195,15 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
       clockVideo = c.video
       handoff.complete()
     }
+    if (!ownsPublish) {
+      if (c.seekRevision !== lastSeekRevision) {
+        lastSeekRevision = c.seekRevision
+        startPlay(true)
+        return false
+      }
+      return true
+    }
+    const state = handoff.observe(c.playheadMs, c.seekRevision)
     if (state === 'seek') { startPlay(true); return false }
     return changed || state === 'continue'
   }
@@ -197,7 +214,7 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
       && acceptPlaybackFrame(expectedKey, vid, mediaTime * 1000, v.currentTime * 1000, ready, v.seeking, cfg.current.frameMs,
         vid.srcInMs + (Math.max(vid.startMs + vid.durMs, cfg.current.continuousEndMs ?? 0) - vid.startMs) * vid.speed)) {
       const mediaMs = Math.max(timelineMsAtSourcePosition(vid, mediaTime * 1000), vid.startMs)
-      emit(now, clock.media(mediaMs, now))
+      monitor.sample(mediaMs, clock.position(now), now, v.seeking, v.paused)
     }
   }
   const onFrame: VideoFrameCallback = (now, meta) => {
@@ -213,19 +230,19 @@ export function runFreeRunClock(args: FreeRunArgs): () => void {
     // it notices a seek that cancels a handoff and keeps the timeline moving.
     if (!v.paused && v.readyState >= 2 && now - lastFrameAt > 250) syncFromMediaTime(now, v.currentTime)
     if (!stopped && observe()) {
-      emit(now, clock.tick(now))
-      if (clock.resyncDue(now)) resync()
+      if (ownsPublish) emitTick(now, clock.position(now))
+      if (monitor.resyncDue(now, !!v.error)) resync()
     }
     if (!stopped) fallbackRaf = scheduler.requestFrame(fallbackTick)
   }
   const onReady = () => { if (!initialised) startPlay(false) }
   const onEnded = () => {
-    if (!observe()) return
+    if (!ownsPublish || !observe()) return
     const c = cfg.current
     if (c.video && v.ended && acceptPlaybackFrame(expectedKey, c.video, v.currentTime * 1000, v.currentTime * 1000, ready, v.seeking, c.frameMs)
       && v.currentTime * 1000 >= c.video.srcOutMs - c.frameMs * 2) {
       const now = scheduler.now()
-      emit(now, clock.media(c.video.startMs + c.video.durMs, now))
+      emitTick(now, Math.max(clock.position(now), c.video.startMs + c.video.durMs))
     }
   }
   v.addEventListener('canplay', onReady)

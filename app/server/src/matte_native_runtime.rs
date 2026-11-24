@@ -63,6 +63,9 @@ impl PreparedMatteRuntime {
 /// A supplied invalid or incomplete context is an error rather than a normal
 /// local/HTTP fallback.
 pub(crate) fn prepared_rvm_runtime() -> Result<Option<PreparedRvmRuntime>, CutError> {
+    if cut_perception::native_runtime_context()?.is_none() {
+        return Ok(None);
+    }
     let sidecar = cut_perception::sidecar_runtime()?;
     let Some(context) = sidecar.native_context.as_ref() else {
         return Ok(None);
@@ -76,6 +79,9 @@ pub(crate) fn prepared_rvm_runtime() -> Result<Option<PreparedRvmRuntime>, CutEr
 pub(crate) fn prepared_matte_runtime(
     model: &MatteModel,
 ) -> Result<Option<PreparedMatteRuntime>, CutError> {
+    if cut_perception::native_runtime_context()?.is_none() {
+        return Ok(None);
+    }
     let sidecar = match model {
         MatteModel::Rvm => cut_perception::sidecar_runtime()?,
         MatteModel::Matanyone => cut_perception::premium_sidecar_runtime()?,

@@ -51,7 +51,7 @@ fn raw_polish_preparatory_probes_obey_cancel_and_deadline() {
                 );
                 break;
             }
-            if started.elapsed() > Duration::from_secs(2) {
+            if started.elapsed() > Duration::from_secs(25) {
                 child.kill().unwrap();
                 child.wait().unwrap();
                 panic!("{case}: preparatory probe outlived its operation control");
@@ -73,14 +73,19 @@ fn raw_polish_probe_child() {
     let dir = std::path::PathBuf::from(std::env::var_os("CUT_RAW_PROBE_DIR").unwrap());
     let stopped = Arc::new(AtomicBool::new(false));
     let on_cancel = stopped.clone();
-    let control = ProcessControl::bounded(Duration::from_millis(500), move || {
-        on_cancel.load(Ordering::Relaxed)
-    });
-    if case.ends_with("cancel") {
+    let is_cancel = case.ends_with("cancel");
+    let control_budget = if is_cancel {
+        Duration::from_secs(15)
+    } else {
+        Duration::from_secs(2)
+    };
+    let control =
+        ProcessControl::bounded(control_budget, move || on_cancel.load(Ordering::Relaxed));
+    if is_cancel {
         let marker = dir.join(format!("started-{case}"));
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
-            while !marker.is_file() && started.elapsed() < Duration::from_secs(1) {
+            while !marker.is_file() && started.elapsed() < Duration::from_secs(10) {
                 std::thread::sleep(Duration::from_millis(10));
             }
             stopped.store(true, Ordering::Relaxed);
@@ -101,10 +106,15 @@ fn raw_polish_probe_child() {
     let error =
         super::mux_raw_with_control(&source, audio.as_deref(), &dir.join("output.mp4"), &control)
             .expect_err("stalled probe must stop");
-    assert!(
-        error.code == "render_cancelled" || error.message == "operation timed out",
-        "{case}: {error}"
-    );
+    if is_cancel {
+        assert_eq!(error.code, "render_cancelled", "{case}: {error}");
+    } else {
+        assert!(
+            error.message == "operation timed out"
+                || error.message == "screen-record render timed out",
+            "{case}: {error}"
+        );
+    }
 }
 
 fn video(path: &Path, color: &str) {

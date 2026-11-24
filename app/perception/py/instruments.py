@@ -72,6 +72,8 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+import attempt_evidence
+import silence_enhancement
 from native_runtime_models import NativeRuntimeModelError, context_requested, parakeet_directory
 # The review's no-follow file helpers, imported as part of the judge/ folder
 # beside this file (adding judge/ itself to sys.path would hide that package
@@ -132,6 +134,7 @@ def log(msg: str) -> None:
 
 def die(code: str, message: str, cause: str):
     """Emit the error contract on the REAL stdout and exit nonzero."""
+    attempt_evidence.fatal(code, message, cause)
     print(json.dumps({"error": {"code": code, "message": message, "cause": cause}}),
           file=REAL_STDOUT, flush=True)
     sys.exit(1)
@@ -206,11 +209,11 @@ def has_video_stream(path: str) -> bool:
     they are skipped (and dropped from instruments_run, keeping the cache
     honest) when no video stream exists. The Rust side normally never
     requests them for kind=="audio"; this guard covers direct CLI use."""
-    proc = subprocess.run(
+    proc = attempt_evidence.stream_probe("video", lambda: subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "v",
          "-show_entries", "stream=codec_type", "-of", "csv=p=0", *input_args(path)],
         capture_output=True, text=True,
-    )
+    ))
     return proc.returncode == 0 and proc.stdout.strip() != ""
 
 
@@ -223,11 +226,11 @@ def has_audio_stream(path: str) -> bool:
     no narration) and a legitimately SILENT render are normal inputs, so those
     instruments are skipped (and dropped from instruments_run, keeping the cache
     honest) rather than failing the whole job."""
-    proc = subprocess.run(
+    proc = attempt_evidence.stream_probe("audio", lambda: subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
          "-show_entries", "stream=codec_type", "-of", "csv=p=0", *input_args(path)],
         capture_output=True, text=True,
-    )
+    ))
     return proc.returncode == 0 and proc.stdout.strip() != ""
 
 
@@ -768,6 +771,7 @@ PARAKEET_WEAK_LANGS = {
 }
 
 
+@attempt_evidence.instrument("words")
 def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
     """Word-level transcript. PRIMARY engine: NVIDIA Parakeet-TDT via ONNX
     (onnx-asr) — native word timestamps, no torch, immune to the torch>=2.6
@@ -794,7 +798,8 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
             raise NativeRuntimeModelError("the preferred Canary/MMS_FA language route needs a prepared local consumer")
         if selected and selected not in {"nemo-parakeet-tdt-0.6b-v2", "nemo-parakeet-tdt-0.6b-v3"}:
             raise NativeRuntimeModelError(f"STT model has no prepared local consumer: {selected}")
-        return _words_via_parakeet(media_path, asset_id, model_override=selected or STT_MODEL_DEFAULT)
+        with attempt_evidence.attempt("words", "parakeet"):
+            return _words_via_parakeet(media_path, asset_id, model_override=selected or STT_MODEL_DEFAULT)
     force_whisper = False
     explicit_whisper = False
     canary_failed = False
@@ -810,7 +815,8 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
         explicit_whisper = True
     elif _selected_is_canary(selected):
         try:
-            return _words_via_canary(media_path, asset_id)
+            with attempt_evidence.attempt("words", "canary"):
+                return _words_via_canary(media_path, asset_id)
         except Exception as e:  # noqa: BLE001 — degrade to the timestamped fallback chain
             canary_failed = True
             force_whisper = True
@@ -821,13 +827,13 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
         # model -> prefer Canary-1B-v2 + MMS_FA timestamps. SOFT preference: if
         # Canary or whisperX are unavailable, fall back to Parakeet at the end.
         try:
-            return _words_via_canary(media_path, asset_id)
+            with attempt_evidence.attempt("words", "canary"):
+                return _words_via_canary(media_path, asset_id)
         except Exception as e:  # noqa: BLE001
             canary_failed = True
             force_whisper = True
             model_name = "large-v3"
-            log(
-                f"words: language '{lang_hint}' Canary/MMS_FA unavailable ({e!r}) "
+            log(f"words: language '{lang_hint}' Canary/MMS_FA unavailable ({e!r}) "
                 "— falling back to whisperx large-v3"
             )
 
@@ -838,7 +844,8 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
     parakeet_tried = False
     if not force_whisper:
         try:
-            return _words_via_parakeet(media_path, asset_id)
+            with attempt_evidence.attempt("words", "parakeet"):
+                return _words_via_parakeet(media_path, asset_id)
         except Exception as e:  # noqa: BLE001 — degrade to the whisper fallback chain
             parakeet_tried = True
             log(f"words: parakeet/onnx-asr unavailable ({e!r}) — falling back to whisperx")
@@ -854,83 +861,85 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
         compute = "float16" if device == "cuda" else "int8"
         # --- primary engine: whisperX ----------------------------------
         try:
-            import whisperx
+            with attempt_evidence.attempt("words", f"whisperx@{device}"):
+                import whisperx
 
-            # SHELLX_CUT_STT_LANG pins the language for the whisperX
-            # fallback; unset → whisperX auto-detects (its default).
-            lang_hint = (os.environ.get("SHELLX_CUT_STT_LANG") or "").strip() or None
-            log(f"words: whisperx model={model_name} device={device} lang={lang_hint or 'auto'}")
-            wmodel = whisperx.load_model(model_name, device, compute_type=compute)
-            # Decoded by Cut's own local-only ffmpeg route: whisperX's loader
-            # would open the path with no protocol or format limits.
-            audio = _decode_audio_16k_float(media_path)
-            result = wmodel.transcribe(audio, batch_size=8, language=lang_hint)
-            # No detectable speech (music/tone/ambient/applause) is a LEGITIMATE
-            # input, not an error — return zero words honestly instead of running
-            # forced alignment, which IndexErrors on empty segments and used to
-            # fail the whole import chain. This is the no-speech regression path.
-            if not result.get("segments"):
-                log(f"words: no speech detected (whisperx, {device}) — empty transcript")
+                # SHELLX_CUT_STT_LANG pins the language for the whisperX
+                # fallback; unset → whisperX auto-detects (its default).
+                lang_hint = (os.environ.get("SHELLX_CUT_STT_LANG") or "").strip() or None
+                log(f"words: whisperx model={model_name} device={device} lang={lang_hint or 'auto'}")
+                wmodel = whisperx.load_model(model_name, device, compute_type=compute)
+                # Decoded by Cut's own local-only ffmpeg route: whisperX's loader
+                # would open the path with no protocol or format limits.
+                audio = _decode_audio_16k_float(media_path)
+                result = wmodel.transcribe(audio, batch_size=8, language=lang_hint)
+                # No detectable speech (music/tone/ambient/applause) is a LEGITIMATE
+                # input, not an error — return zero words honestly instead of running
+                # forced alignment, which IndexErrors on empty segments and used to
+                # fail the whole import chain. This is the no-speech regression path.
+                if not result.get("segments"):
+                    log(f"words: no speech detected (whisperx, {device}) — empty transcript")
+                    return {
+                        "asset": asset_id,
+                        "model": f"whisperx-{model_name}@{device}",
+                        "language": result.get("language"),
+                        "words": [],
+                    }
+                align_model, meta = whisperx.load_align_model(
+                    language_code=result["language"], device=device
+                )
+                aligned = whisperx.align(
+                    result["segments"], align_model, meta, audio, device,
+                    return_char_alignments=False,
+                )
+                words = []
+                for w in aligned.get("word_segments", []):
+                    # Alignment occasionally yields words without timestamps
+                    # (digits, OOV) — skip them rather than invent timings.
+                    if "start" not in w or "end" not in w:
+                        continue
+                    words.append({
+                        "idx": len(words),
+                        "word": w["word"].strip(),
+                        "start_ms": int(w["start"] * 1000),
+                        "end_ms": int(w["end"] * 1000),
+                        "confidence": round(finite_float(w.get("score", 0.0), 0.0), 4) or None,
+                    })
                 return {
                     "asset": asset_id,
                     "model": f"whisperx-{model_name}@{device}",
                     "language": result.get("language"),
-                    "words": [],
+                    "words": words,
                 }
-            align_model, meta = whisperx.load_align_model(
-                language_code=result["language"], device=device
-            )
-            aligned = whisperx.align(
-                result["segments"], align_model, meta, audio, device,
-                return_char_alignments=False,
-            )
-            words = []
-            for w in aligned.get("word_segments", []):
-                # Alignment occasionally yields words without timestamps
-                # (digits, OOV) — skip them rather than invent timings.
-                if "start" not in w or "end" not in w:
-                    continue
-                words.append({
-                    "idx": len(words),
-                    "word": w["word"].strip(),
-                    "start_ms": int(w["start"] * 1000),
-                    "end_ms": int(w["end"] * 1000),
-                    "confidence": round(finite_float(w.get("score", 0.0), 0.0), 4) or None,
-                })
-            return {
-                "asset": asset_id,
-                "model": f"whisperx-{model_name}@{device}",
-                "language": result.get("language"),
-                "words": words,
-            }
         except Exception as e:  # noqa: BLE001 — fall through to next engine
             last_err = e
             log(f"words: whisperx failed on {device} ({e!r}) — trying faster-whisper")
         # --- documented fallback: faster-whisper ------------------------
         try:
-            from faster_whisper import WhisperModel
+            with attempt_evidence.attempt("words", f"faster_whisper@{device}"):
+                from faster_whisper import WhisperModel
 
-            log(f"words: faster-whisper model={model_name} device={device}")
-            fw = WhisperModel(model_name, device=device, compute_type=compute)
-            # Same decoded samples: faster-whisper would otherwise open the
-            # path itself through PyAV with no protocol or format limits.
-            segments, info = fw.transcribe(_decode_audio_16k_float(media_path), word_timestamps=True)
-            words = []
-            for seg in segments:
-                for w in seg.words or []:
-                    words.append({
-                        "idx": len(words),
-                        "word": w.word.strip(),
-                        "start_ms": int(w.start * 1000),
-                        "end_ms": int(w.end * 1000),
-                        "confidence": round(finite_float(w.probability, 0.0), 4),
-                    })
-            return {
-                "asset": asset_id,
-                "model": f"faster-whisper-{model_name}@{device}",
-                "language": getattr(info, "language", None),
-                "words": words,
-            }
+                log(f"words: faster-whisper model={model_name} device={device}")
+                fw = WhisperModel(model_name, device=device, compute_type=compute)
+                # Same decoded samples: faster-whisper would otherwise open the
+                # path itself through PyAV with no protocol or format limits.
+                segments, info = fw.transcribe(_decode_audio_16k_float(media_path), word_timestamps=True)
+                words = []
+                for seg in segments:
+                    for w in seg.words or []:
+                        words.append({
+                            "idx": len(words),
+                            "word": w.word.strip(),
+                            "start_ms": int(w.start * 1000),
+                            "end_ms": int(w.end * 1000),
+                            "confidence": round(finite_float(w.probability, 0.0), 4),
+                        })
+                return {
+                    "asset": asset_id,
+                    "model": f"faster-whisper-{model_name}@{device}",
+                    "language": getattr(info, "language", None),
+                    "words": words,
+                }
         except Exception as e:  # noqa: BLE001 — try the next device
             last_err = e
             log(f"words: faster-whisper failed on {device} ({e!r})")
@@ -941,7 +950,8 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
         try:
             log("words: whisper unavailable — last-resort Parakeet (low quality for this language)")
             fallback_model = STT_MODEL_DEFAULT if canary_failed else None
-            return _words_via_parakeet(media_path, asset_id, fallback_model)
+            with attempt_evidence.attempt("words", "parakeet.fallback"):
+                return _words_via_parakeet(media_path, asset_id, fallback_model)
         except Exception as e:  # noqa: BLE001
             last_err = e
     die("sidecar", "all transcription engines failed", repr(last_err))
@@ -973,40 +983,17 @@ def _ffmpeg_silences(media_path: str) -> list:
     return spans
 
 
+@attempt_evidence.instrument("silence")
 def instrument_silence(media_path: str, wav16k: str) -> list:
     """Silero-vad speech spans inverted to silences, cross-checked against
     ffmpeg silencedetect. source = both|silero|ffmpeg (overlap >= 50% of the
     shorter span counts as agreement). Silero is a quality enhancement, not a
     hard dependency: final-render verification must still measure FFmpeg's
     objective silence spans on a base-only perception install."""
-    ffm = _ffmpeg_silences(media_path)
+    with attempt_evidence.attempt("silence", "ffmpeg.silencedetect"):
+        ffm = _ffmpeg_silences(media_path)
     try:
-        import soundfile as sf
-        import torch
-        from silero_vad import load_silero_vad, get_speech_timestamps
-
-        log("silence: silero-vad")
-        model = load_silero_vad()
-        data, sr = sf.read(wav16k, dtype="float32")
-        if getattr(data, "ndim", 1) > 1:
-            data = data.mean(axis=1)
-        if sr != 16000:
-            raise RuntimeError(f"expected 16 kHz extracted wav, got {sr}")
-        wav = torch.from_numpy(data.copy())  # 16 kHz mono tensor; avoids torchaudio I/O.
-        speech = get_speech_timestamps(wav, model)  # [{start,end}] in samples
-        total_ms = int(len(wav) / 16000 * 1000)
-
-        # Invert speech → silence (gaps + head + tail), min span SILENCE_MIN_S.
-        min_ms = int(SILENCE_MIN_S * 1000)
-        silero = []
-        cursor = 0
-        for s in speech:
-            start_ms, end_ms = int(s["start"] / 16), int(s["end"] / 16)
-            if start_ms - cursor >= min_ms:
-                silero.append((cursor, start_ms))
-            cursor = end_ms
-        if total_ms - cursor >= min_ms:
-            silero.append((cursor, total_ms))
+        silero = silence_enhancement.silences(wav16k, SILENCE_MIN_S, log)
     except Exception as e:  # optional full-perception stack
         log(f"silence: silero unavailable ({e!r}) — using ffmpeg silencedetect")
         return [
@@ -1165,34 +1152,38 @@ def _ffmpeg_scene_cuts(media_path: str) -> list:
     return cuts
 
 
+@attempt_evidence.instrument("scenes")
 def instrument_scenes(media_path: str):
     """Returns (scene_cuts, black_spans, frozen_spans)."""
     try:
-        from scenedetect import SceneManager
-        from scenedetect.detectors import ContentDetector
+        with attempt_evidence.attempt("scenes", "pyscenedetect"):
+            from scenedetect import SceneManager
+            from scenedetect.detectors import ContentDetector
 
-        log("scenes: pyscenedetect ContentDetector")
-        video = scene_video(media_path)
-        sm = SceneManager()
-        sm.add_detector(ContentDetector())
-        sm.detect_scenes(video)
-        scene_list = sm.get_scene_list()
-        # Cuts are the starts of every scene after the first.
-        cuts = [
-            {"at_ms": int(start.get_seconds() * 1000), "score": None}
-            for start, _ in scene_list[1:]
-        ]
+            log("scenes: pyscenedetect ContentDetector")
+            video = scene_video(media_path)
+            sm = SceneManager()
+            sm.add_detector(ContentDetector())
+            sm.detect_scenes(video)
+            scene_list = sm.get_scene_list()
+            # Cuts are the starts of every scene after the first.
+            cuts = [
+                {"at_ms": int(start.get_seconds() * 1000), "score": None}
+                for start, _ in scene_list[1:]
+            ]
     except Exception as e:  # scenedetect is an optional full-perception extra
         log(f"scenes: pyscenedetect unavailable ({e!r}) — using ffmpeg")
-        cuts = _ffmpeg_scene_cuts(media_path)
+        with attempt_evidence.attempt("scenes", "ffmpeg.select"):
+            cuts = _ffmpeg_scene_cuts(media_path)
 
     log("scenes: blackdetect + freezedetect")
-    stderr = run_ffmpeg([
-        *input_args(media_path), "-an",
-        "-vf", f"blackdetect=d={BLACKDETECT_MIN_S}:pix_th=0.10,"
-               f"freezedetect=n=-60dB:d={FREEZEDETECT_MIN_S}",
-        "-f", "null", "-",
-    ])
+    with attempt_evidence.attempt("scenes", "ffmpeg.blackdetect"):
+        stderr = run_ffmpeg([
+            *input_args(media_path), "-an",
+            "-vf", f"blackdetect=d={BLACKDETECT_MIN_S}:pix_th=0.10,"
+                   f"freezedetect=n=-60dB:d={FREEZEDETECT_MIN_S}",
+            "-f", "null", "-",
+        ])
     black, frozen = [], []
     for line in stderr.splitlines():
         m = re.search(r"black_start:([\d.]+)\s+black_end:([\d.]+)", line)
@@ -1220,8 +1211,14 @@ def instrument_scenes(media_path: str):
 # beats — lightweight energy peak grid
 # ---------------------------------------------------------------------------
 
+@attempt_evidence.instrument("beats")
 def instrument_beats(wav16k: str) -> dict:
     """Approximate beat grid over extracted mono audio without native JIT paths."""
+    with attempt_evidence.attempt("beats", "numpy"):
+        return _instrument_beats_numpy(wav16k)
+
+
+def _instrument_beats_numpy(wav16k: str) -> dict:
     import wave
     import numpy as np
 
@@ -1283,13 +1280,15 @@ def instrument_beats(wav16k: str) -> dict:
 # loudness — ffmpeg ebur128
 # ---------------------------------------------------------------------------
 
+@attempt_evidence.instrument("loudness")
 def instrument_loudness(media_path: str) -> dict:
     """ebur128 integrated LUFS + true peak + ~1s momentary windows."""
     log("loudness: ebur128")
-    stderr = run_ffmpeg([
-        *input_args(media_path), "-vn",
-        "-af", "ebur128=peak=true", "-f", "null", "-",
-    ])
+    with attempt_evidence.attempt("loudness", "ffmpeg.ebur128"):
+        stderr = run_ffmpeg([
+            *input_args(media_path), "-vn",
+            "-af", "ebur128=peak=true", "-f", "null", "-",
+        ])
     # Per-frame lines: "t: 1.00237 ... M: -18.1 S: ... I: -17.9 LUFS ..."
     windows, last_bucket = [], -1
     for line in stderr.splitlines():
@@ -1861,6 +1860,7 @@ def _mouth_roi_gray(frame_bgr, fb):
     ).astype(np.float32)
 
 
+@attempt_evidence.instrument("subject")
 def instrument_subject(media_path: str, preset: str = "talking_head", director=None) -> dict:
     """Build the SubjectTrack for auto-reframe (app/perception/src/types.rs).
 
@@ -1912,18 +1912,20 @@ def instrument_subject(media_path: str, preset: str = "talking_head", director=N
         die("sidecar", "subject: no decodable video geometry", media_path)
 
     # Scene starts (0-based frame indices) — the render resets the crop at each.
-    from scenedetect import SceneManager
-    from scenedetect.detectors import ContentDetector
-    sm = SceneManager()
-    sm.add_detector(ContentDetector())
-    sm.detect_scenes(scene_video(media_path))
-    # FrameTimecode → 0-based start frame (frame_num in scenedetect 0.7+, get_frames older).
-    def _start_frame(tc):
-        return tc.frame_num if hasattr(tc, "frame_num") else tc.get_frames()
-    scene_starts = sorted({0} | {_start_frame(s) for s, _ in sm.get_scene_list()[1:]})
-    scene_set = set(scene_starts)
+    with attempt_evidence.attempt("subject", "pyscenedetect"):
+        from scenedetect import SceneManager
+        from scenedetect.detectors import ContentDetector
+        sm = SceneManager()
+        sm.add_detector(ContentDetector())
+        sm.detect_scenes(scene_video(media_path))
+        # FrameTimecode → 0-based start frame (frame_num in scenedetect 0.7+, get_frames older).
+        def _start_frame(tc):
+            return tc.frame_num if hasattr(tc, "frame_num") else tc.get_frames()
+        scene_starts = sorted({0} | {_start_frame(s) for s, _ in sm.get_scene_list()[1:]})
+        scene_set = set(scene_starts)
 
-    predict, model_name = _load_detector(quality, device)
+    with attempt_evidence.attempt("subject", "torchvision"):
+        predict, model_name = _load_detector(quality, device)
     face = _load_face_detector()  # None → body/saliency framing (graceful)
     face_aware = face is not None
     face_backend = _face_backend(face)
@@ -2164,6 +2166,7 @@ def instrument_subject(media_path: str, preset: str = "talking_head", director=N
     return out
 
 
+@attempt_evidence.instrument("contact_sheet")
 def build_contact_sheet(media_path: str, preset: str = "talking_head", out_dir=None) -> dict:
     """DIRECTOR pass — the sparse input the
     foundation model reads to direct the whole clip in ONE call.
@@ -2320,6 +2323,7 @@ _QC_OFFCENTER = 0.22   # |face_cx - 0.5| above this ⇒ subject pushed to the ed
 _QC_HEAD_CUT = 0.02    # face-top normalized y below this ⇒ head clipped at the top
 
 
+@attempt_evidence.instrument("qc_sheet")
 def build_qc_sheet(media_path: str, preset: str = "talking_head", out_dir=None) -> dict:
     """Director QC pass — review the REFRAMED
     OUTPUT and surface what to fix. Samples one keyframe per scene of the finished
@@ -2537,22 +2541,28 @@ def main() -> int:
     if unknown:
         die("sidecar", "unknown instruments requested",
             f"{unknown}; valid: {ALL_INSTRUMENTS}")
-    # audio-only media guard: never run video instruments on a file with no video stream
-    # (see has_video_stream). instruments_run reflects what ACTUALLY ran. `subject`
-    # (auto-reframe) is video-only too — drop it on an audio-only file.
-    video_only = ("scenes", "subject")
-    if any(i in instruments for i in video_only) and not has_video_stream(media):
-        log("video instruments skipped — no video stream in input (audio-only file)")
-        instruments = [i for i in instruments if i not in video_only]
-    # Symmetric guard for AUDIO instruments: a video-only clip or a legitimately
-    # silent render has no audio stream, so words/silence/beats/loudness are
-    # skipped (and dropped from instruments_run) instead of crashing the job.
-    # No-audio regression coverage includes b-roll, music-less screen demos,
-    # and silent renders.
-    audio_instruments = ("words", "silence", "beats", "loudness")
-    if any(i in instruments for i in audio_instruments) and not has_audio_stream(media):
-        log("audio instruments skipped — no audio stream in input")
-        instruments = [i for i in instruments if i not in audio_instruments]
+    if req.get("contact_sheet") is not None:
+        attempt_evidence.requested(["contact_sheet"])
+    elif req.get("qc_sheet") is not None:
+        attempt_evidence.requested(["qc_sheet"])
+    else:
+        attempt_evidence.requested(instruments)
+        # audio-only media guard: never run video instruments on a file with no video stream
+        # (see has_video_stream). instruments_run reflects what ACTUALLY ran. `subject`
+        # (auto-reframe) is video-only too — drop it on an audio-only file.
+        video_only = ("scenes", "subject")
+        if any(i in instruments for i in video_only) and not has_video_stream(media):
+            log("video instruments skipped — no video stream in input (audio-only file)")
+            instruments = [i for i in instruments if i not in video_only]
+        # Symmetric guard for AUDIO instruments: a video-only clip or a legitimately
+        # silent render has no audio stream, so words/silence/beats/loudness are
+        # skipped (and dropped from instruments_run) instead of crashing the job.
+        # No-audio regression coverage includes b-roll, music-less screen demos,
+        # and silent renders.
+        audio_instruments = ("words", "silence", "beats", "loudness")
+        if any(i in instruments for i in audio_instruments) and not has_audio_stream(media):
+            log("audio instruments skipped — no audio stream in input")
+            instruments = [i for i in instruments if i not in audio_instruments]
     asset_id = req.get("asset_id", Path(media).stem)
     model_name = req.get("whisper_model") or "small"
     subject_preset = req.get("subject_preset") or "talking_head"
@@ -2590,7 +2600,12 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="cut-perception-") as tmpdir:
         needs_wav = any(i in instruments for i in ("silence", "beats"))
-        wav16k = extract_wav16k(media, tmpdir) if needs_wav else None
+        if needs_wav:
+            wav_owner = "silence" if "silence" in instruments else "beats"
+            with attempt_evidence.attempt(wav_owner, "ffmpeg.extract_wav16k"):
+                wav16k = extract_wav16k(media, tmpdir)
+        else:
+            wav16k = None
         # Per-instrument PROGRESS so the enrich job never sits at a FROZEN number
         # while the perception battery runs. Scene-detect on a multi-GB file is the
         # bottleneck; emitting before each instrument keeps the label + % moving
@@ -2616,7 +2631,8 @@ def main() -> int:
             # (video-only) instrument so audio-only assets never trigger it
             # (the has_video_stream gate above already dropped "scenes" for
             # them — preserves the audio-only media guard).
-            report["content_bbox"] = detect_content_bbox(media)
+            with attempt_evidence.attempt("scenes", "ffmpeg.cropdetect"):
+                report["content_bbox"] = detect_content_bbox(media)
             _done += 1
         if "beats" in instruments:
             _emit_progress(_done / _total, "perception:beats")

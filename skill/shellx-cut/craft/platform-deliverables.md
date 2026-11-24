@@ -74,7 +74,8 @@ Two paths, cheap-to-considered:
 
 1. **Fast reframe (same project, no re-cut):** `render.final{aspect:"9:16"}`
    (or `"1:1"`/`"4:5"`/explicit `width`+`height`) renders the SAME cut at a new
-   geometry WITHOUT mutating the project — defaults `fit:cover` (centre-crop).
+   geometry WITHOUT mutating the project — defaults `fit:contain` (whole picture
+   with bars, matching preview). Pass `fit:cover` for a centre-crop.
    Render 16:9 for YouTube AND 9:16 for Shorts from one timeline in two calls.
    `render.final{dry_run:true, aspect:"9:16"}` shows the geometry first. Best
    when the subject sits centre-frame (most talking-heads) and you want the

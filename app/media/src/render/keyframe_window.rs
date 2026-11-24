@@ -25,20 +25,51 @@ pub(super) fn points(
     Some((points, interp))
 }
 
-pub(super) fn opacity(seg: &EdlSegment, fps: f64) -> String {
-    if offset(seg, fps) == 0.0 {
-        return super::opacity_kf_filter(&seg.keyframes);
-    }
-    match points(seg, KfParam::Opacity, fps) {
-        Some((points, interp)) if !points.is_empty() => format!(
-            ",geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*clip(({}),0,1)'",
-            super::kf_expr(&points, "T", interp)
-        ),
-        _ => String::new(),
-    }
+pub(super) fn opacity_cmd(
+    seg: &EdlSegment,
+    fps: f64,
+    dur_ms: u64,
+    uniq: &str,
+    keep_hdr: bool,
+    cmd_files: Option<&mut Vec<tempfile::TempPath>>,
+) -> Result<String, cut_core::CutError> {
+    let Some((pts, interp)) = points(seg, KfParam::Opacity, fps) else {
+        return Ok(String::new());
+    };
+    super::keyframe_cmd::opacity_kf_filter_cmd(&pts, interp, fps, dur_ms, uniq, keep_hdr, cmd_files)
 }
 
-pub(super) fn scale(seg: &EdlSegment, w: u32, h: u32, fps: f64, duration: u64) -> Option<String> {
+/// Whether `param`'s curve is longer than the released expression could hold
+/// ([`MAX_KEYFRAME_POINTS`](cut_core::keyframe_limit::MAX_KEYFRAME_POINTS)).
+pub(super) fn long(seg: &EdlSegment, param: KfParam) -> bool {
+    seg.keyframes
+        .iter()
+        .any(|k| k.param == param && k.points.len() > cut_core::keyframe_limit::MAX_KEYFRAME_POINTS)
+}
+
+/// Animated zoom. Curves the released expression could hold (at most
+/// [`MAX_KEYFRAME_POINTS`](cut_core::keyframe_limit::MAX_KEYFRAME_POINTS)) keep
+/// its exact `zoompan` graph, so saved projects render unchanged; longer
+/// curves read a per-frame crop from a command file.
+pub(super) fn scale_cmd(
+    seg: &EdlSegment,
+    w: u32,
+    h: u32,
+    fps: f64,
+    dur_ms: u64,
+    uniq: &str,
+    cmd_files: Option<&mut Vec<tempfile::TempPath>>,
+) -> Result<Option<String>, cut_core::CutError> {
+    let Some((pts, interp)) = points(seg, KfParam::Scale, fps) else {
+        return Ok(None);
+    };
+    if !long(seg, KfParam::Scale) {
+        return Ok(scale(seg, w, h, fps, dur_ms));
+    }
+    super::keyframe_cmd::scale_kf_cmd(&pts, interp, w, h, fps, dur_ms, uniq, cmd_files)
+}
+
+fn scale(seg: &EdlSegment, w: u32, h: u32, fps: f64, duration: u64) -> Option<String> {
     if offset(seg, fps) == 0.0 {
         return super::scale_kf_zoompan(&seg.keyframes, w, h, fps, duration);
     }

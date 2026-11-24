@@ -349,3 +349,80 @@ fn retry_completes_after_a_partial_no_replace_failure() {
     assert_eq!(stager.calls, 2);
     assert!(fixture.capture.join("project.json").is_file());
 }
+
+#[test]
+fn legacy_pause_projection_records_probed_media_cadence_and_retries_idempotently() {
+    let mut fixture = fixture();
+    let intent = RecordingSessionIntent::new(
+        "pause-session",
+        1,
+        100,
+        30.0,
+        None,
+        false,
+        "opaque-target",
+        vec![RecordingStream::ScreenVideo],
+    )
+    .with_capture_cadence(record_core::CaptureCadence::from_server_fps(30.0).unwrap());
+    let temp = tempfile::tempdir().unwrap();
+    let root = record_recovery::CaptureRoot::for_project(temp.path()).unwrap();
+    let capture = root.create_capture_dir(CAPTURE_ID).unwrap();
+    let screen = capture.join("screen");
+    std::fs::create_dir(&screen).unwrap();
+    let first = b"sealed-run-zero";
+    let second = b"sealed-run-one";
+    std::fs::write(screen.join("run-0.mp4"), first).unwrap();
+    std::fs::write(screen.join("run-1.mp4"), second).unwrap();
+    let mut journal_file =
+        RecordingSessionJournalFile::create_new(&root, CAPTURE_ID, intent).unwrap();
+    journal_file
+        .append_transition(transition(0, RecordingSessionState::Started, 0, 1))
+        .unwrap();
+    journal_file
+        .seal_run(run(0, 0, 100, 0, 100, 50, 3, first))
+        .unwrap();
+    journal_file
+        .append_transition(transition(1, RecordingSessionState::Paused, 100, 120))
+        .unwrap();
+    journal_file
+        .append_transition(transition(2, RecordingSessionState::Resumed, 100, 1_100))
+        .unwrap();
+    journal_file
+        .seal_run(run(1, 100, 200, 1, 100, 100, 6, second))
+        .unwrap();
+    journal_file
+        .append_transition(transition(3, RecordingSessionState::Stopping, 200, 1_220))
+        .unwrap();
+    journal_file
+        .seal_terminal(SessionTerminal {
+            disposition: TerminalDisposition::Completed,
+            logical_end_ms: 200,
+            observed_unix_ms: 1_221,
+        })
+        .unwrap();
+    fixture._temp = temp;
+    fixture.root = root;
+    fixture.capture = capture;
+    fixture.journal = journal_file.journal().clone();
+
+    let mut stager = FakeStager::default();
+    let first_exec = execute(&fixture, &mut stager);
+    assert_eq!(first_exec.execution, PauseProjectionExecution::Published);
+    let project: record_core::RecordingProject =
+        serde_json::from_slice(&std::fs::read(fixture.capture.join("project.json")).unwrap())
+            .unwrap();
+    let probed = project
+        .capture_cadence
+        .as_ref()
+        .and_then(|c| c.probed_media.as_ref())
+        .expect("probed_media must be populated");
+    assert_eq!(probed.duration_ms, Some(200));
+    assert_eq!(probed.decoded_video_frames, Some(9));
+
+    let second_exec = execute(&fixture, &mut stager);
+    assert_eq!(
+        second_exec.execution,
+        PauseProjectionExecution::AlreadyComplete
+    );
+    assert_eq!(stager.calls, 1);
+}

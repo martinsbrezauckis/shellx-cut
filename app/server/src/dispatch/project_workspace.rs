@@ -13,7 +13,7 @@ mod project_paths;
 mod project_sync;
 use project_health::{format_reduced_warnings, project_health as project_health_read};
 pub(crate) use project_identity::project_identity as path_free_project_identity;
-use project_paths::default_projects_dir;
+pub(crate) use project_paths::default_projects_dir;
 
 /// Cache lifecycle is intentionally separate from `project.health`: the health
 /// read remains a read-only report, while explicit verbs own deterministic
@@ -104,7 +104,10 @@ pub(crate) async fn open_at_start(state: &AppState, mut store: ProjectStore) {
 /// from being started during the transition. A timed-out drain restores the
 /// previous store; a later attach failure reattaches its job persistence before
 /// restoring it.
-async fn activate_project_locked(state: &AppState, mut next: ProjectStore) -> Result<(), CutError> {
+pub(crate) async fn activate_project_locked(
+    state: &AppState,
+    mut next: ProjectStore,
+) -> Result<(), CutError> {
     let next_name = next.project.name.clone();
     // Proxies are used only once checked as this engine's own (in the background).
     let held = super::media::hold_proxies(&mut next);
@@ -287,7 +290,7 @@ pub(super) async fn project_create(
     let _transition = state.project_transition.lock().await;
     crate::screen_record::refuse_project_transition_if_active(state, None).await?;
     let cancelled = jobs_a_project_change_would_cancel(state, a.cancel_running_jobs)?;
-    let store = ProjectStore::create_with_actor(&parent, &a.name, a.settings, actor)?;
+    let store = ProjectStore::create_with_actor(&parent, &a.name, a.settings, actor.clone())?;
     let starter_asset_path = match a.starter {
         Some(starter) => match install_project_starter(&store, starter) {
             Ok(path) => Some(path),
@@ -308,7 +311,7 @@ pub(super) async fn project_create(
         let project_dir = store.dir.clone();
         drop(store);
         rollback_created_project(&project_dir);
-        return Err(error.into());
+        return Err(crate::projects_index::refusal(error));
     }
     let op_id = store
         .log
@@ -323,14 +326,18 @@ pub(super) async fn project_create(
         rollback_created_project(&project_dir);
         return Err(error);
     }
-    Ok(VerbResult::ok_with_ops(
-        with_cancelled_jobs(payload, &cancelled),
-        vec![op_id],
+    Ok(crate::projects_index::with_rebuilt_notice_for(
+        VerbResult::ok_with_ops(with_cancelled_jobs(payload, &cancelled), vec![op_id]),
+        &actor,
     ))
 }
 
 /// project.open{path} → loads (or rebuilds) the project.
-pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+pub(super) async fn project_open(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         path: String,
@@ -354,7 +361,7 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     let recent_duration = store.project.duration_ms();
     let project_revision = store.log.current_revision()?;
     // Item 141: a format larger than Cut makes was reduced while opening.
-    let format_warnings = format_reduced_warnings(store.open_health());
+    let mut warnings = format_reduced_warnings(store.open_health());
     let mut payload = json!({
         "path": store.dir,
         "project": store.project,
@@ -362,25 +369,52 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     });
     let project_dir = store.dir.clone();
     activate_project_locked(state, store).await?;
-    // Interrupted recordings are prepared in a background job of the newly
-    // active project; opening never waits for that work.
-    let recovery_job = crate::screen_record::recovery::background::start(state, &project_dir)?;
-    payload["recovery_scan"] =
-        crate::screen_record::recovery::background::started_report(recovery_job);
-    // Only an accepted open may register or refresh the recent-project entry.
-    crate::projects_index::note_opened(
+    // Once active (and ProjectChanged published), nothing below may return an
+    // error and leave the caller believing the old project stayed open.
+    match crate::screen_record::recovery::background::start(state, &project_dir) {
+        Ok(recovery_job) => {
+            payload["recovery_scan"] =
+                crate::screen_record::recovery::background::started_report(recovery_job);
+        }
+        Err(error) => {
+            payload["recovery_scan"] =
+                crate::screen_record::recovery::background::started_report(None);
+            warnings.push(post_open_warning("recovery_scan_failed", error));
+        }
+    }
+    if let Err(error) = crate::projects_index::note_opened(
         &recent_name,
         &project_dir.to_string_lossy(),
         Some(recent_duration),
         Some(clips),
-    )?;
-    Ok(VerbResult::ok(with_cancelled_jobs(payload, &cancelled)).with_warnings(format_warnings))
+    ) {
+        warnings.push(post_open_warning(
+            "projects_index_unavailable",
+            crate::projects_index::refusal(error),
+        ));
+    }
+    warnings.extend(crate::projects_index::rebuilt_notice_for(&actor));
+    Ok(VerbResult::ok(with_cancelled_jobs(payload, &cancelled)).with_warnings(warnings))
+}
+
+fn post_open_warning(code: &str, error: CutError) -> cut_core::VerbWarning {
+    let mut detail = serde_json::Map::new();
+    detail.insert("error_code".into(), json!(error.code));
+    detail.insert("cause".into(), json!(error.cause));
+    if let Some(action) = error.suggested_action {
+        detail.insert("suggested_action".into(), json!(action));
+    }
+    cut_core::VerbWarning {
+        code: code.into(),
+        message: error.message,
+        detail,
+    }
 }
 
 /// project.list{sort?, q?} → the recent-projects index, reconciled against the
 /// managed projects dir + the filesystem (missing `.cutproj`s flagged, un-indexed
 /// ones discovered). READ-ONLY discovery — the reopen itself is `project.open`.
-pub(super) async fn project_list(args: Value) -> Result<VerbResult, CutError> {
+pub(super) async fn project_list(args: Value, actor: Actor) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize, Default)]
     struct Args {
         sort: Option<String>,
@@ -389,8 +423,12 @@ pub(super) async fn project_list(args: Value) -> Result<VerbResult, CutError> {
     let a: Args = parse_args(args)?;
     let sort = a.sort.as_deref().unwrap_or("recent");
     let managed = default_projects_dir()?;
-    let projects = crate::projects_index::list(&managed, sort, a.q.as_deref())?;
-    Ok(VerbResult::ok(json!({ "projects": projects })))
+    let projects = crate::projects_index::list(&managed, sort, a.q.as_deref())
+        .map_err(crate::projects_index::refusal)?;
+    Ok(crate::projects_index::with_rebuilt_notice_for(
+        VerbResult::ok(json!({ "projects": projects })),
+        &actor,
+    ))
 }
 
 /// project.forget{id?|path?} → drop a project from the recent index. Does NOT delete
@@ -417,7 +455,8 @@ pub(super) async fn project_forget(args: Value) -> Result<VerbResult, CutError> 
     // (per-entry stat — never the persisted `missing` flag, so a project on a
     // remounted drive survives). Nothing on disk is touched (forget ≠ delete).
     if a.missing {
-        let removed = crate::projects_index::forget_missing()?;
+        let removed =
+            crate::projects_index::forget_missing().map_err(crate::projects_index::refusal)?;
         return Ok(VerbResult::ok(
             json!({ "forgotten": removed > 0, "removed": removed }),
         ));
@@ -435,7 +474,7 @@ pub(super) async fn project_forget(args: Value) -> Result<VerbResult, CutError> 
             .unwrap_or(path),
         (None, None) => unreachable!("mode_count == 1 guarantees id or path here"),
     };
-    let forgotten = crate::projects_index::forget(&key)?;
+    let forgotten = crate::projects_index::forget(&key).map_err(crate::projects_index::refusal)?;
     Ok(VerbResult::ok(json!({ "forgotten": forgotten })))
 }
 
@@ -468,16 +507,18 @@ pub(super) async fn project_delete(state: &AppState, args: Value) -> Result<Verb
     let explicit_id = a.id.clone();
     let path = match (a.path, a.id) {
         (Some(p), _) => p,
-        (None, Some(id)) => crate::projects_index::path_for(&id).ok_or_else(|| {
-            CutError::new(
-                error_codes::NOT_FOUND,
-                "project not found in the index",
-                format!("no project with id {id} in the recent index"),
-            )
-            .with_suggested_action(
-                "pass the .cutproj path directly, or project.list to find the id",
-            )
-        })?,
+        (None, Some(id)) => crate::projects_index::path_for(&id)
+            .map_err(crate::projects_index::refusal)?
+            .ok_or_else(|| {
+                CutError::new(
+                    error_codes::NOT_FOUND,
+                    "project not found in the index",
+                    format!("no project with id {id} in the recent index"),
+                )
+                .with_suggested_action(
+                    "pass the .cutproj path directly, or project.list to find the id",
+                )
+            })?,
         (None, None) => {
             return Err(CutError::new(
                 error_codes::INVALID_ARGS,
@@ -526,7 +567,8 @@ pub(super) async fn project_delete(state: &AppState, args: Value) -> Result<Verb
     // the canonicalize comparison must happen now). This is what stops a stale
     // "missing" ghost from lingering when the stored creation path-string differs
     // from the canonicalized delete path (Windows casing/8.3/`\\?\` quirks).
-    let mut victim_ids = crate::projects_index::ids_for_dir(&canon);
+    let mut victim_ids =
+        crate::projects_index::ids_for_dir(&canon).map_err(crate::projects_index::refusal)?;
     if let Some(id) = explicit_id {
         if !victim_ids.contains(&id) {
             victim_ids.push(id);
@@ -542,10 +584,13 @@ pub(super) async fn project_delete(state: &AppState, args: Value) -> Result<Verb
     drop(open_guard);
     // Forget the captured entries by their exact ids; fall back to the legacy
     // path-string forget for any entry the id-match somehow missed.
-    let mut forgotten = crate::projects_index::forget_ids(&victim_ids)? > 0;
+    let mut forgotten =
+        crate::projects_index::forget_ids(&victim_ids).map_err(crate::projects_index::refusal)? > 0;
     if crate::projects_index::forget(&crate::projects_index::normalize_path(
         &canon.to_string_lossy(),
-    ))? {
+    ))
+    .map_err(crate::projects_index::refusal)?
+    {
         forgotten = true;
     }
     Ok(VerbResult::ok(json!({
@@ -797,8 +842,12 @@ pub(super) fn full_project_state(store: &ProjectStore, sync: Value) -> Result<Va
     Ok(v)
 }
 
-pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
-    project_sync::project_state(state, args).await
+pub(super) async fn project_state(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+) -> Result<VerbResult, CutError> {
+    project_sync::project_state(state, args, actor).await
 }
 
 fn sequence_summary(sequence: &cut_core::Sequence, active: &str) -> Value {
@@ -1080,7 +1129,8 @@ pub(super) async fn project_rename(
     let op_id = op.op_id.clone();
     let name = store.project.name.clone();
     // Keep the global index's display name in sync (the .cutproj dir is unchanged).
-    crate::projects_index::note_renamed(&store.dir.to_string_lossy(), &name)?;
+    crate::projects_index::note_renamed(&store.dir.to_string_lossy(), &name)
+        .map_err(crate::projects_index::refusal)?;
     state.events.publish(Event::OpApplied { op });
     Ok(VerbResult::ok_with_ops(
         json!({ "name": name }),

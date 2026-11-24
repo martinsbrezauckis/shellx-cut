@@ -38,6 +38,20 @@ test('Cargo artifact selection and MCP probe use the same freshly reported execu
       const probe = spawnSync(process.execPath, [resolve(root, 'scripts/mcp-probe.mjs'), '--cutd', selected.stdout.trim()], { encoding: 'utf8', timeout: 5000 })
       assert.equal(probe.status, 0, probe.stderr)
       assert.deepEqual(JSON.parse(probe.stdout).tools, ['fresh_binary'])
+
+      const budgetPass = spawnSync(process.execPath, [resolve(root, 'scripts/mcp-probe.mjs'), '--cutd', selected.stdout.trim(), '--budget'], { encoding: 'utf8', timeout: 5000 })
+      assert.equal(budgetPass.status, 0, budgetPass.stderr)
+      const parsed = JSON.parse(budgetPass.stdout)
+      assert.equal(parsed.ok, true)
+      assert.equal(parsed.maxPercent, 80)
+      assert.match(budgetPass.stderr, /tools\/list is \d+\/393216 bytes \(\d+\.\d{2}%/)
+
+      const overBudgetExe = join(directory, 'over-budget-cutd')
+      writeFileSync(overBudgetExe, `#!/usr/bin/env node\nprocess.stdin.setEncoding("utf8");let data="";process.stdin.on("data",chunk=>{data+=chunk;if(data.split("\\n").length>=3)console.log(JSON.stringify({jsonrpc:"2.0",id:2,result:{tools:[{name:"big",description:"${'x'.repeat(320_000)}"}]}}))})\n`)
+      chmodSync(overBudgetExe, 0o755)
+      const budgetFail = spawnSync(process.execPath, [resolve(root, 'scripts/mcp-probe.mjs'), '--cutd', overBudgetExe, '--budget'], { encoding: 'utf8', timeout: 5000 })
+      assert.notEqual(budgetFail.status, 0)
+      assert.equal(JSON.parse(budgetFail.stdout).ok, false)
     }
     writeFileSync(messages, `${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}\n`)
     assert.notEqual(choose().status, 0, 'ambiguous Cargo artifacts fail closed')

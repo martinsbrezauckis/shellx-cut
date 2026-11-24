@@ -166,22 +166,18 @@ impl Capture for WindowsPausePilotCapture {
         // Only the native Started fact may open the shared ordinary capture
         // clock. The normal CaptureSessionControl observes this same clock and
         // Stop terminalizes it before setting the atomic signal below.
-        let started = cfg
+        let _started = cfg
             .clock
             .as_ref()
             .map(record_capture::CaptureClock::start)
             .unwrap_or_else(Instant::now);
-        let deadline = cfg
-            .duration_ms
-            .and_then(|duration_ms| started.checked_add(Duration::from_millis(duration_ms)));
 
         let mut stop_requested = false;
         let mut acknowledgement_deadline = None;
         loop {
             let now = Instant::now();
             if !stop_requested
-                && (stop.load(Ordering::Relaxed)
-                    || deadline.is_some_and(|deadline| now >= deadline))
+                && (stop.load(Ordering::Relaxed) || session.active_duration_exhausted_at(now))
             {
                 // The session owner records terminal Stop before the native
                 // command leaves the process. Late Pause/Resume facts cannot

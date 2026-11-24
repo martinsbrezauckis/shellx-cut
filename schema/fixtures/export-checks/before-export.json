@@ -1,0 +1,764 @@
+{
+  "pass": true,
+  "risks": [],
+  "perception_assets": 0,
+  "uninstrumented_assets": [
+    "a1"
+  ],
+  "export_checks": {
+    "schema_version": 1,
+    "catalog_version": 1,
+    "phase": "before_export",
+    "at_op": "op_000001",
+    "entries": [
+      {
+        "id": "empty_tail",
+        "name": "Black ending",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "black_or_frozen",
+        "name": "Source picture",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "optional_tool_missing",
+        "result": "not checked, tools not installed",
+        "reason": "The optional tool is not installed.",
+        "suggested_action": "Install captions",
+        "action": {
+          "kind": "open_tools",
+          "label": "Install captions",
+          "tool_id": "perception"
+        },
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "slideshow_risk",
+        "name": "Long holds",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "silent_output",
+        "name": "Sound",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "error",
+        "reason_code": "check_failed",
+        "result": "could not run",
+        "reason": "Configured interpreter exited with code 1",
+        "suggested_action": "Copy details",
+        "action": {
+          "kind": "copy_details",
+          "label": "Copy details",
+          "text": "silent_output\nTool: perception; version unavailable (probe failed)\nConfigured interpreter exited with code 1\nCut: 0.6.121\nSystem: linux x86_64"
+        },
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [
+          {
+            "id": "perception",
+            "configured": true,
+            "status": "damaged",
+            "version": null,
+            "version_reason": "Version probe failed",
+            "attempted": true,
+            "error": {
+              "code": "sidecar",
+              "message": "Captions tools could not start",
+              "cause": "Configured interpreter exited with code 1",
+              "suggested_action": "Repair captions tools in Settings > AI & transcription."
+            }
+          }
+        ],
+        "report_details": {
+          "check_id": "silent_output",
+          "providers": [
+            {
+              "id": "perception",
+              "configured": true,
+              "status": "damaged",
+              "version": null,
+              "version_reason": "Version probe failed",
+              "attempted": true,
+              "error": {
+                "code": "sidecar",
+                "message": "Captions tools could not start",
+                "cause": "Configured interpreter exited with code 1",
+                "suggested_action": "Repair captions tools in Settings > AI & transcription."
+              }
+            }
+          ],
+          "error": {
+            "code": "sidecar",
+            "message": "Captions tools could not start",
+            "cause": "Configured interpreter exited with code 1",
+            "suggested_action": "Repair captions tools in Settings > AI & transcription."
+          },
+          "app_version": "0.6.121",
+          "os": "linux",
+          "arch": "x86_64",
+          "at_op": "op_000001"
+        }
+      },
+      {
+        "id": "tiny_or_zero_clips",
+        "name": "Tiny clips",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "uniform_border",
+        "name": "Black borders",
+        "when": "both",
+        "mode": "automatic",
+        "state": "found",
+        "reason_code": "finding",
+        "result": "0:12 to 0:15",
+        "reason": "A problem was found from 0:12 to 0:15.",
+        "suggested_action": "Go to place",
+        "findings": [
+          {
+            "reason": "A problem was found from 0:12 to 0:15.",
+            "range_ms": [
+              12000,
+              15000
+            ],
+            "evidence": {
+              "count": 1
+            }
+          }
+        ],
+        "coverage": {
+          "applicable_assets": [
+            "a1",
+            "a2"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [
+            "a2"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "seek",
+          "label": "Go to place",
+          "at_ms": 12000
+        }
+      },
+      {
+        "id": "memory",
+        "name": "Free memory",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "disk",
+        "name": "Free space",
+        "when": "before_export",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "cut_on_word",
+        "name": "Word cuts",
+        "when": "both",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "not_run_yet",
+        "result": "not checked yet",
+        "reason": "Analysis has not been requested.",
+        "suggested_action": "Run analysis for the unchecked files.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "media.perception",
+          "args": {
+            "asset": "a1"
+          }
+        }
+      },
+      {
+        "id": "lufs",
+        "name": "Sound levels",
+        "when": "finished_file",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "after_export",
+        "result": "checked after export",
+        "reason": "This check needs the finished file.",
+        "suggested_action": "Export to check the finished file.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "caption_presence",
+        "name": "Captions",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "black_or_frozen_frames",
+        "name": "Output picture",
+        "when": "finished_file",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "after_export",
+        "result": "checked after export",
+        "reason": "This check needs the finished file.",
+        "suggested_action": "Export to check the finished file.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "silence_at_edges",
+        "name": "Sound edges",
+        "when": "finished_file",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "after_export",
+        "result": "checked after export",
+        "reason": "This check needs the finished file.",
+        "suggested_action": "Export to check the finished file.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "duration_matches_edl",
+        "name": "File length",
+        "when": "finished_file",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "after_export",
+        "result": "checked after export",
+        "reason": "This check needs the finished file.",
+        "suggested_action": "Export to check the finished file.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "cut_on_beat",
+        "name": "Music cuts",
+        "when": "both",
+        "mode": "automatic",
+        "state": "not_checked",
+        "reason_code": "unknown_older_analysis",
+        "result": "not checked yet",
+        "reason": "Older analysis did not record what ran.",
+        "suggested_action": "Run analysis for the unchecked files.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "media.perception",
+          "args": {
+            "asset": "a1"
+          }
+        }
+      },
+      {
+        "id": "sources_decodable",
+        "name": "Source files",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "j_l_cut",
+        "name": "Split cuts",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "bed_duck_under_speech",
+        "name": "Music under speech",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "crossfade_smoothness",
+        "name": "Picture fades",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "caption_qc",
+        "name": "Caption timing",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "brand",
+        "name": "Brand rules",
+        "when": "both",
+        "mode": "automatic",
+        "state": "checked",
+        "reason_code": "clear",
+        "result": "fine",
+        "reason": "The applicable check completed without findings.",
+        "suggested_action": "No action needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [
+            "a1"
+          ],
+          "unchecked_assets": [],
+          "errors": []
+        },
+        "providers": []
+      },
+      {
+        "id": "judge",
+        "name": "Picture review",
+        "when": "finished_file",
+        "mode": "on_request",
+        "state": "not_checked",
+        "reason_code": "on_request",
+        "result": "on request",
+        "reason": "Run this check only when requested.",
+        "suggested_action": "Choose this check when needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "verify.judge",
+          "args": {
+            "render_id": "render_001"
+          }
+        }
+      },
+      {
+        "id": "signal_scopes",
+        "name": "Picture levels",
+        "when": "both",
+        "mode": "on_request",
+        "state": "not_checked",
+        "reason_code": "on_request",
+        "result": "on request",
+        "reason": "Run this check only when requested.",
+        "suggested_action": "Choose this check when needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "verify.scopes",
+          "args": {
+            "at_ms": 0
+          }
+        }
+      },
+      {
+        "id": "source_loudness",
+        "name": "Source levels",
+        "when": "both",
+        "mode": "on_request",
+        "state": "not_checked",
+        "reason_code": "on_request",
+        "result": "on request",
+        "reason": "Run this check only when requested.",
+        "suggested_action": "Choose this check when needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "verify.loudness",
+          "args": {
+            "asset": "a1"
+          }
+        }
+      },
+      {
+        "id": "delivery",
+        "name": "Speech pace",
+        "when": "both",
+        "mode": "on_request",
+        "state": "not_checked",
+        "reason_code": "on_request",
+        "result": "on request",
+        "reason": "Run this check only when requested.",
+        "suggested_action": "Choose this check when needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "verify.delivery",
+          "args": {}
+        }
+      },
+      {
+        "id": "reframe_composition",
+        "name": "Subject framing",
+        "when": "finished_file",
+        "mode": "on_request",
+        "state": "not_checked",
+        "reason_code": "on_request",
+        "result": "on request",
+        "reason": "Run this check only when requested.",
+        "suggested_action": "Choose this check when needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": [],
+        "action": {
+          "kind": "command",
+          "label": "Check now",
+          "verb": "render.qc",
+          "args": {
+            "reframe_id": "reframe_001"
+          }
+        }
+      },
+      {
+        "id": "output_geometry",
+        "name": "Picture size",
+        "when": "finished_file",
+        "mode": "on_request",
+        "state": "not_checked",
+        "reason_code": "on_request",
+        "result": "on request",
+        "reason": "Run this check only when requested.",
+        "suggested_action": "Choose this check when needed.",
+        "findings": [],
+        "coverage": {
+          "applicable_assets": [
+            "a1"
+          ],
+          "measured_assets": [],
+          "unchecked_assets": [
+            "a1"
+          ],
+          "errors": []
+        },
+        "providers": []
+      }
+    ]
+  }
+}

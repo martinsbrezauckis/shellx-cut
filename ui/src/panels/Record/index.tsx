@@ -307,6 +307,32 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   const startAdmission = useRecordingStartAdmission()
   const startAdmissionUnknown = startAdmission === 'unknown'
   const [markerPending, setMarkerPending] = useState(false)
+  const [markerConfirmation, setMarkerConfirmation] = useState<string | null>(null)
+  const markerConfirmationTimerRef = useRef<number | null>(null)
+  const clearMarkerConfirmation = useCallback(() => {
+    if (markerConfirmationTimerRef.current !== null) {
+      window.clearTimeout(markerConfirmationTimerRef.current)
+      markerConfirmationTimerRef.current = null
+    }
+    setMarkerConfirmation(null)
+  }, [])
+  const showMarkerConfirmation = useCallback((text: string) => {
+    clearMarkerConfirmation()
+    setMarkerConfirmation(text)
+    markerConfirmationTimerRef.current = window.setTimeout(() => {
+      markerConfirmationTimerRef.current = null
+      setMarkerConfirmation(null)
+    }, 2_000)
+  }, [clearMarkerConfirmation])
+  useEffect(() => {
+    if (phase !== 'recording') clearMarkerConfirmation()
+  }, [clearMarkerConfirmation, phase, session.state.captureId])
+  useEffect(() => () => {
+    if (markerConfirmationTimerRef.current !== null) {
+      window.clearTimeout(markerConfirmationTimerRef.current)
+      markerConfirmationTimerRef.current = null
+    }
+  }, [])
   const previewRecordingScene = useCallback((sceneId: string) => {
     updateStudio((current) => studioStateForRecordingScene(recordingSceneById(sceneId), current, cameraLayoutCustomizedRef.current))
   }, [updateStudio])
@@ -533,9 +559,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       .then((response) => {
         if (markerRequestRef.current !== requestId) return
         if (response?.ok && recordingMarkerAcknowledged(response.result, label)) {
-          setNote(`Marker saved at ${at}`)
+          showMarkerConfirmation(`Marker added at ${at}`)
         } else if (response?.ok) {
-          setNote('The marker was not confirmed as saved. Try adding it again.')
+          clearMarkerConfirmation()
+          setErr('The marker was not confirmed as saved. Try adding it again.')
         }
       })
       .finally(() => {
@@ -543,7 +570,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         markerRequestRef.current = 0
         setMarkerPending(false)
       })
-  }, [getRecordedMs, phase])
+  }, [clearMarkerConfirmation, getRecordedMs, phase, setErr, showMarkerConfirmation])
 
   const probe = useCallback(async (refreshSequence?: number) => {
     if (refreshSequence === undefined && (
@@ -1230,6 +1257,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                   pauseState={recordingPause.state}
                   pauseMessage={recordingPause.message}
                   markerPending={markerPending}
+                  markerConfirmation={markerConfirmation}
                   stopRetry={stopRetryRequired}
                   onMarker={addRecordingMarker}
                   onPauseControl={() => { void recordingPause.control() }}

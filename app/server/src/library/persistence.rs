@@ -6,12 +6,15 @@ use std::io::Write;
 use std::path::Path;
 
 pub(super) fn load_at(path: &Path) -> Result<LibraryManifest, CutError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(LibraryManifest::default());
-        }
-        Err(error) => return Err(io_err("read library manifest", error)),
+    load_at_with(path, crate::replace_temporary::read_optional_text)
+}
+
+fn load_at_with(
+    path: &Path,
+    read: impl FnOnce(&Path) -> std::io::Result<Option<String>>,
+) -> Result<LibraryManifest, CutError> {
+    let Some(text) = read(path).map_err(|error| io_err("read library manifest", error))? else {
+        return Ok(LibraryManifest::default());
     };
     serde_json::from_str(&text).map_err(|error| {
         CutError::new(
@@ -157,5 +160,85 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(load_at(&path).unwrap(), named_library("Before"));
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_sharing_violation_retries_and_loads_manifest() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.json");
+        let expected = named_library("Keep");
+        save_at(&path, &expected).unwrap();
+
+        let locked = Arc::new(Barrier::new(2));
+        let holder = {
+            let path = path.clone();
+            let locked = Arc::clone(&locked);
+            std::thread::spawn(move || {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&path)
+                    .unwrap();
+                locked.wait();
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                drop(file);
+            })
+        };
+
+        locked.wait();
+        let loaded = load_at(&path).expect("transient sharing violation must retry and succeed");
+        holder.join().unwrap();
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn windows_transient_read_errors_recover_and_exhausted_refusals_fail_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.json");
+        let expected = named_library("Keep");
+        let json = serde_json::to_string_pretty(&expected).unwrap();
+
+        for make_err in [
+            || std::io::Error::new(std::io::ErrorKind::NotFound, "replacement gap"),
+            || std::io::Error::from_raw_os_error(5),
+            || std::io::Error::from_raw_os_error(32),
+        ] {
+            let mut attempts = 0;
+            let loaded = load_at_with(&path, |p| {
+                crate::replace_temporary::read_optional_text_with(
+                    p,
+                    true,
+                    |_| {
+                        attempts += 1;
+                        if attempts <= 2 {
+                            Err(make_err())
+                        } else {
+                            Ok(json.clone())
+                        }
+                    },
+                    |_| {},
+                )
+            })
+            .unwrap();
+            assert_eq!(loaded, expected);
+            assert_eq!(attempts, 3);
+        }
+
+        let refused = load_at_with(&path, |p| {
+            crate::replace_temporary::read_optional_text_with(
+                p,
+                true,
+                |_| Err(std::io::Error::from_raw_os_error(5)),
+                |_| {},
+            )
+        });
+        assert!(
+            refused.is_err(),
+            "exhausted access refusal must return error, not empty LibraryManifest"
+        );
     }
 }

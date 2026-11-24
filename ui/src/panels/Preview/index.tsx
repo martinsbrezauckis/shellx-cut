@@ -14,7 +14,7 @@ import PreviewExactReview from './PreviewExactReview'
 import PreviewMonitorOverlay from './PreviewMonitorOverlay'
 import PreviewTransport, { type Rate } from './PreviewTransport'
 import PreviewContextMenu from './PreviewContextMenu'
-import { monitorAudioResyncTarget } from './audioSync'
+import { monitorAudioResyncTarget, shouldSeekMonitorAudio } from './audioSync'
 import { activeBaseAssetId, activeVideo, canPlayPreviewVideo, previewFrameMs, RVFC_SUPPORTED, videoFrameCallbacks } from './model'
 import { PreviewFrameError, PreviewOfflineOverlays, PreviewOfflineStage, usePreviewOfflineMedia } from './PreviewOffline'
 import { usePreviewExportActions } from './usePreviewExportActions'
@@ -30,9 +30,10 @@ import {
   openVideoToolsSettings,
   recheckVideoTools,
 } from '../../lib/videoToolsSetup'
-import { playbackVideoKey, playbackBindingKey, PlaybackSeekTracker, shouldPublishPlaybackTick } from './playbackClock'
+import { nextPlaybackBoundaryMs, playbackVideoKey, playbackBindingKey, PlaybackSeekTracker, PlaybackSessionClock } from './playbackClock'
 import { runFreeRunClock } from './freeRunClock'
 import { posterChip } from './posterChip'
+import { useReleasedMediaRef } from './mediaElementRelease'
 import { BaseVideoDeck } from './BaseVideoDeck'
 import { ComposedFrameOverlay } from './ComposedFrameOverlay'
 import { hiddenInLivePreview, livePreviewNotice } from './livePreviewCoverage'
@@ -136,6 +137,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   // on the next play after an edit. v1 = audio during 1× forward play (+ a drift
   // nudge to the authoritative video playhead); shuttle/reverse play stay silent.
   const audioRef = useRef<HTMLAudioElement>(null)
+  const releasedAudioRef = useReleasedMediaRef(audioRef)
   const [audioOn, setAudioOn] = useState(true)
   const [mixUrl, setMixUrl] = useState<string | null>(null)
   const [mixForOp, setMixForOp] = useState<string | null>(null)
@@ -428,61 +430,75 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   const { playback: voiceoverPlayback, outUnconfirmed } = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
   const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback, continuousEndMs, nextVideoStartMs: upcoming?.startMs ?? null })
   cfg.current = { playheadMs, durationMs, frameMs, onSeek, onPlaybackSeek, seekRevision, rate, video, voiceoverPlayback, continuousEndMs, nextVideoStartMs: upcoming?.startMs ?? null }
+  const sessionClockRef = useRef<PlaybackSessionClock | null>(null)
+  const lastAudioSeekRevision = useRef(seekRevision)
+  const livePlayheadMs = useCallback(() => {
+    const c = cfg.current
+    const sc = sessionClockRef.current
+    return sc ? sc.syncExternal(c.playheadMs, c.seekRevision, performance.now(), c.rate) : c.playheadMs
+  }, [])
   // --- playback clock --------------------------------------------------------
-  // FREE-RUN (forward 1×, <video> mounted): the element plays itself, hardware-
-  // decoded + vsync-timed; we read the presented frame back via rVFC when it is
-  // available, with a currentTime watchdog for playable sources whose rVFC never
-  // fires. SEEK PATH
-  // (reverse / 2×/4× shuttle / composed-poster with no <video>): the original
-  // rAF clock that repositions the playhead ~10×/s. playbackSrcKey re-arms the
-  // effect when the source mapping or front element changes. Contiguous pieces
-  // keep the same clock and frame subscription.
+  // Single continuous PlaybackSessionClock owns real-time timeline progress
+  // for the whole active playback session (`rate` / `voiceoverPlayback`). Cuts,
+  // gaps, asset switches, and slow decoders never reset or stall it. When
+  // forward 1x live video is mounted (`canFreeRun`), `runFreeRunClock` syncs
+  // the active <video> element against `sessionClock` and recovers stalls.
   useEffect(() => {
-    if (rate === 0) return
-    const v = videoRef.current
-    const tracker = new PlaybackSeekTracker(cfg.current.playheadMs, cfg.current.seekRevision)
-    const publish = (position: number) => { cfg.current.onPlaybackSeek(tracker.published(position), cfg.current.seekRevision) }
-
-    const callbacks = v ? videoFrameCallbacks(v) : null
-    if (canFreeRun && v && callbacks) {
-      const stopClock = runFreeRunClock({ video: v, callbacks, expectedKey: playbackVideoKey(cfg.current.video), state: cfg, tracker, publish, stop: () => setRate(0), isCurrentVideo: () => videoRef.current === v })
-      return () => {
-        stopClock()
-        const c = cfg.current
-        const position = previewPlaybackCleanupPosition(c.playheadMs, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
-        if (position !== null) c.onPlaybackSeek(position, c.seekRevision)
-      }
+    if (rate === 0) {
+      sessionClockRef.current = null
+      return
     }
-
-    // SEEK PATH (unchanged 10Hz rAF clock).
+    const tracker = new PlaybackSeekTracker(cfg.current.playheadMs, cfg.current.seekRevision)
+    const clock = new PlaybackSessionClock(cfg.current.playheadMs, performance.now(), cfg.current.rate, cfg.current.seekRevision)
+    sessionClockRef.current = clock
     let raf = 0
-    let last = performance.now()
-    let acc = cfg.current.playheadMs
-    let lastDispatch = 0
     const tick = (now: number) => {
       const c = cfg.current
-      if (tracker.external(c.playheadMs, c.seekRevision)) acc = c.playheadMs
-      acc += (now - last) * c.rate
-      last = now
-      const position = previewPlaybackClockPosition(acc, c.durationMs, c.voiceoverPlayback)
+      if (tracker.external(c.playheadMs, c.seekRevision)) clock.reanchor(c.playheadMs, now, c.rate, c.seekRevision)
+      const rawPos = clock.position(now)
+      const position = previewPlaybackClockPosition(rawPos, c.durationMs, c.voiceoverPlayback, c.rate)
       if (position.stop) {
-        publish(position.positionMs)
+        clock.markPublished(now, position.positionMs)
+        c.onPlaybackSeek(tracker.published(position.positionMs), c.seekRevision)
         setRate(0)
         return
       }
-      if (shouldPublishPlaybackTick(now, lastDispatch, acc, c.rate, c.nextVideoStartMs)) {
-        lastDispatch = now
-        publish(position.positionMs)
+      const boundary = nextPlaybackBoundaryMs(c.rate, c.video, c.nextVideoStartMs)
+      if (clock.shouldPublish(now, position.positionMs, boundary)) {
+        clock.markPublished(now, position.positionMs)
+        c.onPlaybackSeek(tracker.published(position.positionMs), c.seekRevision)
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => {
       cancelAnimationFrame(raf)
+      sessionClockRef.current = null
       const c = cfg.current
-      const position = previewPlaybackCleanupPosition(tracker.external(c.playheadMs, c.seekRevision) ? c.playheadMs : acc, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
+      const raw = tracker.external(c.playheadMs, c.seekRevision) ? c.playheadMs : clock.position(performance.now())
+      const position = previewPlaybackCleanupPosition(raw, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
       if (position !== null) c.onPlaybackSeek(position, c.seekRevision)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rate, voiceoverPlayback])
+
+  useEffect(() => {
+    if (rate === 0) return
+    const v = videoRef.current
+    const sessionClock = sessionClockRef.current
+    const callbacks = v ? videoFrameCallbacks(v) : null
+    if (!canFreeRun || !v || !callbacks || !sessionClock) return
+    return runFreeRunClock({
+      video: v,
+      callbacks,
+      expectedKey: playbackVideoKey(cfg.current.video),
+      state: cfg,
+      tracker: new PlaybackSeekTracker(cfg.current.playheadMs, cfg.current.seekRevision),
+      sessionClock,
+      publish: () => {},
+      stop: () => setRate(0),
+      isCurrentVideo: () => videoRef.current === v,
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rate, playbackSrcKey, voiceoverPlayback])
 
@@ -492,10 +508,16 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
   // shuttle seek path) keep the displayed frame synced to the playhead.
   useEffect(() => {
     const v = videoRef.current
-    if (!v || !video) return
-    if (canFreeRun) return
+    if (!v || !video || canFreeRun) return
     const want = video.srcMs / 1000
-    if (Math.abs(v.currentTime - want) > frameMs / 2000) v.currentTime = want
+    const sync = () => {
+      if (v.readyState >= 1 && !v.seeking && Math.abs(v.currentTime - want) > frameMs / 2000) {
+        try { v.currentTime = want } catch { /* not seekable yet */ }
+      }
+    }
+    sync()
+    v.addEventListener('loadedmetadata', sync)
+    return () => v.removeEventListener('loadedmetadata', sync)
   }, [video, frameMs, canFreeRun])
 
   // --- poster staleness: dim immediately, spinner only past 150ms ------
@@ -636,37 +658,36 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
     setMixForOp(null)
   }, [projectKey])
 
+  const syncAudioToClock = useCallback((a: HTMLAudioElement, snap: boolean, now = performance.now()) => {
+    lastAudioSeekRevision.current = cfg.current.seekRevision
+    const targetMs = livePlayheadMs()
+    const targetS = targetMs / 1000
+    if (snap) {
+      if (shouldSeekMonitorAudio(a.currentTime, targetS)) { a.currentTime = targetS; lastAudioResyncAt.current = now }
+      return
+    }
+    const target = monitorAudioResyncTarget({ audioTimeS: a.currentTime, playheadMs: targetMs, nowMs: now, lastResyncAtMs: lastAudioResyncAt.current })
+    if (target != null) { a.currentTime = target; lastAudioResyncAt.current = now }
+  }, [livePlayheadMs])
+
   // Play/pause the mix with the transport — 1× forward only (no audio scrub).
   useEffect(() => {
     const a = audioRef.current
     if (!a) return
     if (audioOn && mixUrl && rate === 1) {
-      a.currentTime = cfg.current.playheadMs / 1000
-      lastAudioResyncAt.current = performance.now()
+      syncAudioToClock(a, true)
       void a.play().catch(() => {})
     } else {
       a.pause()
     }
-  }, [rate, mixUrl, audioOn])
+  }, [rate, mixUrl, audioOn, syncAudioToClock])
 
-  // Drift nudge: the VIDEO/seek playhead is authoritative; if the mix <audio>
-  // drifts past ~250ms during 1× play, snap it back. Runs on the 100ms playhead
-  // dispatch and corrects only on real drift (no per-tick reseek stutter).
+  // Snap audio on explicit user seeks during 1× play and nudge real drift.
   useEffect(() => {
     const a = audioRef.current
-    if (!a || !audioOn || !mixUrl || rate !== 1) return
-    const now = performance.now()
-    const target = monitorAudioResyncTarget({
-      audioTimeS: a.currentTime,
-      playheadMs,
-      nowMs: now,
-      lastResyncAtMs: lastAudioResyncAt.current,
-    })
-    if (target != null) {
-      a.currentTime = target
-      lastAudioResyncAt.current = now
-    }
-  }, [playheadMs, rate, audioOn, mixUrl])
+    if (!a || !audioOn || !mixUrl || rate !== 1 || a.readyState < 1) return
+    syncAudioToClock(a, seekRevision !== lastAudioSeekRevision.current)
+  }, [playheadMs, seekRevision, rate, audioOn, mixUrl, syncAudioToClock])
 
   // --- transport actions ------------------------------------------------------
   const playPause = useCallback(() => setRate((r) => (r === 0 ? 1 : 0)), [])
@@ -767,7 +788,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
       {/* Hidden timeline-audio element: the sole sound source — the preview
           <video>s are muted, so this plays the full mix synced to the playhead. */}
       <audio
-        ref={audioRef}
+        ref={releasedAudioRef}
         src={mixUrl ?? undefined}
         preload="auto"
         data-cut-timeline-audio
@@ -776,8 +797,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
         onLoadedMetadata={() => {
           const a = audioRef.current
           if (a && audioOn && cfg.current.rate === 1) {
-            a.currentTime = cfg.current.playheadMs / 1000
-            lastAudioResyncAt.current = performance.now()
+            syncAudioToClock(a, true)
             void a.play().catch(() => {})
           }
         }}
@@ -841,6 +861,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
                 {/* Base track: on-screen element + the next clip parked behind it. */}
                 <BaseVideoDeck
                   deck={deck}
+                  upcomingKey={upcoming ? playbackVideoKey(upcoming) : null}
                   frontRef={videoRef}
                   frameMs={frameMs}
                   // Base clip's color grade, CSS-approximated (exact = COMPOSED / final).
@@ -904,6 +925,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, on
                 transform={dragOverride?.clipId === o.clipId ? dragOverride.transform : o.transform}
                 stageRef={stageRef}
                 pinResizePosition={o.keyedCamera}
+                sourceAspect={o.sourceAspect}
                 onCancel={() => setDragOverride(null)}
                 onLive={(t) => setDragOverride({ clipId: o.clipId, transform: t })}
                 onCommit={(t, resize) => void commitTransform(o.clipId,

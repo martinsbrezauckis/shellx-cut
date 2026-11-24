@@ -642,3 +642,178 @@ fn calibrated_resume_then_pause_and_stop_preserve_boundary_generations() {
         assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
     }
 }
+
+#[test]
+fn active_duration_limit_saves_paused_take_after_stop_overshoot() {
+    use record_capture::windows_pause_pilot::WindowsPausePilotCommand;
+    use record_recovery::MediaFacts;
+
+    let origin = Instant::now();
+    let (mut session, commands, events, log) =
+        session_with_active_duration_limit(origin, 100, vec![(0, 45, 0, 45), (520, 585, 45, 110)]);
+    session.request_pause_at(at(origin, 40)).unwrap();
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        Some(WindowsPausePilotCommand::Pause {
+            generation: 1,
+            epoch: 1
+        })
+    ));
+    events
+        .send(WindowsPausePilotEvent::PauseSealed {
+            generation: 1,
+            epoch: 1,
+            run: native_run(0, 45),
+            input: None,
+            audio: Vec::new(),
+            observed_at: at(origin, 50),
+        })
+        .unwrap();
+    assert_eq!(
+        session.pump_once().unwrap(),
+        Some(WindowsPauseSessionEvent::Paused)
+    );
+
+    // Staying paused well past the 100ms wall-clock mark leaves the take paused so resume works.
+    assert!(!session.active_duration_exhausted_at(at(origin, 50)));
+    assert!(!session.active_duration_exhausted_at(at(origin, 500)));
+    session.request_resume_at(at(origin, 500)).unwrap();
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        Some(WindowsPausePilotCommand::Resume {
+            generation: 2,
+            epoch: 2
+        })
+    ));
+    let mut resumed = started(origin, 520);
+    resumed.physical_generation = 2;
+    events
+        .send(WindowsPausePilotEvent::ResumeReady {
+            generation: 2,
+            epoch: 2,
+            started: resumed,
+        })
+        .unwrap();
+    assert_eq!(
+        session.pump_once().unwrap(),
+        Some(WindowsPauseSessionEvent::Resumed)
+    );
+    assert!(!session.active_duration_exhausted_at(at(origin, 574)));
+    assert!(session.active_duration_exhausted_at(at(origin, 575)));
+
+    // Reaching the 100ms active limit at t = 520 + (100 - 45) = 575ms stops and seals run 1 with
+    // realistic encoder stop overshoot (65ms active span -> logical end 110ms > 100ms limit).
+    session.request_stop_at(at(origin, 575)).unwrap();
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        Some(WindowsPausePilotCommand::Stop { epoch: 3 })
+    ));
+    let mut run_one = native_run(520, 585);
+    run_one.range.first_physical_generation = 2;
+    run_one.range.last_physical_generation = 2;
+    run_one.range.first_checkpoint_sequence = 1;
+    run_one.range.last_checkpoint_sequence = 1;
+    run_one.checkpoints[0].physical_generation = 2;
+    run_one.checkpoints[0].checkpoint.sequence = 1;
+    run_one.checkpoints[0].checkpoint.file = "checkpoints/segment-000001.mp4".into();
+    run_one.checkpoints[0].checkpoint.media = Some(MediaFacts {
+        duration_ms: 65,
+        decoded_video_frames: 2,
+        has_audio: false,
+        width: None,
+        height: None,
+        codec_name: None,
+        avg_frame_rate: None,
+        r_frame_rate: None,
+    });
+    events
+        .send(WindowsPausePilotEvent::StopSealed {
+            epoch: 3,
+            run: Some(run_one),
+            input: None,
+            audio: Vec::new(),
+            observed_at: at(origin, 595),
+        })
+        .unwrap();
+    assert_eq!(
+        session.pump_once().unwrap(),
+        Some(WindowsPauseSessionEvent::Stopped)
+    );
+    assert_eq!(session.journal().sealed_runs().len(), 2);
+    assert_eq!(
+        session.journal().terminal().unwrap().disposition,
+        TerminalDisposition::Completed
+    );
+    assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
+}
+
+#[test]
+fn paused_take_reaching_active_duration_limit_refuses_resume_and_saves_cleanly() {
+    use record_capture::windows_pause_pilot::WindowsPausePilotCommand;
+    use record_recovery::MediaFacts;
+
+    let origin = Instant::now();
+    let (mut session, commands, events, log) =
+        session_with_active_duration_limit(origin, 100, vec![(0, 105, 0, 105)]);
+    session.request_pause_at(at(origin, 95)).unwrap();
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        Some(WindowsPausePilotCommand::Pause {
+            generation: 1,
+            epoch: 1
+        })
+    ));
+    let mut run_zero = native_run(0, 105);
+    run_zero.checkpoints[0].checkpoint.media = Some(MediaFacts {
+        duration_ms: 105,
+        decoded_video_frames: 3,
+        has_audio: false,
+        width: None,
+        height: None,
+        codec_name: None,
+        avg_frame_rate: None,
+        r_frame_rate: None,
+    });
+    events
+        .send(WindowsPausePilotEvent::PauseSealed {
+            generation: 1,
+            epoch: 1,
+            run: run_zero,
+            input: None,
+            audio: Vec::new(),
+            observed_at: at(origin, 110),
+        })
+        .unwrap();
+    assert_eq!(
+        session.pump_once().unwrap(),
+        Some(WindowsPauseSessionEvent::Paused)
+    );
+    assert!(session.active_duration_exhausted_at(at(origin, 115)));
+    assert!(session.request_resume_at(at(origin, 200)).is_err());
+    assert_eq!(session.phase(), PauseSessionOwnerPhase::Paused);
+
+    session.request_stop_at(at(origin, 205)).unwrap();
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        Some(WindowsPausePilotCommand::Stop { epoch: 2 })
+    ));
+    events
+        .send(WindowsPausePilotEvent::StopSealed {
+            epoch: 2,
+            run: None,
+            input: None,
+            audio: Vec::new(),
+            observed_at: at(origin, 210),
+        })
+        .unwrap();
+    assert_eq!(
+        session.pump_once().unwrap(),
+        Some(WindowsPauseSessionEvent::Stopped)
+    );
+    assert_eq!(session.journal().sealed_runs().len(), 1);
+    assert_eq!(
+        session.journal().terminal().unwrap().disposition,
+        TerminalDisposition::Completed
+    );
+    assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
+}

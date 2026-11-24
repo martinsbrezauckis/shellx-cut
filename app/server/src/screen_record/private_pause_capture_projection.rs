@@ -106,6 +106,24 @@ impl PrivateFrameGridProjection {
                 return Err(capture_error("verify private projected system audio"));
             }
         };
+        let verified_media = project
+            .capture_cadence
+            .as_ref()
+            .and_then(|cadence| cadence.probed_media.as_ref())
+            .and_then(|probed| {
+                probed.duration_ms.zip(probed.decoded_video_frames).map(
+                    |(duration_ms, decoded_video_frames)| record_recovery::MediaFacts {
+                        duration_ms,
+                        decoded_video_frames,
+                        has_audio: audio.is_some() || system_audio_selected,
+                        width: None,
+                        height: None,
+                        codec_name: None,
+                        avg_frame_rate: probed.avg_frame_rate,
+                        r_frame_rate: probed.r_frame_rate,
+                    },
+                )
+            });
         Ok(CaptureOutput {
             source_video: project.source_video,
             events: project.events,
@@ -119,7 +137,7 @@ impl PrivateFrameGridProjection {
             },
             settings: project.settings,
             capture_quality: None,
-            verified_media: None,
+            verified_media,
         })
     }
 }

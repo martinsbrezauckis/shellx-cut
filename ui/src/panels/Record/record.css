@@ -486,6 +486,16 @@
 .rec-live-controls__state small { color: var(--ink-3, #aab1bd); font: 600 var(--fs-ui-xs, 11px)/1 var(--sans); }
 .rec-live-controls__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .rec-live-controls__marker { min-height: 38px; }
+.rec-live-controls__marker-feedback {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border: 1px solid rgba(74, 222, 128, .35);
+  border-radius: 7px;
+  background: rgba(74, 222, 128, .12);
+  color: #4ade80;
+  font: 600 var(--fs-ui-xs, 11px)/1.2 var(--sans);
+}
 .rec-live-controls__unavailable {
   display: grid;
   gap: 2px;
@@ -1236,7 +1246,12 @@
 [data-theme="light"] .rec__audio-probe[data-cut-rec-system-audio-probe="error"] .rec__audio-probe-status { color: var(--danger); }
 [data-theme="light"] .rec__done,
 [data-theme="light"] .rec__mic-status[data-cut-rec-mic-status="signal"],
-[data-theme="light"] .rec__audio-probe[data-cut-rec-system-audio-probe="ready"] .rec__audio-probe-status { color: var(--green); }
+[data-theme="light"] .rec__audio-probe[data-cut-rec-system-audio-probe="ready"] .rec__audio-probe-status,
+[data-theme="light"] .rec-live-controls__marker-feedback { color: var(--green); }
+[data-theme="light"] .rec-live-controls__marker-feedback {
+  border-color: rgba(22, 163, 74, .35);
+  background: rgba(22, 163, 74, .1);
+}
 [data-theme="light"] .rec-studio-controls__chips span[data-on="true"] { color: var(--green); }
 [data-theme="light"] .rec__hud,
 [data-theme="light"] .rec-live-controls__state { color: var(--danger); }

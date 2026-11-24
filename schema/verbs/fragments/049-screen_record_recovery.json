@@ -122,7 +122,7 @@
           }
         }
       },
-      "result": "{capture_id, clip_ids, take_path, video_recovered, microphone_recovered, system_audio_recovered, recovered_ms, recorded_ms_at_least, lost_tail_lower_bound_ms, recorded_longer_unknown, sound_after_picture, files_folder, message}",
+      "result": "{capture_id, clip_ids, take_path, video_recovered, microphone_recovered, system_audio_recovered, recovered_ms, recorded_ms_at_least, lost_tail_lower_bound_ms, recorded_longer_unknown, sound_after_picture, files_folder, message}; clip_markers_added (take markers given to the recovered clips as clip markers) and clip_markers_notice (null, or the sentence naming markers after the end of what was saved, which could not be added; also appended to message).",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {

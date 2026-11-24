@@ -1,5 +1,20 @@
 This changelog records release notes for ShellX Cut. For older versions, see the [GitHub releases page](https://github.com/martinsbrezauckis/shellx-cut/releases).
 
+## 0.6.122 - 2026-11-24
+- HDR videos can be exported as HDR: choose Keep HDR in the export options to get a 10-bit H.265 or AV1 file with the clip's own HDR type (HLG or PQ). The normal export is unchanged.
+- Markers you flag while recording appear on the recording clip in Edit and move, trim and split with it. A short note confirms each marker while you record.
+- Recordings made with 0.6.116 to 0.6.118 can be made editable: select the recording and choose Make editable.
+- A conversation started by an agent appears in the Chat tab, marked "Started by an agent", and you can continue it. Conversations are saved in the project.
+- Windows recordings: the camera recording is saved when you stop, short sounds such as clicks stay in sync with the picture, and a recording starts with movement instead of a frozen first picture.
+- Playback keeps time on timelines with many short clips.
+- Tracking and face blur on long clips export quickly.
+- A rectangle camera overlay keeps the shape of its camera, and the export matches the preview.
+- Before an export and on the finished file, every check is listed as passed, found something, not checked or could not run, with the reason.
+- An empty timeline shows its hint in the middle of the panel.
+- A take with a pause shows its length, and the length limit counts recorded time only.
+- Error messages say what to do next.
+- Many smaller fixes.
+
 ## 0.6.121 - 2026-11-24
 - A picture in a project is no longer shown as offline, with editing blocked, when Cut could not check it at that moment; it is checked again.
 

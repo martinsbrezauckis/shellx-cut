@@ -132,17 +132,47 @@ pub(crate) fn measure(capture_dir: &Path, video: bool, sounds: &[Option<&Path>])
         .flatten()
         .filter_map(|path| sound_ms_even_if_unfinished(path))
         .max();
+    let paused_take = cut_core::store::plain_file_state(
+        &capture_dir.join(record_recovery::RECORDING_SESSION_JOURNAL_FILE),
+    ) == cut_core::store::PlainFileState::Plain;
     let (kept, committed, open) = manifest.as_ref().map_or((0, 0, None), |manifest| {
+        let recorded = |clock_ms: u64| {
+            if paused_take {
+                recorded_ms_at(&manifest.checkpoints, clock_ms)
+            } else {
+                clock_ms
+            }
+        };
         (
-            kept_video_ms(manifest),
-            manifest
-                .checkpoints
-                .last()
-                .map_or(0, |checkpoint| checkpoint.facts.end_ms),
-            manifest.open_segment_start_ms(),
+            recorded(kept_video_ms(manifest)),
+            recorded(
+                manifest
+                    .checkpoints
+                    .last()
+                    .map_or(0, |checkpoint| checkpoint.facts.end_ms),
+            ),
+            manifest.open_segment_start_ms().map(recorded),
         )
     });
     measure_from(video.then_some(kept), committed, open, sound)
+}
+
+/// A take recorded with Pause & resume (it keeps a pause-session journal):
+/// its parts are stamped on a clock that runs on through every pause, while
+/// its video, like its length limit, holds recorded time only. The recorded
+/// time at `clock_ms` is what the parts recorded before it; the gap before a
+/// later part is a pause, never lost picture.
+fn recorded_ms_at(checkpoints: &[record_recovery::Checkpoint], clock_ms: u64) -> u64 {
+    checkpoints
+        .iter()
+        .map(|checkpoint| {
+            checkpoint
+                .facts
+                .end_ms
+                .min(clock_ms)
+                .saturating_sub(checkpoint.facts.start_ms)
+        })
+        .sum()
 }
 
 /// "15 s", "1 min 5 s", rounded to whole seconds.

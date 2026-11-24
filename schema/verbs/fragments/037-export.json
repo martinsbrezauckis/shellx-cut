@@ -51,7 +51,7 @@
     {
       "name": "export.range",
       "domain": "export",
-      "description": "Save a PART OF THE TIMELINE as a reusable clip: render the composed timeline over [range_ms[0], range_ms[1]) (all effects baked) to exports/range_<in>_<out>.mp4 and, by default (to_asset), import it as a NEW asset. The saved clip lands in the Assets tray (draggable / insertable) AND on disk (importable into another project). NON-DESTRUCTIVE — the timeline is unchanged. The UI passes the selected clip's span (or in/out points).",
+      "description": "Save a timeline range as an MP4 with all effects included; import it as a reusable asset by default. The timeline is unchanged. Checks memory before starting using render.final's out_of_memory refusal and memory_short warning. See resources for the estimate and thread choice.",
       "args": {
         "type": "object",
         "required": [
@@ -83,7 +83,7 @@
           }
         }
       },
-      "result": "{path, asset_id?, job_id?} — the saved mp4; asset_id/job_id present when to_asset",
+      "result": "{path, resources, asset_id?, job_id?} — the saved mp4; asset_id/job_id present when to_asset; resources.memory reports the admission estimate and encoder-thread choice",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -256,7 +256,7 @@
     {
       "name": "export.gif",
       "domain": "export",
-      "description": "Export a SHORT timeline window as a looping animated GIF (the social/reaction-clip export). Renders the window (all effects baked, like export.range) then converts via the high-quality ffmpeg palettegen/paletteuse path (per-clip optimised 256-colour palette + dithering — far better than a naive GIF). Default range = the first 15s; HARD-CAPPED at 30s (GIFs balloon). fps (default 12) and width (default 480px, height auto) are the file-size levers. Output exports/gif_<in>_<out>.gif (FENCED); imports as an asset by default (to_asset).",
+      "description": "Save a short timeline range as a looping GIF; import it as an asset by default. Defaults: first 15 s, 12 fps, 480 px wide; maximum 30 s. Checks both stages' memory before starting using render.final's out_of_memory refusal and memory_short warning. See resources.",
       "args": {
         "type": "object",
         "required": [],
@@ -305,7 +305,7 @@
           }
         }
       },
-      "result": "{path, fps, width, range_ms, asset_id?, job_id?} — the GIF in exports/ (downloadable via /api/export)",
+      "result": "{path, fps, width, range_ms, resources, asset_id?, job_id?} — the GIF in exports/ (downloadable via /api/export); resources reports source-render memory and post_pass GIF memory",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

@@ -67,6 +67,11 @@ impl<J: RecordingSessionJournalSink> RunSealCoordinator<J> {
     ) -> Result<StreamBoundary, RunSealCoordinatorError> {
         self.ensure_mutable()?;
         let _ = self.origin()?;
+        if self.logical.active_duration_exhausted_at(at) {
+            return Err(invalid(
+                "active recording duration limit has already been reached",
+            ));
+        }
         let BoundaryRequestResult::Issued(boundary) = self.logical.request_resume_at(at) else {
             return Err(invalid(
                 "resume boundary is not valid from the current logical phase",

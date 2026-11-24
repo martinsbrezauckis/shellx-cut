@@ -6,7 +6,9 @@ import { strict as assert } from 'node:assert'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { renderReceiptFrom } from '../src/lib/events'
-import Receipts from '../src/panels/Review/Receipts'
+import { register } from 'node:module'
+register('./lib/css-module-loader.mjs', import.meta.url)
+const { default: Receipts } = await import('../src/panels/Review/Receipts')
 
 const base = {
   render_id: 'render_001',

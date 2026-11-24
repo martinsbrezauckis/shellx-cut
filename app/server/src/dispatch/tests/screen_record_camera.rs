@@ -542,56 +542,12 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
             };
             assert_eq!(m.transform.as_ref().unwrap().x, 0.4);
         }
-        let screen = result["clip_id"].as_str().unwrap();
-        let changed = dispatch(
-            &state,
-            "screen_record.zoom_add",
-            json!({"clip":screen,"at_ms":500,"duration_ms":2000}),
-            test_actor(),
-        )
-        .await;
-        assert!(changed.ok, "{:?}", changed.error);
-        let refresh = dispatch(
-            &state,
-            "screen_record.take_refresh",
-            json!({"clip":screen}),
-            test_actor(),
-        )
-        .await;
-        assert!(refresh.ok, "{:?}", refresh.error);
-        let id = refresh.result.unwrap()["job_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut done = None;
-        // 5 minutes: a slow shared machine needs more than 30 s for this bake.
-        for _ in 0..6_000 {
-            let job = state.jobs.get(&id).unwrap();
-            if matches!(
-                job.state,
-                crate::jobs::JobState::Done | crate::jobs::JobState::Failed
-            ) {
-                done = Some(job);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        let job = done.expect("refresh completes");
-        assert_eq!(job.state, crate::jobs::JobState::Done, "{:?}", job.error);
-        let guard = state.project.read().await;
-        let p = &guard.as_ref().unwrap().project;
-        let rgb = camera_test_rgb(Path::new(&p.assets[&p.recordings[0].asset].path), 0.75);
-        let center = (288 * 640 + 568) * 3;
-        assert!(
-            rgb[center + 1] > 80 && rgb[center] < 30,
-            "refresh must not bake the camera back into the screen"
-        );
     }
-
     // A restart can happen after every individual lowered op (import, track
     // creation, visibility, or insert). Once all have committed, retrying the
     // same sealed capture must adopt that durable identity rather than add a
-    // second camera asset or clip.
+    // second camera asset or clip, and reuse the unchanged initial bake before
+    // Update video replaces and retires it.
     let first_camera_asset_id = result["camera_asset_id"].as_str().unwrap().to_string();
     let first_camera_clip_id = camera_clip_id.to_string();
     close_camera_test_project_after_jobs_drain(&state, "after camera polish").await;
@@ -649,6 +605,54 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         1,
         "retry must not duplicate the durable camera clip"
     );
+    drop(reopened_guard);
+
+    if separate {
+        let screen = result["clip_id"].as_str().unwrap();
+        let changed = dispatch(
+            &reopened,
+            "screen_record.zoom_add",
+            json!({"clip":screen,"at_ms":500,"duration_ms":2000}),
+            test_actor(),
+        )
+        .await;
+        assert!(changed.ok, "{:?}", changed.error);
+        let refresh = dispatch(
+            &reopened,
+            "screen_record.take_refresh",
+            json!({"clip":screen}),
+            test_actor(),
+        )
+        .await;
+        assert!(refresh.ok, "{:?}", refresh.error);
+        let id = refresh.result.unwrap()["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut done = None;
+        // 5 minutes: a slow shared machine needs more than 30 s for this bake.
+        for _ in 0..6_000 {
+            let job = reopened.jobs.get(&id).unwrap();
+            if matches!(
+                job.state,
+                crate::jobs::JobState::Done | crate::jobs::JobState::Failed
+            ) {
+                done = Some(job);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let job = done.expect("refresh completes");
+        assert_eq!(job.state, crate::jobs::JobState::Done, "{:?}", job.error);
+        let guard = reopened.project.read().await;
+        let p = &guard.as_ref().unwrap().project;
+        let rgb = camera_test_rgb(Path::new(&p.assets[&p.recordings[0].asset].path), 0.75);
+        let center = (288 * 640 + 568) * 3;
+        assert!(
+            rgb[center + 1] > 80 && rgb[center] < 30,
+            "refresh must not bake the camera back into the screen"
+        );
+    }
 }
 
 async fn screen_record_polish_camera_tail_cannot_extend_final_render_case() {

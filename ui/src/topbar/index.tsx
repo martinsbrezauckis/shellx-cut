@@ -40,11 +40,14 @@ import UpdateButton from './UpdateButton'
 import StoryboardOverlay from './StoryboardOverlay'
 import PreflightWarning from './PreflightWarning'
 import ExportWarningNotice, { type ExportWarningNoticeState } from './ExportWarningNotice'
-import { runVideoPreflightAction, withResourceRisks } from './videoPreflight'
+import { refreshedReport, runVideoPreflightAction, withResourceRisks } from './videoPreflight'
+import { createExportCheckActionHandler } from '../components/exportChecks/actions'
+import { dispatchVerb, seekPlayhead } from '../panels/Review/shared'
 import SequenceSwitcher from './SequenceSwitcher'
 import { useTopbarDismissibleMenu } from './useTopbarDismissibleMenu'
 import { useTopbarJobs } from './useTopbarJobs'
 import { WorkspaceModeTabs } from './WorkspaceModeTabs'
+import { keepHdrAvailability, type ExportColorMode } from './hdrExport'
 import {
   ASPECTS,
   ASYNC_RENDER_IDS,
@@ -97,6 +100,8 @@ export interface TopBarProps {
   onSequenceChanged?: () => void
   /** Live playhead (ms) — the position the Export-menu "Still frame" extracts. */
   playheadMs?: number
+  /** Moves the playhead (the Go to place button of an export check). */
+  onSeek?: (atMs: number) => void
   /** Active workspace mode and setter. */
   mode?: WorkspaceMode
   onMode?: (m: WorkspaceMode) => void
@@ -117,7 +122,7 @@ export interface TopBarProps {
 // live in lib/formatPresets. New projects auto-adopt the first video; these are
 // expert corrections, not quality choices required during project creation.
 
-export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false, embeddedManual }: TopBarProps) {
+export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, onSeek, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false, embeddedManual }: TopBarProps) {
   const desktopAvailability = useAvailability('shell.desktop')
   // New project + Import moved OUT of the topbar: create lives in the
   // Projects left-tab (panels/Projects), import lives in the Assets tray + Library.
@@ -178,9 +183,12 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
   // Defaults match the server (h264, hardware auto). Only sent on the render.final
   // branch — render.reframe takes neither arg, so its branch stays untouched.
   const [fileFormat, setFileFormat] = useState<FileFormat>('h264')
+  const [exportColor, setExportColor] = useState<ExportColorMode>('sdr')
   const [useGpu, setUseGpu] = useState(true)
   // Loudness normalization target (render.final{normalize_loudness}); 'off' = omit.
   const [loudness, setLoudness] = useState<Loudness>('off')
+  const hdrStatus = keepHdrAvailability(project, fileFormat, doctor)
+  const effectiveColor: ExportColorMode = hdrStatus.available ? exportColor : 'sdr'
   const [directorOpen, setDirectorOpen] = useState(false)
   // Batch-delivery (render.queue) surface — opened from the Export menu.
   const [queueOpen, setQueueOpen] = useState(false)
@@ -252,6 +260,17 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
     pendingPreflightCancel.current = onCancel ?? null
     setPreflight({ report: { ...report, risks: report.risks ?? [] }, actionLabel })
   }
+  // The buttons of the check list: go to a place, install the captions tools, or
+  // run one check and read the list again.
+  const exportCheckActions = createExportCheckActionHandler({
+    seek: (atMs) => (onSeek ? onSeek(atMs) : seekPlayhead(atMs)),
+    call: dispatchVerb,
+    afterCommand: async () => {
+      const fresh = await callVerb('verify.pregate', {})
+      const next = fresh.ok ? fresh.result : undefined
+      if (next) setPreflight((current) => (current ? { ...current, report: refreshedReport(next, current.report) } : current))
+    },
+  })
   const clearPreflight = () => {
     pendingPreflight.current = null
     pendingPreflightCancel.current = null
@@ -280,8 +299,9 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
           ])
           // An odd project size refuses the render outright: no quality
           // dialog, no "Export anyway"; the odd-size notice has the fix.
-          if (plan && !plan.ok && plan.error?.code === 'odd_project_size') {
-            return { ok: false, error: plan.error, blocked: `Not rendered: ${plan.error.message}.` }
+          if (plan && !plan.ok && (plan.error?.code === 'odd_project_size' || 'color' in renderPlanArgs)) {
+            const way = plan.error?.suggested_action ? ` ${plan.error.suggested_action}` : ''
+            return { ok: false, error: plan.error, blocked: `Not rendered: ${plan.error?.message ?? 'render refused'}.${way}` }
           }
           if (!pregate.ok || !plan?.ok) return pregate
           return { ...pregate, result: withResourceRisks(pregate.result, plan.result) }
@@ -300,6 +320,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
       preset,
       format: fileFormat,
       hardware: useGpu ? 'auto' as const : 'off' as const,
+      ...(effectiveColor === 'keep_hdr' ? { color: 'keep_hdr' as const } : {}),
       ...(profile !== 'auto' ? { profile } : {}),
       ...(loudness !== 'off' ? { normalize_loudness: Number(loudness) } : {}),
     }
@@ -929,6 +950,42 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
                 ))}
               </select>
             </label>
+            <div className="tb-render-field">
+              <span>Color</span>
+              <div className="tb-render-color-seg" role="group" aria-label="Export color">
+                <button
+                  type="button"
+                  className={effectiveColor === 'sdr' ? 'tb-seg--on' : undefined}
+                  data-cut-render-color="sdr"
+                  aria-pressed={effectiveColor === 'sdr'}
+                  onClick={() => setExportColor('sdr')}
+                >SDR</button>
+                <button
+                  type="button"
+                  className={effectiveColor === 'keep_hdr' ? 'tb-seg--on' : undefined}
+                  data-cut-render-color="keep_hdr"
+                  aria-pressed={effectiveColor === 'keep_hdr'}
+                  disabled={!hdrStatus.available}
+                  title={hdrStatus.reason ?? `Export 10-bit BT.2020 ${hdrStatus.summary.targetLabel ?? 'HDR'} video`}
+                  onClick={() => setExportColor('keep_hdr')}
+                >Keep HDR</button>
+              </div>
+            </div>
+            {hdrStatus.reason && (
+              <p className="tb-render-note tb-render-note--reason" data-cut-render-hdr-reason role="status">
+                {hdrStatus.reason}
+              </p>
+            )}
+            {hdrStatus.previewNote && (
+              <p className="tb-render-note" data-cut-render-hdr-preview-note>
+                {hdrStatus.previewNote}
+              </p>
+            )}
+            {effectiveColor === 'keep_hdr' && hdrStatus.fallbackNotice && (
+              <p className="tb-render-note tb-render-note--warn" data-cut-render-hdr-fallback-note>
+                {hdrStatus.fallbackNotice}
+              </p>
+            )}
             <label className="tb-render-field tb-render-field--check">
               <span>Use GPU when available</span>
               <input
@@ -1187,6 +1244,7 @@ export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenM
           overModal={queueOpen}
           onCancel={cancelPreflight}
           onContinue={() => void continuePreflight()}
+          onAction={exportCheckActions}
         />
       )}
     </header>

@@ -40,6 +40,7 @@ import {
   type RecipeRunHandle,
   type RecipeReport,
 } from '../../lib/client'
+import { humanFailureMessage, humanFailureReason } from '../../lib/userActionFeedback'
 import { Icon } from '../../icons'
 import { recipeNeedsPreview } from './model'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
@@ -74,17 +75,16 @@ function argsLabel(args: Record<string, unknown> | undefined): string {
   return entries.map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join('  ')
 }
 
-function recipePlanErrorMessage(result: unknown, fallback: string | undefined): string {
-  const r = result as { status?: unknown; reason?: unknown; message?: unknown; error?: { message?: unknown } } | null | undefined
-  const detail =
-    (typeof r?.reason === 'string' && r.reason.trim()) ||
-    (typeof r?.error?.message === 'string' && r.error.message.trim()) ||
-    (typeof r?.message === 'string' && r.message.trim()) ||
-    fallback ||
-    'could not plan this recipe'
-  return typeof r?.status === 'string' && r.status && r.status !== 'planned'
-    ? `${r.status}: ${detail}`
-    : detail
+function recipePlanErrorMessage(result: unknown, error: { code?: string; message?: string } | null | undefined): string {
+  const r = result as { status?: unknown; reason?: unknown; message?: unknown; error?: { code?: string; message?: string } } | null | undefined
+  const detail = (typeof r?.reason === 'string' && r.reason.trim()) ||
+    r?.error?.message || (typeof r?.message === 'string' && r.message.trim()) || error?.message
+  const reason = humanFailureReason(detail, 'Could not plan this recipe')
+  return humanFailureMessage({ ...error, ...r?.error, message: reason }, 'Could not plan this recipe')
+}
+
+function recipeSummaryText(summary: string): string {
+  return humanFailureReason(summary, 'The recipe stopped. Review the details below.')
 }
 
 function cleanStageText(value: string | null | undefined): string {
@@ -180,7 +180,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
     try {
       const r = await callVerb('recipe.list', {})
       if (r.ok && r.result) setRecipes(r.result.recipes ?? [])
-      else setErr(r.error?.message ?? 'could not list recipes')
+      else setErr(humanFailureMessage(r.error, 'Could not list recipes'))
     } catch {
       setErr('server unreachable')
     } finally {
@@ -217,7 +217,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
         setParamValues(seed)
         setView('detail')
       } else {
-        setErr(r.error?.message ?? `could not describe "${name}"`)
+        setErr(humanFailureMessage(r.error, 'Could not open this recipe'))
       }
     } catch {
       setErr('server unreachable')
@@ -275,7 +275,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
         starter: 'first-edit',
       })
       if (!created.ok || !created.result?.starter_asset_path) {
-        throw new Error(created.error?.message ?? 'could not create the sample project')
+        throw new Error(humanFailureMessage(created.error, 'Could not create the sample project'))
       }
       await onProjectSwitched()
 
@@ -286,15 +286,15 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
       })
       const importResult = imported.result as { asset_id?: string; job_id?: string } | undefined
       if (!imported.ok || !importResult?.asset_id || !importResult.job_id) {
-        throw new Error(imported.error?.message ?? 'could not import the sample clip')
+        throw new Error(humanFailureMessage(imported.error, 'Could not import the sample clip'))
       }
 
       const deadline = Date.now() + 45_000
       for (;;) {
         const status = await callVerb('jobs.status', { job_id: importResult.job_id })
-        if (!status.ok || !status.result) throw new Error(status.error?.message ?? 'sample import status unavailable')
+        if (!status.ok || !status.result) throw new Error(humanFailureMessage(status.error, 'Could not read sample import progress'))
         if (status.result.state === 'done') break
-        if (status.result.state === 'failed') throw new Error(status.result.error?.message ?? 'sample import failed')
+        if (status.result.state === 'failed') throw new Error(humanFailureMessage(status.result.error, 'Sample import failed'))
         if (Date.now() >= deadline) throw new Error('sample import timed out before it was ready to edit')
         await new Promise((resolve) => window.setTimeout(resolve, 350))
       }
@@ -303,7 +303,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
       await onProjectSwitched()
       setPhase('')
     } catch (error) {
-      setErr(error instanceof Error ? error.message : 'could not prepare the sample project')
+      setErr(humanFailureReason(error instanceof Error ? error.message : null, 'Could not prepare the sample project. Check your settings and try again.'))
       setPhase('')
     } finally {
       setBusy(false)
@@ -319,7 +319,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
       if (r.ok && r.result && 'status' in r.result && (r.result as RecipeDryRun).status === 'planned') {
         setPlan(r.result as RecipeDryRun)
       } else {
-        setErr(recipePlanErrorMessage(r.result, r.error?.message))
+        setErr(recipePlanErrorMessage(r.result, r.error))
       }
     } catch {
       setErr('server unreachable')
@@ -336,7 +336,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
     try {
       const r = await callVerb('recipe.run', { name: manifest.name, args: buildArgs(), policy: 'run', rationale: `human: run recipe ${manifest.name}` })
       if (!r.ok || !r.result || !('job_id' in r.result)) {
-        setErr(r.error?.message ?? 'recipe.run failed')
+        setErr(humanFailureMessage(r.error, 'Could not start the recipe'))
         setBusy(false); setPhase('')
         return
       }
@@ -361,7 +361,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
             // A stopped recipe keeps its report (stages, checkpoint to restore).
             const stopped = j.result.result as RecipeReport | undefined
             if (stopped && typeof stopped === 'object' && 'status' in stopped) setReport(stopped)
-            setErr(`recipe failed: ${j.result.error?.message ?? 'a stage errored'}`)
+            setErr(`${humanFailureMessage(j.result.error, 'The recipe stopped')} Review the recipe details; if changes were made, use Restore to undo them.`)
             setBusy(false); setPhase('')
             return
           }
@@ -381,7 +381,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
     if (!report?.checkpoint) return
     const r = await callVerb('project.revert', { to: report.checkpoint, rationale: 'undo recipe run' })
     if (r.ok) setRestored(true)
-    else setErr(`restore failed: ${r.error?.message ?? ''}`)
+    else setErr(humanFailureMessage(r.error, 'Could not restore the recipe'))
   }, [report])
 
   const openInspect = () => document.dispatchEvent(new CustomEvent('cut:open-receipts'))
@@ -604,7 +604,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
                         ? <Icon name="check" size={16} tone="success" label="completed" />
                         : <Icon name="warning" size={16} tone="warn" label={report.status} />}
                     </span>
-                    <span>{report.summary_line}</span>
+                    <span>{recipeSummaryText(report.summary_line)}</span>
                   </div>
 
                   {report.changed && (report.changed.ops ?? 0) > 0 && (
@@ -641,7 +641,7 @@ export default function RecipesDrawer({ project, onProjectSwitched, onClose }: R
                                 check {gatePass ? 'passed' : 'failed'}
                               </span>
                             )}
-                            {sr.error && <span className="rc-op-err">{sr.error.message}</span>}
+                            {sr.error && <span className="rc-op-err">{humanFailureMessage(sr.error, 'This step did not finish')}</span>}
                           </div>
                           {i === report.stages_run - 1 && !report.status.startsWith('completed') && (
                             <span className="rc-op-stop" title="run stopped here">stopped</span>

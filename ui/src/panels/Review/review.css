@@ -234,6 +234,9 @@
   border: 1px solid var(--hairline-2);
   border-radius: var(--radius-card);
   overflow: hidden;
+  /* overflow:hidden gives a flex item a minimum height of 0; without this the card
+     shrinks to the panel and clips its own checks, and the list never scrolls. */
+  flex-shrink: 0;
 }
 
 /* the across-the-room verdict (rule 2 of the feel) */
@@ -367,6 +370,9 @@
   border-bottom: 1px solid var(--hairline);
   background: var(--surface);
 }
+.rr-rc__rerun { font: var(--fs-sm, 12px) var(--sans, system-ui, sans-serif); color: var(--ink-2); }
+.rr-rc__rerun .rr-rc__download { margin-left: 0; background: transparent; font: inherit; cursor: pointer; }
+.rr-rc__rerun .rr-rc__download:hover { background: var(--cut); color: var(--bg-0); }
 .rr-rc__profile-proposal { color: var(--amber); }
 
 /* ---- waived checks: amber-muted, NEVER green (rule 3/4 of the feel) -------- */
@@ -692,6 +698,7 @@
 
 /* ── QC tab (verify.* receipts + one-click fixes) ───────────────────────── */
 .qc { display: flex; flex-direction: column; gap: var(--space-2, 8px); padding: var(--space-2, 8px); overflow-y: auto; }
+.qc > * { flex-shrink: 0; }
 .qc__bar { display: flex; align-items: center; gap: 10px; }
 .qc__run {
   font: var(--fs-ui-xs); font-family: var(--mono, monospace);
@@ -885,3 +892,7 @@
 @media (max-width: 780px) {
   .scopes__grid { grid-template-columns: 1fr; }
 }
+
+/* The list of every check with its state, as of the export. */
+.rr-rc__export-checks { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--hairline); }
+.rr-rc__export-checks-at { font: var(--fs-mono-xs) var(--mono); color: var(--ink-3); }

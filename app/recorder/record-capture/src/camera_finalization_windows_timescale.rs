@@ -93,49 +93,130 @@ fn mdhd_timescale(file: &mut (impl Read + Seek), box_: Mp4Box) -> io::Result<u32
     Ok(timescale)
 }
 
-fn track_video_timescale(file: &mut (impl Read + Seek), track: Mp4Box) -> io::Result<Option<u32>> {
-    let mut mdia = None;
-    let mut at = track.body;
-    while at < track.end {
-        let child = read_box(file, at, track.end)?;
-        if child.kind == *b"mdia" && mdia.replace(child).is_some() {
-            return Err(invalid("duplicate MP4 mdia"));
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct VideoTrackTiming {
+    pub(super) timescale: u32,
+    pub(super) has_ctts: bool,
+    pub(super) has_elst: bool,
+    pub(super) stts_samples: u64,
+    pub(super) stts_total_ticks: u64,
+    pub(super) last_stts_delta: u64,
+}
+
+fn u32_be(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes(bytes[..4].try_into().unwrap())
+}
+
+fn fullbox_count(file: &mut (impl Read + Seek), box_: Mp4Box) -> io::Result<u32> {
+    Ok(u32_be(&read_prefix::<8>(file, box_)?[4..8]))
+}
+
+fn stts_summary(file: &mut (impl Read + Seek), box_: Mp4Box) -> io::Result<(u64, u64, u64)> {
+    let entry_count = u64::from(fullbox_count(file, box_)?);
+    if entry_count.checked_mul(8) != Some(box_.end - box_.body - 8) {
+        return Err(invalid("invalid MP4 stts table length"));
+    }
+    let (mut samples, mut total_ticks, mut last_delta) = (0_u64, 0_u64, 0_u64);
+    let mut entry = [0_u8; 8];
+    for _ in 0..entry_count {
+        file.read_exact(&mut entry)?;
+        let (count, delta) = (
+            u64::from(u32_be(&entry[..4])),
+            u64::from(u32_be(&entry[4..8])),
+        );
+        let run = count
+            .checked_mul(delta)
+            .ok_or_else(|| invalid("MP4 stts duration overflow"))?;
+        samples = samples
+            .checked_add(count)
+            .ok_or_else(|| invalid("MP4 stts count overflow"))?;
+        total_ticks = total_ticks
+            .checked_add(run)
+            .ok_or_else(|| invalid("MP4 stts ticks overflow"))?;
+        if count > 0 {
+            last_delta = delta;
+        }
+    }
+    Ok((samples, total_ticks, last_delta))
+}
+
+fn child_box(
+    file: &mut (impl Read + Seek),
+    parent: Mp4Box,
+    target: &[u8; 4],
+    dup: &'static str,
+) -> io::Result<Option<Mp4Box>> {
+    let (mut found, mut at) = (None, parent.body);
+    while at < parent.end {
+        let child = read_box(file, at, parent.end)?;
+        if child.kind == *target && found.replace(child).is_some() {
+            return Err(invalid(dup));
         }
         at = child.end;
     }
-    let mdia = mdia.ok_or_else(|| invalid("missing MP4 mdia"))?;
-    let mut hdlr = None;
-    let mut mdhd = None;
-    let mut at = mdia.body;
-    while at < mdia.end {
-        let child = read_box(file, at, mdia.end)?;
-        match &child.kind {
-            b"hdlr" if hdlr.replace(child).is_some() => {
-                return Err(invalid("duplicate MP4 hdlr"));
-            }
-            b"mdhd" if mdhd.replace(child).is_some() => {
-                return Err(invalid("duplicate MP4 mdhd"));
-            }
-            _ => {}
-        }
-        at = child.end;
-    }
-    let hdlr = hdlr.ok_or_else(|| invalid("missing MP4 hdlr"))?;
+    Ok(found)
+}
+
+fn track_video_header(
+    file: &mut (impl Read + Seek),
+    track: Mp4Box,
+) -> io::Result<Option<(u32, Mp4Box)>> {
+    let mdia = child_box(file, track, b"mdia", "duplicate MP4 mdia")?
+        .ok_or_else(|| invalid("missing MP4 mdia"))?;
+    let hdlr = child_box(file, mdia, b"hdlr", "duplicate MP4 hdlr")?
+        .ok_or_else(|| invalid("missing MP4 hdlr"))?;
     if !handler_is_video(file, hdlr)? {
         return Ok(None);
     }
-    let mdhd = mdhd.ok_or_else(|| invalid("missing MP4 video mdhd"))?;
-    Ok(Some(mdhd_timescale(file, mdhd)?))
+    let mdhd = child_box(file, mdia, b"mdhd", "duplicate MP4 mdhd")?
+        .ok_or_else(|| invalid("missing MP4 video mdhd"))?;
+    Ok(Some((mdhd_timescale(file, mdhd)?, mdia)))
 }
 
-/// Return the sole video track's `mdhd` timescale from a retained file handle.
-pub(super) fn video_timescale(file: &mut (impl Read + Seek), bytes: u64) -> io::Result<u32> {
+fn track_video_timing(
+    file: &mut (impl Read + Seek),
+    track: Mp4Box,
+) -> io::Result<Option<VideoTrackTiming>> {
+    let Some((timescale, mdia)) = track_video_header(file, track)? else {
+        return Ok(None);
+    };
+    let has_elst = match child_box(file, track, b"edts", "duplicate MP4 edts")? {
+        Some(edts) => match child_box(file, edts, b"elst", "duplicate MP4 elst")? {
+            Some(elst) => fullbox_count(file, elst)? > 0,
+            None => false,
+        },
+        None => false,
+    };
+    let minf = child_box(file, mdia, b"minf", "duplicate MP4 minf")?
+        .ok_or_else(|| invalid("missing MP4 minf"))?;
+    let stbl = child_box(file, minf, b"stbl", "duplicate MP4 stbl")?
+        .ok_or_else(|| invalid("missing MP4 stbl"))?;
+    let stts = child_box(file, stbl, b"stts", "duplicate MP4 stts")?
+        .ok_or_else(|| invalid("missing MP4 stts"))?;
+    let (stts_samples, stts_total_ticks, last_stts_delta) = stts_summary(file, stts)?;
+    let has_ctts = match child_box(file, stbl, b"ctts", "duplicate MP4 ctts")? {
+        Some(ctts) => fullbox_count(file, ctts)? > 0,
+        None => false,
+    };
+    Ok(Some(VideoTrackTiming {
+        timescale,
+        has_ctts,
+        has_elst,
+        stts_samples,
+        stts_total_ticks,
+        last_stts_delta,
+    }))
+}
+
+fn scan_moov_video<R: Read + Seek, T>(
+    file: &mut R,
+    bytes: u64,
+    mut visit: impl FnMut(&mut R, Mp4Box) -> io::Result<Option<T>>,
+) -> io::Result<T> {
     if file.seek(SeekFrom::End(0))? != bytes {
         return Err(invalid("MP4 file length changed"));
     }
-    let mut at = 0;
-    let mut found_moov = false;
-    let mut video = None;
+    let (mut at, mut found_moov, mut video) = (0, false, None);
     while at < bytes {
         let top = read_box(file, at, bytes)?;
         if top.kind == *b"moov" {
@@ -147,8 +228,8 @@ pub(super) fn video_timescale(file: &mut (impl Read + Seek), bytes: u64) -> io::
             while child_at < top.end {
                 let child = read_box(file, child_at, top.end)?;
                 if child.kind == *b"trak" {
-                    if let Some(scale) = track_video_timescale(file, child)? {
-                        if video.replace(scale).is_some() {
+                    if let Some(found) = visit(file, child)? {
+                        if video.replace(found).is_some() {
                             return Err(invalid("multiple MP4 video tracks"));
                         }
                     }
@@ -159,6 +240,21 @@ pub(super) fn video_timescale(file: &mut (impl Read + Seek), bytes: u64) -> io::
         at = top.end;
     }
     video.ok_or_else(|| invalid("missing MP4 video track"))
+}
+
+/// Return the sole video track's `mdhd` timescale from a retained file handle.
+pub(super) fn video_timescale(file: &mut (impl Read + Seek), bytes: u64) -> io::Result<u32> {
+    scan_moov_video(file, bytes, |reader, trak| {
+        Ok(track_video_header(reader, trak)?.map(|(s, _)| s))
+    })
+}
+
+/// Return the sole video track's container `mdhd`/`stts`/`ctts`/`elst` timing summary.
+pub(super) fn video_track_timing(
+    file: &mut (impl Read + Seek),
+    bytes: u64,
+) -> io::Result<VideoTrackTiming> {
+    scan_moov_video(file, bytes, track_video_timing)
 }
 
 #[cfg(test)]

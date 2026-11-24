@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { realpathSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { DEFAULT_PUBLIC_TESTS_ROOT, discoverLibraryTests } from './libraryTestDiscovery.mjs'
 
@@ -103,11 +103,12 @@ async function main() {
     })
   }
 
+  const cspPreloadPath = resolve(here, 'cspPlaywrightPreload.mjs')
   console.log(`[test:lib] discovered ${included.length} eligible tests; ${excluded.length} explicit exclusions; limit ${Math.round(timeoutMs / 1000)} s per file`)
   for (const relativePath of included) {
     if (interrupted.signal.aborted) break
     const testPath = resolve(DEFAULT_PUBLIC_TESTS_ROOT, relativePath)
-    const args = relativePath.endsWith('.ts') ? [tsxCli, testPath] : [testPath]
+    const args = ['--import', pathToFileURL(cspPreloadPath).href, ...(relativePath.endsWith('.ts') ? [tsxCli, testPath] : [testPath])]
     console.log(`[test:lib] RUN ${relativePath}`)
     const result = await runTestFile({ args, cwd: uiRoot, env: process.env, timeoutMs, abort: interrupted.signal })
     durations.push({ path: relativePath, ms: result.ms })

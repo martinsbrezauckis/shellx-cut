@@ -86,7 +86,35 @@ pub fn run_subject_owned(
     direction: Option<serde_json::Value>,
     control: &cut_media::ffmpeg::OwnedProcessControl,
 ) -> Result<crate::types::SubjectTrack, CutError> {
-    run_subject_with_owner(media_path, asset_hash, preset, direction, Some(control))
+    run_subject_with_owner(
+        media_path,
+        asset_hash,
+        preset,
+        direction,
+        None,
+        Some(control),
+    )
+}
+
+/// Recorded variant of [`run_subject_owned`] that persists `subject` attempts
+/// under the caller-provided artifact id without touching source asset cache.
+pub fn run_subject_recorded(
+    media_path: &Path,
+    receipts_dir: &Path,
+    artifact_id: &str,
+    asset_hash: &str,
+    preset: &str,
+    direction: Option<serde_json::Value>,
+    control: &cut_media::ffmpeg::OwnedProcessControl,
+) -> Result<crate::types::SubjectTrack, CutError> {
+    run_subject_with_owner(
+        media_path,
+        asset_hash,
+        preset,
+        direction,
+        Some((receipts_dir, artifact_id)),
+        Some(control),
+    )
 }
 
 pub(super) fn run_subject_with_owner(
@@ -94,6 +122,7 @@ pub(super) fn run_subject_with_owner(
     asset_hash: &str,
     preset: &str,
     direction: Option<serde_json::Value>,
+    record: Option<(&Path, &str)>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
 ) -> Result<crate::types::SubjectTrack, CutError> {
     let request = serde_json::json!({
@@ -109,7 +138,17 @@ pub(super) fn run_subject_with_owner(
         directed = direction.is_some(),
         "running subject instrument"
     );
-    let stdout = spawn_with_optional_owner(&request, control)?;
+    let stdout = match record {
+        Some((receipts_dir, artifact_id)) => spawn_recorded_with_optional_owner(
+            &request,
+            receipts_dir,
+            artifact_id,
+            asset_hash,
+            "subject",
+            control,
+        )?,
+        None => spawn_with_optional_owner(&request, control)?,
+    };
     let report: PerceptionReport = serde_json::from_str(stdout.trim())
         .map_err(|e| invalid_json("sidecar emitted invalid PerceptionReport JSON", &stdout, e))?;
     if report.schema != PERCEPTION_SCHEMA {
@@ -135,24 +174,55 @@ pub fn build_contact_sheet_owned(
     preset: &str,
     control: &cut_media::ffmpeg::OwnedProcessControl,
 ) -> Result<serde_json::Value, CutError> {
-    build_contact_sheet_with_owner(media_path, out_dir, preset, Some(control))
+    build_contact_sheet_with_owner(media_path, out_dir, preset, None, Some(control))
+}
+
+/// Recorded variant of [`build_contact_sheet_owned`].
+pub fn build_contact_sheet_recorded(
+    media_path: &Path,
+    out_dir: &Path,
+    preset: &str,
+    receipts_dir: &Path,
+    artifact_id: &str,
+    asset_hash: &str,
+    control: &cut_media::ffmpeg::OwnedProcessControl,
+) -> Result<serde_json::Value, CutError> {
+    build_contact_sheet_with_owner(
+        media_path,
+        out_dir,
+        preset,
+        Some((receipts_dir, artifact_id, asset_hash)),
+        Some(control),
+    )
 }
 
 pub(super) fn build_contact_sheet_with_owner(
     media_path: &Path,
     out_dir: &Path,
     preset: &str,
+    record: Option<(&Path, &str, &str)>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
 ) -> Result<serde_json::Value, CutError> {
+    let asset_hash = record.map(|(_, _, h)| h).unwrap_or("");
     let request = serde_json::json!({
         "media_path": media_path.canonicalize().unwrap_or_else(|_| media_path.to_path_buf()),
         "asset_id": "reframe-contact",
-        "asset_hash": "",
+        "asset_hash": asset_hash,
         "contact_sheet": out_dir,
         "subject_preset": preset,
     });
     tracing::info!(preset, "building director contact sheet");
-    let stdout = spawn_with_optional_owner(&request, control)?;
+    let stdout = match record {
+        Some((receipts_dir, artifact_id, asset_hash)) => spawn_recorded_with_optional_owner(
+            &request,
+            receipts_dir,
+            artifact_id,
+            asset_hash,
+            "contact_sheet",
+            control,
+        )?,
+        None => spawn_with_optional_owner(&request, control)?,
+    };
     serde_json::from_str(stdout.trim())
         .map_err(|e| invalid_json("contact-sheet sidecar emitted invalid JSON", &stdout, e))
 }
@@ -164,58 +234,57 @@ pub fn build_qc_sheet_owned(
     preset: &str,
     control: &cut_media::ffmpeg::OwnedProcessControl,
 ) -> Result<serde_json::Value, CutError> {
-    build_qc_sheet_with_owner(media_path, out_dir, preset, Some(control))
+    build_qc_sheet_with_owner(media_path, out_dir, preset, None, Some(control))
+}
+
+/// Recorded variant of [`build_qc_sheet_owned`].
+pub fn build_qc_sheet_recorded(
+    media_path: &Path,
+    out_dir: &Path,
+    preset: &str,
+    receipts_dir: &Path,
+    artifact_id: &str,
+    asset_hash: &str,
+    control: &cut_media::ffmpeg::OwnedProcessControl,
+) -> Result<serde_json::Value, CutError> {
+    build_qc_sheet_with_owner(
+        media_path,
+        out_dir,
+        preset,
+        Some((receipts_dir, artifact_id, asset_hash)),
+        Some(control),
+    )
 }
 
 pub(super) fn build_qc_sheet_with_owner(
     media_path: &Path,
     out_dir: &Path,
     preset: &str,
+    record: Option<(&Path, &str, &str)>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
 ) -> Result<serde_json::Value, CutError> {
+    let asset_hash = record.map(|(_, _, h)| h).unwrap_or("");
     let request = serde_json::json!({
         "media_path": media_path.canonicalize().unwrap_or_else(|_| media_path.to_path_buf()),
         "asset_id": "reframe-qc",
-        "asset_hash": "",
+        "asset_hash": asset_hash,
         "qc_sheet": out_dir,
         "subject_preset": preset,
     });
     tracing::info!(preset, "building director quality check sheet");
-    let stdout = spawn_with_optional_owner(&request, control)?;
+    let stdout = match record {
+        Some((receipts_dir, artifact_id, asset_hash)) => spawn_recorded_with_optional_owner(
+            &request,
+            receipts_dir,
+            artifact_id,
+            asset_hash,
+            "qc_sheet",
+            control,
+        )?,
+        None => spawn_with_optional_owner(&request, control)?,
+    };
     serde_json::from_str(stdout.trim())
         .map_err(|e| invalid_json("qc-sheet sidecar emitted invalid JSON", &stdout, e))
-}
-
-/// Progress-aware transcription under the caller's operation owner.
-pub fn transcribe_owned_progress(
-    media_path: &Path,
-    receipts_dir: &Path,
-    asset_id: &str,
-    asset_hash: &str,
-    model: Option<&str>,
-    progress: Option<Arc<SidecarProgress>>,
-    control: &cut_media::ffmpeg::OwnedProcessControl,
-) -> Result<Transcript, CutError> {
-    let report = run_instruments_owned_progress(
-        media_path,
-        receipts_dir,
-        asset_id,
-        asset_hash,
-        InstrumentSet::WordsOnly,
-        model,
-        progress,
-        control,
-    )?;
-    let transcript = transcript_or_empty(report, asset_id)?;
-    let path = receipts_dir.join(format!("{asset_id}.words.json"));
-    // Replaces the name: never writes through a link or shared file.
-    cut_core::store::replace_project_file(
-        &path,
-        serde_json::to_string_pretty(&transcript)
-            .map_err(CutError::from)?
-            .as_bytes(),
-    )?;
-    Ok(transcript)
 }
 
 fn spawn_with_optional_owner(
@@ -226,6 +295,27 @@ fn spawn_with_optional_owner(
         Some(control) => spawn_sidecar_streaming(request, None, Some(control)),
         None => spawn_sidecar(request),
     }
+}
+
+fn spawn_recorded_with_optional_owner(
+    request: &serde_json::Value,
+    receipts_dir: &Path,
+    artifact_id: &str,
+    asset_hash: &str,
+    instrument: &str,
+    control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
+) -> Result<String, CutError> {
+    let attempts = Arc::new(crate::analysis_attempts::AttemptRecorder::new(
+        receipts_dir,
+        artifact_id,
+        asset_hash,
+        &[instrument],
+        true,
+    ));
+    attempts.asked();
+    let result = spawn_sidecar_streaming_recorded(request, None, control, Some(attempts.clone()));
+    attempts.finish(result.as_ref().err());
+    result
 }
 
 fn invalid_json(message: &str, stdout: &str, error: serde_json::Error) -> CutError {

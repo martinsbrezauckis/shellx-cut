@@ -4,7 +4,7 @@
 
 import type { JobRecord, ProjectIdentity, VerbResult } from '../../lib/client'
 import type { DoctorCard } from '../../lib/doctor'
-import { jobFailureText } from '../../lib/jobFailureText'
+import { humanFailureMessage } from '../../lib/userActionFeedback'
 
 export type SpeechServiceAction = 'diarize' | 'dub'
 
@@ -113,9 +113,9 @@ function dubbingResult(result: unknown, asset: string, targetLang: string): { tr
 }
 
 function jobError(record: JobRecord): string {
-  return jobFailureText(
-    record,
-    record.outcome === 'cancelled' ? 'Speaker-label job was cancelled.' : 'Speaker-label job failed.',
+  return humanFailureMessage(
+    record.error,
+    record.outcome === 'cancelled' ? 'Speaker labels were cancelled' : 'Speaker labels did not finish',
   )
 }
 

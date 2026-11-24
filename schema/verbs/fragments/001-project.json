@@ -115,7 +115,7 @@
     {
       "name": "project.list",
       "domain": "project",
-      "description": "List recent projects from the global index (~/.shellx-cut/projects.json), reconciled against the managed projects dir + the filesystem: projects whose .cutproj vanished are flagged missing:true, and un-indexed .cutproj dirs found in the managed dir are discovered and added. READ-ONLY discovery — reopen a listed project with project.open{path}. The index is updated as a side-effect of project.create/open/rename.",
+      "description": "List recent projects from the global index (~/.shellx-cut/projects.json), reconciled against the managed projects dir + the filesystem: projects whose .cutproj vanished are flagged missing:true, and un-indexed .cutproj dirs found in the managed dir are discovered and added. READ-ONLY discovery — reopen a listed project with project.open{path}. The index is updated as a side-effect of project.create/open/rename. A damaged index is read from the copy kept at the last save (projects.last-good.json); without a usable copy it is moved aside as projects.damaged.json (never deleted), the list starts again from the projects folder, and the first project.list or project.create reply after that carries the warning project_list_rebuilt.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -268,7 +268,7 @@
     {
       "name": "project.state",
       "domain": "project",
-      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Every result carries a transient path-free project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name} derived from the canonical open .cutproj origin; raw project paths are never returned by this projection. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json.",
+      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Every result carries a transient path-free project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name} derived from the canonical open .cutproj origin; raw project paths are never returned by this projection. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json. Media clips may carry markers:[{id,source_ms,label,note?,color?}]: clip markers (like Premiere/Resolve clip markers) in the clip's SOURCE media time, made from the markers flagged during a recording take when that take is added to the timeline. They travel with the clip on move, stay in the data through trims (the timeline draws only markers whose source_ms is inside [src_in_ms,src_out_ms)), go to both halves of a split, are copied with new ids by edit.duplicate, are mapped through speed and reverse, and come back with undo/redo; edit.replace with a different asset clears them. No verb edits clip markers in this release; render, export and interchange output ignore them.",
       "args": {
         "type": "object",
         "additionalProperties": false,

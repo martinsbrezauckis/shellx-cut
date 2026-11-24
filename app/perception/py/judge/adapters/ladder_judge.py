@@ -84,22 +84,35 @@ def detect_ladder(launches: dict | None = None) -> dict:
                 "availability_reason": "provider launch wrapper is unsupported",
             }
 
-    claude = (detect_one("claude", lambda launch: cli_judge.detect_providers(launch).get(
-                  "claude", {"found": False}), launches.get("claude"))
-              if not admitted_only or "claude" in launches else unavailable("claude"))
-    # Normalize the claude entry to the {provider, found, ...} shape the others
-    # use (cli_judge keys it under the name; add the provider field).
-    claude = {"provider": "claude", **claude}
-    rungs = {
-        "claude": claude,
-        "codex": (detect_one("codex", codex_judge.detect, launches.get("codex"))
-                  if not admitted_only or "codex" in launches else unavailable("codex")),
-        "antigravity": (detect_one("antigravity", antigravity_judge.detect,
-                                    launches.get("antigravity"))
-                        if not admitted_only or "antigravity" in launches else unavailable("antigravity")),
-        "grok": (detect_one("grok", grok_judge.detect, launches.get("grok"))
-                 if not admitted_only or "grok" in launches else unavailable("grok")),
-    }
+    with __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futs = {}
+        if not admitted_only or "claude" in launches:
+            futs["claude"] = pool.submit(
+                detect_one,
+                "claude",
+                lambda launch: cli_judge.detect_providers(launch).get("claude", {"found": False}),
+                launches.get("claude"),
+            )
+        if not admitted_only or "codex" in launches:
+            futs["codex"] = pool.submit(detect_one, "codex", codex_judge.detect, launches.get("codex"))
+        if not admitted_only or "antigravity" in launches:
+            futs["antigravity"] = pool.submit(
+                detect_one, "antigravity", antigravity_judge.detect, launches.get("antigravity")
+            )
+        if not admitted_only or "grok" in launches:
+            futs["grok"] = pool.submit(detect_one, "grok", grok_judge.detect, launches.get("grok"))
+        claude = futs["claude"].result() if "claude" in futs else unavailable("claude")
+        # Normalize the claude entry to the {provider, found, ...} shape the others
+        # use (cli_judge keys it under the name; add the provider field).
+        claude = {"provider": "claude", **claude}
+        rungs = {
+            "claude": claude,
+            "codex": futs["codex"].result() if "codex" in futs else unavailable("codex"),
+            "antigravity": (
+                futs["antigravity"].result() if "antigravity" in futs else unavailable("antigravity")
+            ),
+            "grok": futs["grok"].result() if "grok" in futs else unavailable("grok"),
+        }
     # Presence and admission are distinct. Claude has a restricted-Read gate;
     # every other rung must affirmatively declare its own judge-ready boundary.
     # A future adapter without that declaration remains unavailable by default.

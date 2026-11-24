@@ -264,27 +264,31 @@ impl Capture for WindowsCapture {
             Src::Window(win) => Some(HWND(win.as_raw_hwnd())),
             Src::Monitor(_) => None,
         };
-        let (start, input, window_clicks) = crate::windows_input::start(cfg, window_hwnd, w, h)?;
+        let mic_gate = cfg
+            .audio
+            .then(|| Arc::new(crate::mic::MicRecordingGate::default()));
+        let anchor = crate::windows_first_frame::WindowsFirstFrameAnchor::new(cfg.clock.clone())
+            .with_mic_gate(mic_gate.clone());
+        let (input, window_clicks) = crate::windows_input::start_deferred(
+            cfg,
+            window_hwnd,
+            w,
+            h,
+            anchor.input_origin_cell(),
+        )?;
+        anchor.set_input_seed(input.seed_handle());
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
             let mic_path = format!("{out_dir}/mic.wav");
-            Some(match cfg.microphone_level.clone() {
-                Some(level) => crate::mic_endpoint::spawn_microphone_capture_with_level(
-                    mic_path,
-                    cfg.microphone_source.clone(),
-                    stop.clone(),
-                    ready,
-                    start,
-                    level,
-                ),
-                None => crate::mic_endpoint::spawn_microphone_capture(
-                    mic_path,
-                    cfg.microphone_source.clone(),
-                    stop.clone(),
-                    ready,
-                    start,
-                ),
-            })
+            Some(crate::mic_endpoint::spawn_microphone_capture_with_gate(
+                mic_path,
+                cfg.microphone_source.clone(),
+                stop.clone(),
+                ready,
+                Instant::now(),
+                mic_gate,
+                cfg.microphone_level.clone(),
+            ))
         } else {
             None
         };
@@ -304,30 +308,31 @@ impl Capture for WindowsCapture {
             range,
         )?;
         let mut selected_window_segment_started = false;
-        let qpc_origin = cfg
-            .checkpoint
-            .as_ref()
-            .map(|_| {
-                crate::windows_wgc_clock_origin::QpcCaptureOrigin::sample(start)
-                    .map_err(|error| cap_err("pair WGC and input clocks", error))
-            })
-            .transpose()?;
         let current_wgc_timing = Arc::new(Mutex::new(None));
         let factory_wgc_timing = current_wgc_timing.clone();
         let mut start_wgc = |target: &Src,
                              destination: &Path,
                              reserved_start_ms: u64|
          -> Result<WgcStartedControl<LiveWgcControl>> {
-            let timed_clock = qpc_origin
-                .map(|origin| {
+            let started_origin = anchor.qpc_origin();
+            let timed_clock = started_origin
+                .map(|(start, origin)| {
                     origin
                         .reserved_boundary_hns(reserved_start_ms)
                         .map(|boundary| (start, origin, boundary))
                         .map_err(|error| cap_err("reserve WGC native sample clock", error))
                 })
                 .transpose()?;
+            let first_frame = started_origin.is_none().then(|| anchor.clone());
             let source_lifecycle = cfg.source_lifecycle.clone();
-            let timing = crate::windows_wgc_timing::WgcTimingRecorder::new(start, fps, destination);
+            let timing = match started_origin {
+                Some((start, _)) => {
+                    crate::windows_wgc_timing::WgcTimingRecorder::new(start, fps, destination)
+                }
+                None => {
+                    crate::windows_wgc_timing::WgcTimingRecorder::new_deferred(fps, destination)
+                }
+            };
             *factory_wgc_timing
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(timing.clone());
@@ -356,6 +361,7 @@ impl Capture for WindowsCapture {
                 stop: stop.clone(),
                 timing: Some(timing.clone()),
                 timed_clock,
+                first_frame,
                 window_clicks: window_clicks.clone(),
                 active_preview: cfg.active_preview.as_ref().and_then(|preview| {
                     preview
@@ -418,14 +424,11 @@ impl Capture for WindowsCapture {
         };
         let (duration_ms, checkpoints) = match Checkpoints::open(cfg.checkpoint.as_ref())? {
             Some(checkpoints) => {
-                let origin = qpc_origin
-                    .ok_or_else(|| cap_err("rotate recording writer", "capture clock missing"))?;
                 let (duration, checkpoints) = crate::windows_continuous::capture(
                     cfg,
                     &stop,
-                    start,
+                    &anchor,
                     &accepted.settings,
-                    origin,
                     checkpoints,
                     |destination, reserved_start_ms| {
                         let started = start_wgc(&src, destination, reserved_start_ms)?;
@@ -444,6 +447,14 @@ impl Capture for WindowsCapture {
             }
             None => {
                 let mut control = start_wgc(&src, Path::new(&path), 0)?.control;
+                let Some((start, _)) = anchor.wait_started(&stop, || Ok(()))? else {
+                    stop.store(true, Ordering::Release);
+                    let _ = control.close();
+                    return Err(cap_err(
+                        "capture screen",
+                        "capture stopped before the first video frame arrived",
+                    ));
+                };
                 while !stop.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(dur)
                 {
                     thread::sleep(Duration::from_millis(50));

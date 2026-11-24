@@ -243,6 +243,7 @@ fn two_clip_project(asset_path: &Path) -> Project {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![mk("c1", 0, 1000, 0.0), mk("c2", 500, 1500, 0.0)];
@@ -445,6 +446,7 @@ fn render_loops_still_for_clip_duration() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
         Clip::Media(MediaClip {
             id: "c2".into(),
@@ -474,6 +476,7 @@ fn render_loops_still_for_clip_duration() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
     ];
     p.track_mut("a1t").unwrap().clips = vec![
@@ -506,6 +509,7 @@ fn render_loops_still_for_clip_duration() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
     ];
     let edl = edl_from_project(&p);
@@ -648,6 +652,7 @@ fn scale_keyframe_zooms_in_over_time() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let edl = edl_from_project(&p);
     let fence = PathFence::new(dir.path()).unwrap();
@@ -773,6 +778,7 @@ fn loudness_normalize_then_remeasure_closes_the_loop() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     // Video on v1, audio on a1t (audio renders from the audio track).
@@ -872,6 +878,7 @@ fn new_transition_renders_via_ffmpeg() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     // clip1 (0–2000), clip2 crossfades IN over 500ms with the NEW `coverleft` style.
@@ -989,6 +996,7 @@ fn draft_preview_renders_timeline_with_still_card() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
         Clip::Media(MediaClip {
             id: "c2".into(),
@@ -1018,6 +1026,7 @@ fn draft_preview_renders_timeline_with_still_card() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
     ];
     let edl = edl_from_project(&p);
@@ -1195,6 +1204,7 @@ fn matte_media_clip(id: &str, asset: &str, matte: Option<cut_core::ClipMatte>) -
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     }
 }
 
@@ -1291,6 +1301,7 @@ fn mask_black_region_scopes_to_the_shape() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let edl = edl_from_project(&p);
     let fence = PathFence::new(dir.path()).unwrap();
@@ -1411,6 +1422,7 @@ fn grade_window_with_base_transform_renders() {
                 lut: None,
             },
         }],
+        markers: vec![],
     })];
     let edl = edl_from_project(&project);
     let fence = PathFence::new(dir.path()).unwrap();
@@ -1528,6 +1540,7 @@ fn mask_blur_reduces_detail_in_the_region() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let edl = edl_from_project(&p);
     let fence = PathFence::new(dir.path()).unwrap();
@@ -1662,6 +1675,7 @@ fn redaction_is_active_only_within_its_time_range() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let edl = edl_from_project(&p);
     let fence = PathFence::new(dir.path()).unwrap();
@@ -1808,6 +1822,7 @@ fn tracked_redaction_blur_follows_the_moving_region() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let edl = edl_from_project(&p);
     let fence = PathFence::new(dir.path()).unwrap();
@@ -1923,6 +1938,7 @@ fn render_composites_overlay_track_with_transform() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     // Overlay track: red still for the FIRST second only, half-size PiP
     // at the bottom-right quadrant (x=0.5, y=0.5, scale=0.5 → 160×120 @ 160,120).
@@ -1963,6 +1979,7 @@ fn render_composites_overlay_track_with_transform() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })],
         gain_db: 0.0,
         gain_windows: vec![],
@@ -2185,6 +2202,7 @@ fn render_layer_order_visibility_and_base_opacity() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     };
     let track = |id: &str, clip: MediaClip| Track {
         id: id.into(),
@@ -2453,6 +2471,7 @@ fn title_overlay_composites_with_alpha() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     // Title on a full-frame overlay track (no transform — it's already canvas-sized).
     p.tracks.push(Track {
@@ -2486,6 +2505,7 @@ fn title_overlay_composites_with_alpha() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })],
         gain_db: 0.0,
         gain_windows: vec![],
@@ -2595,6 +2615,7 @@ fn render_crop_removes_baked_in_letterbox() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })];
     };
     let fence = PathFence::new(dir.path()).unwrap();
@@ -2752,6 +2773,7 @@ fn render_reverse_flips_clip_in_time() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })];
     };
     let fence = PathFence::new(dir.path()).unwrap();
@@ -2911,6 +2933,7 @@ fn render_freeze_holds_one_frame() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let fence = PathFence::new(dir.path()).unwrap();
     let edl = edl_from_project(&p);
@@ -3046,6 +3069,7 @@ fn render_animate_ken_burns_pans() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     let fence = PathFence::new(dir.path()).unwrap();
     let edl = edl_from_project(&p);
@@ -3166,6 +3190,7 @@ fn render_keyframe_opacity_fades_overlay() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     };
     // base = red on v1.
     p.track_mut("v1").unwrap().clips = vec![Clip::Media(mk("c1", "a1"))];
@@ -3311,6 +3336,7 @@ fn render_keyframe_position_slides_overlay() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     };
     // base = red on v1.
     p.track_mut("v1").unwrap().clips = vec![Clip::Media(mk("c1", "a1"))];
@@ -3461,6 +3487,7 @@ fn render_fit_contain_vs_cover() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })];
         p
     };
@@ -3493,6 +3520,7 @@ fn render_fit_contain_vs_cover() {
         fit: Fit::Cover,
         resolution: Resolution::Project,
         loudness_target: None,
+        ..Default::default()
     };
     let out = render_final(
         &p,
@@ -3620,6 +3648,7 @@ fn crossfade_renders_at_60fps_and_seam_blends() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
         Clip::Media(MediaClip {
             id: "cb".into(),
@@ -3649,6 +3678,7 @@ fn crossfade_renders_at_60fps_and_seam_blends() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }),
     ];
     let edl = edl_from_project(&p);
@@ -3761,6 +3791,7 @@ fn styled_crossfade_renders_end_to_end() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![
@@ -3851,6 +3882,7 @@ fn effects_render_end_to_end() {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             })
         };
     // Base clip: vignette + grain + mirror + flip + hue (uniform effects, chained).
@@ -3974,6 +4006,7 @@ fn denoise_audio_effect_renders() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![media("c1", vec![])];
@@ -4082,6 +4115,7 @@ fn render_survives_non_exact_transform_scale() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     // The overlay-tail repro shape: overlay clip for 1s + trailing transparent filler
     // (so the overlay track concats ≥2 streams), scale 0.62 → 198×148 even-
@@ -4123,6 +4157,7 @@ fn render_survives_non_exact_transform_scale() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })],
         gain_db: 0.0,
         gain_windows: vec![],
@@ -4250,6 +4285,7 @@ fn render_mixes_all_audio_tracks_with_gain() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![mk("c1", "sp", 0.0)];
@@ -4360,6 +4396,7 @@ fn render_applies_duck_windows() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })];
     // Duck [1200, 2200) by −18 dB with 100 ms ramps (edit.duck's storage).
     p.track_mut("a1t").unwrap().gain_windows = vec![cut_core::GainWindow {
@@ -4482,6 +4519,7 @@ fn render_eq_reshapes_audio_bands() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })];
         p
     };
@@ -4612,6 +4650,7 @@ fn render_gate_silences_quiet_section() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })];
         p
     };
@@ -4775,6 +4814,7 @@ fn render_stabilize_reduces_shake() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })];
         p
     };
@@ -4891,6 +4931,7 @@ fn render_blend_mode_multiplies_only_in_overlay_region() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     };
     // base = gray on v1; overlay = green PiP (top-left quadrant) on v2 set to MULTIPLY.
     p.track_mut("v1").unwrap().clips = vec![Clip::Media(mk("c1", "a1", None))];
@@ -5408,6 +5449,7 @@ fn render_range_preview_composites_matte() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     };
     p.track_mut("v1").unwrap().clips = vec![Clip::Media(mk("c1", "a1", None))];
     p.tracks.push(Track {
@@ -5530,6 +5572,7 @@ fn render_applies_clip_fades() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![mk("c1")];
@@ -5808,6 +5851,7 @@ fn composite_6s_project(asset: &Path) -> Project {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     // Base 0–6s (three 2s clips) + mirrored audio.
@@ -5967,6 +6011,7 @@ fn gpu_friendly_project(asset: &Path) -> Project {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![media("c1"), media("c2")];
@@ -6142,6 +6187,7 @@ fn gpu_overlay_pip_falls_back_to_software() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![base_clip("c1"), base_clip("c2")];
@@ -6185,6 +6231,7 @@ fn gpu_overlay_pip_falls_back_to_software() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })],
         gain_db: 0.0,
         gain_windows: vec![],
@@ -6295,6 +6342,7 @@ fn real_4k_project(path: &Path, src_w: u64, src_h: u64) -> Project {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips = vec![media("c1", 0, 6000), media("c2", 6000, 12000)];
@@ -6656,6 +6704,7 @@ fn speed_retime_changes_render_duration() {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             })
         };
         p.track_mut("v1").unwrap().clips = vec![mk("c1")];

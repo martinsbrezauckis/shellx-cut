@@ -23,6 +23,13 @@ import type {
   MediaIntelligenceStatusResult,
 } from './mediaIntelligenceModel'
 export type * from './mediaIntelligenceModel'
+export type * from './chatConversationModel'
+import type {
+  AgentChatGetResult,
+  AgentChatListResult,
+  AgentChatMigrateResult,
+  AgentChatPatchResult,
+} from './chatConversationModel'
 
 export interface RecordingZoomSegment {
   id: string
@@ -48,6 +55,20 @@ export interface RecordingZoomListResult {
   missing_video_reason: string | null
   next_action: string | null
 }
+export interface RecordingRenderCachePreview {
+  files: { name: string; bytes: number; size_is_recorded?: boolean; removable: boolean; reason: string | null }[]
+  bytes: number
+  plan_id: string
+  removable_files: number
+  legacy: { files: string[]; bytes: number; reveal_asset: string | null; reason: string }
+}
+export interface RecordingRenderRemoval {
+  warning?: string
+  status: 'removed' | 'kept'
+  bytes?: number
+  reason?: string
+  message: string
+}
 export interface RecordingTakeRefreshResult {
   job_id: string
   clip: string
@@ -55,6 +76,15 @@ export interface RecordingTakeRefreshResult {
   baked: string
   cached: boolean
   applied_plan: string
+  earlier_render?: RecordingRenderRemoval
+}
+export interface RecordingMakeEditableResult {
+  clip: string
+  take: string
+  stale: boolean
+  segments: RecordingZoomSegment[]
+  camera_clip: string | null
+  camera_asset: string | null
 }
 
 /** ui.state result. Keep the relay's path-safe fields typed for UI-internal
@@ -1034,6 +1064,7 @@ export interface PregateRisk {
 }
 
 export interface PregateReport {
+  export_checks?: import('./exportChecks').ExportChecks
   pass: boolean
   risks: PregateRisk[]
   summary?: string
@@ -1590,6 +1621,8 @@ export interface VerbResults {
   //   detail         — the raw CLI tail (diagnostics). All four omitted on success.
   'agent.chat': {
     ok: boolean
+    conversation_id?: string
+    origin?: 'agent' | 'human'
     agent: string | null
     reply: string
     actions: Array<{ op_id: string; verb: string }>
@@ -1605,6 +1638,10 @@ export interface VerbResults {
     agent_message?: string | null
     detail?: string | null
   }
+  'agent.chat_list': AgentChatListResult
+  'agent.chat_get': AgentChatGetResult
+  'agent.chat_migrate': AgentChatMigrateResult
+  'agent.chat_patch': AgentChatPatchResult
   'jobs.status': JobRecord
   'jobs.list': JobsListResult
   'jobs.cancel': { job_id: string; cancelled: boolean }
@@ -1805,6 +1842,9 @@ export interface VerbResults {
   'screen_record.zoom_update': { segment: RecordingZoomSegment; stale: boolean }
   'screen_record.zoom_remove': { removed: string[]; stale: boolean }
   'screen_record.zoom_auto': { segments: RecordingZoomSegment[]; stale: boolean }
+  'screen_record.make_editable': RecordingMakeEditableResult
+  'screen_record.render_cache_preview': RecordingRenderCachePreview
+  'screen_record.render_cache_remove': { results: RecordingRenderRemoval[]; warning?: string | null }
   'screen_record.take_refresh': RecordingTakeRefreshResult
   'screen_record.camera_reset': { clip: string; transform: ClipTransform; keyframes: Keyframe[] }
   'media.relink': {

@@ -1,6 +1,6 @@
 //! Selected-window physical click mapping, owned by the same WGC stream.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -17,19 +17,19 @@ use record_core::ClickSample;
 pub(crate) struct WindowClickCapture {
     hwnd: usize,
     pid: u32,
-    start: Instant,
+    origin: Arc<OnceLock<Instant>>,
     output: (u32, u32),
     state: Arc<Mutex<WindowClicks>>,
     worker: Arc<crate::window_click_worker::WindowClickWorker>,
 }
 
 impl WindowClickCapture {
-    pub(crate) fn new(
+    pub(crate) fn new_deferred(
         id: &str,
         admitted_hwnd: HWND,
         width: u32,
         height: u32,
-        start: Instant,
+        origin: Arc<OnceLock<Instant>>,
     ) -> Result<Self, &'static str> {
         let (hwnd, pid) =
             crate::window_target::admitted_windows_window_identity(id, admitted_hwnd.0 as usize)
@@ -37,16 +37,16 @@ impl WindowClickCapture {
                     "selected-window click owner does not match the admitted capture identity",
                 )?;
         let state = Arc::new(Mutex::new(WindowClicks::new(width, height)));
-        let worker = crate::window_click_worker::WindowClickWorker::new(
+        let worker = crate::window_click_worker::WindowClickWorker::new_deferred(
             state.clone(),
-            start,
+            origin.clone(),
             move |point| observed_geometry(hwnd, pid, point),
         )
         .map_err(|_| "selected-window geometry observer could not start")?;
         Ok(Self {
             hwnd,
             pid,
-            start,
+            origin,
             output: (width, height),
             state,
             worker: Arc::new(worker),
@@ -83,7 +83,10 @@ impl WindowClickCapture {
             .filter(|rect| before == Some(*rect) && rect.width == width && rect.height == height)
             .filter(|_| fit.source_size() == (width, height) && fit.output_size() == self.output)
             .map(|_| fit);
-        let t_ms = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let Some(origin) = self.origin.get().copied() else {
+            return;
+        };
+        let t_ms = u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

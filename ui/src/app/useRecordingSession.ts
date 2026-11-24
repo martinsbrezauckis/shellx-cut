@@ -105,9 +105,19 @@ async function appendInitialStudioEvent(captureId: string, event: StudioEventPay
 }
 
 /** Exactly one owner for native capture, result, recovery, and both F9 routes. */
-export function useRecordingSession({ project, onEnsureProject, onResult }: {
+export type FallbackProjectStartOutcome =
+  | 'begin'
+  | 'started'
+  | 'discarded'
+  | 'kept'
+  | 'incomplete'
+  | 'not_created'
+  | 'unknown'
+
+export function useRecordingSession({ project, onEnsureProject: _onEnsureProject, onProjectStartOutcome, onResult }: {
   project: Project | null
-  onEnsureProject: () => Promise<Project | null>
+  onEnsureProject?: () => Promise<Project | null>
+  onProjectStartOutcome?: (outcome: FallbackProjectStartOutcome, createdProjectName?: string) => Promise<void>
   onResult: () => void
 }) {
   const [state, setState] = useState<RecordingSessionState>(INITIAL)
@@ -115,8 +125,8 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
   stateRef.current = state
   const projectRef = useRef(project)
   projectRef.current = project
-  const ensureProjectRef = useRef(onEnsureProject)
-  ensureProjectRef.current = onEnsureProject
+  const projectStartOutcomeRef = useRef(onProjectStartOutcome)
+  projectStartOutcomeRef.current = onProjectStartOutcome
   const resultRef = useRef(onResult)
   resultRef.current = onResult
   const presetRef = useRef<RecordingPreset | null>(loadRecordingPreset())
@@ -162,19 +172,6 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     // workspace or restore a minimized window to present setup errors.
   }, [publish])
 
-  const ensureCurrentProject = useCallback(async (): Promise<Project | null> => {
-    const current = projectRef.current
-    if (current?.project_identity) return current
-    try {
-      const created = await ensureProjectRef.current()
-      if (created?.project_identity) {
-        projectRef.current = created
-        return created
-      }
-    } catch { /* the caller publishes one bounded failure below */ }
-    return null
-  }, [])
-
   const start = useCallback(async (draft?: RecordingPreset | null) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
     const blocked = startGuardRef.current?.()
@@ -185,6 +182,9 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     const initialProjectIdentity = projectRef.current?.project_identity
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
+    let fallbackMode = false
+    let startRequestSent = false
+    let startCompletedWithOutcome = false
     try {
       if (!preset) {
         publish({ phase: 'starting', message: 'Checking the primary display for your first recording…' })
@@ -193,8 +193,8 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         preset = firstUseRecordingPreset(discovery.result)
         if (!preset) { showSetup(recordingReadinessFailure(discovery.result) ?? 'No current screen source is available. Open Record to check capture setup.'); return }
       }
-      // Preflight refusals create nothing. A project created after these
-      // checks stays open if native Start refuses, and the next attempt reuses it.
+      // Run source/device/encoder checks first; if no project is open, Start
+      // itself creates and owns any fallback recording project inside the engine.
       const guardFailure = startGuardRef.current?.()
       if (guardFailure) { showSetup(guardFailure); return }
       publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw,
@@ -215,9 +215,8 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         ? !sameProjectIdentity(initialProjectIdentity, projectRef.current?.project_identity)
         : Boolean(projectRef.current?.project_identity)
       if (projectChanged) { showSetup('The open project changed during recording checks. Try again.'); return }
-      const currentProject = await ensureCurrentProject()
-      if (!currentProject) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
-      if (!sameProjectIdentity(currentProject.project_identity, projectRef.current?.project_identity)) { showSetup('The open project changed during recording checks. Try again.'); return }
+      const currentProject = projectRef.current
+      fallbackMode = !currentProject
       // Save only a freshly admitted setup intent. No capture ID, output path,
       // one-use token, or project binding is persisted.
       presetRef.current = preset
@@ -227,8 +226,8 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       const args: Record<string, unknown> = {
         fps: preset.fps, audio: preset.audio, system_audio: preset.systemAudio,
         keys: preset.raw || preset.pause ? false : preset.keys,
-        expected_project_identity: currentProject.project_identity,
       }
+      if (currentProject?.project_identity) args.expected_project_identity = currentProject.project_identity
       if (preset.durationMs !== null) args.duration_ms = preset.durationMs
       if (preset.source.kind === 'display') args.monitor_id = preset.source.monitorId
       else if (preset.source.kind === 'window') args.window = preset.source.windowId
@@ -237,17 +236,89 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       if (preset.scenes && !preset.pause) args.scenes = preset.scenes
       if (preset.pause) args.pause = preset.pause
       if (preset.studio) args.studio = preset.studio
+      if (fallbackMode) await projectStartOutcomeRef.current?.('begin')
+      startRequestSent = true
       const reply = await callVerb('screen_record.start', args)
-      if (!reply.ok) { showSetup(`Could not start recording: ${refusalText(reply.error)}`); return }
+      // A failure after the native capture started (opening or listing its
+      // project failed) is NOT a refused Start: the take is running.
+      const runningDespiteError = !reply.ok && (reply.result as { take_running?: boolean } | undefined)?.take_running === true
+        ? recordingStartResult(reply.result) : null
+      if (runningDespiteError) {
+        if (fallbackMode) {
+          startCompletedWithOutcome = true
+          await projectStartOutcomeRef.current?.('incomplete')
+        }
+        captureRef.current = runningDespiteError.captureId
+        activePresetRef.current = preset
+        projectIdentityRef.current = undefined
+        const warning = await indicator('begin_recording_indicator', runningDespiteError.captureId)
+        publish({ phase: 'starting', captureId: runningDespiteError.captureId, startResult: runningDespiteError,
+          cadence: runningDespiteError.cadence, startedAt: null, projectName: currentProject?.name ?? null,
+          message: `Recording is running, but its project could not be opened (${refusalText(reply.error)}). Stop this capture before starting another.`,
+          initialStudioWarning: null, indicatorWarning: warning })
+        busyRef.current = false
+        toggleGateRef.current.setInFlight(false)
+        const firstFrame = await waitForFirstFrame(runningDespiteError.captureId,
+          () => captureRef.current === runningDespiteError.captureId && stateRef.current.phase === 'starting', 10 * 60_000)
+        if (firstFrame.state === 'ready') {
+          publish({ phase: 'recording', startedAt: Date.now() - firstFrame.sinceFirstFrameMs,
+            message: 'Recording is running, but its project could not be opened. Stop this capture before continuing.' })
+        } else if (firstFrame.state === 'ended' && captureRef.current === runningDespiteError.captureId) {
+          void stopRef.current()
+        }
+        return
+      }
+      if (!reply.ok) {
+        let message = `Could not start recording: ${refusalText(reply.error)}`
+        if (fallbackMode) {
+          const outcome = reply.result as {
+            created_project_outcome?: string
+            created_project_discarded?: boolean
+            created_project_kept?: boolean
+          } | undefined
+          if (outcome?.created_project_kept === true || outcome?.created_project_outcome === 'kept') {
+            message += ' Recording did not start. The recording project already holds other files, so it was kept and is listed in Projects.'
+            startCompletedWithOutcome = true
+            await projectStartOutcomeRef.current?.('kept')
+          } else if (outcome?.created_project_outcome === 'incomplete'
+            || (outcome?.created_project_discarded === false && outcome?.created_project_kept === false && outcome?.created_project_outcome !== 'not_created')) {
+            message += ' Recording did not start. The state of the temporary recording project could not be confirmed. Check Projects before recording again.'
+            startCompletedWithOutcome = true
+            await projectStartOutcomeRef.current?.('incomplete')
+          } else if (outcome?.created_project_discarded === true || outcome?.created_project_outcome === 'discarded') {
+            startCompletedWithOutcome = true
+            await projectStartOutcomeRef.current?.('discarded')
+          } else {
+            startCompletedWithOutcome = true
+            await projectStartOutcomeRef.current?.('not_created')
+          }
+        }
+        showSetup(message)
+        return
+      }
       const admitted = recordingStartResult(reply.result)
       if (!admitted) {
         unknownStartRef.current = true
         markRecordingStartAdmissionUnknown()
+        if (fallbackMode) {
+          startCompletedWithOutcome = true
+          await projectStartOutcomeRef.current?.('unknown')
+        }
         showSetup(UNKNOWN_START)
         return
       }
       captureRef.current = admitted.captureId
-      projectIdentityRef.current = currentProject.project_identity ? { ...currentProject.project_identity } : undefined
+      const startPayload = reply.result as {
+        created_project?: boolean
+        project_name?: string
+        project_identity?: Project['project_identity']
+      } | undefined
+      if (fallbackMode) {
+        startCompletedWithOutcome = true
+        await projectStartOutcomeRef.current?.('started', startPayload?.project_name)
+      }
+      const resolvedIdentity = startPayload?.project_identity ?? currentProject?.project_identity ?? projectRef.current?.project_identity
+      projectIdentityRef.current = resolvedIdentity ? { ...resolvedIdentity } : undefined
       activePresetRef.current = preset
       const warning = await indicator('begin_recording_indicator', admitted.captureId)
       let initialStudioWarning: string | null = null
@@ -266,12 +337,12 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
           }
         }
       }
-      const recordingMessage = (sameProjectIdentity(currentProject.project_identity, projectRef.current?.project_identity)
+      const recordingMessage = (sameProjectIdentity(resolvedIdentity, projectRef.current?.project_identity ?? resolvedIdentity)
         ? 'Recording' : 'Recording started, but the open project changed. Stop this capture before continuing.') + presetStorageWarning
         + (initialStudioWarning ? ` ${initialStudioWarning}` : '')
       // "Starting…" until the first screen frame is captured; the timer then
       // counts from that frame. Stop (button or F9) works during this wait.
-      publish({ phase: 'starting', captureId: admitted.captureId, startResult: admitted, cadence: admitted.cadence, startedAt: null, projectName: currentProject.name,
+      publish({ phase: 'starting', captureId: admitted.captureId, startResult: admitted, cadence: admitted.cadence, startedAt: null, projectName: currentProject?.name ?? startPayload?.project_name ?? null,
         message: STARTING_MESSAGE, initialStudioWarning, indicatorWarning: warning })
       busyRef.current = false
       toggleGateRef.current.setInFlight(false)
@@ -284,9 +355,22 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         void stopRef.current()
       }
     } catch (error) {
-      showSetup(`Recorder start failed: ${error instanceof Error ? error.message : 'server unavailable'}`)
-    } finally { busyRef.current = false; toggleGateRef.current.setInFlight(false) }
-  }, [ensureCurrentProject, publish, showSetup])
+      const detail = error instanceof Error ? error.message : 'server unavailable'
+      if (fallbackMode && startRequestSent) {
+        startCompletedWithOutcome = true
+        try { await projectStartOutcomeRef.current?.('unknown') } catch { /* ignore sync failure when server did not reply */ }
+        showSetup(`Recorder start failed without a reply (${detail}). Recording and project state are unknown; check Projects before recording again.`)
+      } else {
+        showSetup(`Recorder start failed: ${detail}`)
+      }
+    } finally {
+      if (fallbackMode && !startCompletedWithOutcome) {
+        try { await projectStartOutcomeRef.current?.('not_created') } catch { /* best-effort reset of in-flight flag */ }
+      }
+      busyRef.current = false
+      toggleGateRef.current.setInFlight(false)
+    }
+  }, [publish, showSetup])
 
   const cancelCountdown = useCallback(() => {
     if (countdownRef.current === null) return
@@ -537,12 +621,15 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
             if (result.terminal === true) void stop()
           } else if (result.capture_id !== id) publish({ phase: 'recovery', message: 'Recorder status returned a different capture ID. Inspect Recording Recovery.' })
         } else if (reply.error?.code === 'not_found' && adoptedRef.current === id) releaseAdopted(id)
-        else if (reply.error?.code === 'not_found') await checkCaptureStatus(id, 'The native capture ended before Stop returned an output.')
+        // The engine finished this take by itself (the length limit) and let
+        // it go: Stop collects the saved take. The live-meter poll asks for
+        // the same Stop; whichever sees the end first, it runs once.
+        else if (reply.error?.code === 'not_found') void stop('capture_ended')
       } finally { checking = false }
     }
     const timer = window.setInterval(() => { void check() }, 1000)
     return () => window.clearInterval(timer)
-  }, [checkCaptureStatus, publish, releaseAdopted, state.captureId, state.phase, stop])
+  }, [publish, releaseAdopted, state.captureId, state.phase, stop])
 
   const toggleRef = useRef<() => void>(() => {})
   toggleRef.current = () => {

@@ -737,6 +737,47 @@
 .tb-render-field--check > span { flex: 1; }
 .tb-render-field--check input[type='checkbox'] { flex: none; width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--cut); }
 .tb-render-note { margin: 2px 0 0; font: var(--fs-ui-xs) var(--sans); line-height: 1.4; color: var(--ink-3); }
+.tb-render-note--reason { color: var(--ink-3); }
+.tb-render-note--warn { color: color-mix(in srgb, var(--amber, #d9a441) 82%, var(--ink)); }
+.tb-render-color-seg {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.tb-menu .tb-render-color-seg button {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-2);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: 600 var(--fs-ui-xs) var(--sans);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tb-menu .tb-render-color-seg button:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.tb-menu .tb-render-color-seg button.tb-seg--on {
+  background: var(--cut);
+  border-color: var(--cut);
+  color: #fff;
+}
+.tb-menu .tb-render-color-seg button.tb-seg--on:hover:not(:disabled) {
+  background: var(--cut);
+  color: #fff;
+}
+.tb-menu .tb-render-color-seg button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--ink-3);
+}
 .tb-render-timeline {
   margin-top: 2px;
   padding-top: 7px;

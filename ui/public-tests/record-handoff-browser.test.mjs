@@ -61,7 +61,7 @@ async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = fa
     const result = name === 'screen_record.doctor' ? currentDoctor
       : name === 'screen_record.start' ? { capture_id: 'capture-fixture', pause: { enabled: Boolean(starts.at(-1)?.pause) } }
         : holdPolish && name === 'screen_record.stop' ? { capture_id: 'capture-fixture', raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json' }
-          : holdPolish && name === 'screen_record.studio_event' ? { last_event: route.request().postDataJSON().event }
+          : holdPolish && name === 'screen_record.studio_event' ? { last_event: { ...route.request().postDataJSON().event, logical_ts: 1 } }
         : name === 'screen_record.status' ? { capture_id: 'capture-fixture', ready: true, terminal: false, since_first_screen_frame_ms: 0,
           pause: { enabled: Boolean(starts.at(-1)?.pause), state: pauseState, reason: 'Pause was not enabled for this take.' } }
           : name === 'screen_record.pause' ? { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: 200 }
@@ -570,10 +570,9 @@ test('a paused take: the live box says Paused with a pause mark and its timer st
   assert.deepEqual(errors, [])
 })
 
-// With a length limit the HUD shows "Ns left" in place of the timer. The recorder stops a take at its start plus
-// the limit on the wall clock and a pause does not move that deadline, so the seconds left must run on through a
-// pause (they follow the recorder, not the recorded time that stands still).
-test('a paused take with a length limit: the seconds left keep counting down through the pause', async t => {
+// With a length limit the HUD shows "Ns left" in place of the timer. The length limit counts recorded time
+// only (pause time excluded), so the seconds left stay paused during a pause and resume counting down on Resume.
+test('a paused take with a length limit: the seconds left pause during Pause and resume on Resume', async t => {
   const preset = {
     schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
     fps: 30, durationMs: 30_000, startCountdownSeconds: 0, audio: false, systemAudio: false,
@@ -598,14 +597,15 @@ test('a paused take with a length limit: the seconds left keep counting down thr
   await page.locator('[data-cut-action="record-pause-resume"]').click()
   await page.locator('[data-cut-rec-pause-state="paused"]').waitFor()
   assert.match(await hud.locator('small').textContent(), /^Paused · /)
+  const atPause = await left()
   await page.waitForTimeout(3300)
   const duringPause = await left()
-  assert.ok(beforePause - duringPause >= 3, `the limit keeps running while paused: ${beforePause}s left before, ${duringPause}s left 3.3 s into the pause`)
+  assert.ok(Math.abs(atPause - duringPause) <= 0, `the limit holds while paused: ${beforePause}s left before, ${atPause}s at pause, ${duringPause}s left 3.3 s into pause`)
   await page.locator('[data-cut-action="record-pause-resume"]').click()
   await page.locator('[data-cut-rec-pause-state="recording"]').waitFor()
-  await page.waitForTimeout(1300)
+  await page.waitForTimeout(2300)
   const afterResume = await left()
-  assert.ok(duringPause - afterResume >= 1, `and after Resume: ${duringPause}s -> ${afterResume}s`)
+  assert.ok(duringPause - afterResume >= 1, `the limit resumes counting down after Resume: ${duringPause}s -> ${afterResume}s`)
   assert.deepEqual(errors, [])
 })
 
@@ -651,5 +651,40 @@ test('a paused take says the time in plain words and the preview says it is paus
   await page.locator('[data-cut-rec-pause-state="recording"]').waitFor()
   await page.waitForFunction(() => document.querySelector('[data-cut-rec-preview-unavailable]')?.textContent?.includes('Waiting for the first recorded frame'))
   assert.equal(await page.locator('[data-cut-rec-preview-phase]').textContent(), 'REC')
+  assert.deepEqual(errors, [])
+})
+
+test('a recording marker shows a temporary confirmation inside live controls for about two seconds', async t => {
+  const { page, errors } = await fixture(t, quickPreset, doctor, true)
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+
+  await page.locator('[data-cut-action="record-marker"]').click()
+  const confirmation = page.locator('[data-cut-rec-live-controls] [data-cut-rec-marker-feedback]')
+  await confirmation.waitFor({ timeout: 2000 })
+  assert.match(await confirmation.textContent(), /^Marker added at 0:\d{2}$/)
+  assert.equal(await confirmation.getAttribute('role'), 'status')
+  assert.equal(await confirmation.getAttribute('aria-live'), 'polite')
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate(t => { document.documentElement.dataset.theme = t }, theme)
+    const style = await confirmation.evaluate(el => {
+      const box = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      return { w: box.width, h: box.height, color: cs.color, bg: cs.backgroundColor }
+    })
+    assert.ok(style.w > 0 && style.h > 0, `${theme}: marker confirmation is visibly laid out`)
+    assert.notEqual(style.color, style.bg, `${theme}: marker confirmation has distinct ink vs background`)
+  }
+
+  await page.waitForTimeout(2400)
+  assert.equal(await confirmation.count(), 0, 'the marker confirmation clears after about two seconds')
+
+  // F12 routes through the same live-controls confirmation and clears immediately when recording stops.
+  await page.keyboard.press('F12')
+  await confirmation.waitFor({ timeout: 2000 })
+  assert.match(await confirmation.textContent(), /^Marker added at 0:\d{2}$/)
+  await page.locator('[data-test-stop]').click()
+  await page.waitForFunction(() => document.querySelector('[data-cut-rec-result-view]'))
+  assert.equal(await confirmation.count(), 0, 'marker confirmation clears cleanly when capture stops')
   assert.deepEqual(errors, [])
 })

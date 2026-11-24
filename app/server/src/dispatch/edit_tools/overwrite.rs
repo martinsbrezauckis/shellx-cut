@@ -179,14 +179,24 @@ pub(in crate::dispatch) async fn edit_overwrite(
     map.remove("source_in_ms");
     map.remove("source_out_ms");
     map.remove("duration_ms");
-    if !a.create_video_track && !a.create_audio_track {
-        return commit_core(state, "edit.overwrite", committed_args, actor).await;
-    }
     // Creation and replacement share one staged project and one undo record.
     // Lowered steps are durable, so replay never has to guess destination ids.
     let op = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
+        let video_markers = if wants_video {
+            crate::screen_record::clip_markers::resolve_markers_for_asset(
+                Some(&store.dir),
+                &store.project,
+                &a.asset,
+            )
+        } else {
+            Vec::new()
+        };
+        if !a.create_video_track && !a.create_audio_track && video_markers.is_empty() {
+            drop(guard);
+            return commit_core(state, "edit.overwrite", committed_args, actor).await;
+        }
         let mut steps = Vec::new();
         for (existing, create, kind, field, create_field) in [
             (
@@ -227,6 +237,18 @@ pub(in crate::dispatch) async fn edit_overwrite(
             verb: "edit.overwrite".into(),
             args: committed_args.clone(),
         });
+        if !video_markers.is_empty() {
+            let video_clip_id = cut_core::edit::new_clip_id(&store.project);
+            let with_ids = crate::screen_record::clip_markers::marker_inputs_with_ids(
+                &store.project,
+                &video_markers,
+                0,
+            );
+            steps.push(crate::screen_record::clip_markers::set_clip_markers_step(
+                &video_clip_id,
+                with_ids,
+            ));
+        }
         guard_call("edit.overwrite", || {
             store.apply_lowered(
                 "edit.overwrite",

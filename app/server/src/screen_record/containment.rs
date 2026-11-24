@@ -108,3 +108,39 @@ mod permission_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+
+    #[test]
+    fn containment_error_uses_shared_recording_folder_error_for_permission_denied() {
+        let (capture_path, expected_folder) = if cfg!(windows) {
+            (
+                PathBuf::from(r"\\?\C:\work\locked.cutproj\.capture"),
+                r"C:\work\locked.cutproj",
+            )
+        } else {
+            (
+                PathBuf::from("/work/locked.cutproj/.capture"),
+                "/work/locked.cutproj",
+            )
+        };
+        let err = containment_error(
+            "prepare the screen-record capture root",
+            ManifestError::Io {
+                path: capture_path,
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            },
+        );
+        assert_eq!(err.code, error_codes::IO);
+        assert_eq!(
+            err.message,
+            format!("recording folder cannot be written: {expected_folder} (access is denied)")
+        );
+        assert_eq!(
+            err.suggested_action.as_deref(),
+            Some("choose a folder you can write to, or give your user account write access to this folder")
+        );
+    }
+}

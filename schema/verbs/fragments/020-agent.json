@@ -182,10 +182,17 @@
           "timeout_ms": {
             "type": "integer",
             "description": "Turn timeout (default 180000; clamped 10000–600000)."
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Optional existing project conversation ID to continue. Omit to start a new conversation."
           }
         }
       },
-      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, target?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,target?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment and target fields echo the validated request snapshot; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
+      "result": "{ok, conversation_id?, origin?, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, target?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,target?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment and target fields echo the validated request snapshot; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -202,6 +209,178 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_list",
+      "domain": "agent",
+      "summary": "List conversations stored in the open project, including live running state and unreadable format reasons.",
+      "description": "List persisted and active conversations stored under the open project's chat folder, including origin ('agent' or 'human'), live running state, and a short plain reason for any unreadable, oversized, or unsupported-version file. Replies are bounded to 2 MiB and include a short note when additional conversations are not shown.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{conversations:[{id, title, origin, readable, unreadable_reason?, running, turn_count, created_at?, updated_at?, last_preview?}], truncated?: boolean, not_shown?: integer, note?: string}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_list",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_get",
+      "domain": "agent",
+      "summary": "Read one project conversation including live running turn actions or an unreadable reason.",
+      "description": "Read the full turn history for one project conversation, overlaying any currently running turn and its live actions or returning the short plain reason why an unrecognized record cannot be opened.",
+      "args": {
+        "type": "object",
+        "required": ["conversation_id"],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Conversation ID within the open project."
+          }
+        }
+      },
+      "result": "{conversation:{id, title, origin, readable, unreadable_reason?, running, created_at?, updated_at?, turns:[]}}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_get",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_migrate",
+      "domain": "agent",
+      "summary": "Migrate legacy browser-local Chat conversations into the open project's engine conversation store idempotently.",
+      "description": "Idempotently import previously browser-local Chat tab conversations into the open project's engine conversation store with secret redaction applied.",
+      "args": {
+        "type": "object",
+        "required": ["legacy_key", "conversations"],
+        "additionalProperties": false,
+        "properties": {
+          "legacy_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Client identity key whose localStorage chat log is being migrated."
+          },
+          "conversations": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "title": { "type": "string" },
+                "origin": { "type": "string", "enum": ["human", "agent"] },
+                "turns": { "type": "array", "maxItems": 200 }
+              }
+            }
+          }
+        }
+      },
+      "result": "{migrated: integer, conversation_ids: [string]}",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_migrate",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_patch",
+      "domain": "agent",
+      "summary": "Update metadata, reverted turn state, or delete one persisted project conversation file.",
+      "description": "Update mutable UI state on one readable engine-kept conversation (mark a turn reverted or rename title), or delete an idle conversation, removing its conversation file from the project's chat folder.",
+      "args": {
+        "type": "object",
+        "required": ["conversation_id", "op"],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "op": {
+            "type": "string",
+            "enum": ["mark_reverted", "set_title", "delete"]
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        }
+      },
+      "result": "{updated: boolean, already_reverted?: true (mark_reverted of a turn that was already reverted)}",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_patch",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
         "facets": []
       }
     }

@@ -141,6 +141,82 @@ async fn verify_pregate_wiring_no_project_then_empty_pass() {
     assert_eq!(res["perception_assets"], 0);
 }
 
+/// The pregate reply lists every check with its state, and a state never
+/// changes the verdict: a placed file nobody analysed is "not checked", never
+/// "fine", and the verdict stays the same as without the list.
+#[tokio::test]
+async fn verify_pregate_lists_every_check_with_its_state_and_never_blocks() {
+    let state = AppState::new();
+    let dir = tempfile::tempdir().unwrap();
+    dispatch(
+        &state,
+        "project.create",
+        json!({"name":"t","dir": dir.path().join("t.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    let media = dir.path().join("clip.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+    update_asset(&state, "a1", |a| {
+        a.probe = Some(
+            json!({"kind":"video","width":1920,"height":1080,"duration_ms":5000,"has_audio":true}),
+        );
+    })
+    .await
+    .unwrap();
+    dispatch(
+        &state,
+        "edit.insert",
+        json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,5000],"ripple":false}),
+        test_actor(),
+    )
+    .await;
+    let r = dispatch(&state, "verify.pregate", json!({}), test_actor()).await;
+    assert!(r.ok, "{:?}", r.error);
+    let res = r.result.unwrap();
+    let list = &res["export_checks"];
+    assert_eq!(list["phase"], "before_export");
+    assert_eq!(list["schema_version"], 1);
+    let entries = list["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 27, "every catalog check is listed");
+    let state_of = |id: &str| {
+        entries
+            .iter()
+            .find(|e| e["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))["state"]
+            .clone()
+    };
+    // Calculated from the timeline: a real answer.
+    assert_eq!(state_of("empty_tail"), "checked");
+    // Measured from the file: nobody analysed it, so it is not "fine".
+    assert_eq!(state_of("black_or_frozen"), "not_checked");
+    let source = entries
+        .iter()
+        .find(|e| e["id"] == "black_or_frozen")
+        .unwrap();
+    assert_eq!(source["coverage"]["unchecked_assets"], json!(["a1"]));
+    assert!(matches!(
+        source["reason_code"].as_str(),
+        Some("optional_tool_missing" | "not_run_yet" | "check_failed")
+    ));
+    // The finished-file checks wait for the file.
+    assert_eq!(
+        entries.iter().find(|e| e["id"] == "lufs").unwrap()["reason_code"],
+        "after_export"
+    );
+    // Every row that is not "checked" says why, and an error can be copied.
+    for e in entries {
+        assert!(e["reason"].is_string() && e["suggested_action"].is_string());
+        if e["state"] == "error" {
+            assert_eq!(e["action"]["kind"], "copy_details");
+        }
+    }
+    // The list is information: the verdict fields keep their old meaning.
+    assert_eq!(res["pass"], true);
+    assert_eq!(res["uninstrumented_assets"], json!(["a1"]));
+}
+
 /// render.final{dry_run} returns the render PLAN (geometry, duration, checks)
 /// WITHOUT encoding — no render job is created.
 #[test]

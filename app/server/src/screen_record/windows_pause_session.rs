@@ -287,6 +287,10 @@ where
         self.owner.phase()
     }
 
+    pub(crate) fn active_duration_exhausted_at(&self, at: Instant) -> bool {
+        self.owner.active_duration_exhausted_at(at)
+    }
+
     pub(crate) fn journal(&self) -> &RecordingSessionJournal {
         self.owner.journal()
     }

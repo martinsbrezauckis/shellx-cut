@@ -35,7 +35,10 @@ fn schema_classifies_every_registry_verb_and_requires_review_for_new_safe_capabi
     // decision, while new schema verbs classified as deny need no stale count
     // update. Recording zoom reads and six reversible recording edits extend
     // the reviewed budget by seven; all remain project-local with no network.
-    assert_eq!(allowed, 111, "reviewed safe capability budget");
+    // screen_record.make_editable extends the reversible recording edits by one.
+    // screen_record.render_cache_preview adds one read-only storage inspection
+    // (analogous to project.cache_preview; render_cache_remove remains denied).
+    assert_eq!(allowed, 113, "reviewed safe capability budget");
     assert_eq!(allowed + denied, registry.verbs.len());
     assert_eq!(denied, registry.verbs.len() - allowed);
 }
@@ -109,6 +112,7 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
         "project.group_preview",
         "media.check",
         "media.bin_list",
+        "screen_record.render_cache_preview",
     ] {
         let spec = registry.get(name).expect("registered bounded inspection");
         assert_eq!(capability(spec), AgentChatCapability::Inspect);
@@ -147,6 +151,8 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
             "project.ops",
             "project.sequence_index",
             "project.state",
+            "screen_record.make_editable",
+            "screen_record.render_cache_preview",
             "screen_record.take_refresh",
             "screen_record.zoom_add",
             "screen_record.zoom_auto",

@@ -1,12 +1,13 @@
 {
   "schema": "shellx-cut/published-test-inventory@1",
-  "version": "0.6.121",
+  "version": "0.6.122",
   "contract": {
-    "node_test_count": 17,
-    "python_test_count": 10,
-    "ui_library_test_count": 183
+    "node_test_count": 18,
+    "python_test_count": 11,
+    "ui_library_test_count": 189
   },
   "python_tests": [
+    "app/perception/py/attempt_evidence_test.py",
     "app/perception/py/diarize_runner_test.py",
     "app/perception/py/instruments_audio_envelope_test.py",
     "app/perception/py/judge/adapters/codex_judge_integration_test.py",
@@ -68,6 +69,11 @@
       "requires": ["python"]
     },
     {
+      "path": "scripts/public-tests/manual-asset-version.test.mjs",
+      "resources": ["scripts/public-tests/manual-asset-version.test.mjs", "scripts/generate-manual-content.mjs", "docs/public/site/manual/cut/index.html", "docs/public/site/manual/manual.js", "docs/public/site/manual/manual.css", "schema/verbs.json", "ui/package.json", "ui/src/manual/content.generated.json"],
+      "requires": []
+    },
+    {
       "path": "scripts/public-tests/manual-publication-browser-receipt.test.mjs",
       "resources": ["scripts/public-tests/manual-publication-browser-receipt.test.mjs", "scripts/lib/manual-publication-browser-receipt.mjs"],
       "requires": []
@@ -104,7 +110,7 @@
     },
     {
       "path": "scripts/public-tests/manual-ui-assets-contract.test.mjs",
-      "resources": ["scripts/public-tests/manual-ui-assets-contract.test.mjs", "docs/public/site/manual/cut/index.html", "docs/public/site/manual/assets/cut/cut-main-editor-current.png", "docs/public/site/manual/assets/cut/cut-recording-studio-current.png", "ui/package.json", "app/desktop/src-tauri/tauri.conf.json"],
+      "resources": ["scripts/public-tests/manual-ui-assets-contract.test.mjs", "ui/public-tests/lib/cspHarness.mjs", "docs/public/site/manual/cut/index.html", "docs/public/site/manual/assets/cut/cut-main-editor-current.png", "docs/public/site/manual/assets/cut/cut-recording-studio-current.png", "ui/package.json", "app/desktop/src-tauri/tauri.conf.json"],
       "requires": []
     },
     {
@@ -132,6 +138,7 @@
       "about-links-bridge.test.ts",
       "about-version-state.test.ts",
       "active-job-presentation.test.ts",
+      "agent-chat-conversations-browser.test.mjs",
       "agent-chat-history.test.ts",
       "agent-chat-model-remount-browser.test.mjs",
       "agent-chat-session.test.ts",
@@ -156,8 +163,11 @@
       "capture-error-contract.test.ts",
       "chat-timeline-target.test.ts",
       "clip-context-menu.test.ts",
+      "clip-markers-browser.test.mjs",
+      "clip-markers.test.ts",
       "clipboard-paste-feedback.test.ts",
       "context-menu-reverse-match-frame.test.ts",
+      "csp-policy-harness.test.mjs",
       "drop-skipped-items.test.ts",
       "effective-transform.test.ts",
       "encoder-report.test.ts",
@@ -178,6 +188,7 @@
       "generation-unmount-project-browser.test.mjs",
       "gpu-hint.test.ts",
       "grade-drawer.test.ts",
+      "hdr-export.test.ts",
       "health-recovery-actions.test.ts",
       "health-recovery.test.ts",
       "inspector-catalog-lifecycle.test.mjs",
@@ -261,6 +272,7 @@
       "recording-capture-status.test.ts",
       "recording-delivery-feedback.test.ts",
       "recording-interruption.test.ts",
+      "recording-make-editable.test.ts",
       "recording-recovery-actions.test.ts",
       "recording-rehearsal-live-controls.test.ts",
       "recording-rehearsal-playback-key.test.ts",

@@ -1,0 +1,224 @@
+/* Compact project conversation switcher styled for both dark and light Cut themes. */
+
+.chat-convos {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+
+.chat-convos__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-convos__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.chat-convos__count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chat-convos__new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-2);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chat-convos__new:hover:not(:disabled) {
+  border-color: var(--cut);
+  color: var(--cut);
+}
+
+.chat-convos__new:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-convos__empty {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  padding: 2px 0;
+}
+
+.chat-convos__items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 148px;
+  overflow-y: auto;
+}
+
+.chat-convos__item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.chat-convos__item:hover {
+  border-color: var(--hairline-2);
+  background: var(--surface-3);
+}
+
+.chat-convos__item.is-selected {
+  border-color: var(--cut);
+  background: var(--surface-3);
+}
+
+.chat-convos__item.is-unreadable {
+  border-style: dashed;
+  background: var(--surface);
+  color: var(--ink-2);
+}
+
+.chat-convos__row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-convos__item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-convos__row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.chat-convos__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.chat-convos__badge--agent {
+  background: var(--surface-3);
+  border: 1px solid var(--hairline-2);
+  color: var(--ink-2);
+}
+
+.chat-convos__badge--running {
+  background: transparent;
+  border: 1px solid var(--orange);
+  color: var(--orange);
+  flex-shrink: 0;
+}
+
+.chat-convos__reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--err);
+  line-height: 1.3;
+}
+
+.chat-convos__note {
+  padding: 4px 6px 2px;
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.3;
+}
+
+.chat__origin-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 10px 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-2);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chat__unreadable-card {
+  margin: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--err);
+  background: var(--surface-2);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chat__unreadable-card p {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
+
+.chat__spin {
+  animation: chat-convos-spin 900ms linear infinite;
+}
+
+@keyframes chat-convos-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+[data-theme='light'] .chat-convos__badge--agent {
+  background: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.16);
+  color: #1e293b;
+}

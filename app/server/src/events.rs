@@ -66,6 +66,16 @@ pub enum Event {
     /// re-render off this. Fired on startup scan, on refresh, and after a
     /// successful fetch_tool — but only when capabilities actually changed.
     DoctorUpdated { report: crate::doctor::DoctorReport },
+    /// Project Chat conversation list or messages changed (live turn start, MCP
+    /// op, completion, migration, or patch). Clients refresh `agent.chat_list` /
+    /// `agent.chat_get`.
+    ChatUpdated {
+        conversation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+    },
 }
 
 /// Broadcast bus: cheap clone, every WS connection subscribes. Buffer of 256

@@ -407,3 +407,90 @@ async fn a_child_that_exits_before_reading_its_input_reports_its_own_status_and_
     assert_eq!(output.status.code(), Some(7));
     assert!(String::from_utf8_lossy(&output.stderr).contains("no-input-wanted"));
 }
+
+/// Multi-threaded job child starts must stay on `posix_spawn` rather than
+/// falling back to `fork()`, which can abort in macOS `libSystem_atfork_child`
+/// before `exec` runs.
+#[cfg(unix)]
+#[test]
+fn multi_threaded_job_spawns_never_call_fork() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+    use tokio::task::JoinSet;
+
+    const SUBPROCESS_ENV: &str = "SHELLX_CUT_JOBS_FORK_PROBE";
+    const TASKS: usize = 8;
+    const SPAWNS_PER_TASK: usize = 16;
+
+    static FORK_PREPARE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn record_fork_prepare() {
+        FORK_PREPARE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    if std::env::var_os(SUBPROCESS_ENV).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["multi_threaded_job_spawns_never_call_fork", "--nocapture"])
+            .env(SUBPROCESS_ENV, "1")
+            .output()
+            .expect("re-exec fork probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "fork probe failed ({:?}):\nstdout:\n{stdout}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    assert_eq!(
+        unsafe { libc::pthread_atfork(Some(record_fork_prepare), None, None) },
+        0,
+        "register pthread_atfork prepare hook"
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(TASKS)
+        .enable_all()
+        .build()
+        .expect("build multi-thread runtime");
+    runtime.block_on(async {
+        let barrier = Arc::new(Barrier::new(TASKS));
+        let mut set = JoinSet::new();
+        for _ in 0..TASKS {
+            let barrier = Arc::clone(&barrier);
+            set.spawn(async move {
+                barrier.wait().await;
+                let mut sleeper = Command::new("sleep");
+                sleeper.arg("30");
+                tree::configure(&mut sleeper).expect("configure sleeper");
+                let mut child = sleeper.spawn().expect("spawn sleep probe");
+                let pid = child.id().expect("sleep pid") as i32;
+                let mut pgid_tree = ProcessTree::establish(&child).expect("establish tree");
+                assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+                pgid_tree.hard_stop().expect("stop sleep probe");
+                let _ = child.wait().await;
+
+                let control = ProcessControl::with_cancellation(
+                    Duration::from_secs(10),
+                    JobCancellation::test_active(),
+                );
+                for _ in 0..SPAWNS_PER_TASK {
+                    let mut command = Command::new("true");
+                    let output = run_owned(&mut command, None, &control)
+                        .await
+                        .expect("spawn bounded job helper");
+                    assert!(output.status.success());
+                }
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            joined.expect("worker task");
+        }
+    });
+    let forks = FORK_PREPARE_CALLS.load(Ordering::Acquire);
+    assert_eq!(
+        forks, 0,
+        "multi-threaded job spawns called fork() {forks} times"
+    );
+}

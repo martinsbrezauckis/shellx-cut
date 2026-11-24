@@ -17,7 +17,9 @@ import { exportUrl as sharedExportUrl } from '../../lib/client'
 import type { CheckResult, JudgeEnvelope, JudgeIssue, RenderReceipt } from '../../lib/client'
 import { Icon } from '../../icons'
 import { TemporalPoint } from '../../components/TemporalNavigation'
-import { fmtDur, fmtTc } from './shared'
+import { dispatchVerb, fmtDur, fmtTc } from './shared'
+import { ExportCheckReceiptList, summarizeExportChecks } from '../../components/exportChecks'
+import { createExportCheckActionHandler, withoutCommands } from '../../components/exportChecks/actions'
 import ReceiptRerunControl from './ReceiptRerunControl'
 import { encodeLine } from './encodeLine'
 import { isNotApplicable, notApplicable } from '../../lib/checkApplicability'
@@ -163,12 +165,23 @@ interface CardProps {
   onSeek: (atMs: number) => void
 }
 
+/** " · 24 Nov 02:21" from the receipt's own time; nothing when it cannot be read. */
+function checksTime(ts: string | undefined): string {
+  const at = ts ? new Date(ts) : null
+  if (!at || Number.isNaN(at.getTime())) return ''
+  return ` · ${at.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+}
+
 function ReceiptCard({ receipt, onSeek }: CardProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
-  const v = verdictOf(receipt)
+  // With the export check list the headline is the list's own summary, so the card says it once.
+  const listed = receipt.export_checks ? summarizeExportChecks(receipt.export_checks, 'finished_file') : null
+  const v = listed
+    ? { label: listed.text, kind: (listed.mark === 'fine' ? 'pass' : listed.mark === 'not_checked' ? 'unmeasured' : 'fail') as 'pass' | 'unmeasured' | 'fail' }
+    : verdictOf(receipt)
   const profileEntry = (receipt.checks ?? []).find((c) => c.name === 'footage_profile')
   const encode = encodeLine(receipt)
-  const notMeasured = unmeasuredReason(gatingChecks(receipt))
+  const notMeasured = receipt.export_checks ? null : unmeasuredReason(gatingChecks(receipt))
 
   return (
     <div className={`rr-rc rr-rc--${v.kind}`} data-cut-receipt={receipt.render_id}>
@@ -236,10 +249,22 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
           )}
         </div>
       )}
+      {receipt.export_checks && (
+        <div className="rr-rc__export-checks" data-cut-receipt-export-checks={receipt.render_id}>
+          <div className="rr-rc__export-checks-at" data-cut-receipt-checks-at={receipt.render_id}>
+            Checks at export{checksTime(receipt.ts)}
+          </div>
+          <ExportCheckReceiptList
+            checks={withoutCommands(receipt.export_checks)}
+            onAction={createExportCheckActionHandler({ seek: onSeek, call: dispatchVerb })}
+          />
+        </div>
+      )}
       <ReceiptRerunControl receipt={receipt} />
       {profileEntry && <ProfileRow entry={profileEntry} />}
+      {/* The engine's rows stay in the receipt data (agents, Copy details); a person sees each check once, in the list. */}
       <div className="rr-rc__checks">
-        {gatingChecks(receipt).map((c) => {
+        {(receipt.export_checks ? [] : gatingChecks(receipt)).map((c) => {
           const waiver = waiverOf(c)
           const unmeasured = isUnmeasured(c)
           const na = notApplicable(c)

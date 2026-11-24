@@ -104,6 +104,53 @@ assert.match(gpu, /Exports need video processing first/)
 assert.doesNotMatch(gpu, /Software export works/)
 assert.doesNotMatch(gpu, />Ready</)
 
+// When the person's chosen FFmpeg file is missing, the setup card shows the
+// plain sentence from the engine and lets them choose again or download.
+const chosenMissingHint = 'The chosen video tool file is missing; choose it again or use the app\'s own download.'
+const chosenMissing = render({
+  id: 'ffmpeg',
+  kind: 'tool',
+  status: 'missing',
+  source: 'missing',
+  hint: chosenMissingHint,
+  details: { chosen_missing: true, setup: windowsMissing.details.setup },
+}, 'windows', 'x86_64')
+assert.match(chosenMissing, /Needs setup/)
+assert.ok(
+  chosenMissing.replaceAll('&#x27;', "'").includes(chosenMissingHint),
+  'missing chosen FFmpeg sentence is visible on the card',
+)
+assert.match(chosenMissing, /data-cut-env-download="ffmpeg"/)
+
+const macChosenMissing = render({
+  ...macMissing,
+  hint: 'The chosen video tool file is missing; choose it again, use automatic selection, or install FFmpeg from the setup steps below.',
+  details: { chosen_missing: true, setup: macGuide },
+}, 'macos', 'aarch64')
+assert.match(macChosenMissing, /The chosen video tool file is missing; choose it again/)
+assert.match(macChosenMissing, /data-cut-ffmpeg-setup-choose/)
+
+const chosenMissingGpu = render({
+  id: 'gpu-encode',
+  kind: 'tool',
+  status: 'degraded',
+  hint: 'Exports need video processing first. Set up Video processing above; faster exports are checked after that.',
+  details: { hardware_available: false, ffmpeg_missing: true, chosen_missing: true, override_setting: '/deleted/ffmpeg', enable_help: null },
+}, 'windows', 'x86_64')
+assert.match(chosenMissingGpu, /Needs setup/)
+assert.match(chosenMissingGpu, /data-cut-env-ffmpeg-auto/)
+assert.match(chosenMissingGpu, /data-cut-env-ffmpeg-change/)
+
+const chosenPresentGpu = render({
+  id: 'gpu-encode',
+  kind: 'tool',
+  status: 'ok',
+  details: { hardware_available: false, ffmpeg_missing: false, override_setting: '/valid/ffmpeg', enable_help: null },
+}, 'windows', 'x86_64')
+assert.match(chosenPresentGpu, /Custom video tool selected/)
+assert.match(chosenPresentGpu, /data-cut-env-ffmpeg-auto/)
+assert.doesNotMatch(chosenPresentGpu, /data-cut-env-ffmpeg-change/)
+
 // A verb refused for missing tools: plain words for the person (the agent's
 // suggested_action is not shown) and the Open setup route, for any verb.
 const refused: VerbResult = {

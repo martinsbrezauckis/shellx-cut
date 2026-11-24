@@ -1357,7 +1357,8 @@ pub(in crate::dispatch) async fn edit_insert_at(
     if let Some(obj) = args.as_object_mut() {
         obj.remove("duration_ms");
     }
-    let res = commit_core(state, "edit.insert", args, actor).await?;
+    let res = crate::screen_record::clip_markers::commit_insert_dispatch(state, args, actor, None)
+        .await?;
     // F-1: warn (don't silently drop) when an audio-bearing clip lands on a
     // video track whose audio the renderer won't mix.
     let warning = audio_drop_warning(state, &a.asset, &a.track).await;

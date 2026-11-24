@@ -62,7 +62,8 @@ pub(super) fn replacement_background(
 /// at their own first frame and hold their final frame when the matted segment is
 /// longer; stills are already looped by `graph_args`. Both are conformed before
 /// the caller applies the subject's placement/fade geometry.
-pub(super) fn background_filter(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn background_filter_for(
     project: &Project,
     input_idx: &BTreeMap<String, usize>,
     background: ReplacementBackground<'_>,
@@ -71,12 +72,23 @@ pub(super) fn background_filter(
     fps: &str,
     fit: Fit,
     dur_ms: u64,
+    hdr_target: Option<super::source_color::Hdr>,
 ) -> Result<String, CutError> {
     let dur = secs(dur_ms);
+    let afmt = if hdr_target.is_some() {
+        "yuva420p10le"
+    } else {
+        "yuva420p"
+    };
     match background {
-        ReplacementBackground::Color(color) => Ok(format!(
-            "color=c={color}:s={w}x{h}:r={fps}:d={dur},format=yuva420p"
-        )),
+        ReplacementBackground::Color(color) => {
+            let hdr_conv = hdr_target
+                .map(|t| super::hdr::sdr_to_hdr_filter(t, None, false))
+                .unwrap_or_default();
+            Ok(format!(
+                "color=c={color}:s={w}x{h}:r={fps}:d={dur}{hdr_conv},format={afmt}"
+            ))
+        }
         ReplacementBackground::Asset(asset_id) => {
             let idx = input_idx.get(asset_id).copied().ok_or_else(|| {
                 CutError::new(
@@ -94,9 +106,21 @@ pub(super) fn background_filter(
             })?;
             let conform = conform_filter_for_asset(asset, None, w, h, fit);
             let bg_fps = fps_filter_for_asset(asset, project.settings.fps, 1.0, false);
+            let hdr_conv = if let Some(target) = hdr_target {
+                let c = super::source_color::source_color(asset);
+                if c.hdr.is_some() {
+                    super::hdr::hdr_to_hdr_filter(&c, target)
+                } else {
+                    let b601 = super::source_prep::bt601_to_bt709_filter(&c);
+                    let to_hdr = super::hdr::sdr_to_hdr_filter(target, c.range.as_deref(), false);
+                    format!("{b601}{to_hdr}")
+                }
+            } else {
+                String::new()
+            };
             Ok(format!(
                 "[{idx}:v]trim=start=0:end={dur},setpts=PTS-STARTPTS,\
-                 tpad=stop_mode=clone:stop_duration={dur},{conform},{bg_fps},format=yuva420p"
+                 tpad=stop_mode=clone:stop_duration={dur},{conform},{bg_fps}{hdr_conv},format={afmt}"
             ))
         }
     }
@@ -116,8 +140,13 @@ pub(super) fn replace_block(
     output_format: &str,
     output_suffix: &str,
 ) -> String {
+    let subject_fmt = if output_format.contains("10") {
+        ",format=yuva420p10le"
+    } else {
+        ""
+    };
     format!(
-        "[{foreground}][{alpha}]alphamerge[{subject}];\n\
+        "[{foreground}][{alpha}]alphamerge{subject_fmt}[{subject}];\n\
          {background_filter}[{background}];\n\
          [{background}][{subject}]overlay=shortest=1:format=auto,format={output_format}{output_suffix}[{output}];"
     )

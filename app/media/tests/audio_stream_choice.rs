@@ -98,6 +98,7 @@ fn media_clip(id: &str, asset: &str) -> Clip {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     })
 }
 

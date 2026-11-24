@@ -4,13 +4,15 @@ import { events, type CutEvent, type UiCommandResult, type UiCommandVerb } from 
 import { VERB_BEHAVIOR, VERB_NAMES } from '../lib/generatedVerbBehavior'
 import type { HighlightSpec } from '../HighlightOverlay'
 import type { UiObservableState } from './uiControlState'
-import { waitForCommittedState } from './uiCommandCommit'
-import { uiSurface } from './uiSurfaceRegistry'
+import { UI_COMMAND_CONFIRM_TIMEOUT_MS, waitForCommittedState } from './uiCommandCommit'
+import { handleUiOpenCommand } from './uiOpenCommand'
 import { handlePreviewModeCommand } from './previewModeCommand'
 import { handleVoiceoverPlaybackCommand } from './voiceoverPlaybackCommand'
 
 export {
+  UI_COMMAND_CONFIRM_TIMEOUT_MS,
   UI_COMMIT_WALL_CLOCK_FALLBACK_MS,
+  waitForCommittedState,
   waitForUiCommitTick,
 } from './uiCommandCommit'
 export type { UiCommitScheduler } from './uiCommandCommit'
@@ -196,55 +198,14 @@ export function useUiCommandController({
           return
         }
         case 'ui.open': {
-          const panel = typeof command.args.panel === 'string' ? command.args.panel : ''
-          const requested = { panel }
-          const definition = uiSurface(panel)
-          if (!definition?.action) {
-            reject(command, requested, { code: 'not_found', message: `surface '${panel || '(empty)'}' is not agent-openable` }, { surface: panel || undefined })
-            return
-          }
-          if (definition.action.kind !== 'focus' && before.open_surface_ids.includes(panel)) {
-            reject(command, requested, { code: 'conflict', message: `surface '${panel}' is already open` }, { surface: panel, selector: definition.selector })
-            return
-          }
-          if (!openSurface(panel)) {
-            reject(command, requested, { code: 'not_found', message: `surface '${panel}' has no available opener` }, { surface: panel, selector: definition.selector })
-            return
-          }
-          const rightTab = definition.action.kind === 'right' ? definition.action.tab : null
-          const state = await waitForCommittedState(
+          await handleUiOpenCommand({
+            args: command.args,
+            before,
             stateRef,
-            before.state_revision,
-            (current) => {
-              if (!current.open_surface_ids.includes(panel)) return false
-              const target = queryTarget(definition.selector)
-              if (!target) return false
-              if (rightTab) {
-                return current.right.body_status === 'loaded'
-                  && !!queryTarget(`[data-cut-right-body-loaded="${rightTab}"]`)
-              }
-              if (definition.action?.kind !== 'focus') return true
-              return document.activeElement === target || target.contains(document.activeElement)
-            },
-            1_500,
-            rightTab
-              ? (current) => current.right.active_tab === rightTab
-                && (current.right.body_status === 'blocked' || current.right.body_status === 'failed')
-              : undefined,
-          )
-          if (state) answer(command, true, requested, state, { surface: panel, selector: definition.selector })
-          else {
-            const current = stateRef.current
-            const blocked = rightTab !== null
-              && current.right.active_tab === rightTab
-              && (current.right.body_status === 'blocked' || current.right.body_status === 'failed')
-            reject(command, requested, {
-              code: 'conflict',
-              message: blocked
-                ? `surface '${panel}' body is ${current.right.body_status}; use the recovery control to load it`
-                : `surface '${panel}' did not become observable before the confirmation deadline`,
-            }, { surface: panel, selector: blocked ? current.right.recovery_selector ?? definition.selector : definition.selector })
-          }
+            openSurface,
+            answer: (requested, state, extra) => answer(command, true, requested, state, extra),
+            reject: (requested, error, extra) => reject(command, requested, error, extra),
+          })
           return
         }
         case 'ui.highlight': {
@@ -295,7 +256,7 @@ export function useUiCommandController({
             stateRef,
             before.state_revision,
             (current) => current.overlays.highlight !== null && highlightIsVisible(selector, targetId),
-            5_000,
+            UI_COMMAND_CONFIRM_TIMEOUT_MS,
           )
           if (state) {
             answer(command, true, requested, state, { selector })

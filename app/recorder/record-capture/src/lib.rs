@@ -284,6 +284,8 @@ pub mod windows_pause_pilot;
 // The private WGC run owner is platform-neutral enough to exercise its control
 // ordering on the host test target; only the live adapter below is Windows-only.
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_first_frame;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
 mod windows_wgc_clock_origin;
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
 mod windows_wgc_factory;

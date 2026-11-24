@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import InspectorSection from '../../components/inspector/InspectorSection'
-import { callVerb, type RecordingZoomListResult } from '../../lib/client'
+import { callVerb, type RecordingZoomListResult, type RecordingTakeRefreshResult } from '../../lib/client'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import RecordingZoomControls, { type ZoomPatch } from './RecordingZoomControls'
 import { RecordingZoomList, RecordingZoomRedo, RecordingZoomRefresh } from './RecordingZoomParts'
@@ -20,6 +20,9 @@ export default function RecordingZoomSection({ clip, revision, timelineAtPlayhea
   const [confirm, setConfirm] = useState(false)
   const [job, setJob] = useState<string | null>(null)
   const [progress, setProgress] = useState(0)
+  const [renderResult, setRenderResult] = useState('')
+
+  useEffect(() => { setRenderResult('') }, [clip])
 
   useEffect(() => {
     if (busy) return
@@ -52,6 +55,8 @@ export default function RecordingZoomSection({ clip, revision, timelineAtPlayhea
         } else if (response.result) {
           setProgress(response.result.progress)
           if (response.result.state === 'done') {
+            const result = response.result.result as Partial<RecordingTakeRefreshResult> | null
+            setRenderResult(result?.earlier_render?.message ?? 'Earlier video kept so Undo brings it back at once.')
             setJob(null)
             setBusy(false)
           }
@@ -90,6 +95,7 @@ export default function RecordingZoomSection({ clip, revision, timelineAtPlayhea
     if (busy) return
     setBusy(true)
     setNote('')
+    setRenderResult('')
     void runUserVerb('screen_record.take_refresh', { clip }, 'Could not update video.')
       .then((response) => {
         if (response?.ok && response.result) {
@@ -110,6 +116,7 @@ export default function RecordingZoomSection({ clip, revision, timelineAtPlayhea
   return (
     <InspectorSection title="Zoom" sectionKey="recording-zoom">
       <div className="insp__group">
+        {renderResult && <p role="status" className="insp__hint" data-cut-earlier-render>{renderResult}</p>}
         {note && (
           <p role="status" className="insp__hint">
             {note} Update video only after resolving this issue.

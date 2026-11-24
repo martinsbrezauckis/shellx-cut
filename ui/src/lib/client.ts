@@ -6,6 +6,8 @@
 // via project.state / WS events.
 // Callers: every panel + App.tsx. Dependencies: fetch only.
 
+export type * from './exportChecks'
+
 import { API_BASE } from './clientUrls'
 import { deliveryFeedbackSession, isHumanDeliveryVerb, reportExportRefusal } from '../topbar/exportRefusal'
 
@@ -29,7 +31,7 @@ import type {
 } from './clientModel'
 import { UI_OPEN_SURFACE_IDS } from '../app/uiSurfaceRegistry'
 import type { VerbResults, RecordingZoomSegment } from './clientResults'
-export type { RecordingZoomSegment, RecordingZoomListResult, RecordingTakeRefreshResult } from './clientResults'
+export type { RecordingZoomSegment, RecordingZoomListResult, RecordingTakeRefreshResult, RecordingMakeEditableResult } from './clientResults'
 import type { ChatTimelineTarget } from './chatTimelineTarget'
 import type {
   InspectMediaArgs,
@@ -60,6 +62,7 @@ export type {
   ClipFreeze,
   ClipGrade,
   ClipGradeWindow,
+  ClipMarker,
   ClipTransform,
   ColorSpace,
   BrandKit,
@@ -814,6 +817,9 @@ export interface VerbArgs {
   'screen_record.zoom_update': { clip: string; id: string; target?: 'pointer' } & Partial<Omit<RecordingZoomSegment, 'id' | 'origin'>>
   'screen_record.zoom_remove': { clip: string; id?: string; ids?: string[] }
   'screen_record.zoom_auto': { clip: string; keep_manual?: boolean; config?: Record<string, unknown> }
+  'screen_record.make_editable': { clip: string; rationale?: string }
+  'screen_record.render_cache_preview': Record<string, never>
+  'screen_record.render_cache_remove': { plan_id: string; confirm: true }
   'screen_record.take_refresh': { clip: string }
   'screen_record.autoedit': { track: string; config?: Record<string, unknown>; webcam?: string; studio_events?: string }
   'screen_record.polish': { source: string; plan: string; track?: string; at_ms?: number; rationale?: string; raw?: boolean; camera?: 'separate' | 'baked' }
@@ -832,7 +838,11 @@ export interface VerbArgs {
     rationale?: string
   }
   'assets.generated_list': { kind?: 'image' | 'video'; limit?: number }
-  'agent.chat': { message: string; attachments?: string[]; evidence_ids?: string[]; evidence_index_id?: string; target?: ChatTimelineTarget; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number }
+  'agent.chat': { message: string; attachments?: string[]; evidence_ids?: string[]; evidence_index_id?: string; target?: ChatTimelineTarget; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number; conversation_id?: string }
+  'agent.chat_list': Record<string, never>
+  'agent.chat_get': { conversation_id: string }
+  'agent.chat_migrate': { legacy_key: string; conversations: Array<{ title?: string; origin?: 'human' | 'agent'; turns: Record<string, unknown>[] }> }
+  'agent.chat_patch': { conversation_id: string; op: 'mark_reverted' | 'set_title' | 'delete'; turn_id?: string; title?: string }
   'plugins.list': Record<string, never>
   'plugins.enable': { name: string; enabled?: boolean; rationale?: string }
   'plugins.call': { plugin: string; verb: string; args?: Record<string, unknown>; rationale?: string }
@@ -861,7 +871,7 @@ export interface VerbArgs {
   // pro .mov, av1 highest-quality mp4. hardware = encoder tier: 'auto' uses the
   // GPU encoder (NVENC/QSV/AMF/VideoToolbox) when present (much faster, probe-
   // verified with safe software fallback), 'off' forces byte-deterministic software.
-  'render.final': { path?: string; preset?: 'draft' | 'standard' | 'high'; format?: 'h264' | 'hevc' | 'vp9' | 'prores' | 'av1'; hardware?: 'auto' | 'off'; bitrate?: string; rate_control?: 'vbr' | 'cbr'; audio_bitrate?: string; target_size_mb?: number; profile?: 'talking_head' | 'silent_screen_demo'; fit?: 'contain' | 'cover'; resolution?: 'project' | 'match_source'; aspect?: string; width?: number; height?: number; normalize_loudness?: number; allow_stale_recordings?: boolean; dry_run?: boolean; rationale?: string }
+  'render.final': { path?: string; preset?: 'draft' | 'standard' | 'high'; format?: 'h264' | 'hevc' | 'vp9' | 'prores' | 'av1'; color?: 'sdr' | 'keep_hdr'; hardware?: 'auto' | 'off'; bitrate?: string; rate_control?: 'vbr' | 'cbr'; audio_bitrate?: string; target_size_mb?: number; profile?: 'talking_head' | 'silent_screen_demo'; fit?: 'contain' | 'cover'; resolution?: 'project' | 'match_source'; aspect?: string; width?: number; height?: number; normalize_loudness?: number; allow_stale_recordings?: boolean; dry_run?: boolean; rationale?: string }
   // SUBJECT-AWARE auto-reframe (perception contract): render the edit → subject instrument →
   // moving-crop post-pass to `aspect`. The HONEST alt to render.final{aspect,fit:cover}
   // (a naive static centre-crop). Returns {reframe_id, job_id}; receipt in the job result.
@@ -1190,6 +1200,21 @@ export async function callVerb<N extends VerbName>(
   // odd-size notice shows the engine's sentence with its one fix button.
   if (!result.ok && result.error?.code === 'odd_project_size' && typeof document !== 'undefined') {
     document.dispatchEvent(new CustomEvent('cut:odd-project-size', { detail: result.error }))
+  }
+  // The engine rebuilt a damaged project list: the person sees its one notice
+  // whichever surface listed, created, or loaded startup state (USER_ACTION_FEEDBACK_EVENT).
+  // `project.open` shows its own warnings where it is called so it never fires twice.
+  const rebuilt = result.ok && (
+    name === 'project.list' ||
+    name === 'project.create' ||
+    name === 'project.state'
+  )
+    ? result.warnings?.find((warning) => warning.code === 'project_list_rebuilt')
+    : undefined
+  if (rebuilt && typeof document !== 'undefined') {
+    document.dispatchEvent(new CustomEvent('cut:user-action-feedback', {
+      detail: { message: rebuilt.message, source: name, code: rebuilt.code },
+    }))
   }
   if (!result.ok && result.error?.code !== 'odd_project_size' && notifyDelivery && owner === deliveryFeedbackSession()) {
     reportExportRefusal(result.error, name)

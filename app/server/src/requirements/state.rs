@@ -78,7 +78,12 @@ fn one_card(requirement: &Requirement, card: &Card) -> State {
     let source = &requirement.state;
     if let Some(key) = &source.detail_true {
         if card.id == "ffmpeg" && card.status == CardStatus::Missing {
-            return State::new("missing", Some("FFmpeg is not installed".into()));
+            let reason = if detail_flag(card, "chosen_missing") == Some(true) {
+                card_reason(card).unwrap_or_else(|| "FFmpeg is not installed".into())
+            } else {
+                "FFmpeg is not installed".into()
+            };
+            return State::new("missing", Some(reason));
         }
         if card.id == "gpu-encode" && detail_flag(card, "ffmpeg_missing") == Some(true) {
             return State::new("missing", Some("FFmpeg is not installed".into()));

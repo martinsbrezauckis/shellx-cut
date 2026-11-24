@@ -128,6 +128,7 @@ pub fn make_media_clip(id: &str, asset: &str, src_in_ms: u64, src_out_ms: u64) -
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     }
 }
 
@@ -299,6 +300,7 @@ pub fn split_pinned(
                         nest: c.nest.clone(),
                         grade_stack: c.grade_stack.clone(),
                         grade_windows: c.grade_windows.clone(),
+                        markers: c.markers.clone(),
                     };
                     let left_id = c.id.clone();
                     c.src_out_ms = c.src_in_ms + src_off;
@@ -1360,6 +1362,7 @@ fn splice_into_track(
                         nest: c.nest.clone(),
                         grade_stack: c.grade_stack.clone(),
                         grade_windows: c.grade_windows.clone(),
+                        markers: c.markers.clone(),
                     };
                     c.src_out_ms = c.src_in_ms + src_off;
                     c.fade = left_fade;
@@ -1894,6 +1897,7 @@ pub fn replace(
         c.speed = 1.0;
         c.speed_ramp = None;
         c.freeze = None;
+        crate::clip_markers::on_replace_source(c, &old_asset, new_asset);
         // Pad the slot's remainder with a gap when the source ran short, so the
         // slot's total span (and all downstream timing) is preserved exactly.
         if pad > 0 {

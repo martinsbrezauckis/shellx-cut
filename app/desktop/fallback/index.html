@@ -36,6 +36,7 @@
     white-space: pre-wrap; word-break: break-word; display: none;
   }
   .pulse { animation: pulse 1.2s ease-in-out infinite; }
+  .cont { display: inline-block; margin-top: 14px; color: #3b82f6; cursor: pointer; }
   @keyframes pulse { 0%,100% { opacity: .45 } 50% { opacity: 1 } }
 </style>
 </head>
@@ -65,8 +66,7 @@
         + '\n\n— Once done, restart ShellX Cut. To open the editor anyway, click below.';
       if (!document.getElementById('cont')) {
         const a = document.createElement('a');
-        a.id = 'cont'; a.href = '#'; a.textContent = 'Continue to editor anyway →';
-        a.style.cssText = 'display:inline-block;margin-top:14px;color:#3b82f6;cursor:pointer';
+        a.id = 'cont'; a.href = '#'; a.className = 'cont'; a.textContent = 'Continue to editor anyway →';
         a.onclick = (e) => { e.preventDefault(); location.replace(url); };
         document.querySelector('.card').appendChild(a);
       }

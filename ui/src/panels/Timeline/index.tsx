@@ -302,6 +302,7 @@ export default function Timeline(props: TimelineProps) {
   // contract while sharing the renderer helper (which uses `null`).
   const baseVideoId = useMemo(() => baseVideoTrackId(project?.tracks ?? []) ?? undefined, [project])
   const allItems = useMemo(() => laidTracks.flatMap((t) => t.items), [laidTracks])
+  const hasContent = (project?.tracks ?? []).some((track) => track.clips.length > 0)
 
   const windowedTiles = useWindowedThumbnails({ allItems, filmstrips, zoom, viewW, scrollX })
 
@@ -315,7 +316,8 @@ export default function Timeline(props: TimelineProps) {
   // unlocked rows only).
   const rows = useMemo(() => trackRows(project), [project])
 
-  const contentW = Math.max(msToPx(durationMs, zoom) + 240, viewW - RAIL_W)
+  const emptyMargin = Math.min(240, Math.max(0, viewW - RAIL_W) * 0.5)
+  const contentW = Math.max(msToPx(durationMs, zoom) + (hasContent ? 240 : emptyMargin), viewW - RAIL_W)
   const tracksH = laidTracks.reduce((h, { track }) => h + (TRACK_HEIGHT[track.kind] ?? 40) + 1, 0)
 
   // configRef: gesture/wheel handlers read CURRENT values without re-binding
@@ -350,14 +352,30 @@ export default function Timeline(props: TimelineProps) {
   }, [])
 
   const didFit = useRef(false)
+  const lastFitScope = useRef<string | null>(null)
+  const autoFitEmpty = useRef(false)
+  const fitScope = project ? `project:${project.project_identity?.origin_path_sha256 ?? project.name}` : 'no-project'
   useEffect(() => {
-    // First project load: fit the whole timeline to ~80% of the lane width.
+    const newScope = lastFitScope.current !== fitScope
+    lastFitScope.current = fitScope
+    if (newScope) autoFitEmpty.current = !hasContent
+    if (hasContent) autoFitEmpty.current = false
+    if (autoFitEmpty.current) {
+      // Keep the initial empty fit on resize until the user chooses a zoom.
+      const lane = Math.max(0, (scrollRef.current?.clientWidth ?? viewW) - RAIL_W)
+      const margin = Math.min(240, lane * 0.5)
+      const fit = Math.max(0, Math.min(lane * 0.8, lane - margin - 20)) / ((durationMs / 1000) * BASE_PPS)
+      setZoom(Math.min(MAX_ZOOM, Math.max(minZoomFor(durationMs, lane), fit)))
+      if (project) didFit.current = true
+      return
+    }
+    // Keep the existing first-load fit for projects containing clips.
     if (!project || didFit.current) return
     didFit.current = true
     const lane = Math.max(200, viewW - RAIL_W)
     const fit = (lane * 0.8) / ((durationMs / 1000) * 50)
     setZoom(Math.min(MAX_ZOOM, Math.max(minZoom, fit)))
-  }, [project, durationMs, viewW, minZoom])
+  }, [project, fitScope, hasContent, durationMs, viewW, minZoom])
 
   // --- ghost lifecycle: clear when the snapshot (op_applied) replaces it ----
   useEffect(() => {
@@ -405,6 +423,7 @@ export default function Timeline(props: TimelineProps) {
   // --- zoom with anchor identity (timeline behavior contract) ----------------------------
   const pendingAnchor = useRef<{ anchorMs: number; viewportOffset: number } | null>(null)
   const applyZoom = useCallback((nextZoom: number, anchorMs: number) => {
+    autoFitEmpty.current = false
     const el = scrollRef.current
     const c = cfg.current
     const z = Math.min(MAX_ZOOM, Math.max(c.minZoom, nextZoom))
@@ -432,6 +451,7 @@ export default function Timeline(props: TimelineProps) {
   // lane, clamped to [minZoom, MAX_ZOOM], and scroll back to the start so the
   // entire project is visible at once. BASE_PPS is px-per-second at zoom=1.
   const fitToWindow = useCallback(() => {
+    autoFitEmpty.current = false
     const el = scrollRef.current
     const c = cfg.current
     const lane = Math.max(200, (el?.clientWidth ?? RAIL_W) - RAIL_W)
@@ -1469,8 +1489,10 @@ export default function Timeline(props: TimelineProps) {
   const ticks = useMemo(() => {
     const fromMs = pxToMs(Math.max(0, scrollX - 200), zoom)
     const toMs = pxToMs(scrollX + viewW + 200, zoom)
-    return rulerTicks(fromMs, Math.min(toMs, durationMs + pxToMs(240, zoom)), zoom, fps, timeMode)
-  }, [scrollX, viewW, zoom, durationMs, fps, timeMode])
+    // Empty canvases can have a narrower trailing margin; keep labels inside it.
+    const endMs = hasContent ? durationMs + pxToMs(240, zoom) : pxToMs(Math.max(0, contentW - 96), zoom)
+    return rulerTicks(fromMs, Math.min(toMs, endMs), zoom, fps, timeMode)
+  }, [scrollX, viewW, zoom, durationMs, fps, timeMode, hasContent, contentW])
 
   const innerW = RAIL_W + contentW
   const fullH = RULER_H + tracksH
@@ -1548,6 +1570,7 @@ export default function Timeline(props: TimelineProps) {
         onAskAgent={askAgent}
       />
 
+      <div className="tl-viewport">
       <div
         className={`tl-scroll ${razorMode ? 'tl-scroll--razor' : ''}${assetDnd ? ' tl-scroll--asset-dnd' : ''}`}
         ref={scrollRef}
@@ -1648,12 +1671,13 @@ export default function Timeline(props: TimelineProps) {
             )
           })()}
 
-          <TimelineEmptyState
-            hasProject={!!project}
-            hasTracks={laidTracks.length > 0}
-            onImport={() => document.dispatchEvent(new CustomEvent('cut:open-import'))}
-          />
         </div>
+      </div>
+      <TimelineEmptyState
+        hasProject={!!project}
+        hasTracks={hasContent}
+        onImport={() => document.dispatchEvent(new CustomEvent('cut:open-import'))}
+      />
       </div>
 
       <TimelineGestureHud hud={hud} />

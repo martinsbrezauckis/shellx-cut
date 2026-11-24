@@ -57,8 +57,10 @@ mod caption_bulk;
 mod caption_track_resolution;
 mod captions_kinetic_regression;
 mod captions_refusal;
+mod chat_conversations;
 mod check_applicable;
 mod clip_delete_cleanup;
+mod clip_markers;
 mod delivery_admission;
 mod derived_media_at_open;
 mod detach_audio;
@@ -66,6 +68,7 @@ mod diarize_project_files;
 mod edit_point_snap;
 mod engine_reports;
 mod export_chapters;
+mod export_private_staging;
 mod generate_project_transition;
 mod generation_cli;
 mod group_review_request_idempotency;
@@ -121,7 +124,9 @@ mod screen_record_cadence;
 mod screen_record_containment;
 mod screen_record_export_regression;
 mod screen_record_link_consumers;
+mod screen_record_make_editable;
 mod screen_record_quality;
+mod screen_record_refused_project_rollback;
 mod screen_record_sparse_export_regression;
 mod screen_record_start_project_identity;
 mod screen_record_take_edit;
@@ -1665,7 +1670,9 @@ async fn project_create_rolls_back_directory_and_index_when_job_drain_times_out(
         "failed replacement must remove the unactivated project"
     );
     assert!(
-        crate::projects_index::path_for(next_path.to_string_lossy().as_ref()).is_none(),
+        crate::projects_index::path_for(next_path.to_string_lossy().as_ref())
+            .unwrap()
+            .is_none(),
         "failed replacement must not leave a recent-project ghost"
     );
 
@@ -8864,6 +8871,7 @@ async fn judge_fixture(dir: &std::path::Path) -> (AppState, PathBuf) {
         fix_actions: vec![],
         encode: None,
         outcome: None,
+        export_checks: None,
     };
     let rpath = receipts.join("render_001.json");
     std::fs::write(&rpath, serde_json::to_string_pretty(&receipt).unwrap()).unwrap();

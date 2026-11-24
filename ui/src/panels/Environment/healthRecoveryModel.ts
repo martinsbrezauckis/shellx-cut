@@ -8,6 +8,7 @@ import { finishedWithProblems, problemsText } from '../../lib/failedJobNotices'
 import type { VerbArgs, VerbResult } from '../../lib/client'
 import type { JobRecord } from '../../lib/clientModel'
 import type { DoctorReport } from '../../lib/doctor'
+import { toolchainCardHint } from './settingsModel'
 import type {
   JobsListResult,
   ProjectHealthAsset,
@@ -289,9 +290,9 @@ function toolchainRow(report: DoctorReport | null, scanFailed: boolean): HealthR
   if (scanFailed) return attention('toolchain', 'Toolchain', 'The local tool check did not complete. Check again before relying on it.', undefined, 'toolchain')
   if (!report) return checking('toolchain', 'Toolchain', 'Checking local tools…', 'toolchain')
   const missing = report.cards.filter((card) => card.status === 'missing')
-  if (missing.length > 0) return recoverable('toolchain', 'Toolchain', `${missing.length} required or optional tool${plural(missing.length)} missing.`, missing.map((card) => card.hint ?? card.id).join(' '), 'toolchain')
+  if (missing.length > 0) return recoverable('toolchain', 'Toolchain', `${missing.length} required or optional tool${plural(missing.length)} missing.`, missing.map(toolchainCardHint).join(' '), 'toolchain')
   const notHealthy = report.cards.filter((card) => card.status !== 'ok')
-  if (notHealthy.length > 0) return attention('toolchain', 'Toolchain', `${notHealthy.length} tool check${plural(notHealthy.length)} needs attention.`, notHealthy.map((card) => card.hint ?? card.id).join(' '), 'toolchain')
+  if (notHealthy.length > 0) return attention('toolchain', 'Toolchain', `${notHealthy.length} tool check${plural(notHealthy.length)} needs attention.`, notHealthy.map(toolchainCardHint).join(' '), 'toolchain')
   return healthy('toolchain', 'Toolchain', 'Local tool checks passed.', 'toolchain')
 }
 

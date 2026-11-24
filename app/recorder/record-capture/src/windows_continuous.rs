@@ -35,9 +35,8 @@ struct ActiveWriter {
 pub(crate) fn capture(
     cfg: &CaptureConfig,
     stop: &Arc<AtomicBool>,
-    start: Instant,
+    first_frame: &crate::windows_first_frame::WindowsFirstFrameAnchor,
     settings: &Settings,
-    origin: QpcCaptureOrigin,
     mut checkpoints: Checkpoints,
     mut start_control: impl FnMut(&Path, u64) -> Result<(LiveWgcControl, WgcTimingRecorder)>,
 ) -> Result<(u64, Checkpoints)> {
@@ -60,6 +59,17 @@ pub(crate) fn capture(
     };
     let mut prepared = None;
     let result = (|| {
+        let Some((start, origin)) =
+            first_frame.wait_started(stop, || publisher.failure().map_or(Ok(()), Err))?
+        else {
+            stop.store(true, Ordering::Release);
+            let _ = control.close();
+            return Err(RecordError::new(
+                error_codes::CAPTURE,
+                "capture screen",
+                "capture stopped before the first video frame arrived",
+            ));
+        };
         let mut next_boundary_ms = interval;
         loop {
             let end_at = next_boundary_ms.min(duration_ms);

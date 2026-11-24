@@ -9,6 +9,8 @@ export interface AgentChatTurn {
   id: string
   role: 'user' | 'agent'
   text: string
+  origin?: 'agent' | 'human'
+  status?: 'ok' | 'error' | 'interrupted' | 'running'
   ok?: boolean
   agent?: string | null
   actions?: Array<{ op_id: string; verb: string }>

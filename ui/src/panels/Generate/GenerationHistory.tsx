@@ -3,6 +3,12 @@ import { createPortal } from 'react-dom'
 import { sourceUrl, type GeneratedAssetRecord, type Project } from '../../lib/client'
 import { Icon } from '../../icons'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
+import { releaseMediaElement } from '../../lib/mediaElementRelease'
+
+const releaseVideoRef = (node: HTMLVideoElement | null) => {
+  if (!node) return
+  return () => releaseMediaElement(node)
+}
 
 const MAX_REFERENCES = 4
 
@@ -142,7 +148,7 @@ export default function GenerationHistory({
               <article className="gen-compare__take" key={item.asset_id} data-cut-generated-compare-take={item.asset_id}>
                 <div className="gen-compare__media">
                   {item.kind === 'video' ? (
-                    <video src={sourceUrl(item.asset_id)} controls muted preload="metadata" aria-label="Generated video take" />
+                    <video ref={releaseVideoRef} src={sourceUrl(item.asset_id)} controls muted preload="metadata" aria-label="Generated video take" />
                   ) : (
                     <img src={sourceUrl(item.asset_id)} alt="" />
                   )}
@@ -209,7 +215,7 @@ export default function GenerationHistory({
                   {item.integrity === 'verified' && item.kind === 'image' ? (
                     <img src={sourceUrl(item.asset_id)} alt="" loading="lazy" />
                   ) : item.integrity === 'verified' && item.kind === 'video' ? (
-                    <video src={sourceUrl(item.asset_id)} muted preload="metadata" aria-label="Generated video preview" />
+                    <video ref={releaseVideoRef} src={sourceUrl(item.asset_id)} muted preload="metadata" aria-label="Generated video preview" />
                   ) : (
                     <Icon name="warning" size={18} tone="warn" />
                   )}

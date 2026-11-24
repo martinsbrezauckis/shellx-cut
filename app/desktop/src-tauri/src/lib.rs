@@ -54,6 +54,13 @@
 //   cutd binds 127.0.0.1 ONLY (http::DEFAULT_ADDR policy); the shell never
 //   passes a non-loopback addr and never exposes a port externally —
 //   consistent with the loopback-only service boundary.
+//   tauri.conf.json → app.security.csp locks the fallback airlock page to
+//   loopback/self sources (matching server UI_CSP: 'self', data: for preview
+//   images/media fixtures, loopback HTTP/WS at any fallback port because WebKit
+//   does not match ws: with 'self', ipc: for macOS WKWebView & Linux WebKitGTK,
+//   and http://ipc.localhost for Windows WebView2; no remote hosts, wildcards,
+//   asset:, or 'unsafe-eval'). frame-ancestors lives on cutd's HTTP UI_CSP
+//   header instead because Tauri injects app.security.csp via <meta>.
 // ─────────────────────────────────────────────────────────────────────────────
 
 use std::io::{Read, Write};
@@ -1865,5 +1872,53 @@ mod tests {
             TcpListener::bind(&selected).is_ok(),
             "the selected fallback port must be free for cutd"
         );
+    }
+
+    #[test]
+    fn tauri_conf_sets_tight_loopback_csp() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("parse tauri.conf.json");
+        let csp = conf["app"]["security"]["csp"]
+            .as_str()
+            .expect("app.security.csp must be a non-null string");
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("script-src 'self'"));
+        assert!(csp.contains("object-src 'none'"));
+        assert!(csp.contains("base-uri 'self'"));
+        assert!(csp.contains("form-action 'self'"));
+        assert!(csp.contains("frame-src 'self'"));
+        assert!(csp.contains("img-src 'self' data:"));
+        assert!(csp.contains("media-src 'self' data:"));
+        for token in [
+            "ws://127.0.0.1:*",
+            "ws://localhost:*",
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "ipc:",
+            "http://ipc.localhost",
+        ] {
+            assert!(
+                csp.contains(token),
+                "CSP missing loopback/IPC source {token}: {csp}"
+            );
+        }
+        // Tauri injects app.security.csp as a <meta> tag on bundled fallback HTML;
+        // frame-ancestors belongs in cutd's HTTP Content-Security-Policy header instead.
+        assert!(
+            !csp.contains("frame-ancestors"),
+            "meta-injected tauri.conf.json CSP must omit frame-ancestors: {csp}"
+        );
+        assert!(!csp.contains("unsafe-eval"));
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(!csp.contains("asset:"));
+        for directive in csp.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+            for part in directive.split_whitespace().skip(1) {
+                assert_ne!(part, "*", "wildcard host forbidden in CSP: {csp}");
+                assert!(
+                    !part.contains("*."),
+                    "wildcard subdomain forbidden in CSP: {csp}"
+                );
+            }
+        }
     }
 }

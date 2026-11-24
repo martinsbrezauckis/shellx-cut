@@ -1,3 +1,6 @@
+import { cardLabel, type DoctorCard } from '../../lib/doctor'
+import { isAgentInstruction } from '../../lib/userActionFeedback'
+
 export const SETTINGS_CATEGORY_IDS = [
   'overview',
   'health-recovery',
@@ -119,4 +122,65 @@ export function searchSettings(query: string): SettingsSearchResult[] {
     const matched = candidates.find((candidate) => candidate.toLocaleLowerCase().includes(needle))
     return matched ? [{ category, matched }] : []
   })
+}
+
+const TOOLCHAIN_CARD_HINTS: Record<string, { missing: string; degraded: string }> = {
+  perception: {
+    missing: 'Captions and transcription are not installed yet. Open Settings > AI & transcription and choose Install captions.',
+    degraded: 'Captions and transcription need attention. Open Settings > AI & transcription to install or repair them.',
+  },
+  matte: {
+    missing: 'Background removal is not installed yet. Open Settings > AI & transcription and choose Install.',
+    degraded: 'Background removal needs attention. Open Settings > AI & transcription to check or reinstall it.',
+  },
+  matte_premium: {
+    missing: 'Cleaner background removal is not installed yet. Open Settings > AI & transcription and choose Install premium on a supported NVIDIA graphics card.',
+    degraded: 'Cleaner background removal needs attention. Open Settings > AI & transcription to check it.',
+  },
+  ffmpeg: {
+    missing: 'Video engine is missing. Open Settings > Video & performance and choose Download.',
+    degraded: 'Video engine needs attention. Open Settings > Video & performance to check or repair it.',
+  },
+  ffprobe: {
+    missing: 'Media inspection tool is missing. Open Settings > Video & performance and choose Download.',
+    degraded: 'Media inspection tool needs attention. Open Settings > Video & performance to check or repair it.',
+  },
+  'vc-runtime': {
+    missing: 'Microsoft C++ Redistributable is missing. Open Settings > Video & performance and choose Download and install.',
+    degraded: 'Microsoft C++ Redistributable needs attention. Open Settings > Video & performance to check it.',
+  },
+  'gpu-encode': {
+    missing: 'Hardware-accelerated export is not ready. Open Settings > Video & performance to check it.',
+    degraded: 'Hardware-accelerated export needs attention. Open Settings > Video & performance to check it.',
+  },
+}
+
+function safePersonHint(card: DoctorCard): string {
+  const hint = card.hint?.trim()
+  if (
+    hint
+    && !hint.includes('system.')
+    && !hint.includes('{')
+    && !hint.includes('Settings ->')
+    && !isAgentInstruction(hint)
+  ) {
+    return hint
+  }
+  return `${cardLabel(card).title} needs attention. Open Settings to check it.`
+}
+
+/**
+ * Formats a non-healthy DoctorCard hint as a plain sentence for people on the
+ * Settings > Health & recovery Toolchain card without exposing agent verb syntax.
+ */
+export function toolchainCardHint(card: DoctorCard): string {
+  const mapped = TOOLCHAIN_CARD_HINTS[card.id]
+  if (mapped) return card.status === 'missing' ? mapped.missing : mapped.degraded
+  if (card.kind === 'service') {
+    return `${cardLabel(card).title} needs attention. Open Settings > Services & integrations to check it.`
+  }
+  if (card.kind === 'judge') {
+    return `${cardLabel(card).title} cannot run until Captions and transcription are set up. Open Settings > AI & transcription or Settings > Services & integrations.`
+  }
+  return safePersonHint(card)
 }

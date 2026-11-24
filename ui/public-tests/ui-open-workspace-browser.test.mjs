@@ -72,17 +72,57 @@ test('ui.open confirms mounted and focused Edit panels after full-page workspace
     }
     await openInEdit()
     console.log('PASS Edit-origin focus surfaces, repeated while already open')
-    // Music is a blocking drawer: the editor is inert, so focus must conflict.
+    // Music is a blocking drawer: background panels, workspaces, and Settings are
+    // inert behind it, so ui.open rejects quickly naming Music and how to close it,
+    // without mutating background tabs, while drawer->drawer replacement keeps working.
     assert.equal((await command('music')).applied, true)
-    for (const panel of ['preview', 'timeline']) {
+    for (const panel of ['preview', 'timeline', 'assets', 'color', 'record', 'environment']) {
+      const startedAt = Date.now()
       const answer = await command(panel)
-      assert.equal(answer.applied, false)
+      const elapsedMs = Date.now() - startedAt
+      assert.equal(answer.applied, false, `${panel} must be blocked while music is open`)
       assert.equal(answer.error.code, 'conflict')
       assert.equal(answer.state.overlays.drawer, 'music')
+      assert.ok(elapsedMs < 500, `blocked ui.open (${panel}) must reject quickly instead of timing out (took ${elapsedMs} ms)`)
+      assert.match(answer.error.message, /music/i, `blocked ui.open (${panel}) must name the blocking drawer: ${answer.error.message}`)
+      assert.match(answer.error.message, /close|escape/i, `blocked ui.open (${panel}) must say how to close the drawer: ${answer.error.message}`)
+      assert.notEqual(answer.state.right.active_tab, 'color', 'blocked panel open must not silently mutate background tabs')
+    }
+    const alreadyMusic = await command('music')
+    assert.equal(alreadyMusic.applied, false)
+    assert.equal(alreadyMusic.error.code, 'conflict')
+    assert.match(alreadyMusic.error.message, /already open/)
+    for (const bad of ['', 'nonexistent-surface']) {
+      const invalid = await command(bad)
+      assert.equal(invalid.applied, false)
+      assert.equal(invalid.error.code, 'not_found')
+    }
+    assert.equal((await command('title')).applied, true, 'opening another drawer still replaces music')
+    const blockedByTitle = await command('transcript')
+    assert.equal(blockedByTitle.applied, false)
+    assert.match(blockedByTitle.error.message, /title/i)
+    await page.locator('[data-cut-title-mode="free"]').click()
+    assert.equal((await command('transcript')).applied, true, 'Title free placement mode does not block background panels')
+    await page.locator('[data-cut-title-close]').click()
+    await page.locator('[data-cut-title-open="true"]').waitFor({ state: 'detached' })
+    assert.equal((await command('mask')).applied, true)
+    assert.equal((await command('environment')).applied, true, 'Mask drawer does not block Settings and yields on navigation')
+    await page.locator('[data-cut-mask-open="true"]').waitFor({ state: 'detached' })
+    await page.locator('[data-cut-environment-close]').click()
+    await page.locator('[data-cut-environment-open="true"]').waitFor({ state: 'detached' })
+    await page.evaluate(() => document.activeElement?.blur?.())
+    await page.keyboard.press('Control+k')
+    await page.locator('[data-cut-command-palette]').waitFor()
+    for (const panel of ['preview', 'music']) {
+      const blockedByPalette = await command(panel)
+      assert.equal(blockedByPalette.applied, false)
+      assert.equal(blockedByPalette.error.code, 'conflict')
+      assert.match(blockedByPalette.error.message, /command palette/i)
+      assert.match(blockedByPalette.error.message, /close|escape/i)
     }
     await page.keyboard.press('Escape')
-    await page.locator('[data-cut-musicbed-open="true"]').waitFor({ state: 'detached' })
-    console.log('PASS blocking drawer prevents background panel focus')
+    await page.locator('[data-cut-command-palette]').waitFor({ state: 'detached' })
+    console.log('PASS blocking drawers, Title free vs blocking, Mask->Settings, CommandPalette, and invalid surface checks')
     // Repeated real unmount/remounts exercise the frame-before-commit race.
     for (const workspace of ['record', 'library']) {
       for (let round = 0; round < 15; round++) {
@@ -108,9 +148,27 @@ test('ui.open confirms mounted and focused Edit panels after full-page workspace
     const missing = await command('preview')
     assert.equal(missing.applied, false)
     assert.equal(missing.error.code, 'conflict')
+    assert.match(missing.error.message, /not confirmed in time/)
     await page.evaluate(() => { window.missingTarget = null })
     assert.equal((await command('preview')).applied, true)
-    console.log('PASS genuine focus/target conflicts and subsequent recovery')
+    // Delayed PanelPaintConfirm readiness (>1.5 s old deadline, inside 6 s bounded deadline)
+    // confirms cleanly when the real body-loaded sentinel mounts at ~1.8 s.
+    assert.equal((await command('properties')).applied, true)
+    await page.evaluate(() => {
+      const origSetTimeout = window.setTimeout.bind(window)
+      let delayedOnce = false
+      window.setTimeout = (fn, ms, ...rest) => {
+        if (!delayedOnce && ms === 350) {
+          delayedOnce = true
+          return origSetTimeout(fn, 1_800, ...rest)
+        }
+        return origSetTimeout(fn, ms, ...rest)
+      }
+    })
+    const delayed = await command('color')
+    assert.equal(delayed.applied, true, `delayed confirmation (>1.5 s) should succeed: ${JSON.stringify(delayed.error)}`)
+    assert.equal(delayed.state.right.active_tab, 'color')
+    console.log('PASS genuine focus/target conflicts, delayed (>1.5 s) confirmation, and subsequent recovery')
   } finally {
     await browser?.close()
     await server.close()

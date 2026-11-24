@@ -18,6 +18,7 @@ import { revealRegisteredSource } from '../../lib/tauri'
 import { requestSourceNavigation } from '../../app/sourceNavigation'
 import { Icon } from '../../icons'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
+import { useReleasedMediaRef } from '../Preview/mediaElementRelease'
 import { assetUsesFromSequenceIndex, type AssetUse } from './assetUses'
 import SourceWaveform from './SourceWaveform'
 import './source-monitor.css'
@@ -51,6 +52,7 @@ function formatTime(ms: number): string {
 export default function SourceMonitor({ asset, project, playheadMs, initialMs = 0, onProjectChanged, onClose }: SourceMonitorProps) {
   const desktopAvailability = useAvailability('shell.desktop')
   const mediaRef = useRef<HTMLMediaElement | null>(null)
+  const releasedMediaRef = useReleasedMediaRef(mediaRef)
   const overwriteButtonRef = useRef<HTMLButtonElement | null>(null)
   const overwriteFocusPending = useRef(false)
   const backdropArmedAt = useRef(Date.now() + 500)
@@ -384,7 +386,7 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
   }
 
   const mediaProps = {
-    ref: (node: HTMLMediaElement | null) => { mediaRef.current = node },
+    ref: releasedMediaRef,
     className: 'source-monitor__media',
     src: (asset.proxy ? scopeMediaUrl(asset.proxy) : '') || sourceUrl(asset.id),
     controls: true,

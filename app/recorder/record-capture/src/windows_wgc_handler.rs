@@ -105,6 +105,7 @@ pub(crate) struct EncFlags {
         crate::windows_wgc_clock_origin::QpcCaptureOrigin,
         i64,
     )>,
+    pub(crate) first_frame: Option<crate::windows_first_frame::WindowsFirstFrameAnchor>,
     pub(crate) active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
 }
 
@@ -119,6 +120,7 @@ pub(crate) struct Handler {
     source_lifecycle: Option<CaptureSourceLifecycle>,
     stop: Arc<AtomicBool>,
     timing: Option<WgcTimingRecorder>,
+    first_frame: Option<crate::windows_first_frame::WindowsFirstFrameAnchor>,
     active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
     preview_started: Instant,
 }
@@ -198,6 +200,7 @@ impl GraphicsCaptureApiHandler for Handler {
             source_lifecycle: flags.source_lifecycle,
             stop: flags.stop,
             timing: flags.timing,
+            first_frame: flags.first_frame,
             active_preview: flags.active_preview,
             preview_started: Instant::now(),
         })
@@ -212,22 +215,23 @@ impl GraphicsCaptureApiHandler for Handler {
             crate::windows_gpu_crop::crop_frame_to_origin(frame, crop, &mut self.crop_surface)?;
         }
         if let Some(encoder) = self.encoder.as_mut() {
-            let sample = self
-                .timing
-                .as_ref()
-                .map(|_| {
+            let sample = if self.timing.is_some() || self.first_frame.is_some() {
+                Some(
                     frame
                         .timestamp()
-                        .map(|timestamp| (timestamp.Duration, Instant::now()))
-                })
-                .transpose()?;
+                        .map(|timestamp| (timestamp.Duration, Instant::now()))?,
+                )
+            } else {
+                None
+            };
             let geometry = self
                 .window_clicks
                 .as_ref()
                 .and_then(|clicks| clicks.geometry());
-            let accepted = if let Some(clicks) = self.window_clicks.as_ref() {
+            let mut window_fit = None;
+            let accepted = if self.window_clicks.is_some() {
                 if let Some(fit) = encoder.send_window_frame(frame)? {
-                    clicks.accepted_frame(geometry, frame.width(), frame.height(), fit);
+                    window_fit = Some(fit);
                     true
                 } else {
                     false
@@ -237,6 +241,19 @@ impl GraphicsCaptureApiHandler for Handler {
             };
             if !accepted {
                 return Ok(());
+            }
+            if let Some(anchor) = self.first_frame.take() {
+                let (native_hns, callback_at) =
+                    sample.ok_or("missing WGC frame timestamp for first frame")?;
+                let (origin_instant, qpc_origin) =
+                    anchor.admit_first_frame(native_hns, callback_at)?;
+                encoder.set_timed_origin(origin_instant, qpc_origin);
+                if let Some(timing) = &self.timing {
+                    timing.set_origin(origin_instant);
+                }
+            }
+            if let (Some(clicks), Some(fit)) = (self.window_clicks.as_ref(), window_fit) {
+                clicks.accepted_frame(geometry, frame.width(), frame.height(), fit);
             }
             if let (Some(timing), Some((native_timestamp_100ns, callback_at))) =
                 (&self.timing, sample)

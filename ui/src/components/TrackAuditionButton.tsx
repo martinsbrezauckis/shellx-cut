@@ -168,6 +168,7 @@ export function TrackAuditionButton({
         audio.onerror = null
         audio.pause()
         audio.removeAttribute('src')
+        audio.load()
       }
       clearActive()
     }

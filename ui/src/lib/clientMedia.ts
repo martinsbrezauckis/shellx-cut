@@ -6,7 +6,7 @@
 
 import { callVerb } from './client'
 import type { Waveform } from './clientModel'
-import { activeMediaScope, scopeMediaUrl, scopedCacheKey } from './mediaScope'
+import { activeMediaScope, onMediaScopeChange, scopeMediaUrl, scopedCacheKey } from './mediaScope'
 
 // ---------------------------------------------------------------------------
 // Waveform cache (timeline audio-clip overlay, zero-local-mutation contract display-only)
@@ -32,13 +32,19 @@ const waveformCache = new Map<string, Promise<Waveform | null>>()
  * entry per asset. Display-only: this reads peaks, it never mutates state.
  */
 export function getWaveform(asset: string, buckets?: number): Promise<Waveform | null> {
+  const scopeAtStart = activeMediaScope()
   const key = scopedCacheKey(`${asset}@${buckets ?? 'def'}`)
   const hit = waveformCache.get(key)
   if (hit) return hit
-  const p = callVerb('media.waveform', buckets != null ? { asset, buckets } : { asset })
+  let entry!: Promise<Waveform | null>
+  entry = callVerb('media.waveform', buckets != null ? { asset, buckets } : { asset })
     .then((r) => {
       if (!r.ok) {
         waveformCache.delete(key)
+        return null
+      }
+      if (activeMediaScope() !== scopeAtStart) {
+        if (waveformCache.get(key) === entry) waveformCache.delete(key)
         return null
       }
       return r.result ?? null
@@ -49,8 +55,8 @@ export function getWaveform(asset: string, buckets?: number): Promise<Waveform |
       waveformCache.delete(key)
       return null
     })
-  waveformCache.set(key, p)
-  return p
+  waveformCache.set(key, entry)
+  return entry
 }
 
 /* WINDOWED THUMBNAILS (per-zoom filmstrip) -------------------------------------
@@ -93,13 +99,34 @@ export function getWindowThumbs(
   const hit = windowThumbCache.get(key)
   const wrap = (url: string | null): WindowThumbs | null => (url && scopeMediaUrl(`/${url}`, scope) ? { url: scopeMediaUrl(`/${url}`, scope), startMs: t0, endMs: t1 } : null)
   if (hit) return hit.then(wrap)
-  const p = callVerb('media.filmstrip', { asset, range_ms: [t0, t1], count, h })
-    .then((r) => (r.ok && r.result ? ((r.result as { thumbs?: string }).thumbs ?? null) : null))
+  let entry!: Promise<string | null>
+  entry = callVerb('media.filmstrip', { asset, range_ms: [t0, t1], count, h })
+    .then((r) => {
+      if (activeMediaScope() !== scope) {
+        if (windowThumbCache.get(key) === entry) windowThumbCache.delete(key)
+        return null
+      }
+      return r.ok && r.result ? ((r.result as { thumbs?: string }).thumbs ?? null) : null
+    })
     // Transport failure ≠ permanent "no thumbs": drop so a later request retries.
     .catch(() => {
       windowThumbCache.delete(key)
       return null
     })
-  windowThumbCache.set(key, p)
-  return p.then(wrap)
+  windowThumbCache.set(key, entry)
+  return entry.then(wrap)
 }
+
+/** Release all cached waveform peak arrays and windowed filmstrip URLs. */
+export function clearClientMediaCaches(): void {
+  waveformCache.clear()
+  windowThumbCache.clear()
+}
+
+export function mediaCacheStats(): { waveforms: number; windowThumbs: number } {
+  return { waveforms: waveformCache.size, windowThumbs: windowThumbCache.size }
+}
+
+onMediaScopeChange(() => {
+  clearClientMediaCaches()
+})

@@ -38,7 +38,7 @@ const DRAFT_H: u32 = crate::proxy::PROXY_HEIGHT;
 
 /// Cache file prefix of an exact draft piece. Changing the piece recipe
 /// changes the prefix, so no older piece is ever reused.
-const PIECE_PREFIX: &str = "draft4_";
+const PIECE_PREFIX: &str = "draft5_";
 
 /// The draft size of a project frame: scaled into DRAFT_W x DRAFT_H (never up),
 /// even-sized for yuv420.
@@ -252,6 +252,7 @@ pub fn render_draft(
             opts,
             caps,
             *w0,
+            None,
             &|_| {},
         )?;
         segment_trust::remember(path);

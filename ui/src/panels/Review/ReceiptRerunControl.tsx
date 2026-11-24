@@ -201,7 +201,7 @@ export default function ReceiptRerunControl({ receipt }: { receipt: RenderReceip
   }, [poll, state])
 
   const resultLabel = result?.pass ? 'OUTPUT CHECKS PASSED' : 'OUTPUT CHECKS NEED REVIEW'
-  return <div className="rr-rc__profile" data-cut-receipt-rerun-state={state}>
+  return <div className="rr-rc__profile rr-rc__rerun" data-cut-receipt-rerun-state={state}>
     {state === 'running' ? (
       <button type="button" className="rr-rc__download" data-cut-action="receipt-rerun-cancel"
         data-cut-receipt-rerun-cancel={identity.renderId} onClick={() => void cancel()}

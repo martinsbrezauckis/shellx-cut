@@ -95,6 +95,26 @@ impl Default for RenderPreset {
 /// SOFTWARE-slow here (libsvtav1) — hardware av1_nvenc/qsv is a follow-up.
 pub const FORMAT_NAMES: &[&str] = &["h264", "hevc", "vp9", "prores", "av1"];
 
+/// Merge a colon-separated encoder parameter string (`-x265-params` /
+/// `-svtav1-params`) onto an arg vector in place instead of emitting a second
+/// duplicate flag that FFmpeg would silently overwrite.
+pub(crate) fn merge_codec_kv_param(args: &mut Vec<String>, flag: &str, extra: &str) {
+    if extra.is_empty() {
+        return;
+    }
+    if let Some(pos) = args.iter().position(|a| a == flag) {
+        if let Some(val) = args.get_mut(pos + 1) {
+            if !val.is_empty() {
+                val.push(':');
+            }
+            val.push_str(extra);
+            return;
+        }
+    }
+    args.push(flag.into());
+    args.push(extra.into());
+}
+
 /// Map a `format` id + quality tier (draft|standard|high) to the encoder args +
 /// output extension. Returns None for an unknown format (the verb turns that into
 /// an actionable error BEFORE any encode). The quality tier shifts the rate knob
@@ -103,12 +123,66 @@ pub fn format_codec_args(
     format: &str,
     quality: &str,
 ) -> Option<(Vec<String>, Vec<String>, &'static str)> {
+    format_codec_args_for_color(format, quality, RenderColorMode::Sdr)
+}
+
+/// Codec/container args aware of output dynamic range (`Sdr` keeps the
+/// exact pre-existing 8-bit SDR paths; `KeepHdr` admits 10-bit HEVC Main 10
+/// and AV1 10-bit, refusing H.264/VP9/ProRes as `None`).
+pub fn format_codec_args_for_color(
+    format: &str,
+    quality: &str,
+    color: RenderColorMode,
+) -> Option<(Vec<String>, Vec<String>, &'static str)> {
     let s = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     let q = match quality {
         "draft" => 0usize,
         "high" => 2,
         _ => 1, // standard
     };
+    if color == RenderColorMode::KeepHdr {
+        return Some(match format {
+            "hevc" | "h265" => {
+                let crf = ["28", "26", "23"][q];
+                (
+                    s(&[
+                        "-c:v",
+                        "libx265",
+                        "-preset",
+                        "medium",
+                        "-crf",
+                        crf,
+                        "-pix_fmt",
+                        "yuv420p10le",
+                        "-profile:v",
+                        "main10",
+                        "-tag:v",
+                        "hvc1",
+                    ]),
+                    s(&["-c:a", "aac", "-b:a", "192k"]),
+                    "mp4",
+                )
+            }
+            "av1" => {
+                let crf = ["38", "32", "27"][q];
+                (
+                    s(&[
+                        "-c:v",
+                        "libsvtav1",
+                        "-preset",
+                        "6",
+                        "-crf",
+                        crf,
+                        "-pix_fmt",
+                        "yuv420p10le",
+                    ]),
+                    s(&["-c:a", "aac", "-b:a", "192k"]),
+                    "mp4",
+                )
+            }
+            _ => return None,
+        });
+    }
     Some(match format {
         // Default golden combo — reuse the named h264 preset for byte-identical
         // replay of a no-`format` render.
@@ -316,11 +390,9 @@ pub fn apply_bitrate(video_args: Vec<String>, kbps: u32, cbr: bool, encoder: &st
             // codec-specific HRD/strict flag makes CBR honestly constant (pads to
             // target), which is the point of CBR (streaming / strict ingest).
             if encoder.contains("libx264") {
-                out.push("-x264-params".into());
-                out.push("nal-hrd=cbr".into());
+                merge_codec_kv_param(&mut out, "-x264-params", "nal-hrd=cbr");
             } else if encoder.contains("libx265") {
-                out.push("-x265-params".into());
-                out.push("strict-cbr=1".into());
+                merge_codec_kv_param(&mut out, "-x265-params", "strict-cbr=1");
             }
             // libsvtav1 / libvpx-vp9: best-effort capped CBR (no stable strict-CBR
             // flag across builds) — documented as approximate for those codecs.
@@ -503,6 +575,36 @@ impl std::str::FromStr for Resolution {
     }
 }
 
+/// Render output color dynamic range (`render.final` `color`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderColorMode {
+    #[default]
+    Sdr,
+    KeepHdr,
+}
+
+impl RenderColorMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sdr => "sdr",
+            Self::KeepHdr => "keep_hdr",
+        }
+    }
+}
+
+impl std::str::FromStr for RenderColorMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "sdr" => Ok(Self::Sdr),
+            "keep_hdr" => Ok(Self::KeepHdr),
+            other => Err(format!(
+                "unknown render color mode '{other}' (expected sdr|keep_hdr)"
+            )),
+        }
+    }
+}
+
 /// Output framing options for a render (render.final `fit` + `resolution`).
 /// `Default` = contain + project geometry = the legacy render, so an
 /// op log that never set these replays byte-identical (the registry-sync
@@ -519,6 +621,8 @@ pub struct RenderOptions {
     /// i32 (not f64): LUFS targets are whole numbers and it keeps RenderOptions
     /// Copy + Eq for the registry-sync default test.
     pub loudness_target: Option<i32>,
+    /// Output dynamic range mode (`sdr` default vs 10-bit `keep_hdr`).
+    pub color: RenderColorMode,
 }
 
 impl RenderOptions {

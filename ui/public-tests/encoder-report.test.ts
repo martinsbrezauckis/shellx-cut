@@ -70,7 +70,7 @@ const hdr = renderReceiptFrom({
       processing_bit_depth: 8,
       file_bit_depth: 8,
       sources: [{ asset: 'a1', file: 'hlg.mp4', transfer: 'arib-std-b67', bit_depth: 10, handling: 'tone_mapped_to_sdr' }],
-      note: 'hlg.mp4 is HDR (HLG, 10-bit) and was converted to SDR BT.709 for this export; exports cannot keep HDR yet.',
+      note: 'hlg.mp4 is HDR (HLG, 10-bit) and was converted to SDR BT.709 for this export; choose Keep HDR to export 10-bit HDR.',
     },
   },
 })
@@ -78,8 +78,36 @@ assert.ok(hdr?.encode?.color, 'parser must keep the colour record')
 assert.equal(hdr.encode.color.sources[0].handling, 'tone_mapped_to_sdr')
 assert.equal(
   encodeLine(hdr)?.color,
-  'hlg.mp4 is HDR (HLG, 10-bit) and was converted to SDR BT.709 for this export; exports cannot keep HDR yet.',
+  'hlg.mp4 is HDR (HLG, 10-bit) and was converted to SDR BT.709 for this export; choose Keep HDR to export 10-bit HDR.',
 )
+
+const keepHdr = renderReceiptFrom({
+  ...base,
+  encode: {
+    encoder: 'libx265',
+    hardware_requested: true,
+    hardware_used: false,
+    fallback_reason: 'Keep HDR uses 10-bit software libx265; hardware encoders in Cut currently target 8-bit SDR.',
+    color: {
+      output: 'HDR BT.2020 (PQ)',
+      transfer: 'smpte2084',
+      processing_bit_depth: 10,
+      file_bit_depth: 10,
+      hdr10_metadata: {
+        present_in_sources: true,
+        carried: true,
+        mastering_display: 'G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)',
+        max_cll: '1000,400',
+      },
+      sources: [{ asset: 'a1', file: 'pq_hdr10.mp4', transfer: 'smpte2084', bit_depth: 10, handling: 'kept_hdr' }],
+      note: 'HDR10 static metadata carried into the 10-bit PQ stream.',
+    },
+  },
+})
+assert.equal(keepHdr?.encode?.color?.transfer, 'smpte2084')
+assert.equal(keepHdr?.encode?.color?.hdr10_metadata?.carried, true)
+assert.equal(keepHdr?.encode?.color?.hdr10_metadata?.max_cll, '1000,400')
+assert.match(encodeLine(keepHdr!)?.color ?? '', /HDR10 static metadata carried/)
 // A plain SDR render says nothing extra about colour.
 const plain = renderReceiptFrom({
   ...base,

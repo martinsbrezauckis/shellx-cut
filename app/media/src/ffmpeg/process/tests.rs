@@ -424,3 +424,77 @@ fn a_stopped_child_is_not_ready_to_reap() {
     );
     child.stop_and_reap("stop test").unwrap();
 }
+
+/// Multi-threaded render child starts must stay on `posix_spawn` rather than
+/// falling back to `fork()`, which can abort in macOS `libSystem_atfork_child`
+/// before `exec` runs.
+#[cfg(unix)]
+#[test]
+fn multi_threaded_render_spawns_never_call_fork() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
+
+    const SUBPROCESS_ENV: &str = "SHELLX_CUT_MEDIA_FORK_PROBE";
+    const THREADS: usize = 8;
+    const SPAWNS_PER_THREAD: usize = 16;
+
+    static FORK_PREPARE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn record_fork_prepare() {
+        FORK_PREPARE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    if std::env::var_os(SUBPROCESS_ENV).is_none() {
+        let output = Command::new(std::env::current_exe().expect("current test binary"))
+            .args([
+                "multi_threaded_render_spawns_never_call_fork",
+                "--nocapture",
+            ])
+            .env(SUBPROCESS_ENV, "1")
+            .output()
+            .expect("re-exec fork probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "fork probe failed ({:?}):\nstdout:\n{stdout}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    assert_eq!(
+        unsafe { libc::pthread_atfork(Some(record_fork_prepare), None, None) },
+        0,
+        "register pthread_atfork prepare hook"
+    );
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for _ in 0..THREADS {
+            scope.spawn(|| {
+                barrier.wait();
+                let control = RenderProcessControl::bounded(Duration::from_secs(10), || false);
+                let mut sleeper = Command::new("sleep");
+                sleeper.arg("30");
+                let mut active = ManagedChild::spawn(&mut sleeper, control.clone(), "pgid probe")
+                    .expect("spawn sleep probe");
+                let pid = active.tree.group();
+                assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+                active
+                    .stop_and_reap("pgid probe")
+                    .expect("reap sleep probe");
+
+                for _ in 0..SPAWNS_PER_THREAD {
+                    let mut command = Command::new("true");
+                    let output = command_output_with_control(&mut command, &control, "fork probe")
+                        .expect("spawn bounded helper");
+                    assert!(output.status.success());
+                }
+            });
+        }
+    });
+    let forks = FORK_PREPARE_CALLS.load(Ordering::Acquire);
+    assert_eq!(
+        forks, 0,
+        "multi-threaded media child spawns called fork() {forks} times"
+    );
+}

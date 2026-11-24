@@ -460,6 +460,7 @@ mod tests {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             })
         };
         // Project::new already creates the default v1/a1t tracks — fill v1

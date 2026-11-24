@@ -16,6 +16,7 @@ export function previewPlaybackClockPosition(
   positionMs: number,
   durationMs: number,
   voiceover: Pick<VoiceoverPlayback, 'outMs'> | null,
+  rate?: number,
 ): { positionMs: number; stop: boolean } {
   if (voiceover) {
     // The reserved take owns its clock beyond current program content. At
@@ -26,9 +27,14 @@ export function previewPlaybackClockPosition(
       stop: false,
     }
   }
+  const stop = rate !== undefined && rate > 0
+    ? durationMs <= 0 || positionMs >= durationMs
+    : rate !== undefined && rate < 0
+      ? durationMs <= 0 || positionMs <= 0
+      : positionMs <= 0 || positionMs >= durationMs
   return {
     positionMs: Math.max(0, Math.min(durationMs, Math.round(positionMs))),
-    stop: positionMs <= 0 || positionMs >= durationMs,
+    stop,
   }
 }
 

@@ -90,6 +90,7 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
             // public lifecycle projection.
             stop: Arc::new(AtomicBool::new(false)),
             timing: None,
+            first_frame: None,
             active_preview: None,
         };
         let control = Handler::start_free_threaded(WcSettings::new(

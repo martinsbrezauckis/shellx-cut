@@ -4,6 +4,48 @@ use super::{PreparedMatteBinding, PreparedRvmBinding, RVM_MODEL_ID};
 use crate::matte::{cache_matches_prepared_runtime, matte_runner_command, MatteStats};
 use std::path::Path;
 
+#[test]
+fn absent_context_does_not_require_captions_python() {
+    const CHILD: &str = "CUT_TEST_MATTE_CONTEXT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("absent_context_does_not_require_captions_python")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .env("SHELLX_CUT_PYTHON", "/nonexistent/cut-test-python")
+            .env_remove(cut_native_runtime_context::CONTEXT_ENV)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    assert!(super::prepared_rvm_runtime().unwrap().is_none());
+    for model in [cut_core::MatteModel::Rvm, cut_core::MatteModel::Matanyone] {
+        assert!(super::prepared_matte_runtime(&model).unwrap().is_none());
+    }
+
+    // A supplied locator, even malformed or incomplete, must never fall back.
+    let temp = tempfile::tempdir().unwrap();
+    let context = temp.path().join("context.json");
+    for contents in [
+        "not json",
+        r#"{"schema":"release-runner.native-runtime-context/v1"}"#,
+    ] {
+        std::fs::write(&context, contents).unwrap();
+        std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, &context);
+        assert!(super::prepared_rvm_runtime().is_err());
+        for model in [cut_core::MatteModel::Rvm, cut_core::MatteModel::Matanyone] {
+            assert!(super::prepared_matte_runtime(&model).is_err());
+        }
+    }
+}
+
 fn binding() -> PreparedRvmBinding {
     PreparedRvmBinding {
         contract: "release-runner.native-runtime-context/v1".into(),

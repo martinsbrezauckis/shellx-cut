@@ -54,7 +54,8 @@ import { useAppImportEvents } from './app/useAppImportEvents'
 import { useAppAsyncBoundary } from './app/useAppAsyncBoundary'
 import { useAppLayoutController } from './app/useAppLayoutController'
 import { useRecordingWorkspaceNavigation, type RequestLayout } from './app/useRecordingWorkspaceNavigation'
-import { useRecordingSession } from './app/useRecordingSession'
+import { recordingNoticeBelongsElsewhere } from './app/recordingSessionModel'
+import { useRecordingSession, type FallbackProjectStartOutcome } from './app/useRecordingSession'
 import { useShellOpenProject } from './app/useShellOpenProject'
 import { RecordingDeliveryProvider } from './app/RecordingDeliveryContext'
 import { useRenderQueueOwner } from './topbar/useRenderQueueOwner'
@@ -139,6 +140,8 @@ export default function App() {
   const asyncBoundary = useAppAsyncBoundary()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [envOpen, setEnvOpen] = useState(false)
+  const envOpenRef = useRef(false)
+  envOpenRef.current = envOpen
   const [envCategory, setEnvCategory] = useState<SettingsCategoryId>('overview')
   // A stable identity for Settings reads that are tied to an open project. It
   // changes on a confirmed switch/close, never on ordinary project deltas.
@@ -256,6 +259,15 @@ export default function App() {
     }
   }, [asyncBoundary])
 
+  const openSettings = useCallback((category?: SettingsCategoryId) => {
+    setWizardOpen(false)
+    if (category) setEnvCategory(category)
+    else setEnvCategory('overview')
+    envOpenRef.current = true
+    setEnvOpen(true)
+    void refreshDoctor(false)
+  }, [refreshDoctor])
+
   const { layout, setLayout: setRawLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
     useAppLayoutController(selectedClipIds)
   const { admission: recordingWorkspaceAdmission, reportAdmission: reportRecordingWorkspaceAdmission, requestLayout: requestSystemLayout } =
@@ -285,6 +297,7 @@ export default function App() {
     setWizardOpen,
     setEnvOpen,
     setEnvCategory,
+    onReadDoctor: () => refreshDoctor(false),
     onRefreshDoctor: () => refreshDoctor(true),
     onOpenManual: (featureId) => {
       if (!embeddedManualFrontend) setLocalManual((state) => openLocalManualArticle(state, featureId))
@@ -509,31 +522,18 @@ export default function App() {
     }
   }, [])
 
-  const recordingCreatedProjectName = useRef<string | null>(null)
-  const ensureRecordingProject = useCallback(async (): Promise<SyncedProject | null> => {
-    if (projectRef.current?.project_identity) return projectRef.current
-    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-    const name = `Recording ${suffix}`
-    // project.create also broadcasts project_changed. Its normal handler
-    // switches to Edit; this recording-owned creation must leave Record (or
-    // a minimized Edit workspace) in place while the capture begins.
-    recordingCreatedProjectName.current = name
+  const recordingFallbackInFlightRef = useRef(false)
+  const handleRecordingProjectOutcome = useCallback(async (outcome: FallbackProjectStartOutcome) => {
+    if (outcome === 'begin') {
+      recordingFallbackInFlightRef.current = true
+      return
+    }
     try {
-      const created = await callVerb('project.create', { name })
-      if (!created.ok || !created.result?.project) {
-        if (recordingCreatedProjectName.current === name) recordingCreatedProjectName.current = null
-        return null
+      if (outcome === 'started' || outcome === 'kept' || outcome === 'incomplete' || outcome === 'unknown') {
+        await syncProject(true)
       }
-      projectRef.current = created.result.project
-      setProject(created.result.project)
-      const synced = await syncProject(true)
-      // A confirmed close/switch must not be replaced by the earlier create
-      // reply. An unavailable pull may retain that reply, which is already a
-      // complete server result and now visible to React as well as the ref.
-      return synced === null ? null : synced ?? created.result.project
-    } catch (error) {
-      if (recordingCreatedProjectName.current === name) recordingCreatedProjectName.current = null
-      throw error
+    } finally {
+      recordingFallbackInFlightRef.current = false
     }
   }, [syncProject])
 
@@ -609,7 +609,7 @@ export default function App() {
       // this precisely, independent of the broader essential_ok flag).
       const d = await refreshDoctor(false)
       if (!asyncBoundary.isCurrentResync(token) || generation !== historyLoadGeneration.current) return
-      if (shouldAutoPopWizard(d) && !wizardAutoShown.current) {
+      if (!envOpenRef.current && shouldAutoPopWizard(d) && !wizardAutoShown.current) {
         wizardAutoShown.current = true
         setWizardOpen(true)
       }
@@ -624,9 +624,12 @@ export default function App() {
   useShellOpenProject()
   const recordingSession = useRecordingSession({
     project,
-    onEnsureProject: ensureRecordingProject,
+    onProjectStartOutcome: handleRecordingProjectOutcome,
     onResult: () => { void resync() },
   })
+  // A notice about a finished recording belongs to the project it was made in.
+  const recordingBannerShown = recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record'
+    && !recordingNoticeBelongsElsewhere(recordingSession.state, project?.project_identity)
   const renderQueueOwner = useRenderQueueOwner(project, projectSession)
 
   const playheadSeeks = useMemo(() => createPlayheadSeeks(setPlayheadMs, setSeekRevision), [])
@@ -751,8 +754,8 @@ export default function App() {
           // Project create/open/close can originate from REST, CLI, MCP, or
           // another UI client. Refresh the visible workspace even though these
           // transitions do not append a project op.
-          if (ev.open && ev.name === recordingCreatedProjectName.current) {
-            recordingCreatedProjectName.current = null
+          if (recordingFallbackInFlightRef.current) {
+            if (ev.open) void syncProject(true)
             break
           }
           void onProjectSwitched()
@@ -766,7 +769,7 @@ export default function App() {
           asyncBoundary.supersedeDoctor()
           doctorRef.current = ev.report
           setDoctor(ev.report)
-          if (shouldAutoPopWizard(ev.report) && !wizardAutoShown.current) {
+          if (!envOpenRef.current && shouldAutoPopWizard(ev.report) && !wizardAutoShown.current) {
             wizardAutoShown.current = true
             setWizardOpen(true)
           } else if (ev.report.essential_ok) {
@@ -838,7 +841,7 @@ export default function App() {
       className="app"
       data-cut-app-root
       data-cut-workspace-mode={layout.workspaceMode}
-      data-cut-recording-banner={(recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record') || recoveryNoticeVisible ? 'true' : undefined}
+      data-cut-recording-banner={recordingBannerShown || recoveryNoticeVisible ? 'true' : undefined}
       data-cut-drawer={activeDrawer ?? undefined}
     >
       {layout.workspaceMode === 'record' ? (
@@ -851,11 +854,7 @@ export default function App() {
           onMode={(mode) => { requestLayout((current) => ({ ...current, workspaceMode: mode })) }}
           backDisabled={recordingWorkspaceAdmission.blocked}
           backReason={recordingWorkspaceAdmission.reason}
-          onOpenSetup={() => {
-            setWizardOpen(false)
-            setEnvCategory('general')
-            setEnvOpen(true)
-          }}
+          onOpenSetup={() => openSettings('general')}
           onOpenManual={() => {
             if (!embeddedManualFrontend) setLocalManual(toggleLocalManual)
           }}
@@ -884,15 +883,11 @@ export default function App() {
         onProjectChanged={() => void resync()}
         onSequenceChanged={onSequenceChanged}
         playheadMs={playheadMs}
+        onSeek={onSeek}
         mode={layout.workspaceMode}
         onMode={(m) => { requestLayout((l) => ({ ...l, workspaceMode: m })) }}
         doctor={doctor}
-        onOpenSetup={() => {
-          // Same handler as the status-bar env chip: never both env surfaces at once.
-          setWizardOpen(false)
-          setEnvCategory('overview')
-          setEnvOpen(true)
-        }}
+        onOpenSetup={() => openSettings()}
         onOpenManual={() => {
           if (!embeddedManualFrontend) setLocalManual(toggleLocalManual)
         }}
@@ -901,8 +896,8 @@ export default function App() {
       )}
 
       {/* One grid row for the recording status and the recovery notice. */}
-      <div style={(recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record') || recoveryNoticeVisible ? undefined : { display: 'none' }}>
-      {recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record' && (
+      <div style={recordingBannerShown || recoveryNoticeVisible ? undefined : { display: 'none' }}>
+      {recordingBannerShown && (
         <div
           className="app__recording-session"
           data-cut-recording-session={recordingSession.state.phase}
@@ -969,11 +964,7 @@ export default function App() {
           onReopenProject={() => void onProjectSwitched()}
           onLibraryAddedToProject={() => void resync()}
           onRecordClipAdded={() => void resync()}
-          onOpenOutputSettings={() => {
-            setWizardOpen(false)
-            setEnvCategory('general')
-            setEnvOpen(true)
-          }}
+          onOpenOutputSettings={() => openSettings('general')}
           stockImportCoordinator={stockImportCoordinator}
         />
 
@@ -1008,11 +999,7 @@ export default function App() {
           opsCount={ops.length}
           doctor={doctor}
           clipboardNotice={clipboardNotice}
-          onOpenEnvironment={(category = 'overview') => {
-            setWizardOpen(false)
-            setEnvCategory(category)
-            setEnvOpen(true)
-          }}
+          onOpenEnvironment={(category) => openSettings(category)}
         />
       </div>
       {/* `?` keyboard-map modal — self-contained, any scope */}

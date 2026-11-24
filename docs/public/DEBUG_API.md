@@ -1,12 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
+<!-- shellx-cut-release-truth: published; version=0.6.122; published=0.6.122 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.121 source; v0.6.121 is the latest published release.
+This reference describes the Debug API in v0.6.122 source; v0.6.122 is the latest published release.
 
 ## Starting the server
 
@@ -127,7 +127,7 @@ All verbs go through one route; the rest are read-side support surfaces.
 | `/api/verb/{name}` | POST | dispatch any of the schema's verbs; body = args JSON; returns the envelope `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,cause,…}}` |
 | `/api/state` | GET | current project/timeline state snapshot |
 | `/api/verbs` | GET | the live verb registry (generated from `schema/verbs.json`) |
-| `/api/events` | GET (WS) | event stream: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated · output_folder_changed`. `job_progress` carries `terminal:true` on the event that ends a job (done, failed or cancelled); an ended job keeps the progress it reached (1.0 means finished), so read "ended" from `terminal` or the job state. `op_applied` carries `revision`, `from_revision`, and `{delta:{kind:"op",count:1}}`; clients repair a missed frame through bounded `project.state{since_revision}` deltas or an explicit snapshot fallback. (`project_changed` refreshes visible clients after REST/CLI/MCP create, open, or close; `doctor_updated` refreshes environment capabilities; agents key on `receipt_ready`) |
+| `/api/events` | GET (WS) | event stream: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated · output_folder_changed · chat_updated`. `job_progress` carries `terminal:true` on the event that ends a job (done, failed or cancelled); an ended job keeps the progress it reached (1.0 means finished), so read "ended" from `terminal` or the job state. `op_applied` carries `revision`, `from_revision`, and `{delta:{kind:"op",count:1}}`; clients repair a missed frame through bounded `project.state{since_revision}` deltas or an explicit snapshot fallback. (`project_changed` refreshes visible clients after REST/CLI/MCP create, open, or close; `doctor_updated` refreshes environment capabilities; agents key on `receipt_ready`) |
 | `/api/frame?at_ms=[&h=][&compose=1]` | GET | bounded composited/scrub JPEG at a timeline position — `h` defaults to 540 and may not exceed 2160; derived width and pixels are capped at 4K UHD. Use `export.frame` for an explicit full-resolution still. |
 | `/api/agent` | GET | `shellx-cut/agent-docs/2`: machine-readable API/docs discovery, exact running executable, MCP proxy/standalone metadata, copyable client config, and self-test contract |
 | `/api/agent-doc/*path` | GET | serves the agent docs (e.g. `skill/shellx-cut/SKILL.md`) over HTTP for installed-app onboarding |
@@ -266,7 +266,7 @@ unowned path remain outside both verbs' deletion roots.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 326 schemas once at startup and applies the selected schema at the shared
+all 333 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -742,7 +742,10 @@ reverse. Do not copy that mapping into clients.
 | `screen_record.zoom_update` | `{clip,id,target?:"pointer",start_ms?,end_ms?,scale?,cx?,cy?,ramp_in_ms?,ramp_out_ms?}` | `{segment,stale}`; pins manual |
 | `screen_record.zoom_remove` | `{clip,id? or ids?}` | `{removed,stale}` |
 | `screen_record.zoom_auto` | `{clip,keep_manual?=true,config?}` | `{segments,stale}`; autoedit config, keeps manual segments |
-| `screen_record.take_refresh` | `{clip}` | `{job_id,clip,asset,baked,cached,applied_plan}`; initial asset may be null, poll jobs.status |
+| `screen_record.make_editable` | `{clip,rationale?}` | `{clip,take,stale,segments,camera_clip,camera_asset}`; turns 0.6.116–0.6.118 polished clip editable when files exist (one Undo reverts) |
+| `screen_record.take_refresh` | `{clip}` | `{job_id,clip,asset,baked,cached,applied_plan,earlier_render?}`; initial asset may be null, poll jobs.status (`earlier_render` reports `{status,bytes?,reason?,message}`) |
+| `screen_record.render_cache_preview` | `{}` | `{files:[{name,bytes,size_is_recorded?,reason,removable}],bytes,plan_id,removable_files,legacy:{files,bytes,reveal_asset,reason}}` — list old recording renders (project-relative names, never absolute paths) and older or unrecorded files before removal; a render recorded for another project at the same folder is kept |
+| `screen_record.render_cache_remove` | `{plan_id,confirm:true}` | `{results:[{status,bytes?,reason?,message}],warning?}` — remove only the independently owned unreferenced renders in the previewed `plan_id` |
 | `screen_record.take_link` | Internal only | Polish provenance op; direct calls refuse |
 
 For zoom_add send EXACTLY ONE of recording `at_ms` or absolute project
@@ -775,9 +778,17 @@ over one frame, then swaps the source behind EVERY split/trimmed take clip witho
 resetting trim, timing, speed/ramp/freeze/reverse, effects, transform or fades.
 For a missing old file the duration reference is its stored probe; otherwise the
 old file is probed if present, then recording plan/source duration is the fallback.
-A cached target also repairs a missing current asset reference. Earlier renders
-stay in the project's recording cache until the cache is cleared. An unchanged
-take reuses the original plan bytes and cache filename.
+A cached target also repairs a missing current asset reference. After a new render
+is verified complete, `screen_record.take_refresh` KEEPS the previous render
+and its asset, so `project.undo` right after Update video plays the earlier
+picture at once and `project.redo` the new one, like any other undo. The
+reply says so (`earlier_render.status` `"kept"`, `earlier_render.message`:
+`"Earlier video kept so Undo brings it back at once. To remove older recording videos, open Settings > Old recording renders."`).
+Older recording videos that no clip uses are listed with their size and removed
+only when the person confirms, under Settings > Old recording renders
+(`screen_record.render_cache_preview` / `screen_record.render_cache_remove` for
+confirmed owned cleanup). An unchanged take reuses the original plan bytes and
+cache filename.
 
 `render.final` refuses stale takes with **Update video first** unless the caller
 explicitly passes `allow_stale_recordings:true` to export the old baked picture.
@@ -1355,7 +1366,9 @@ curl -sS http://127.0.0.1:6161/api/verb/project.state \
   -H 'content-type: application/json' -d '{}'
 ```
 
-Agent Chat accepts registered project asset IDs as references, never source paths:
+Agent Chat accepts registered project asset IDs as references, never source paths, and
+stores every turn in the open project's engine conversation record (`<project>.cutproj/chat/<id>.json`).
+Pass `conversation_id` to continue an existing conversation or read/list project chats with `agent.chat_list`, `agent.chat_get`, `agent.chat_migrate`, and `agent.chat_patch`:
 
 ```bash
 curl -sS http://127.0.0.1:6161/api/verb/agent.chat \
@@ -1509,7 +1522,11 @@ depend on source words, captions, edit boundaries, or the current timeline.
 ## MCP setup
 
 `cutd mcp` speaks MCP over stdio and exposes **every** schema verb as a tool
-(dots→underscores: `edit.split` → `edit_split`). It proxies to the running
+(dots→underscores: `edit.split` → `edit_split`). `tools/list` carries concise
+summaries so the payload stays comfortably within client size limits, while MCP
+`resources/list` and `resources/read` expose the full untruncated verb registry
+and docs (`shellx-cut://verbs`, `shellx-cut://verb/{name}`,
+`shellx-cut://docs/skill`, `shellx-cut://docs/reference`). It proxies to the running
 `cutd serve` found via port discovery. Read-only discovery such as
 `system.mcp_test`, `system.doctor`, and `project.list` works with no project
 open; project-scoped verbs operate on the one live project authority.
@@ -1587,7 +1604,7 @@ Antigravity's `/mcp` overlay exposes live status and connection logs. For
 (`system.mcp_test` in Cut verb notation) through that client. The bounded test
 allows 120 seconds for the full doctor's cold tool/hardware checks and reports
 total proxy-check time as `elapsed_ms`; no doctor checks are skipped. That Cut-owned
-read-only check proves protocol negotiation, ping, every verb as a tool (326), and that the
+read-only check proves protocol negotiation, ping, every verb as a tool (333), and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use

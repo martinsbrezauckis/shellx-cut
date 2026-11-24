@@ -71,6 +71,7 @@ pub(super) use title_shape::{
 };
 
 mod assets_plugins;
+mod chat_conversations;
 pub(super) use assets_plugins::{
     agent_chat, assets_fetch, assets_generate, assets_providers, assets_search, effects_list,
     media_index, media_index_status, media_search, plugins_call, plugins_enable, plugins_list,
@@ -79,6 +80,9 @@ pub(super) use assets_plugins::{
 #[cfg(test)]
 pub(in crate::dispatch) use assets_plugins::{
     install_assets_fetch_project_transition_gate, AssetsFetchProjectTransitionGate,
+};
+pub(super) use chat_conversations::{
+    agent_chat_get, agent_chat_list, agent_chat_migrate, agent_chat_patch,
 };
 
 /// captions.kinetic — ANIMATED, transcript-synced captions: each caption line

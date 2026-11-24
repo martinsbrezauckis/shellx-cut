@@ -180,6 +180,10 @@ pub fn resolve_microphone_source(source: &MicrophoneSource) -> Result<()> {
 /// re-checked before resolving its CPAL stream and never falls back to the
 /// system default. The native identifier remains private throughout.
 #[cfg(feature = "mic")]
+#[cfg_attr(
+    all(windows, feature = "capture-windows"),
+    allow(dead_code, reason = "macOS and Linux callers use non-gated mic spawn")
+)]
 pub(crate) fn spawn_microphone_capture(
     path: String,
     source: MicrophoneSource,
@@ -187,16 +191,17 @@ pub(crate) fn spawn_microphone_capture(
     ready: Arc<AtomicBool>,
     capture_started: Instant,
 ) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
-    match cpal_device_for_source(&source) {
-        Ok(device) => crate::mic::spawn_device_mic(path, device, stop, ready, capture_started),
-        Err(error) => thread::spawn(move || Err(error)),
-    }
+    spawn_microphone_capture_with_gate(path, source, stop, ready, capture_started, None, None)
 }
 
 /// Open the resolved microphone source through its normal one-stream path and
 /// feed the caller-owned level model from that stream's existing callbacks.
 /// The level is not process-global and cannot cause an implicit device open.
 #[cfg(feature = "mic")]
+#[cfg_attr(
+    all(windows, feature = "capture-windows"),
+    allow(dead_code, reason = "macOS and Linux callers use non-gated mic spawn")
+)]
 pub(crate) fn spawn_microphone_capture_with_level(
     path: String,
     source: MicrophoneSource,
@@ -205,17 +210,48 @@ pub(crate) fn spawn_microphone_capture_with_level(
     capture_started: Instant,
     level: Arc<crate::mic::RollingAudioLevel>,
 ) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
+    spawn_microphone_capture_with_gate(
+        path,
+        source,
+        stop,
+        ready,
+        capture_started,
+        None,
+        Some(level),
+    )
+}
+
+#[cfg(feature = "mic")]
+#[cfg_attr(
+    not(all(windows, feature = "capture-windows")),
+    allow(
+        dead_code,
+        reason = "Windows first-frame gate anchors mic at first video frame"
+    )
+)]
+pub(crate) fn spawn_microphone_capture_with_gate(
+    path: String,
+    source: MicrophoneSource,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    recording_gate: Option<Arc<crate::mic::MicRecordingGate>>,
+    level: Option<Arc<crate::mic::RollingAudioLevel>>,
+) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
     match cpal_device_for_source(&source) {
-        Ok(device) => crate::mic::spawn_device_mic_with_level(
+        Ok(device) => crate::mic::spawn_device_mic_with_level_and_gate(
             path,
             device,
             stop,
             ready,
             capture_started,
+            recording_gate,
             level,
         ),
         Err(error) => thread::spawn(move || {
-            level.mark_device_lost();
+            if let Some(level) = level.as_deref() {
+                level.mark_device_lost();
+            }
             Err(error)
         }),
     }

@@ -34,8 +34,8 @@ const refusal = clipboardPasteFailureMessage(unavailableAsset)
 
 assert.equal(
   refusal,
-  "no asset 'missing-asset' in the project the snapshot's asset is not (or no longer) imported",
-  'a refused snapshot paste keeps the exact engine error and recovery cause',
+  "No asset 'missing-asset' in the project. The snapshot's asset is not (or no longer) imported. Check your selection and try again.",
+  'a refused snapshot paste keeps the exact engine error, recovery cause, and next step',
 )
 assert.equal(unavailableAsset.op_ids, undefined, 'the refused paste reports no committed mutation')
 assert.equal(JSON.stringify(unavailableAsset), rejectionBefore, 'feedback does not mutate the refused verb result')
@@ -49,7 +49,7 @@ const renderedRefusal = renderToStaticMarkup(createElement(UserActionFeedbackNot
 assert.match(renderedRefusal, /data-cut-user-action-feedback/, 'the paste refusal has the shared visible notification selector')
 assert.match(renderedRefusal, /role="alert"/, 'the paste refusal is exposed as an accessible alert')
 assert.match(renderedRefusal, /aria-live="assertive"/, 'the paste refusal is announced when it appears')
-assert.match(renderedRefusal, /no asset &#x27;missing-asset&#x27; in the project/, 'the rendered alert preserves the exact engine error')
+assert.match(renderedRefusal, /No asset &#x27;missing-asset&#x27; in the project/, 'the rendered alert preserves the engine error')
 assert.match(renderedRefusal, /snapshot&#x27;s asset is not \(or no longer\) imported/, 'the rendered alert preserves the actionable recovery cause')
 
 const sourceDeletedButAssetAvailable: VerbResult = {

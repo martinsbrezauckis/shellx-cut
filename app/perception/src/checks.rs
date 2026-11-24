@@ -2403,6 +2403,7 @@ mod tests {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     }
 
@@ -2424,6 +2425,7 @@ mod tests {
             speaker_turns: vec![],
             diarization: None,
             runtime_context: None,
+            analysis_attempt: None,
         }
     }
 
@@ -2664,6 +2666,7 @@ mod tests {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             })
         };
         let beats = vec![(
@@ -2751,6 +2754,7 @@ mod tests {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             })
         };
         // v1 cuts at 5000 (5000+3000); a1t cuts at 4500 (4500+3500) — both end
@@ -2819,6 +2823,7 @@ mod tests {
                 nest: None,
                 grade_stack: vec![],
                 grade_windows: vec![],
+                markers: vec![],
             })
         };
         let mut p = Project::new("t", ProjectSettings::default());

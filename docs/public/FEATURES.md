@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: published; version=0.6.121; published=0.6.121 -->
+<!-- shellx-cut-release-truth: published; version=0.6.122; published=0.6.122 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,9 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.121 published
+## v0.6.122 published
 
-v0.6.121 remains the latest published release.
+v0.6.122 remains the latest published release.
 
 - A picture in a project is no longer shown as offline, with editing blocked, when Cut could not check it at that moment; it is checked again.
 
@@ -48,8 +48,10 @@ This section records the published v0.6.119 release.
 - Select a new recording's screen clip in Edit and open the Inspector Zoom card.
   Select, add or delete zooms; adjust strength, target, timing and speed. Redo
   automatic zooms keeps your own zooms. Press Update video to apply changes to the
-  picture; playback keeps the previous zooms until it finishes. Old recordings
-  and Raw MP4 files stay as they are.
+  picture; playback keeps the previous zooms until it finishes. Earlier
+  0.6.116–0.6.118 polished recordings stay unchanged on open and can be made
+  editable from the Inspector Zoom section (**Make editable**) when their
+  recording files still exist; Raw MP4 files stay as they are.
 - A separate camera track is on by default. Select the Camera track clip for the
   Inspector Camera section: four corners and centre, size, Circle / Rounded /
   Rectangle, ring, and Back to as recorded. Drag the bubble on the preview, or
@@ -833,6 +835,13 @@ establish a tested editing workflow for the current release.
   delta instead. If a file was unlinked but its ledger publish failed, the job
   is explicitly failed, records the known partial removal, and leaves the stale
   ledger entry visible so later cleanup stays blocked until recovery.
+  A separate Settings control checks old recording renders via
+  `screen_record.render_cache_preview` and removes only listed, unreferenced
+  renders with verified take ownership (`screen_record.render_cache_remove`),
+  leaving original recordings and older or unrecorded renders untouched.
+  After a verified Update video (`screen_record.take_refresh`), the editor
+  also retires that take's previous owned render automatically when no clip or
+  input still uses it, reporting what was removed or kept.
 - Verification receipts: deterministic checks, judge review, pregate, pacing,
   captions, delivery, brand, loudness, video scopes, and related fix loops.
   Review can re-run the output-only checks for one exact persisted render; Cut
@@ -1103,7 +1112,8 @@ establish a tested editing workflow for the current release.
   with position, size, visibility, and shape retained as replayable Studio events.
   New polished recordings put the camera on a visible Camera track by default;
   its layout can be edited in the Camera section after recording. The Record
-  page switch can bake the bubble in instead. Old recordings are unchanged.
+  page switch can bake the bubble in instead. Earlier 0.6.116–0.6.118 recordings
+  stay unchanged on open and can be made editable on demand.
 - Camera settings show four explicit corners, Circle or Rounded rectangle,
   size, and a separate **Reset camera layout** action. A chosen transform
   survives internal scene changes until Reset. The on-video timer offers Off,
@@ -1306,18 +1316,24 @@ establish a tested editing workflow for the current release.
   carries a failing `sources_decodable` check naming the file, and the clip still fills its place
   on the timeline: its last readable frame is held to the end.
   `sources_decodable` cannot certify damage concealed by the decoder.
-- Every export is SDR (BT.709 unless `project.color` sets another output
-  space), processed in 8 bits. An HDR source (HLG or PQ,
-  usually 10-bit phone or camera footage) is tone-mapped to SDR and the file is
-  tagged BT.709, so it never claims to be HDR; the editing proxy is converted
-  the same way so the preview matches. The render plan, the receipt (Render history & checks
-  tab) and the job result say what happened to each source, including a
-  10-bit source exported in 8 bits. The conversion happens before grades and
-  effects, so a grade works on the SDR picture. An SD source tagged BT.601 is
-  converted to BT.709 the same way. The HDR conversion needs an ffmpeg with the
-  zscale filter (zimg); without one every export, preview, composed frame and
-  scope of a timeline with HDR clips is refused at once, naming the clips and
-  saying what to install. Keeping HDR in the export is not available yet.
+- By default every export is SDR (BT.709 unless `project.color` sets another output
+  space), processed in 8 bits: an HDR source (HLG or PQ, usually 10-bit phone or
+  camera footage) is tone-mapped to SDR before grades and effects and tagged
+  BT.709, matching the tone-mapped editing preview. When the timeline has at
+  least one active HDR clip, choosing **Keep HDR** (`color: "keep_hdr"`) in H.265
+  (HEVC Main 10, default when Keep HDR is chosen) or AV1 10-bit exports 10-bit
+  `yuv420p10le` BT.2020 using the first HDR clip's transfer (HLG `arib-std-b67` or
+  PQ `smpte2084`), carries PQ HDR10 mastering-display and MaxCLL/MaxFALL static
+  metadata when present, converts mismatched HDR clips via `zscale`, and places
+  SDR clips into BT.2020 at reference white 203 nits (ITU-R BT.2408). Without an
+  HDR clip or a 10-bit-capable H.265/AV1 format and encoder, Keep HDR is greyed
+  out (UI) or refused (verbs) with the reason. Grades and effects that only run in
+  SDR (`grade`, `grade_stack`, `grade_window`, `vignette`, `sepia`, `auto_color`,
+  `posterize`) run on that clip in SDR and convert back to HDR while naming the
+  affected clips in the export panel and `encode.color`. The render plan, receipt,
+  and job result record every source's color handling and carried HDR10 metadata;
+  an SD source tagged BT.601 is converted to BT.709 the same way, and HDR/BT.601
+  conversions require FFmpeg with `zscale` (`zimg`).
 - A project from an older release with an odd frame size (for example
   641x361) cannot be exported as video at that size (video needs an even width
   and height). Cut says so when the project opens, with one button, "Change

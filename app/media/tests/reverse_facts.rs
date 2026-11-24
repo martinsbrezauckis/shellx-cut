@@ -99,12 +99,17 @@ fn a_source_that_cannot_be_measured_is_planned_at_the_bound() {
 }
 
 #[test]
-fn a_timeline_without_a_reversed_clip_is_not_touched() {
-    let mut p = forged("/nonexistent.mp4");
+fn ordinary_clips_also_use_measured_facts_without_changing_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = source(dir.path());
+    let mut p = forged(&src.display().to_string());
     if let cut_core::Clip::Media(m) = &mut p.tracks[0].clips[0] {
         m.reverse = false;
     }
-    assert!(measured_for_reverse(&p, Path::new("/")).is_none());
+    let before = serde_json::to_value(&p).unwrap();
+    let planned = measured_for_reverse(&p, dir.path()).expect("ordinary sources are measured too");
+    assert_eq!(dims(&planned), (Some(1920), Some(1080), Some(30.0)));
+    assert_eq!(serde_json::to_value(&p).unwrap(), before);
 }
 
 #[test]

@@ -17,7 +17,7 @@ type OpenReply = {
 export interface ShellOpenEffects {
   open: (path: string, cancelRunningJobs: boolean) => Promise<OpenReply>
   confirm: (text: string, opts: { title: string; okLabel: string; cancelLabel: string }) => Promise<boolean>
-  tell: (message: string) => void
+  tell: (message: string, code?: string) => void
 }
 
 /** Open `path`; returns what happened, for tests and logs. */
@@ -36,14 +36,14 @@ export async function openProjectFromShell(path: string, effects: ShellOpenEffec
     effects.tell(`The project could not be opened: ${reason}.${reply.error?.suggested_action ? ` ${reply.error.suggested_action}` : ''}`)
     return 'failed'
   }
-  for (const warning of reply.warnings ?? []) effects.tell(warning.message)
+  for (const warning of reply.warnings ?? []) effects.tell(warning.message, warning.code)
   return 'opened'
 }
 
 const EFFECTS: ShellOpenEffects = {
   open: (path, cancel) => callVerb('project.open', cancel ? { path, cancel_running_jobs: true } : { path }) as Promise<OpenReply>,
   confirm: (text, opts) => confirmAction(text, opts),
-  tell: (message) => publishUserActionMessage(message, { source: 'project.open' }),
+  tell: (message, code) => publishUserActionMessage(message, { source: 'project.open', ...(code ? { code } : {}) }),
 }
 
 export function useShellOpenProject(): void {

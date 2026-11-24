@@ -18,11 +18,13 @@ crate::isolate_test_process!();
 pub mod auto_zoom;
 pub mod beatsync;
 pub mod check_outcome;
+pub mod clip_markers;
 pub mod detach;
 pub mod diff;
 pub mod edit;
 pub mod edl;
 pub mod error;
+pub mod export_checks;
 pub mod frame_size;
 mod journal;
 pub mod keyframe_limit;
@@ -54,6 +56,7 @@ pub use check_outcome::{
     check_outcome, is_not_applicable, not_applicable_check, CheckOutcome, CheckProblem,
     NOT_APPLICABLE,
 };
+pub use clip_markers::ClipMarker;
 pub use detach::{find_safe_detach_audio_track, plan_detach_audio, DetachPlan, DetachReject};
 pub use diff::{diff, DiffSummary, TrackTouch};
 pub use edit::{FadeTarget, GainTarget};
@@ -66,7 +69,7 @@ pub use rebase::{
 };
 pub use receipt::{
     check_names, fix_action, CheckResult, ColorReport, EncodeReport, FixAction, FixTarget,
-    RenderReceipt, SourceColorReport,
+    Hdr10StaticMetadataReport, RenderReceipt, SourceColorReport,
 };
 pub use speed_ramp_timing::{
     timeline_duration_ms_for_frames, timeline_frame_count, timeline_sample_count_for_frames,

@@ -301,8 +301,9 @@
 }
 
 /* --- THE one scroll container ------------------------------------------- */
+.tl-viewport { flex: 1; min-height: 0; position: relative; display: flex; }
 .tl-scroll {
-  flex: 1; min-height: 0; overflow: auto; position: relative;
+  flex: 1; min-width: 0; min-height: 0; overflow: auto; position: relative;
   background: var(--bg);
 }
 /* Razor mode: the whole lane area shows a blade cursor — clicking a clip
@@ -1034,6 +1035,27 @@
   background: var(--orange); opacity: .35; pointer-events: none;
 }
 
+/* Clip markers (recording markers of a take, Premiere/Resolve clip markers):
+   a small orange flag at the clip top and a thin stem, positioned in the clip.
+   A 7px transparent hit strip carries the label tooltip; it has no handlers so
+   presses bubble to the clip. A dark halo keeps it readable over thumbnails. */
+.tl-clip-marker {
+  position: absolute; top: 0; bottom: 0; width: 7px; z-index: 2;
+  transform: translateX(-3px); cursor: inherit;
+}
+.tl-clip-marker::before {
+  content: ''; position: absolute; top: 0; left: 0; width: 0; height: 0;
+  border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+  border-top: 6px solid var(--orange);
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, .7));
+}
+.tl-clip-marker::after {
+  content: ''; position: absolute; top: 4px; bottom: 0; left: 3px; width: 1px;
+  background: var(--orange); box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+}
+[data-theme="light"] .tl-clip-marker::before { filter: drop-shadow(0 0 1px rgba(255, 255, 255, .9)); }
+[data-theme="light"] .tl-clip-marker::after { box-shadow: 0 0 0 1px rgba(255, 255, 255, .75); }
+
 /* Playhead: 2px --cut line, full height incl. ruler, glow; NEVER tweened.
    Position is an imperative style write (timeline behavior contract). */
 .tl-playhead {
@@ -1053,14 +1075,14 @@
 .tl-empty {
   position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; color: var(--ink-4); font-size: var(--fs-ui-sm);
-  font-family: var(--mono);
+  font-family: var(--mono); pointer-events: none;
 }
 /* …with a project but no media, the hint is a real CTA button that opens the
    topbar Import dialog (cut:open-import) — a human can start the edit here. */
 .tl-empty--cta {
   all: unset; box-sizing: border-box;
-  position: absolute; inset: 0; display: flex; align-items: center;
-  justify-content: center; gap: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px; cursor: pointer; pointer-events: auto;
   color: var(--cut-soft); font-size: var(--fs-ui-sm); font-family: var(--mono);
   transition: color 120ms ease, background 120ms ease;
 }

@@ -312,6 +312,20 @@ kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
 /* One shared, non-blocking failure surface for human-triggered verbs. It stays
    above drawers/modals without stealing focus and offers setup only when the
    engine identifies a missing capability. */
+.user-action-feedback-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 52px;
+  z-index: var(--z-toast);
+  width: min(440px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.user-action-feedback-stack .user-action-feedback {
+  position: static;
+  width: 100%;
+}
 .user-action-feedback {
   position: fixed;
   right: 16px;

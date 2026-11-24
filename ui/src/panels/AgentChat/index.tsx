@@ -59,7 +59,12 @@ import {
   type AgentChatSession,
   type AgentChatTurn,
 } from './session'
-import type { AgentModelOverrides } from './useAgentChatSessions'
+import {
+  agentChatSessionKey,
+  type AgentModelOverrides,
+} from './useAgentChatSessions'
+import { ConversationList } from './ConversationList'
+import { useEngineConversations } from './useEngineConversations'
 import './chat.css'
 
 type ChatResult = VerbResults['agent.chat']
@@ -122,6 +127,13 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
   const promptLibraryRef = useRef<HTMLDivElement>(null)
   const hasProject = project !== null
   const attachmentOptions = useMemo(() => chatAttachmentOptions(project), [project])
+  const projectKey = useMemo(() => agentChatSessionKey(project, 0), [project])
+  const engine = useEngineConversations({
+    project,
+    projectKey,
+    projectSession: 0,
+    updateSession: onSessionChange,
+  })
 
   useEffect(() => {
     const registered = new Set(attachmentOptions.map((option) => option.id))
@@ -313,6 +325,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
       projectIdentity: turnProjectIdentity,
     }])
     setBusy(true)
+    const conversationId = engine.beginOwnSend()
     try {
       // Pass the selected provider. The backend rejects a provider without an
       // enabled Agent Chat route with a structured response.
@@ -322,6 +335,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
         model: modelOverrides[agent]?.trim() || undefined,
         attachments: turnAttachments.length > 0 ? turnAttachments.map((attachment) => attachment.id) : undefined,
         target: turnTarget ?? undefined,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
         ...evidenceIdentity,
       })
       const res: ChatResult | null | undefined = r.ok ? r.result : null
@@ -348,6 +362,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
             review: res.review,
           },
         ])
+        engine.finishOwnSend(res.conversation_id)
       } else if (res) {
         // ok:FALSE — the agent's honest failure. Surface the structured reason
         // (+ the machine category + the agent's OWN words) inline; never swallow.
@@ -374,17 +389,20 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
             review: res.review,
           },
         ])
+        engine.finishOwnSend(res.conversation_id)
       } else {
         // Transport / dispatch error (not the agent's honest ok:false).
         const msg = !r.ok && r.error ? r.error.message : 'the chat request failed'
         setLog((l) => [...l, { id: newTurnId(), role: 'agent', text: msg, ok: false }])
+        engine.finishOwnSend(undefined)
       }
     } catch (e) {
       setLog((l) => [...l, { id: newTurnId(), role: 'agent', text: errorText(e), ok: false }])
+      engine.finishOwnSend(undefined)
     } finally {
       setBusy(false)
     }
-  }, [input, busy, agent, modelOverrides, attachments, attachmentOptions, evidenceAttachments, project, setAttachments, setBusy, setInput, setLog, setTarget, target])
+  }, [input, busy, agent, modelOverrides, attachments, attachmentOptions, evidenceAttachments, project, setAttachments, setBusy, setInput, setLog, setTarget, target, engine])
 
   // A Comment already contains an explicit request, so its Make changes action
   // may send through the normal Chat turn after the target reaches this mounted
@@ -425,12 +443,13 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
         return false
       }
       patchTurn(turnId, { reviewBusy: false, reviewState: 'reverted', reviewError: null })
+      void engine.markTurnReverted(turnId)
       return true
     } catch (error) {
       patchTurn(turnId, { reviewBusy: false, reviewError: errorText(error) })
       return false
     }
-  }, [patchTurn, project?.project_identity])
+  }, [patchTurn, project?.project_identity, engine])
 
   const replaceTurn = useCallback((turnId: string, turn: AgentChatTurn) => {
     if (!turn.request) return
@@ -583,8 +602,33 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
           onChange={(event) => onModelOverridesChange((current) => ({ ...current, [agent]: event.target.value }))}
         />
       </label>
+      {engine.engineBacked && (
+        <ConversationList
+          conversations={engine.conversations}
+          note={engine.listNote}
+          activeConversationId={engine.activeConversationId}
+          busy={busy}
+          onSelect={engine.selectConversation}
+          onNewChat={engine.startNewConversation}
+        />
+      )}
+      {engine.activeConversation?.origin === 'agent' && !engine.unreadableDetail && (
+        <div className="chat__origin-pill" data-cut-chat-active-origin="agent">
+          Started by an agent. You can continue it here.
+        </div>
+      )}
       <div className="chat__log" ref={logRef} data-cut-chat-log>
-        {log.length === 0 && (
+        {engine.unreadableDetail ? (
+          <div className="chat__unreadable-card" data-cut-chat-unreadable-detail>
+            <strong>{engine.unreadableDetail.title}</strong>
+            <p>{engine.unreadableDetail.reason}</p>
+            <div>
+              <button type="button" className="chat-convos__new" data-cut-chat-new onClick={engine.startNewConversation}>
+                Start new conversation
+              </button>
+            </div>
+          </div>
+        ) : log.length === 0 && (
           <div className="chat__empty" data-cut-chat-empty>
             <Icon name="agent" size={18} />
             <p>Ask the agent to edit your timeline in plain language.</p>
@@ -595,14 +639,20 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
             </p>
           </div>
         )}
-        {log.map((t) => (
+        {!engine.unreadableDetail && log.map((t) => (
           <div
             key={t.id}
             className={`chat__turn chat__turn--${t.role} ${t.ok === false ? 'chat__turn--failed' : ''}`}
             data-cut-chat-turn={t.role}
             data-cut-chat-error={t.role === 'agent' && t.ok === false ? (t.errorKind ?? 'error') : undefined}
           >
-            <div className="chat__bubble">{t.text}</div>
+            {t.role === 'agent' && t.status === 'running' ? (
+              <div className="chat__bubble chat__bubble--busy" data-cut-chat-running-turn>
+                <span className="chat__spinner" /> {t.text || 'working on it…'}
+              </div>
+            ) : (
+              <div className="chat__bubble">{t.text}</div>
+            )}
             {t.target && <div className="chat__target" data-cut-chat-target>{t.target.label}</div>}
             {t.role === 'user' && <AssetAttachmentStrip attachments={t.attachments ?? []} turn />}
             {t.role === 'user' && <EvidenceAttachmentStrip attachments={t.evidence ?? []} turn />}
@@ -683,7 +733,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
             )}
           </div>
         ))}
-        {busy && (
+        {busy && !log.some((t) => t.status === 'running') && (
           <div className="chat__turn chat__turn--agent" data-cut-chat-busy>
             <div className="chat__bubble chat__bubble--busy">
               <span className="chat__spinner" /> working on it…
@@ -764,29 +814,31 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
         </div>
       )}
       {targetError && <div className="chat__target-error" data-cut-chat-target-error>{targetError}</div>}
-      {historyStatus !== 'memory' && (
-        <div className={`chat__history chat__history--${historyStatus}`} data-cut-chat-history-status={historyStatus}>
-          {historyStatus === 'saved'
-            ? 'Chat history is saved on this device for this project.'
-            : historyStatus === 'invalid'
-              ? 'Chat history could not be saved safely on this device; this session will be lost after reload.'
-              : 'Local storage is unavailable; this Chat session will be lost after reload.'}
+      {(engine.engineBacked || historyStatus !== 'memory') && (
+        <div className={`chat__history chat__history--${engine.engineBacked ? 'saved' : historyStatus}`} data-cut-chat-history-status={historyStatus}>
+          {engine.engineBacked
+            ? 'Conversations are saved in this project.'
+            : historyStatus === 'saved'
+              ? 'Chat history is saved on this device for this project.'
+              : historyStatus === 'invalid'
+                ? 'Chat history could not be saved safely on this device; this session will be lost after reload.'
+                : 'Local storage is unavailable; this Chat session will be lost after reload.'}
         </div>
       )}
       <div className="chat__compose">
         <AttachmentPicker
           options={attachmentOptions}
           selected={attachments}
-          disabled={!hasProject || busy}
+          disabled={!hasProject || busy || Boolean(engine.unreadableDetail)}
           onToggle={(id) => setAttachments((selected) => toggleChatAttachment(selected, id))}
         />
         <textarea
           className="chat__input"
           data-cut-chat-input
           ref={inputRef}
-          placeholder={hasProject ? 'Ask for an edit…' : 'Open a project first'}
+          placeholder={!hasProject ? 'Open a project first' : engine.unreadableDetail ? 'Start a new conversation to continue…' : 'Ask for an edit…'}
           value={input}
-          disabled={!hasProject || busy}
+          disabled={!hasProject || busy || Boolean(engine.unreadableDetail)}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
@@ -794,7 +846,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
         <button
           className="chat__send"
           data-cut-chat-send
-          disabled={!hasProject || busy || !input.trim()}
+          disabled={!hasProject || busy || Boolean(engine.unreadableDetail) || !input.trim()}
           onClick={() => void send()}
           title="Send (Enter)"
         >

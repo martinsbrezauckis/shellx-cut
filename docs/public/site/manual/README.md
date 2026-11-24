@@ -14,8 +14,10 @@ product manuals around this page; those sibling manuals remain owned by their
 respective projects.
 
 For each release, update this existing HTML and its feature descriptions in
-`manual.js`. Regenerate `ui/src/manual/content.generated.json` for text parity
-with the already shipped read-only help panel. This does not activate the
+`manual.js`. Run `node scripts/generate-manual-content.mjs` to update the
+shared script and stylesheet content-hash URLs in the page and regenerate
+`ui/src/manual/content.generated.json` for text parity with the already shipped
+read-only help panel. Its `--check` mode detects stale URLs. This does not activate the
 deferred remastered interactive manual. Do not select `ui/manual.html` or run
 `scripts/public/stage-cut-manual.mjs` to replace the current web manual until
 that separate roadmap item is accepted.

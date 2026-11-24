@@ -1,5 +1,26 @@
 use super::input_paths::strip_verbatim_prefix;
 use super::*;
+
+/// Graph-only tests still provide a measurable decoder input; the stored
+/// probe below each fixture remains the subject of pure graph-conversion tests.
+pub(super) fn graph_fixture(path: &std::path::Path) {
+    let made = std::process::Command::new(crate::ffmpeg::ffmpeg_bin())
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=64x36:r=10:d=0.1",
+            "-c:v",
+            "libx264",
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+}
 use cut_core::{ColorConfig, ColorSpace, EdlSegment};
 
 fn redaction_limit_mask(regions: usize, points: usize) -> cut_core::ClipMask {
@@ -64,69 +85,43 @@ fn saved_over_cap_redaction_loads_but_render_refuses_before_assembly() {
     }
 }
 
+/// The largest admitted redaction (256 regions, 200 000 motion points) still
+/// builds one bounded graph and one command file: the per-frame commands grow
+/// with frames times moving regions, never with the number of points.
 #[test]
-fn eight_tracked_regions_300_points_keep_exact_legacy_ffmpeg_text() {
-    let mask = redaction_limit_mask(8, 300);
-    let indicators = std::iter::once((mask.shape, &mask.points, mask.track.as_deref()))
-        .chain(
-            mask.regions
-                .iter()
-                .map(|region| (region.shape, &region.points, region.track.as_deref())),
-        )
-        .map(|(shape, points, track)| region_indicator(shape, points, track, 32.0, 32.0))
-        .collect::<Vec<_>>();
-    let legacy = indicators
-        .into_iter()
-        .reduce(|a, b| format!("max({a},{b})"))
-        .unwrap();
-    let expected = format!("geq=lum='{legacy}':cb=128:cr=128,format=gray");
-    let actual = tracked_alpha_geq(&mask, 32, 32);
-    assert_eq!(actual, expected);
-
-    // The exact graph reaches FFmpeg. Its parser outcome is unchanged by this fix.
-    let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("redaction.graph");
-    std::fs::write(&script, format!("[0:v]{actual}[out]")).unwrap();
-    let output = std::process::Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=s=32x32:d=0.04",
-            "-filter_complex_script",
-        ])
-        .arg(&script)
-        .args(["-map", "[out]", "-frames:v", "1", "-f", "null", "-"])
-        .output()
-        .expect("FFmpeg must start with the accepted legacy graph");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!(
-        "eight-region FFmpeg exit: {:?}; text bytes: {}; stderr prefix: {}",
-        output.status.code(),
-        actual.len(),
-        stderr.chars().take(160).collect::<String>()
-    );
-}
-
-/// The largest admitted redaction stays one linear pass: its expression is a
-/// few tens of megabytes (36 MB measured), never a multiple that grows with
-/// the number of regions times the number of points.
-#[test]
-fn cap_case_expression_stays_linear() {
+fn cap_case_command_block_stays_bounded() {
     use std::time::Instant;
     let mut mask = redaction_limit_mask(256, 0);
     mask.track = redaction_limit_mask(1, 200_000).track;
     let start = Instant::now();
-    let text = tracked_alpha_geq(&mask, 1920, 1080);
+    let mut files = Vec::new();
+    let text = tracked_mask::mask_block_tracked_cmd(
+        &mask,
+        "in",
+        "out",
+        "cap",
+        1920,
+        1080,
+        30.0,
+        10_000,
+        "",
+        super::hdr::GraphColor::sdr(),
+        Some(&mut files),
+    )
+    .unwrap();
+    let script = files
+        .iter()
+        .map(|f| std::fs::metadata(f).unwrap().len())
+        .sum::<u64>();
     eprintln!(
-        "cap case: {} bytes in {} ms",
+        "cap case: graph {} bytes, commands {script} bytes in {} ms",
         text.len(),
         start.elapsed().as_millis()
     );
-    assert!(text.len() < 64 * 1024 * 1024, "{} bytes", text.len());
+    assert_eq!(files.len(), 1);
+    assert!(!text.contains("if(lt("), "no nested expression");
+    assert!(text.len() < 1024 * 1024, "{} bytes", text.len());
+    assert!(script < 64 * 1024 * 1024, "{script} bytes");
 }
 
 /// The GPU gate as a yes/no (the gate itself names why it says no).
@@ -987,6 +982,7 @@ fn gpu_friendly_predicate_is_conservative() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     // The base video source, probed at the project geometry (aspect matches
@@ -1139,6 +1135,7 @@ fn gpu_friendly_predicate_is_conservative() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     let with_overlay = |aid: &str, add_a2: bool| {
@@ -1239,6 +1236,7 @@ fn gpu_vram_bound_falls_back_when_over_budget() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     let asset = |w: u64, h: u64| cut_core::Asset {
@@ -2055,6 +2053,7 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
         nest: None,
         grade_stack: vec![],
         grade_windows: vec![],
+        markers: vec![],
     };
     vclip.crop = Some(ClipCrop {
         x: 0,
@@ -2094,6 +2093,7 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }));
     let edl = cut_core::edl_from_project(&p);
 
@@ -2102,6 +2102,7 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
         fit: Fit::Contain,
         resolution: Resolution::Project,
         loudness_target: None,
+        ..Default::default()
     };
     assert_eq!(proj.output_geometry(&p, &edl), (1920, 1080));
 
@@ -2111,6 +2112,7 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
         fit: Fit::Contain,
         resolution: Resolution::MatchSource,
         loudness_target: None,
+        ..Default::default()
     };
     assert_eq!(
         ms.output_geometry(&p, &edl),
@@ -2127,6 +2129,7 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
             height: 1920,
         },
         loudness_target: None,
+        ..Default::default()
     };
     assert_eq!(
         ex.output_geometry(&p, &edl),
@@ -2140,6 +2143,7 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
             height: 1921,
         },
         loudness_target: None,
+        ..Default::default()
     };
     assert_eq!(
         odd.output_geometry(&p, &edl),
@@ -2154,10 +2158,10 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
 #[test]
 fn loudnorm_applied_only_when_target_set() {
     use cut_core::{Asset, Clip, MediaClip, Project, ProjectSettings};
-    // build_graph asserts the asset file exists — give it a real one.
+    // Input kind and decoder geometry are measured even in a graph-only test.
     let tmp = tempfile::tempdir().unwrap();
     let media = tmp.path().join("x.mp4");
-    std::fs::write(&media, b"stub").unwrap();
+    graph_fixture(&media);
     let mut p = Project::new(
         "t",
         ProjectSettings {
@@ -2211,6 +2215,7 @@ fn loudnorm_applied_only_when_target_set() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().clips.push(clip("c1"));
@@ -2266,8 +2271,8 @@ fn hidden_base_video_preserves_overlay_layer_over_black() {
     let tmp = tempfile::tempdir().unwrap();
     let base_media = tmp.path().join("base.mp4");
     let overlay_media = tmp.path().join("overlay.mp4");
-    std::fs::write(&base_media, b"base").unwrap();
-    std::fs::write(&overlay_media, b"overlay").unwrap();
+    graph_fixture(&base_media);
+    graph_fixture(&overlay_media);
 
     let mut p = Project::new("t", ProjectSettings::default());
     p.assets.insert(
@@ -2327,6 +2332,7 @@ fn hidden_base_video_preserves_overlay_layer_over_black() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1").unwrap().visible = false;
@@ -2430,7 +2436,7 @@ fn audio_mix_honors_mute_and_solo() {
     use cut_core::{Asset, Clip, MediaClip, Project, ProjectSettings, Track, TrackKind};
     let tmp = tempfile::tempdir().unwrap();
     let media = tmp.path().join("x.mp4");
-    std::fs::write(&media, b"stub").unwrap();
+    graph_fixture(&media);
     let mut p = Project::new(
         "t",
         ProjectSettings {
@@ -2484,6 +2490,7 @@ fn audio_mix_honors_mute_and_solo() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     // Two AUDIO tracks (default a1t + a2t), each with one clip of the same asset.
@@ -2613,7 +2620,7 @@ fn mute_gate_lands_in_audio_graph() {
     use cut_core::{Asset, Clip, Project, ProjectSettings};
     let tmp = tempfile::tempdir().unwrap();
     let media = tmp.path().join("x.mp4");
-    std::fs::write(&media, b"stub").unwrap();
+    graph_fixture(&media);
     let mut p = Project::new("t", ProjectSettings::default());
     p.assets.insert(
         "a1".into(),
@@ -2711,7 +2718,7 @@ fn audio_only_graph_skips_mask_alpha_inputs_and_bakes() {
 
     let tmp = tempfile::tempdir().unwrap();
     let media = tmp.path().join("x.mp4");
-    std::fs::write(&media, b"stub").unwrap();
+    graph_fixture(&media);
     let mut p = Project::new(
         "audio-only-mask",
         ProjectSettings {
@@ -2793,7 +2800,7 @@ fn mask_alpha_inputs_use_resolved_output_geometry() {
 
     let tmp = tempfile::tempdir().unwrap();
     let media = tmp.path().join("x.mp4");
-    std::fs::write(&media, b"stub").unwrap();
+    graph_fixture(&media);
     let mut p = Project::new(
         "mask-explicit-geometry",
         ProjectSettings {
@@ -2842,6 +2849,7 @@ fn mask_alpha_inputs_use_resolved_output_geometry() {
             height: 1920,
         },
         loudness_target: None,
+        ..Default::default()
     };
     let g = build_graph(&p, &edl, tmp.path(), false, false, true, opts, None).unwrap();
     let expected = mask_alpha_path(tmp.path(), &mask, 1080, 1920);
@@ -2870,7 +2878,7 @@ fn overlay_opacity_emits_alpha_filter() {
     use cut_core::{Asset, Clip, MediaClip, Project, ProjectSettings, Track, TrackKind};
     let tmp = tempfile::tempdir().unwrap();
     let media = tmp.path().join("x.mp4");
-    std::fs::write(&media, b"stub").unwrap();
+    graph_fixture(&media);
     let mut p = Project::new(
         "t",
         ProjectSettings {
@@ -2924,6 +2932,7 @@ fn overlay_opacity_emits_alpha_filter() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })
     };
     p.track_mut("v1")
@@ -3067,6 +3076,7 @@ fn plan_scrub_frame_eligibility_and_mapping() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }));
     p.track_mut("v1")
         .unwrap()
@@ -3099,6 +3109,7 @@ fn plan_scrub_frame_eligibility_and_mapping() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         }));
     let project_dir = tmp.path();
     let edl = cut_core::edl_from_project(&p);
@@ -3214,6 +3225,7 @@ fn plan_scrub_frame_eligibility_and_mapping() {
             nest: None,
             grade_stack: vec![],
             grade_windows: vec![],
+            markers: vec![],
         })],
         gain_db: 0.0,
         gain_windows: vec![],
@@ -3407,4 +3419,235 @@ fn serial_window_gets_the_whole_render_budget() {
         Some((15 * gb, 15 * gb + 512 * 1024 * 1024))
     );
     assert_eq!(window_mem_cap(1, None), None);
+}
+
+#[test]
+fn oversized_tracked_mask_plan_is_refused_before_allocation() {
+    use cut_core::{
+        types::MaskRegion, Clip, ClipMask, MaskEffect, MaskShape, MaskTrackPoint, ProjectSettings,
+    };
+    let two_pts = |cx0: f64, cx1: f64| {
+        vec![
+            MaskTrackPoint {
+                t_ms: 0,
+                cx: cx0,
+                cy: 0.5,
+            },
+            MaskTrackPoint {
+                t_ms: 480_000,
+                cx: cx1,
+                cy: 0.5,
+            },
+        ]
+    };
+    let mut project = Project::new("cmd-budget-mask", ProjectSettings::default());
+    let mut clip = cut_core::edit::make_media_clip("c1", "missing-asset", 0, 480_000);
+    clip.mask = Some(ClipMask {
+        shape: MaskShape::Rect,
+        points: vec![[0.1, 0.1], [0.2, 0.2]],
+        feather: 0.0,
+        invert: false,
+        effect: MaskEffect::Blur,
+        strength: Some(20.0),
+        range_ms: None,
+        track: Some(two_pts(0.1, 0.9)),
+        regions: (1..256)
+            .map(|i| MaskRegion {
+                shape: MaskShape::Rect,
+                points: vec![[0.1, 0.1], [0.2, 0.2]],
+                track: Some(two_pts(0.1 + (i as f64) * 0.001, 0.8 - (i as f64) * 0.001)),
+            })
+            .collect(),
+    });
+    project.tracks[0].clips.push(Clip::Media(clip));
+    let edl = cut_core::edl_from_project(&project);
+    let err = build_graph(
+        &project,
+        &edl,
+        std::path::Path::new("/nonexistent-cmd-budget"),
+        false,
+        false,
+        true,
+        RenderOptions::default(),
+        None,
+    )
+    .err()
+    .expect("256 moving regions over 6 min must refuse before building graph or allocating");
+    assert_eq!(err.code, cut_core::error_codes::INVALID_ARGS);
+    assert!(
+        err.message.starts_with("This export would need ")
+            && err
+                .message
+                .contains("MB of movement data; split the clip or reduce the moving regions"),
+        "{}",
+        err.message
+    );
+    assert!(err.suggested_action.is_some());
+}
+
+#[test]
+fn oversized_audio_volume_plan_is_refused_before_allocation() {
+    use cut_core::{Clip, Keyframe, KfInterp, KfParam, KfPoint, ProjectSettings};
+    let mut project = Project::new("cmd-budget-audio", ProjectSettings::default());
+    let mut clip = cut_core::edit::make_media_clip("ca", "missing-audio", 0, 200_000_000);
+    clip.keyframes.push(Keyframe {
+        lead_in: None,
+        param: KfParam::Volume,
+        points: (0..=65)
+            .map(|i| KfPoint {
+                t_ms: i * 1_000,
+                value: 0.2 + 0.01 * i as f64,
+            })
+            .collect(),
+        interp: KfInterp::Linear,
+    });
+    project
+        .track_mut("a1t")
+        .unwrap()
+        .clips
+        .push(Clip::Media(clip));
+    let edl = cut_core::edl_from_project(&project);
+    let err = build_graph(
+        &project,
+        &edl,
+        std::path::Path::new("/nonexistent-cmd-budget"),
+        false,
+        true,
+        false,
+        RenderOptions::default(),
+        None,
+    )
+    .err()
+    .expect("55-hour >64-point audio volume curve must refuse before allocation");
+    assert_eq!(err.code, cut_core::error_codes::INVALID_ARGS);
+    assert!(
+        err.message.starts_with("This export would need ")
+            && err.message.contains("split the clip"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn multi_clip_aggregate_command_budget_refuses_before_segmented_or_single_render() {
+    use cut_core::{
+        types::MaskRegion, Clip, ClipMask, MaskEffect, MaskShape, MaskTrackPoint, ProjectSettings,
+    };
+    let two_pts = |cx0: f64, cx1: f64| {
+        vec![
+            MaskTrackPoint {
+                t_ms: 0,
+                cx: cx0,
+                cy: 0.5,
+            },
+            MaskTrackPoint {
+                t_ms: 240_000,
+                cx: cx1,
+                cy: 0.5,
+            },
+        ]
+    };
+    let mut project = Project::new("cmd-budget-aggregate", ProjectSettings::default());
+    // Each clip alone is 4 min * 200 moving regions (~125 MiB < 256 MiB),
+    // but three sequential clips combine to ~375 MiB (> 256 MiB).
+    for idx in 0..3 {
+        let mut clip =
+            cut_core::edit::make_media_clip(&format!("c{idx}"), "missing-asset", 0, 240_000);
+        clip.mask = Some(ClipMask {
+            shape: MaskShape::Rect,
+            points: vec![[0.1, 0.1], [0.2, 0.2]],
+            feather: 0.0,
+            invert: false,
+            effect: MaskEffect::Blur,
+            strength: Some(20.0),
+            range_ms: None,
+            track: Some(two_pts(0.1, 0.9)),
+            regions: (1..200)
+                .map(|i| MaskRegion {
+                    shape: MaskShape::Rect,
+                    points: vec![[0.1, 0.1], [0.2, 0.2]],
+                    track: Some(two_pts(0.1 + (i as f64) * 0.001, 0.8 - (i as f64) * 0.001)),
+                })
+                .collect(),
+        });
+        project.tracks[0].clips.push(Clip::Media(clip));
+    }
+    let edl = cut_core::edl_from_project(&project);
+    let err = check_command_budget(&project, &edl)
+        .expect_err("combined multi-clip command text above 256 MiB must refuse");
+    assert_eq!(err.code, cut_core::error_codes::INVALID_ARGS);
+    assert!(
+        err.message.starts_with("This export would need ")
+            && err
+                .message
+                .contains("MB of movement data; split the clip or reduce the moving regions"),
+        "{}",
+        err.message
+    );
+    // Segmented render (Windows multi-window path) must refuse up front too.
+    let tmp = tempfile::tempdir().unwrap();
+    let fence = crate::PathFence::new(tmp.path()).unwrap();
+    let seg_err = render_segmented(
+        &project,
+        &edl,
+        &fence,
+        &tmp.path().join("exports/out.mp4"),
+        &RenderPreset::default(),
+        RenderOptions::default(),
+        None,
+    )
+    .expect_err("render_segmented must refuse oversized aggregate plan before starting");
+    assert_eq!(seg_err.code, cut_core::error_codes::INVALID_ARGS);
+}
+
+#[test]
+fn empty_hidden_and_audio_only_plans_handle_command_budget_precisely() {
+    use cut_core::{
+        types::MaskRegion, Clip, ClipMask, MaskEffect, MaskShape, MaskTrackPoint, ProjectSettings,
+    };
+    // Empty project passes without panic.
+    let empty = Project::new("empty-cmd", ProjectSettings::default());
+    let empty_edl = cut_core::edl_from_project(&empty);
+    assert!(check_command_budget(&empty, &empty_edl).is_ok());
+
+    // Hidden base video track emits a plain black canvas (no sendcmd), and
+    // audio-only check ignores video redaction masks on the video track.
+    let two_pts = |cx0: f64, cx1: f64| {
+        vec![
+            MaskTrackPoint {
+                t_ms: 0,
+                cx: cx0,
+                cy: 0.5,
+            },
+            MaskTrackPoint {
+                t_ms: 480_000,
+                cx: cx1,
+                cy: 0.5,
+            },
+        ]
+    };
+    let mut project = Project::new("hidden-and-audio", ProjectSettings::default());
+    let mut clip = cut_core::edit::make_media_clip("c1", "missing-asset", 0, 480_000);
+    clip.mask = Some(ClipMask {
+        shape: MaskShape::Rect,
+        points: vec![[0.1, 0.1], [0.2, 0.2]],
+        feather: 0.0,
+        invert: false,
+        effect: MaskEffect::Blur,
+        strength: Some(20.0),
+        range_ms: None,
+        track: Some(two_pts(0.1, 0.9)),
+        regions: (1..256)
+            .map(|i| MaskRegion {
+                shape: MaskShape::Rect,
+                points: vec![[0.1, 0.1], [0.2, 0.2]],
+                track: Some(two_pts(0.1 + (i as f64) * 0.001, 0.8 - (i as f64) * 0.001)),
+            })
+            .collect(),
+    });
+    project.tracks[0].clips.push(Clip::Media(clip));
+    let edl = cut_core::edl_from_project(&project);
+    assert!(check_audio_command_budget(&project, &edl).is_ok());
+    project.tracks[0].visible = false;
+    assert!(check_command_budget(&project, &edl).is_ok());
 }

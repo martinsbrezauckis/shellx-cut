@@ -53,7 +53,7 @@ async fn check_features(state: &AppState, verb: &str, args: &Value) -> Result<()
     #[cfg(test)]
     {
         if let Some(stubbed) = test_presence::missing_features(&needed) {
-            return refusal(state, stubbed.first().copied()).await;
+            return refusal(state, verb, args, stubbed.first().copied()).await;
         }
     }
     // Probing filters starts ffmpeg (cached per build per tools generation).
@@ -61,14 +61,30 @@ async fn check_features(state: &AppState, verb: &str, args: &Value) -> Result<()
         tokio::task::spawn_blocking(move || cut_media::toolpath::missing_features(&needed))
             .await
             .unwrap_or_default();
-    refusal(state, missing.first().copied()).await
+    refusal(state, verb, args, missing.first().copied()).await
+}
+
+fn requests_keep_hdr(verb: &str, args: &Value) -> bool {
+    if args.get("color").and_then(Value::as_str) == Some("keep_hdr") {
+        return true;
+    }
+    verb == "render.queue"
+        && args
+            .get("jobs")
+            .and_then(Value::as_array)
+            .is_some_and(|jobs| {
+                jobs.iter()
+                    .any(|j| j.get("color").and_then(Value::as_str) == Some("keep_hdr"))
+            })
 }
 
 /// The refusal for the first missing filter. A missing zimg on a timeline
-/// with HDR clips says which clips need the tone map and how to proceed,
-/// not only "color-managed export".
+/// with HDR clips says which clips need the tone map (or Keep HDR) and how to
+/// proceed, not only "color-managed export".
 async fn refusal(
     state: &AppState,
+    verb: &str,
+    args: &Value,
     missing: Option<cut_media::toolpath::FfmpegFeature>,
 ) -> Result<(), CutError> {
     let Some(feature) = missing else {
@@ -77,9 +93,14 @@ async fn refusal(
     if feature == cut_media::toolpath::FfmpegFeature::Zscale {
         let hdr = features::hdr_files(state).await;
         if !hdr.is_empty() {
-            return Err(cut_media::render::tone_map_support::missing_tone_map_error(
-                &hdr,
-            ));
+            let mut err = cut_media::render::tone_map_support::missing_tone_map_error(&hdr);
+            if requests_keep_hdr(verb, args) {
+                err.message = format!(
+                    "Keep HDR export ({}) needs FFmpeg with zimg (the zscale filter), and the installed FFmpeg has none",
+                    hdr.join(", ")
+                );
+            }
+            return Err(err);
         }
     }
     Err(cut_media::tool_setup::missing_feature_error(feature))

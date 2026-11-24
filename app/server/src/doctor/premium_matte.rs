@@ -3,9 +3,41 @@
 use super::{probe_command, Card, CardStatus, ProbeOutcome};
 use cut_core::{CutError, MatteModel};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+
+pub(super) enum MattePremiumScan {
+    Ready(Card),
+    Deferred {
+        card: Card,
+        python: PathBuf,
+        native_context: bool,
+    },
+}
+
+impl MattePremiumScan {
+    pub(super) fn into_card(self) -> Card {
+        match self {
+            Self::Ready(card) | Self::Deferred { card, .. } => card,
+        }
+    }
+}
+
+pub(super) fn probe_cuda_availability(python: &Path, native_context: bool) -> Option<bool> {
+    matte_premium_cuda_availability(python, native_context)
+}
+
+pub(super) fn finalize_matte_premium_card(mut card: Card, cuda_avail: Option<bool>) -> Card {
+    let (status, hint) = matte_premium_status(true, cuda_avail);
+    card.status = status;
+    card.hint = hint;
+    if let Some(details) = card.details.as_object_mut() {
+        details.insert("cuda_available".into(), json!(cuda_avail));
+        details.remove("checking");
+    }
+    card
+}
 
 /// PREMIUM background-removal capability: MatAnyone2 (`edit.matte{model:"matanyone"}`)
 /// — target-assigned matting (pick WHICH subject) with cleaner edges + temporal
@@ -14,14 +46,22 @@ use std::time::Duration;
 /// `system.setup_matte{model:"matanyone", accept_noncommercial:true}`. A supplied
 /// native runtime instead binds the sealed RVM, MatAnyone2, and SAM2 group. OPTIONAL —
 /// the default RVM tier + core editing work without it.
+#[allow(dead_code)]
 pub(super) fn matte_premium_card() -> Card {
+    scan_matte_premium(false).into_card()
+}
+
+pub(super) fn scan_matte_premium(defer_cuda: bool) -> MattePremiumScan {
     let native_context = match cut_perception::native_runtime_context() {
         Ok(context) => context,
-        Err(error) => return prepared_matte_premium_card_failure(&error.message),
+        Err(error) => {
+            return MattePremiumScan::Ready(prepared_matte_premium_card_failure(&error.message));
+        }
     };
     if native_context.is_some() {
-        return prepared_matte_premium_card_from_resolution(
+        return prepared_matte_premium_card_from_resolution_with_mode(
             crate::matte::native_runtime::prepared_matte_runtime(&MatteModel::Matanyone),
+            defer_cuda,
         );
     }
 
@@ -35,6 +75,34 @@ pub(super) fn matte_premium_card() -> Card {
         .or_else(crate::matte::read_matanyone_model_setting)
         .or_else(crate::matte::matanyone_default_model);
     let model_present = model.as_ref().map(|p| p.exists()).unwrap_or(false);
+    if defer_cuda {
+        if let Some(runtime) = rt.as_ref() {
+            let card = Card {
+                id: "matte_premium".into(),
+                kind: "matte".into(),
+                status: CardStatus::Unknown,
+                source: None,
+                version: None,
+                hint: Some("Checking CUDA GPU support for MatAnyone2...".to_string()),
+                details: json!({
+                    "model": "matanyone2",
+                    "installed": true,
+                    "checking": true,
+                    "setup_supported": Value::Null,
+                    "checkpoint_present": model_present,
+                    "checkpoint_path": model.map(|p| p.display().to_string()),
+                    "cuda_available": Value::Null,
+                    "license": "NTU S-Lab License 1.0 (non-commercial)",
+                    "unlocks": "premium target-assigned matte (edit.matte{model:matanyone}) — cleaner edges, pick the subject",
+                }),
+            };
+            return MattePremiumScan::Deferred {
+                card,
+                python: runtime.python.clone(),
+                native_context: false,
+            };
+        }
+    }
     // CUDA probe only when installed (a bounded torch import — premium users only,
     // so the cost is never paid on a default install). We read the FULL probe
     // outcome (not version_line's Option) so a TIMED-OUT probe is distinguishable
@@ -57,7 +125,7 @@ pub(super) fn matte_premium_card() -> Card {
     } else {
         matte_premium_status(installed, cuda_avail)
     };
-    Card {
+    MattePremiumScan::Ready(Card {
         id: "matte_premium".into(),
         kind: "matte".into(),
         status,
@@ -77,29 +145,51 @@ pub(super) fn matte_premium_card() -> Card {
             "license": "NTU S-Lab License 1.0 (non-commercial)",
             "unlocks": "premium target-assigned matte (edit.matte{model:matanyone}) — cleaner edges, pick the subject",
         }),
-    }
+    })
 }
 
 /// Interpret the authoritative native-context resolver once it has selected the
 /// requested premium runtime.  Keeping this branch independent from process
 /// environment lookup lets tests exercise the real resolver with an explicit
 /// `RuntimeContext`, without changing the global context locator.
+#[allow(dead_code)]
 fn prepared_matte_premium_card_from_resolution(
     resolution: Result<Option<crate::matte::native_runtime::PreparedMatteRuntime>, CutError>,
 ) -> Card {
+    prepared_matte_premium_card_from_resolution_with_mode(resolution, false).into_card()
+}
+
+fn prepared_matte_premium_card_from_resolution_with_mode(
+    resolution: Result<Option<crate::matte::native_runtime::PreparedMatteRuntime>, CutError>,
+    defer_cuda: bool,
+) -> MattePremiumScan {
     match resolution {
         Ok(Some(crate::matte::native_runtime::PreparedMatteRuntime::Matanyone(runtime))) => {
-            prepared_matte_premium_card(&runtime)
+            if defer_cuda {
+                let mut card = prepared_matte_premium_card_with_cuda(&runtime, None);
+                card.status = CardStatus::Unknown;
+                card.hint = Some("Checking CUDA GPU support for MatAnyone2...".to_string());
+                if let Some(details) = card.details.as_object_mut() {
+                    details.insert("checking".into(), json!(true));
+                }
+                MattePremiumScan::Deferred {
+                    card,
+                    python: runtime.python.clone(),
+                    native_context: true,
+                }
+            } else {
+                MattePremiumScan::Ready(prepared_matte_premium_card(&runtime))
+            }
         }
         Ok(Some(crate::matte::native_runtime::PreparedMatteRuntime::Rvm(_))) => {
-            prepared_matte_premium_card_failure(
+            MattePremiumScan::Ready(prepared_matte_premium_card_failure(
                 "the prepared native-runtime context selected an RVM runtime for MatAnyone2",
-            )
+            ))
         }
-        Ok(None) => prepared_matte_premium_card_failure(
+        Ok(None) => MattePremiumScan::Ready(prepared_matte_premium_card_failure(
             "the prepared native-runtime context disappeared while Doctor was checking MatAnyone2",
-        ),
-        Err(error) => prepared_matte_premium_card_failure(&error.message),
+        )),
+        Err(error) => MattePremiumScan::Ready(prepared_matte_premium_card_failure(&error.message)),
     }
 }
 

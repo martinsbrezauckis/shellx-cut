@@ -1,6 +1,6 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.121",
+  "appVersion": "0.6.122",
   "featureCount": 201,
   "features": [
     {
@@ -1799,7 +1799,7 @@
       "group": "record",
       "title": "Polished clip in Edit",
       "where": "Record workspace",
-      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the open project; when no project is open, Cut creates a new recording project first. The polished clip follows recorded pointer movement and clicks with blue click rings and smooth zoom up to 2×. Display recording supports smooth cursor styling; Windows/macOS Window recording keeps the native cursor. On Wayland, stationary clicks may lack a fresh pointer position and produce no ring or zoom. Show keystrokes is optional, off by default, and shown directly beneath this mode. For new recordings, select the screen clip in Edit and use the Zoom card in Inspector to select, add or delete zooms, change strength, target, timing and speed. Redo automatic zooms keeps your own zooms. Press Update video to see the changes; playback keeps the previous zooms until it finishes. Old recordings stay as they are. New camera recordings use a separate camera track by default; select its clip for the Camera section and Back to as recorded. The Record page switch Edit the camera later (own track) can bake the bubble in instead. Export MP4 or GIF chooses a file after Stop.",
+      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the open project; when no project is open, Cut creates a new recording project first. The polished clip follows recorded pointer movement and clicks with blue click rings and smooth zoom up to 2×. Display recording supports smooth cursor styling; Windows/macOS Window recording keeps the native cursor. On Wayland, stationary clicks may lack a fresh pointer position and produce no ring or zoom. Show keystrokes is optional, off by default, and shown directly beneath this mode. For new recordings, select the screen clip in Edit and use the Zoom card in Inspector to select, add or delete zooms, change strength, target, timing and speed. Redo automatic zooms keeps your own zooms. Press Update video to see the changes; playback keeps the previous zooms until it finishes. Earlier 0.6.116–0.6.118 recordings stay unchanged on open and can be turned into editable takes from the Zoom card (Make editable) when their capture files still exist. New camera recordings use a separate camera track by default; select its clip for the Camera section and Back to as recorded. The Record page switch Edit the camera later (own track) can bake the bubble in instead. Export MP4 or GIF chooses a file after Stop.",
       "requirement": "Requires FFmpeg and a finalized capture. A camera bubble needs a completed camera take.",
       "api": "project.create, screen_record.stop {mux_raw:true, autoedit:true}, screen_record.polish, screen_record.export"
     },

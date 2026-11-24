@@ -229,7 +229,7 @@ const PROJECT: Project = {
     m1: { path: 'assets/music-bed.mp3', hash: 'sha256:5150bedbed', probe: { kind: 'audio', duration_ms: 60000 } },
   },
   tracks: [
-    { id: 'v1', kind: 'video', clips: [{ id: 'c1', asset: 'a1', src_in_ms: 0, src_out_ms: 58000, ...(mockParams().has('recordingZoom') ? { recording: { take: 'mock-take', stale: mockParams().get('recordingZoom') === 'stale', zoom_count: 3, camera_clip: null } } : {}) }] },
+    { id: 'v1', kind: 'video', clips: [{ id: 'c1', asset: 'a1', src_in_ms: 0, src_out_ms: 58000, ...(mockParams().has('recordingZoom') ? { recording: { take: 'mock-take', stale: mockParams().get('recordingZoom') === 'stale', zoom_count: 3, camera_clip: null } } : mockParams().has('oldRecording') ? { old_recording: true } : {}) }] },
     // overlay video track (v2 — composites above v1): an intro image card,
     // then a PiP'd clip carrying edit.transform geometry
     {
@@ -532,7 +532,21 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
     return { ok: true, result: camera }
   }
   const recording = recordingMock.handle(name, args)
-  if (recording.handled) return recording.value
+  if (recording.handled) {
+    if (name === 'screen_record.make_editable' && (recording.value as { ok?: boolean })?.ok) {
+      const targetId = String(args.clip ?? '')
+      for (const track of PROJECT.tracks) {
+        for (const c of track.clips) {
+          if ('asset' in c && c.id === targetId) {
+            delete c.old_recording
+            c.recording = { take: 'mock-take', stale: false, zoom_count: 3, camera_clip: null }
+          }
+        }
+      }
+      applyOp(op({ actor: human, verb: name, args }))
+    }
+    return recording.value
+  }
   switch (name) {
     case 'project.state':
       {

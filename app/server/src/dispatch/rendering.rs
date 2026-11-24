@@ -52,12 +52,16 @@ pub(crate) async fn snapshot_for_media_io(
     // A missing title/shape movie is made again before any media read.
     super::edit_tools::ensure_overlay_movies(state).await?;
     let (project, edl, dir, at_op) = snapshot(state).await?;
-    if !project.has_nests() {
-        return Ok((project, edl, dir, at_op));
-    }
     let bake_dir = dir.clone();
     let (project, edl) = run_blocking(context, move || {
-        crate::nest::flatten_for_media_io(&project, &edl, &bake_dir)
+        let (project, edl) = if project.has_nests() {
+            crate::nest::flatten_for_media_io(&project, &edl, &bake_dir)?
+        } else {
+            (project, edl)
+        };
+        let project =
+            cut_media::render::measured_for_reverse(&project, &bake_dir).unwrap_or(project);
+        Ok((project, edl))
     })
     .await?;
     Ok((project, edl, dir, at_op))
@@ -137,6 +141,7 @@ pub(super) async fn render_preview(state: &AppState, args: Value) -> Result<Verb
     }
     let a: Args = parse_args(args)?;
     let (project, edl, dir, _at_op) = snapshot_for_media_io(state, "render.preview.nests").await?;
+    cut_media::render::check_command_budget(&project, &edl)?;
 
     if a.draft {
         // Incremental whole-timeline draft preview.
@@ -859,6 +864,7 @@ pub(super) async fn export_audio(
             (reserved.to_path_buf(), Some(reserved))
         }
     };
+    cut_media::render::check_audio_command_budget(&project, &edl)?;
     // Scratch audio is rendered under a fresh private name, then renamed onto
     // its slot, so nothing at the slot name is ever opened for writing.
     let scratch_temp = match a.scratch {
@@ -873,13 +879,14 @@ pub(super) async fn export_audio(
         .scratch
         .as_ref()
         .and_then(|_| out.parent().map(Path::to_path_buf));
-    let (p, e, d, o, aa) = (project, edl, dir.clone(), render_to, audio_args);
+    let base_fence = make_fence(&dir)?;
+    let (p, e, o, aa) = (project, edl, render_to, audio_args);
     let res = run_blocking("export.audio", move || {
         // Scratch audio is written in the engine's private folder: admit
         // exactly that folder as an extra root for this one write.
         let fence = match &scratch_root {
-            Some(root) => make_fence(&d)?.with_extra_root(root)?,
-            None => make_fence(&d)?,
+            Some(root) => base_fence.with_extra_root(root)?,
+            None => base_fence,
         };
         cut_media::render::render_audio(&p, &e, &fence, &o, &aa, None)
     })
@@ -967,33 +974,29 @@ pub(super) async fn export_range(
         &format!("exports/range_{}_{}.mp4", a.range_ms[0], a.range_ms[1]),
         OutputPathPolicy::MP4,
     )?;
-    let tmp_out = temp_output_path_for_render(&out);
-    let (p, e, d, o, t, range) = (
-        project,
-        edl,
-        dir.clone(),
-        out.clone(),
-        tmp_out.clone(),
-        a.range_ms,
-    );
+    let mut preset = preset;
+    cut_media::render::check_command_budget(&project, &edl)?;
+    let resources = preflight::export_preflight(
+        &project,
+        &edl,
+        &out,
+        &mut preset,
+        &cut_media::render::RenderOptions::default(),
+    )?;
+    let base_fence = make_fence(&dir)?;
+    let (p, e, o, range) = (project, edl, out.clone(), a.range_ms);
     run_blocking("export.range", move || {
-        let fence = make_fence(&d)?;
-        match cut_media::render::render_range(
+        cut_media::render::render_range(
             &p,
             &e,
-            &fence,
-            &t,
+            &base_fence,
+            &o,
             &preset,
             range,
             cut_media::render::RenderOptions::default(),
             None,
-        ) {
-            Ok(_) => publish_output_atomic(&t, &o),
-            Err(err) => {
-                let _ = std::fs::remove_file(&t);
-                Err(err)
-            }
-        }
+        )?;
+        Ok::<(), CutError>(())
     })
     .await?;
 
@@ -1009,9 +1012,14 @@ pub(super) async fn export_range(
             "path": out,
             "asset_id": res.get("asset_id").cloned().unwrap_or(Value::Null),
             "job_id": res.get("job_id").cloned().unwrap_or(Value::Null),
-        })));
+            "resources": resources.json,
+        }))
+        .with_warnings(resources.warnings));
     }
-    Ok(VerbResult::ok(json!({ "path": out })))
+    Ok(
+        VerbResult::ok(json!({ "path": out, "resources": resources.json }))
+            .with_warnings(resources.warnings),
+    )
 }
 
 /// export.gif{range_ms?, fps?, width?, dither?, to_asset?} — export a SHORT
@@ -1079,22 +1087,52 @@ pub(super) async fn export_gif(
         &format!("exports/gif_{}_{}.gif", range[0], range[1]),
         OutputPathPolicy::GIF,
     )?;
-    let tmp = out.with_extension("src.mp4"); // composed window, deleted after
-    let (p, e, d, o, t) = (project, edl, dir.clone(), out.clone(), tmp.clone());
+    let mut preset = preset;
+    cut_media::render::check_command_budget(&project, &edl)?;
+    let mut resources = preflight::export_preflight(
+        &project,
+        &edl,
+        &out,
+        &mut preset,
+        &cut_media::render::RenderOptions::default(),
+    )?;
+    let gif_width = width.clamp(64, 1920);
+    let gif_height = ((u64::from(gif_width) * u64::from(project.settings.height)
+        / u64::from(project.settings.width.max(1))) as u32
+        + 1)
+        & !1;
+    let mut gif_preset = cut_media::render::RenderPreset {
+        name: "gif".into(),
+        video_args: vec!["-c:v".into(), "gif".into()],
+        audio_args: vec![],
+    };
+    let palette = preflight::post_pass_preflight(
+        &project,
+        range[1].min(edl.duration_ms).saturating_sub(range[0]),
+        &out,
+        &mut gif_preset,
+        gif_width,
+        gif_height,
+        Some(fps.clamp(2, 50)),
+    )?;
+    resources.json["post_pass"] = palette.json;
+    resources.warnings.extend(palette.warnings);
+    let (p, e, o) = (project, edl, out.clone());
     run_blocking("export.gif", move || {
-        let fence = make_fence(&d)?;
+        let stage = cut_media::PrivateStageDir::new()?;
+        let staged_mp4 = stage.reserve_named_file("gif_source.mp4")?;
+        let stage_fence = cut_media::PathFence::new(stage.path())?;
         cut_media::render::render_range(
             &p,
             &e,
-            &fence,
-            &t,
+            &stage_fence,
+            &staged_mp4,
             &preset,
             range,
             cut_media::render::RenderOptions::default(),
             None,
         )?;
-        cut_media::gif::make_gif(&t, &o, fps, width, &dither)?;
-        let _ = std::fs::remove_file(&t); // best-effort temp cleanup
+        cut_media::gif::make_gif(&staged_mp4, &o, fps, width, &dither)?;
         Ok(())
     })
     .await?;
@@ -1111,11 +1149,13 @@ pub(super) async fn export_gif(
             "path": out, "fps": fps, "width": width, "range_ms": range,
             "asset_id": res.get("asset_id").cloned().unwrap_or(Value::Null),
             "job_id": res.get("job_id").cloned().unwrap_or(Value::Null),
-        })));
+            "resources": resources.json,
+        }))
+        .with_warnings(resources.warnings));
     }
     Ok(VerbResult::ok(
-        json!({ "path": out, "fps": fps, "width": width, "range_ms": range }),
-    ))
+        json!({ "path": out, "fps": fps, "width": width, "range_ms": range, "resources": resources.json }),
+    ).with_warnings(resources.warnings))
 }
 
 pub(super) async fn render_frame(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
@@ -1920,6 +1960,9 @@ pub(super) async fn render_final(
         /// Target AUDIO bitrate (e.g. "384k", "192k"). Default: the format's
         /// audio rate (192k AAC). Lossless formats (wav/prores PCM) ignore it.
         audio_bitrate: Option<String>,
+        /// Output colour handling: "sdr" (default, BT.709 tone-mapped) or
+        /// "keep_hdr" (10-bit BT.2020 HLG/PQ on HEVC Main 10 or AV1 10-bit).
+        color: Option<String>,
         #[serde(default)]
         allow_stale_recordings: bool,
         #[serde(default)]
@@ -2005,14 +2048,8 @@ pub(super) async fn render_final(
             height: h,
         };
     }
-    // fit default: cover when reframing to explicit geometry, else contain.
-    let fit = fit_explicit.unwrap_or(
-        if matches!(resolution, cut_media::render::Resolution::Explicit { .. }) {
-            cut_media::render::Fit::Cover
-        } else {
-            cut_media::render::Fit::default()
-        },
-    );
+    // Match preview framing at every output geometry; explicit fit still wins.
+    let fit = fit_explicit.unwrap_or_default();
     // Loudness normalization target (LUFS) — validated NOW (fails fast, not
     // after a long encode). Sane broadcast/streaming range; outside it is a
     // typo or a unit mistake. None = no normalization (byte-identical replay).
@@ -2028,15 +2065,37 @@ pub(super) async fn render_final(
             )),
             other => other,
         };
+    let color_mode = match a.color.as_deref() {
+        None => cut_media::render::RenderColorMode::Sdr,
+        Some(s) => s.parse::<cut_media::render::RenderColorMode>().map_err(|e| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                e,
+                "color must be \"sdr\" (default) or \"keep_hdr\"",
+            )
+            .with_suggested_action(
+                "omit color (or pass color:\"sdr\") for SDR BT.709, or color:\"keep_hdr\" with format:\"hevc\" or \"av1\"",
+            )
+        })?,
+    };
     let render_opts = cut_media::render::RenderOptions {
         fit,
         resolution,
         loudness_target,
+        color: color_mode,
     };
     super::edit_tools::ensure_overlay_movies(state).await?;
     #[cfg(test)]
     final_snapshot_gate::wait(gate_path.as_deref()).await;
     let (project, edl, dir, at_op) = snapshot(state).await?;
+    // Preserve verified proxy-decode checks for the output receipt.
+    // Render facts are a separate runtime view, not a persisted probe edit.
+    let verification_project = project.clone();
+    let (p, d) = (project.clone(), dir.clone());
+    let project = run_blocking("render.final.sources", move || {
+        Ok(cut_media::render::measured_for_reverse(&p, &d).unwrap_or(p))
+    })
+    .await?;
     crate::screen_record::take_edit::guard_export(&project, a.allow_stale_recordings)?;
     // Quality tier (draft|standard|high) — validate up front so an unknown name
     // errors BEFORE any encode. It shifts the rate knob within the chosen codec.
@@ -2052,20 +2111,38 @@ pub(super) async fn render_final(
         )
         .with_suggested_action("draft = fast review, standard = default, high = hero asset"));
     }
-    // Output FORMAT (codec + container) — "different file exports". Default
-    // h264/mp4 reuses the named preset verbatim → byte-identical to a no-`format`
-    // render. The format sets the encoder args AND the file extension.
-    let format = a.format.as_deref().unwrap_or("h264");
-    let (mut video_args, audio_args, mut ext) = cut_media::render::format_codec_args(format, quality).ok_or_else(|| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            format!("unknown format '{format}'"),
-            format!("formats: {} (default h264)", cut_media::render::FORMAT_NAMES.join("|")),
-        )
-        .with_suggested_action(
-            "h264 = universal mp4 (default), hevc = ~30-50% smaller, vp9 = web/webm, prores = pro/mov, av1 = highest quality (slow without a GPU)",
-        )
-    })?;
+    // Output FORMAT (codec + container). Default h264/mp4 for SDR; hevc Main10
+    // when color="keep_hdr" omits format.
+    let default_format = if color_mode == cut_media::render::RenderColorMode::KeepHdr {
+        "hevc"
+    } else {
+        "h264"
+    };
+    let format = a.format.as_deref().unwrap_or(default_format);
+    let (mut video_args, audio_args, mut ext) =
+        cut_media::render::format_codec_args_for_color(format, quality, color_mode).ok_or_else(|| {
+            if color_mode == cut_media::render::RenderColorMode::KeepHdr
+                && cut_media::render::format_codec_args(format, quality).is_some()
+            {
+                CutError::new(
+                    error_codes::INVALID_ARGS,
+                    format!("Keep HDR needs H.265 (HEVC) or AV1 10-bit; format '{format}' cannot carry 10-bit HDR"),
+                    "Choose format:\"hevc\" (HEVC Main 10) or format:\"av1\" (10-bit AV1) when keeping HDR.",
+                )
+                .with_suggested_action(
+                    "Pass format:\"hevc\" or format:\"av1\" with color:\"keep_hdr\", or export SDR (color:\"sdr\").",
+                )
+            } else {
+                CutError::new(
+                    error_codes::INVALID_ARGS,
+                    format!("unknown format '{format}'"),
+                    format!("formats: {} (default h264)", cut_media::render::FORMAT_NAMES.join("|")),
+                )
+                .with_suggested_action(
+                    "h264 = universal mp4 (default), hevc = ~30-50% smaller, vp9 = web/webm, prores = pro/mov, av1 = highest quality (slow without a GPU)",
+                )
+            }
+        })?;
     // An explicit path is part of the public request boundary, not render
     // setup. In particular, the automatic hardware tier below can run ffmpeg
     // capability probes, so reject an escaping path before starting that work
@@ -2082,6 +2159,7 @@ pub(super) async fn render_final(
             )
         })
         .transpose()?;
+    cut_media::render::check_command_budget(&project, &edl)?;
     // GPU/HARDWARE encoder tier: use the GPU when the
     // desktop has one). "auto" (default) swaps in the detected HW encoder for the
     // codec — much faster (and AV1-HW is the quality ceiling); "off" forces the
@@ -2099,10 +2177,22 @@ pub(super) async fn render_final(
     let hardware_requested = hw_mode != "off";
     // Why the hardware tier was not used, when it was asked for and software ran.
     let mut software_fallback: Option<cut_media::hwencode::SoftwareFallback> = None;
-    if hardware_requested && base_codec.is_empty() {
+    if color_mode == cut_media::render::RenderColorMode::KeepHdr {
+        if hardware_requested {
+            software_fallback = Some(cut_media::hwencode::SoftwareFallback {
+                message: format!(
+                    "Keep HDR uses 10-bit software {encoder}; hardware encoders in Cut currently target 8-bit SDR."
+                ),
+                detail: None,
+            });
+        }
+    } else if hardware_requested && base_codec.is_empty() {
         software_fallback = Some(cut_media::hwencode::software_fallback("", 0, 0));
     }
-    if hw_mode != "off" && !base_codec.is_empty() {
+    if color_mode != cut_media::render::RenderColorMode::KeepHdr
+        && hw_mode != "off"
+        && !base_codec.is_empty()
+    {
         let q = match quality {
             "draft" => 0usize,
             "high" => 2,
@@ -2135,10 +2225,10 @@ pub(super) async fn render_final(
         let (out_w, out_h) = render_opts.output_geometry(&project, &edl);
         output_size::check_output_size(out_w, out_h, render_opts.resolution, &encoder)?;
     }
-    // Colour: every export is SDR BT.709 in 8 bits; an HDR source is
-    // tone-mapped. The plan, the receipt and the job result say so per source,
-    // and a tone map without a zscale-capable ffmpeg is refused here.
-    let color = color_plan::plan_color(&project, &edl, &video_args)?;
+    // Colour: SDR BT.709 (default, HDR sources tone-mapped) or Keep HDR
+    // (10-bit BT.2020 HLG/PQ on HEVC Main 10 or AV1 10-bit). Missing zscale,
+    // missing HDR source, or missing 10-bit encoder is refused here up front.
+    let color = color_plan::plan_color_for(&project, &edl, &video_args, color_mode)?;
     // BITRATE / RATE CONTROL: platform-specific publishing needs a real
     // bitrate target, not just CRF). When `bitrate` is set, rewrite the codec's
     // rate knob from quality-targeted (CRF/CQ) to VBR/CBR at that target. Parsed
@@ -2265,17 +2355,9 @@ pub(super) async fn render_final(
     // Item 82: estimate memory and output size, compare with this computer now,
     // and adapt (fewer encoder threads), warn or refuse before any encode.
     let (plan_w, plan_h) = render_opts.output_geometry(&project, &edl);
-    // Reversed clips are estimated from facts measured on their files (the
-    // project's cached probe is not trusted for memory); None: none reversed.
-    let measured = {
-        let (p, d) = (project.clone(), dir.clone());
-        run_blocking("render.final.measure", move || {
-            Ok(cut_media::render::measured_for_reverse(&p, &d))
-        })
-        .await?
-    };
+    // Available sources use the same measured view for memory, kind and colour.
     let resources = preflight::render_preflight(&preflight::Plan {
-        project: measured.as_ref().unwrap_or(&project),
+        project: &project,
         edl: &edl,
         width: plan_w,
         height: plan_h,
@@ -2459,7 +2541,7 @@ pub(super) async fn render_final(
                 // Item 132: the software pass gets the same memory and disk
                 // check as a first attempt, for the software preset.
                 let check = preflight::render_preflight(&preflight::Plan {
-                    project: measured.as_ref().unwrap_or(&project),
+                    project: &project,
                     edl: &edl,
                     width: plan_w,
                     height: plan_h,
@@ -2616,7 +2698,7 @@ pub(super) async fn render_final(
                 }
             }
         }
-        let p2 = project.clone();
+        let p2 = verification_project.clone();
         let e2 = edl.clone();
         // The loudness target the person set (normalize_loudness): `lufs` is
         // measured against it; without one (and without a profile) it does
@@ -2627,8 +2709,10 @@ pub(super) async fn render_final(
             let refs: Vec<&cut_perception::Transcript> = owned.iter().collect();
             // Which checks apply is decided on this engine's own probe of the
             // placed sources, never on probe facts cached in the project.
-            let measured = measured_sources::measure_placed_sources(&source_dir, &p2, &e2);
-            Ok(cut_perception::run_all_for_export(
+            let measured = measured_sources::measure_placed_sources_detailed(&source_dir, &p2, &e2);
+            let source_errors = measured.errors;
+            let measured = measured.sources;
+            let checks = cut_perception::run_all_for_export(
                 &p2,
                 &e2,
                 &refs,
@@ -2637,11 +2721,12 @@ pub(super) async fn render_final(
                 profile,
                 asked_loudness,
                 &measured,
-            ))
+            );
+            Ok((checks, source_errors))
         })
         .await;
         match checks {
-            Ok(mut checks) => {
+            Ok((mut checks, source_errors)) => {
                 if let Some(error) = checks_degraded.as_ref() {
                     mark_output_checks_unmeasured(&mut checks, error);
                 }
@@ -2659,8 +2744,39 @@ pub(super) async fn render_final(
                     fix_actions: vec![], // populated by compute_pass()
                     encode: Some(encode.clone()),
                     outcome: None,
+                    export_checks: None,
                 };
                 receipt.compute_pass();
+                // Every check with its state, for the person and the agent. It
+                // is information: it changes no verdict and never fails the
+                // render; if it cannot be built the receipt is written without.
+                {
+                    let (lp, le, lr) = (project.clone(), edl.clone(), receipts.clone());
+                    let (lop, lid, lchecks, lerrors, lres) = (
+                        receipt.at_op.clone(),
+                        render_id.clone(),
+                        receipt.checks.clone(),
+                        source_errors,
+                        resources_json.clone(),
+                    );
+                    match run_blocking("verify.checks.list", move || {
+                        Ok::<_, CutError>(super::verify_handlers::export_checks_collect::finished(
+                            &lp,
+                            &le,
+                            &lr,
+                            &lop,
+                            &lid,
+                            &lchecks,
+                            &lerrors,
+                            &lres,
+                        ))
+                    })
+                    .await
+                    {
+                        Ok(list) => receipt.export_checks = Some(list),
+                        Err(e) => tracing::warn!(error = %e, "could not build the export check list"),
+                    }
+                }
                 let rpath = receipts.join(format!("{render_id}.json"));
                 if let Err(e) = write_output_atomic(
                     &rpath,
@@ -2703,6 +2819,7 @@ pub(super) async fn render_final(
                     "verified": checks_degraded.is_none(),
                     "verification_status": if checks_degraded.is_some() { "unmeasured" } else { "complete" },
                     "encode": encode,
+                    "export_checks": receipt.export_checks,
                 });
                 // The checks' verdict decides how the job ends (check_finish):
                 // a written file that is not the timeline is never plain "done".
@@ -2968,6 +3085,7 @@ fn compute_bundle_receipt(
         fix_actions: vec![],
         encode: Some(encode),
         outcome: None,
+        export_checks: None,
     };
     receipt.compute_pass();
     let rpath = receipts_dir.join(format!("{render_id}.json"));
@@ -3043,6 +3161,17 @@ pub(super) async fn render_direct(
         .count();
     let direct_id = format!("direct_{:03}", n + 1);
 
+    let mut render_preset = cut_media::render::RenderPreset::default();
+    cut_media::render::check_command_budget(&project, &edl)?;
+    let resources = preflight::export_preflight(
+        &project,
+        &edl,
+        &dir.join(format!("exports/{direct_id}.src.mp4")),
+        &mut render_preset,
+        &cut_media::render::RenderOptions::default(),
+    )?;
+    let resources_json = resources.json.clone();
+    let render_note = resources.note.clone();
     let job = state.jobs.create("reframe-direct");
     let job_id = job.job_id.clone();
     let direct_id_ret = direct_id.clone();
@@ -3052,23 +3181,33 @@ pub(super) async fn render_direct(
         let jid = job.job_id.clone();
         // 1) Render the finished edit to a TEMP (the director reads the cut, not the
         //    raw clips), then 2) build the contact sheet from it.
-        st.jobs.progress(&jid, 0.05, Some("rendering edit".into()));
-        let temp = dir.join(format!("exports/{direct_id}.src.mp4"));
-        let (p2, e2, t2, d2) = (project.clone(), edl.clone(), temp.clone(), dir.clone());
+        st.jobs.progress(&jid, 0.05, Some(render_note.unwrap_or_else(|| "rendering edit".into())));
+        let stage_dir = match cut_media::PrivateStageDir::new() {
+            Ok(s) => s,
+            Err(e) => return st.jobs.fail(&jid, e),
+        };
+        let temp = match stage_dir.reserve_named_file(&format!("{direct_id}.src.mp4")) {
+            Ok(t) => t,
+            Err(e) => return st.jobs.fail(&jid, e),
+        };
+        let stage_fence = match cut_media::PathFence::new(stage_dir.path()) {
+            Ok(f) => f,
+            Err(e) => return st.jobs.fail(&jid, e),
+        };
+        let (p2, e2, t2) = (project.clone(), edl.clone(), temp.clone());
         let (sa, ja) = (st.clone(), jid.clone());
         let prog1: cut_media::render::ProgressFn =
             Box::new(move |f| sa.jobs.progress(&ja, 0.05 + f * 0.5, None));
         let cancellation = crate::jobs::current_job_cancellation();
         let render_cancellation = cancellation.clone();
         let rendered = run_blocking("direct.render", move || {
-            let fence = make_fence(&d2)?;
             owned::run_render(render_cancellation, || {
                 cut_media::render::render_final(
                     &p2,
                     &e2,
-                    &fence,
+                    &stage_fence,
                     &t2,
-                    &cut_media::render::RenderPreset::default(),
+                    &render_preset,
                     cut_media::render::RenderOptions::default(),
                     Some(prog1),
                 )
@@ -3076,7 +3215,7 @@ pub(super) async fn render_direct(
         })
         .await;
         if let Err(e) = rendered {
-            let _ = std::fs::remove_file(&temp);
+            drop(stage_dir);
             if let Some(reason) = cancellation.reason() {
                 return st.jobs.cancel_from_worker(&jid, reason);
             }
@@ -3091,14 +3230,20 @@ pub(super) async fn render_direct(
             Ok(path) => path,
             Err(error) => return st.jobs.fail(&jid, error),
         };
-        let (t3, csd, pr) = (temp.clone(), cs_dir.clone(), preset.clone());
+        let (t3, csd, pr, r_dir, aid) = (
+            temp.clone(),
+            cs_dir.clone(),
+            preset.clone(),
+            receipts.clone(),
+            format!("attempts_{direct_id}"),
+        );
         let cancellation = crate::jobs::current_job_cancellation();
         let sidecar_cancellation = cancellation.clone();
         let sheet = run_blocking("direct.contact", move || {
-            owned::contact_sheet(sidecar_cancellation, t3, csd, pr)
+            owned::contact_sheet(sidecar_cancellation, t3, csd, pr, r_dir, aid)
         })
         .await;
-        let _ = std::fs::remove_file(&temp); // draft no longer needed
+        drop(stage_dir);
         if let Some(reason) = cancellation.reason() {
             return st.jobs.cancel_from_worker(&jid, reason);
         }
@@ -3122,6 +3267,7 @@ pub(super) async fn render_direct(
             &jid,
             json!({
                 "direct_id": direct_id,
+                "resources": resources_json,
                 "contact_sheet": sheet.get("contact_sheet"),
                 "contact_sheet_url": sheet_url,
                 "scene_count": sheet.get("scene_count"),
@@ -3134,8 +3280,9 @@ pub(super) async fn render_direct(
         );
     });
     Ok(VerbResult::ok(
-        json!({"job_id": job_id, "direct_id": direct_id_ret}),
-    ))
+        json!({"job_id": job_id, "direct_id": direct_id_ret, "resources": resources.json}),
+    )
+    .with_warnings(resources.warnings))
 }
 
 /// Director-model QC: review a reframed OUTPUT.
@@ -3206,9 +3353,9 @@ pub(super) async fn render_qc(
         ));
     }
     let preset = a.preset.clone().unwrap_or_else(|| "talking_head".into());
-    let (_project, _edl, dir, _at_op) = snapshot(state).await?;
+    let (_project, _edl, dir, at_op) = snapshot(state).await?;
     let output = resolve_reframe_output_for_qc(&dir, &rid)?;
-    checked_internal_dir(&dir, Path::new("receipts"))?;
+    let receipts = checked_internal_dir(&dir, Path::new("receipts"))?;
     let rid_ret = rid.clone();
     let job = state.jobs.create("reframe-qc");
     let job_id = job.job_id.clone();
@@ -3223,11 +3370,18 @@ pub(super) async fn render_qc(
             Ok(path) => path,
             Err(error) => return st.jobs.fail(&jid, error),
         };
-        let (o2, q2, p2) = (output.clone(), qc_dir.clone(), preset.clone());
+        let aid = format!("attempts_qc_{rid}");
+        let (o2, q2, p2, r_dir, a2) = (
+            output.clone(),
+            qc_dir.clone(),
+            preset.clone(),
+            receipts.clone(),
+            aid.clone(),
+        );
         let cancellation = crate::jobs::current_job_cancellation();
         let sidecar_cancellation = cancellation.clone();
         let sheet = run_blocking("reframe.qc", move || {
-            owned::qc_sheet(sidecar_cancellation, o2, q2, p2)
+            owned::qc_sheet(sidecar_cancellation, o2, q2, p2, r_dir, a2)
         })
         .await;
         if let Some(reason) = cancellation.reason() {
@@ -3235,8 +3389,41 @@ pub(super) async fn render_qc(
         }
         let sheet = match sheet {
             Ok(s) => s,
-            Err(e) => return st.jobs.fail(&jid, e),
+            Err(e) => {
+                super::verify_handlers::on_request_cache::record_reframe_qc(
+                    &dir,
+                    super::verify_handlers::on_request_cache::ReframeQcCache {
+                        ts: OpRecord::now_ts(),
+                        at_op: at_op.clone(),
+                        reframe_id: rid.clone(),
+                        review_count: 0,
+                        scene_count: 0,
+                        error: Some(e.clone()),
+                    },
+                );
+                return st.jobs.fail(&jid, e);
+            }
         };
+        super::verify_handlers::on_request_cache::record_reframe_qc(
+            &dir,
+            super::verify_handlers::on_request_cache::ReframeQcCache {
+                ts: OpRecord::now_ts(),
+                at_op: at_op.clone(),
+                reframe_id: rid.clone(),
+                review_count: sheet
+                    .get("review_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+                scene_count: sheet
+                    .get("scene_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+                error: None,
+            },
+        );
+        let attempt = cut_perception::analysis_attempts::load_attempts(&receipts, &aid, "")
+            .ok()
+            .and_then(|v| v.into_iter().last());
         // Serve the QC sheet via frames/ for the UI (receipts/ is not served).
         let sheet_url = sheet
             .get("qc_sheet")
@@ -3258,8 +3445,9 @@ pub(super) async fn render_qc(
                 "scenes": sheet.get("scenes"),
                 "face_aware": sheet.get("face_aware"),
                 "face_backend": sheet.get("face_backend"),
-                "note": "read the qc_sheet image; for any needs_review scene re-issue render.reframe{aspect, direction:{\"<scene>\":{\"cx\":<a better candidate from render.direct>}|{\"mode\":\"widen\"}}}",
-            }),
+            "note": "read the qc_sheet image; for any needs_review scene re-issue render.reframe{aspect, direction:{\"<scene>\":{\"cx\":<a better candidate from render.direct>}|{\"mode\":\"widen\"}}}",
+            "analysis_attempt": attempt,
+        }),
         );
     });
     Ok(VerbResult::ok(
@@ -3318,6 +3506,30 @@ pub(super) async fn render_reframe(
         OutputPathPolicy::MP4,
     )?;
 
+    let mut render_preset = cut_media::render::RenderPreset::default();
+    cut_media::render::check_command_budget(&project, &edl)?;
+    let mut resources = preflight::export_preflight(
+        &project,
+        &edl,
+        &out,
+        &mut render_preset,
+        &cut_media::render::RenderOptions::default(),
+    )?;
+    let mut crop_preset = cut_media::render::RenderPreset::default();
+    let crop = preflight::post_pass_preflight(
+        &project,
+        edl.duration_ms,
+        &out,
+        &mut crop_preset,
+        ow,
+        oh,
+        None,
+    )?;
+    let crop_note = crop.note.clone();
+    resources.json["post_pass"] = crop.json;
+    resources.warnings.extend(crop.warnings);
+    let resources_json = resources.json.clone();
+    let render_note = resources.note.clone();
     let job = state.jobs.create("reframe");
     let job_id = job.job_id.clone();
     let render_id_ret = render_id.clone(); // result copy — the task moves the original
@@ -3328,23 +3540,33 @@ pub(super) async fn render_reframe(
     jobs.spawn_limited(&job_id, "render", RENDER_MAX_RUNNING, async move {
         let jid = job.job_id.clone();
         // 1) Render the finished edit to a TEMP at project geometry (no crop).
-        st.jobs.progress(&jid, 0.01, Some("rendering edit".into()));
-        let temp = dir.join(format!("exports/{render_id}.src.mp4"));
-        let (p2, e2, t2, d2) = (project.clone(), edl.clone(), temp.clone(), dir.clone());
+        st.jobs.progress(&jid, 0.01, Some(render_note.unwrap_or_else(|| "rendering edit".into())));
+        let stage_dir = match cut_media::PrivateStageDir::new() {
+            Ok(s) => s,
+            Err(e) => return st.jobs.fail(&jid, e),
+        };
+        let temp = match stage_dir.reserve_named_file(&format!("{render_id}.src.mp4")) {
+            Ok(t) => t,
+            Err(e) => return st.jobs.fail(&jid, e),
+        };
+        let stage_fence = match cut_media::PathFence::new(stage_dir.path()) {
+            Ok(f) => f,
+            Err(e) => return st.jobs.fail(&jid, e),
+        };
+        let (p2, e2, t2) = (project.clone(), edl.clone(), temp.clone());
         let (sa, ja) = (st.clone(), jid.clone());
         let prog1: cut_media::render::ProgressFn =
             Box::new(move |f| sa.jobs.progress(&ja, 0.01 + f * 0.44, None));
         let cancellation = crate::jobs::current_job_cancellation();
         let render_cancellation = cancellation.clone();
         let rendered = run_blocking("reframe.render", move || {
-            let fence = make_fence(&d2)?;
             owned::run_render(render_cancellation, || {
                 cut_media::render::render_final(
                     &p2,
                     &e2,
-                    &fence,
+                    &stage_fence,
                     &t2,
-                    &cut_media::render::RenderPreset::default(),
+                    &render_preset,
                     cut_media::render::RenderOptions::default(),
                     Some(prog1),
                 )
@@ -3354,7 +3576,7 @@ pub(super) async fn render_reframe(
         let rendered = match rendered {
             Ok(o) => o,
             Err(e) => {
-                let _ = std::fs::remove_file(&temp);
+                drop(stage_dir);
                 if let Some(reason) = cancellation.reason() {
                     return st.jobs.cancel_from_worker(&jid, reason);
                 }
@@ -3367,27 +3589,33 @@ pub(super) async fn render_reframe(
         // instrument) + the optional director brief (per-scene framing override).
         st.jobs
             .progress(&jid, 0.5, Some("analysing subject".into()));
+        let subject_attempt_id = format!("attempts_{render_id}_subject");
         let (t3, h) = (temp.clone(), rendered.hash.clone());
-        let (preset_c, dir_c) = (reframe_preset.clone(), direction.clone());
+        let (preset_c, dir_c, r_dir, aid) = (
+            reframe_preset.clone(),
+            direction.clone(),
+            receipts.clone(),
+            subject_attempt_id.clone(),
+        );
         let sidecar_cancellation = cancellation.clone();
         let track = run_blocking("reframe.subject", move || {
-            owned::subject_track(sidecar_cancellation, t3, h, preset_c, dir_c)
+            owned::subject_track(sidecar_cancellation, t3, h, preset_c, dir_c, r_dir, aid)
         })
         .await;
         if let Some(reason) = cancellation.reason() {
-            let _ = std::fs::remove_file(&temp);
+            drop(stage_dir);
             return st.jobs.cancel_from_worker(&jid, reason);
         }
         let track = match track {
             Ok(t) => t,
             Err(e) => {
-                let _ = std::fs::remove_file(&temp);
+                drop(stage_dir);
                 return st.jobs.fail(&jid, e);
             }
         };
 
         // 3) Map SubjectTrack → FrameObs, then the moving-crop post-pass.
-        st.jobs.progress(&jid, 0.6, Some("reframing".into()));
+        st.jobs.progress(&jid, 0.6, Some(crop_note.unwrap_or_else(|| "reframing".into())));
         let frames: Vec<cut_media::reframe::FrameObs> = track
             .frames
             .iter()
@@ -3431,13 +3659,13 @@ pub(super) async fn render_reframe(
                     oh,
                     &params,
                     &scene_starts,
-                    &cut_media::render::RenderPreset::default(),
+                    &crop_preset,
                     Some(prog2),
                 )
             })
         })
         .await;
-        let _ = std::fs::remove_file(&temp); // intermediate no longer needed
+        drop(stage_dir);
         let reframed = match reframed {
             Ok(o) => o,
             Err(e) => {
@@ -3451,6 +3679,7 @@ pub(super) async fn render_reframe(
         // 4) Honest receipt : subject-in-frame %, device, "reframe ≠ lossless".
         let mut receipt = json!({
             "reframe_id": render_id,
+            "resources": resources_json,
             "ts": OpRecord::now_ts(),
             "output_path": reframed.path.display().to_string(),
             "output_hash": reframed.hash,
@@ -3479,6 +3708,15 @@ pub(super) async fn render_reframe(
         });
         if let Some(warning) = subject_fps_warning {
             receipt["subject_fps_warning"] = json!(warning);
+        }
+        if let Ok(attempts) = cut_perception::analysis_attempts::load_attempts(
+            &receipts,
+            &subject_attempt_id,
+            &rendered.hash,
+        ) {
+            if let Some(attempt) = attempts.into_iter().last() {
+                receipt["analysis_attempt"] = json!(attempt);
+            }
         }
         let rpath = receipts.join(format!("{render_id}.json"));
         let receipt_text = match serde_json::to_string_pretty(&receipt) {
@@ -3514,6 +3752,7 @@ pub(super) async fn render_reframe(
             &jid,
             json!({
                 "reframe_id": render_id,
+                "resources": resources_json,
                 "path": reframed.path,
                 "receipt": rpath,
                 "subject_in_frame_pct": in_frame_pct,
@@ -3525,8 +3764,8 @@ pub(super) async fn render_reframe(
     });
 
     Ok(VerbResult::ok(
-        json!({"reframe_id": render_id_ret, "job_id": job_id, "aspect": a.aspect}),
-    ))
+        json!({"reframe_id": render_id_ret, "job_id": job_id, "aspect": a.aspect, "resources": resources.json}),
+    ).with_warnings(resources.warnings))
 }
 
 /// render.bundle{range_ms?|candidate?, platforms?, preset?, normalize_loudness?,
@@ -3615,6 +3854,28 @@ pub(super) async fn render_bundle(
         (None, None)
     };
 
+    // Check every delivery before starting the first; stages run sequentially.
+    cut_media::render::check_command_budget(&project, &edl)?;
+    let mut delivery_presets = Vec::new();
+    let mut resources = Vec::new();
+    let mut memory_warnings = Vec::new();
+    for (_, (width, height)) in &dims {
+        let opts = cut_media::render::RenderOptions {
+            fit: cut_media::render::Fit::Cover,
+            resolution: cut_media::render::Resolution::Explicit {
+                width: *width,
+                height: *height,
+            },
+            loudness_target: Some(loud),
+            color: cut_media::render::RenderColorMode::Sdr,
+        };
+        let mut delivery = preset.clone();
+        let check = preflight::export_preflight(&project, &edl, &dir, &mut delivery, &opts)?;
+        resources.push(check.json);
+        memory_warnings.extend(check.warnings);
+        delivery_presets.push(delivery);
+    }
+    let initial_resources = resources.clone();
     let job = state.jobs.create("bundle");
     let job_id = job.job_id.clone();
     let bundle_id_out = bundle_id.clone();
@@ -3634,7 +3895,12 @@ pub(super) async fn render_bundle(
             st.jobs.progress(
                 &jid,
                 0.02 + frac0 * 0.9,
-                Some(format!("rendering {aspect}")),
+                Some(
+                    resources[i]["memory"]["note"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("rendering {aspect}")),
+                ),
             );
             let safe = aspect.replace(':', "x");
             let rel = format!("exports/{bundle_id}/{safe}/clip.mp4");
@@ -3665,6 +3931,7 @@ pub(super) async fn render_bundle(
                     height: *h,
                 },
                 loudness_target: Some(loud),
+                color: cut_media::render::RenderColorMode::Sdr,
             };
             let (p2, e2, o2, d2, rng, pr) = (
                 project.clone(),
@@ -3672,9 +3939,9 @@ pub(super) async fn render_bundle(
                 out_path.clone(),
                 dir.clone(),
                 range,
-                preset.clone(),
+                delivery_presets[i].clone(),
             );
-            let bundle_preset = preset.clone();
+            let bundle_preset = delivery_presets[i].clone();
             let cancellation = crate::jobs::current_job_cancellation();
             let render_cancellation = cancellation.clone();
             let rendered = run_blocking("render.bundle", move || {
@@ -3822,6 +4089,7 @@ pub(super) async fn render_bundle(
             .collect::<Vec<_>>();
         let result = json!({
             "bundle_id": bundle_id,
+            "resources": resources,
             "range_ms": range,
             "platforms": platforms_out,
             "receipt_ids": receipt_ids,
@@ -3840,8 +4108,9 @@ pub(super) async fn render_bundle(
         }
     });
     Ok(VerbResult::ok(
-        json!({"job_id": job_id, "bundle_id": bundle_id_out}),
-    ))
+        json!({"job_id": job_id, "bundle_id": bundle_id_out, "resources": initial_resources}),
+    )
+    .with_warnings(memory_warnings))
 }
 
 /// render.queue{jobs:[{output?|path?, …render.final args}], rationale?} — BATCH
@@ -4360,7 +4629,9 @@ pub(super) async fn autopilot_run(
     // Require an open project up front (fail fast, not inside the job).
     {
         let g = state.project.read().await;
-        g.as_ref().ok_or_else(no_project)?;
+        let store = g.as_ref().ok_or_else(no_project)?;
+        let edl = cut_core::edl_from_project(&store.project);
+        cut_media::render::check_command_budget(&store.project, &edl)?;
     }
     // Auto-checkpoint: the whole run reverts to here in one edit.restore/revert.
     let goal_label = a.goal.clone().unwrap_or_else(|| "autopilot polish".into());

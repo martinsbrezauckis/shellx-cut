@@ -33,8 +33,8 @@ export function useRecordedElapsed({ captureId, recording, startedAt, pauseState
     if (!clock) return
     const now = Date.now()
     setElapsed(Math.floor(recordedMs(clock, now) / 1000))
-    setRemaining(capMs === null || startedAt === null ? 0 : limitSecondsLeft(capMs, startedAt, now))
-  }, [capMs, startedAt])
+    setRemaining(capMs === null ? 0 : limitSecondsLeft(capMs, clock, now))
+  }, [capMs])
 
   useLayoutEffect(() => {
     if (!recording || startedAt === null || !captureId) { clockRef.current = null; takeRef.current = null; return }

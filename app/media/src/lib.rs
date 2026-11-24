@@ -13,7 +13,11 @@
 //! Primary callers: server (cutd) verb handlers + job system.
 
 mod atomic_output;
-pub use atomic_output::check_output_dir_policy;
+pub use atomic_output::{
+    check_output_dir_policy, export_staging_root, is_plain_file_owned_by_current_user,
+    process_is_running, publish_staged_file, stage_and_publish, sweep_stale_export_staging,
+    write_bytes_privately_and_publish, PinnedExportDir, PrivateStageDir,
+};
 cut_core::isolate_test_process!();
 
 pub mod cache_trust;
@@ -59,7 +63,7 @@ pub use proxy::{
     make_proxy_with_progress_and_tone_map_bound,
 };
 pub use render::{
-    extract_frame, extract_scrub_frame, plan_scrub_frame, render_final, render_preview, Fit,
-    ProgressFn, RenderOptions, RenderOutput, RenderPreset, Resolution, ScrubPlan,
-    SCRUB_DEFAULT_HEIGHT,
+    extract_frame, extract_frame_with_args, extract_scrub_frame, plan_scrub_frame, render_final,
+    render_preview, Fit, ProgressFn, RenderOptions, RenderOutput, RenderPreset, Resolution,
+    ScrubPlan, SCRUB_DEFAULT_HEIGHT,
 };

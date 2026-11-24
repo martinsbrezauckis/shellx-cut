@@ -1,19 +1,27 @@
 //! The colour handling of a render, decided before any work.
 //!
-//! Every export is SDR BT.709 processed in 8 bits; an HDR (HLG/PQ) source is
-//! tone-mapped with ffmpeg's zscale filter. When the ffmpeg Cut can use has no
-//! zscale, the render is refused up front with what is needed, instead of
-//! failing mid-encode or writing a wrong file.
+//! Default exports are SDR BT.709 processed in 8 bits (HDR sources are
+//! tone-mapped with zscale). Keep HDR exports target 10-bit BT.2020 (HLG or PQ)
+//! and verify HDR clip presence, zscale, and 10-bit encoder support up front.
 
 use cut_core::{ColorReport, CutError};
+use cut_media::render::RenderColorMode;
 
-/// The colour report for this render, or the refusal when a tone map is needed
-/// and no zscale-capable ffmpeg exists.
-pub(super) fn plan_color(
+/// The colour report for this render, or the refusal when a tone map / Keep HDR
+/// requirement is missing before any work runs.
+pub(super) fn plan_color_for(
     project: &cut_core::Project,
     edl: &cut_core::Edl,
     video_args: &[String],
+    mode: RenderColorMode,
 ) -> Result<ColorReport, CutError> {
+    if mode == RenderColorMode::KeepHdr {
+        let encoder = cut_media::render::resources::video_encoder(video_args).unwrap_or("");
+        cut_media::render::hdr::require_support_for_mode(project, edl, mode, encoder)?;
+        return Ok(cut_media::render::source_color::color_report_with_mode(
+            project, edl, video_args, mode,
+        ));
+    }
     let report = cut_media::render::source_color::color_report(project, edl, video_args);
     if cut_media::render::source_color::needs_zscale(&report)
         && !cut_media::hwencode::zscale_available()
@@ -44,8 +52,10 @@ mod tests {
     fn the_refusal_names_the_clip_the_tool_and_both_ways_forward() {
         let report = ColorReport {
             output: "SDR BT.709".into(),
+            transfer: None,
             processing_bit_depth: 8,
             file_bit_depth: 8,
+            hdr10_metadata: None,
             sources: vec![cut_core::SourceColorReport {
                 asset: "a1".into(),
                 file: "hlg.mp4".into(),

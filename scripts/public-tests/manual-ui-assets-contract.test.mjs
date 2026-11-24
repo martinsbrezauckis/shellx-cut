@@ -18,6 +18,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { basename, dirname, join, resolve } from 'node:path'
+import { attachPageCspGuard } from '../../ui/public-tests/lib/cspHarness.mjs'
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const manual = resolve(root, 'docs/public/site/manual/cut/index.html')
 const editorAsset = resolve(root, 'docs/public/site/manual/assets/cut/cut-main-editor-current.png')
@@ -194,6 +195,10 @@ async function captureCurrentUi(appVersion) {
     const page = await browser.newPage({ viewport: { width: 1920, height: 1029 }, deviceScaleFactor: 1 })
     const pageErrors = []
     page.on('pageerror', (error) => pageErrors.push(error.stack || error.message))
+    await attachPageCspGuard(page, {
+      enforceHeaderOnUnprotectedHtml: false,
+      onViolation: (v) => pageErrors.push(`CSP ${v.effectiveDirective || v.violatedDirective} -> ${v.blockedURI || v.sample || 'inline'}`),
+    })
     await page.goto(base, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-cut-panel="topbar"]')
     await page.waitForFunction(() => document.querySelector('[data-cut-connection]')?.getAttribute('data-cut-connection') === 'open')

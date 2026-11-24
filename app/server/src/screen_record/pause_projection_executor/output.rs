@@ -65,6 +65,7 @@ impl ProjectionPayloads {
     pub(super) fn from_plan(
         plan: &LegacyRootProjectionPlan,
         audio: &PreparedPauseProjectionAudio,
+        probed_media: Option<super::types::ProjectionMediaFacts>,
     ) -> Result<Self, CutError> {
         let events = serde_json::to_vec_pretty(&plan.merged_events().events)
             .map_err(|error| invalid(format!("serialize merged pause events: {error}")))?;
@@ -74,7 +75,18 @@ impl ProjectionPayloads {
             plan.merged_events().events.clone(),
         );
         project.audio = audio.microphone_file().map(str::to_owned);
-        project.capture_cadence = plan.capture_cadence().cloned();
+        project.capture_cadence =
+            plan.capture_cadence()
+                .cloned()
+                .map(|cadence| match probed_media {
+                    Some(media) => cadence.with_probed_media(record_core::ProbedMediaCadence {
+                        avg_frame_rate: media.avg_frame_rate,
+                        r_frame_rate: media.r_frame_rate,
+                        decoded_video_frames: Some(media.decoded_video_frames),
+                        duration_ms: Some(media.duration_ms),
+                    }),
+                    None => cadence,
+                });
         let project = serde_json::to_vec_pretty(&project)
             .map_err(|error| invalid(format!("serialize merged pause project: {error}")))?;
         Ok(Self { events, project })

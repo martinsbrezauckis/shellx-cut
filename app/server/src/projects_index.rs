@@ -20,15 +20,105 @@ use crate::userdata;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static PROJECTS_INDEX_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const MAX_PROJECT_NAME_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_RETRY_PAUSE: Duration = Duration::from_millis(5);
+const LOCK_BUSY_MESSAGE: &str =
+    "Cut could not save your project list because another ShellX Cut is saving it. Try again.";
 
 fn projects_index_io_lock() -> &'static Mutex<()> {
     PROJECTS_INDEX_IO_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[derive(Debug)]
+struct IndexLockBusy;
+
+impl std::fmt::Display for IndexLockBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(LOCK_BUSY_MESSAGE)
+    }
+}
+
+impl std::error::Error for IndexLockBusy {}
+
+fn lock_path_for(index_path: &Path) -> PathBuf {
+    let mut os = index_path.as_os_str().to_os_string();
+    os.push(".lock");
+    PathBuf::from(os)
+}
+
+fn is_lock_contended(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock || (cfg!(windows) && error.raw_os_error() == Some(33))
+}
+
+struct IndexLock {
+    file: std::fs::File,
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+impl IndexLock {
+    fn acquire(index_path: &Path) -> io::Result<Self> {
+        Self::acquire_within(index_path, LOCK_WAIT_TIMEOUT)
+    }
+
+    fn acquire_within(index_path: &Path, timeout: Duration) -> io::Result<Self> {
+        use fs2::FileExt;
+
+        let parent = index_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let lock_path = lock_path_for(index_path);
+        if cut_core::store::plain_file_state(&lock_path)
+            == cut_core::store::PlainFileState::NotPlain
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is a link or not an ordinary file", lock_path.display()),
+            ));
+        }
+
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(&lock_path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not an ordinary file", lock_path.display()),
+            ));
+        }
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { file }),
+                Err(error) if is_lock_contended(&error) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, IndexLockBusy));
+                    }
+                    std::thread::sleep(LOCK_RETRY_PAUSE.min(deadline - now));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
 }
 
 /// One tracked project. `path` is the absolute `<name>.cutproj` directory; `id` is a
@@ -215,41 +305,265 @@ pub fn make_entry(
 // ---- I/O + reconcile (filesystem) ------------------------------------------
 
 /// Load the index (migrating on read). Missing file or no home → empty index.
-pub fn load() -> ProjectsIndex {
+/// A damaged file (empty, cut short, not a list) is read from the copy kept at
+/// the last save; without a usable copy it is moved aside (never deleted) and
+/// the list starts again from the projects folder, with a one-time notice. A
+/// file that cannot be read at all returns an error and is left as it is.
+pub fn try_load() -> io::Result<ProjectsIndex> {
     let Some(p) = userdata::projects_index_path() else {
-        return ProjectsIndex::default();
+        return Ok(ProjectsIndex::default());
     };
-    match std::fs::read_to_string(&p) {
-        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
-            Ok(v) => migrate(v),
-            Err(_) => ProjectsIndex::default(),
-        },
-        Err(_) => ProjectsIndex::default(),
+    try_load_readonly_or_repair(&p)
+}
+
+/// The copy of the list kept by every save beside the index. It is read only
+/// when the index itself is damaged, so a damaged index never looks empty and
+/// the next save replaces it with the kept list.
+fn last_good_path(index_path: &Path) -> PathBuf {
+    index_path.with_extension("last-good.json")
+}
+
+fn try_load_existing_or_kept(path: &Path) -> io::Result<ProjectsIndex> {
+    let damaged = match try_load_at_with(path, crate::replace_temporary::read_optional_text) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => error,
+        other => return other,
+    };
+    let kept = crate::replace_temporary::read_optional_text(&last_good_path(path))
+        .ok()
+        .flatten()
+        .and_then(|text| parse_index(&text).ok());
+    if let Some(idx) = kept {
+        tracing::warn!(
+            index = %path.display(),
+            error = %damaged,
+            "recent projects list was damaged; using the copy kept at the last save"
+        );
+        return Ok(idx);
+    }
+    Err(damaged)
+}
+
+fn try_load_readonly_or_repair(path: &Path) -> io::Result<ProjectsIndex> {
+    match try_load_existing_or_kept(path) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            let lock = IndexLock::acquire(path)?;
+            try_load_locked(&lock, path)
+        }
+        other => other,
     }
 }
 
+fn try_load_locked(_lock: &IndexLock, path: &Path) -> io::Result<ProjectsIndex> {
+    let damaged = match try_load_existing_or_kept(path) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => error,
+        other => return other,
+    };
+    let aside = set_damaged_aside(path)?;
+    tracing::warn!(
+        index = %path.display(),
+        kept_as = %aside.display(),
+        error = %damaged,
+        "recent projects list was damaged and had no usable copy; moved aside and rebuilt"
+    );
+    let mut pending = rebuilt_notices().lock().expect("rebuilt notices lock");
+    pending.retain(|notice| notice.path != path);
+    pending.push(PendingRebuiltNotice {
+        path: path.to_path_buf(),
+        aside,
+        agent_seen: false,
+        ui_seen: false,
+    });
+    Ok(ProjectsIndex::default())
+}
+
+/// Move a damaged list to `projects.damaged.json` (or `-2`, `-3`, ...), never
+/// over an earlier one, so nothing a person had is ever deleted.
+fn set_damaged_aside(path: &Path) -> io::Result<PathBuf> {
+    for n in 1..=1000u32 {
+        let aside = if n == 1 {
+            path.with_extension("damaged.json")
+        } else {
+            path.with_extension(format!("damaged-{n}.json"))
+        };
+        if std::fs::symlink_metadata(&aside).is_err() {
+            std::fs::rename(path, &aside)?;
+            return Ok(aside);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "too many damaged copies of the project list are kept beside it",
+    ))
+}
+
+const REBUILT_CODE: &str = "project_list_rebuilt";
+const REBUILT_MESSAGE: &str = "Your project list was damaged and has been rebuilt from your projects folder. Projects saved in other folders appear again when you open them.";
+
+#[derive(Clone)]
+struct PendingRebuiltNotice {
+    path: PathBuf,
+    aside: PathBuf,
+    agent_seen: bool,
+    ui_seen: bool,
+}
+
+type RebuiltNotices = Mutex<Vec<PendingRebuiltNotice>>;
+static REBUILT_NOTICES: OnceLock<RebuiltNotices> = OnceLock::new();
+
+fn rebuilt_notices() -> &'static RebuiltNotices {
+    REBUILT_NOTICES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// True only for the live browser/webview window (`human:ui-<32hex>:ui`),
+/// distinct from CLI/REST/MCP agents and external scripts.
+pub(crate) fn is_ui_window_actor(actor: &cut_core::Actor) -> bool {
+    actor.kind == cut_core::ActorKind::Human
+        && actor.via == "ui"
+        && actor
+            .name
+            .strip_prefix("ui-")
+            .is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The rebuilt-list notice for `actor`, delivered once to the first agent/script
+/// call and once independently to the UI window so automation never steals it
+/// before the window mounts.
+pub fn rebuilt_notice_for(actor: &cut_core::Actor) -> Option<cut_core::VerbWarning> {
+    rebuilt_notice_for_at(&userdata::projects_index_path()?, actor)
+}
+
+#[cfg(test)]
+fn take_rebuilt_notice_at(index_path: &Path) -> Option<cut_core::VerbWarning> {
+    rebuilt_notice_for_at(index_path, &cut_core::Actor::system())
+}
+
+fn rebuilt_notice_for_at(
+    index_path: &Path,
+    actor: &cut_core::Actor,
+) -> Option<cut_core::VerbWarning> {
+    let mut pending = rebuilt_notices().lock().expect("rebuilt notices lock");
+    let at = pending.iter().position(|entry| entry.path == index_path)?;
+    let is_ui = is_ui_window_actor(actor);
+    let aside = {
+        let entry = &mut pending[at];
+        if is_ui {
+            if entry.ui_seen {
+                return None;
+            }
+            entry.ui_seen = true;
+        } else {
+            if entry.agent_seen {
+                return None;
+            }
+            entry.agent_seen = true;
+        }
+        entry.aside.clone()
+    };
+    pending.retain(|entry| entry.path != index_path || !entry.agent_seen || !entry.ui_seen);
+    let mut detail = serde_json::Map::new();
+    detail.insert(
+        "damaged_copy".into(),
+        serde_json::Value::String(aside.to_string_lossy().into_owned()),
+    );
+    detail.insert(
+        "suggested_action".into(),
+        serde_json::Value::String(
+            "open a project saved outside the projects folder by its path (project.open) to list it again"
+                .into(),
+        ),
+    );
+    Some(cut_core::VerbWarning {
+        code: REBUILT_CODE.into(),
+        message: REBUILT_MESSAGE.into(),
+        detail,
+    })
+}
+
+/// Attach any pending rebuilt-list notice for `actor` without disturbing existing warnings.
+pub fn with_rebuilt_notice_for(
+    result: cut_core::VerbResult,
+    actor: &cut_core::Actor,
+) -> cut_core::VerbResult {
+    result.with_warnings(rebuilt_notice_for(actor).into_iter().collect())
+}
+
+/// A project list that cannot be read or saved (locked, no permission, a
+/// folder in its place) as a plain refusal with the way forward.
+pub fn refusal(error: io::Error) -> cut_core::CutError {
+    let index = userdata::projects_index_path();
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<IndexLockBusy>())
+    {
+        let lock = index
+            .as_deref()
+            .map(lock_path_for)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "projects.json.lock".into());
+        return cut_core::CutError::new(
+            cut_core::error_codes::IO,
+            LOCK_BUSY_MESSAGE,
+            format!("{lock}: another ShellX Cut process held the project list lock"),
+        )
+        .with_suggested_action(
+            "Wait for the other ShellX Cut to finish saving your project list, then try again.",
+        );
+    }
+    let file = index
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "projects.json".into());
+    cut_core::CutError::new(
+        cut_core::error_codes::IO,
+        "Cut could not read or save your project list.",
+        format!("{file}: {error}"),
+    )
+    .with_suggested_action(format!(
+        "Make sure {file} is a file you may change and is not held open by another program, then try again."
+    ))
+}
+
+fn try_load_at_with(
+    path: &Path,
+    read: impl FnOnce(&Path) -> io::Result<Option<String>>,
+) -> io::Result<ProjectsIndex> {
+    let Some(text) = read(path)? else {
+        return Ok(ProjectsIndex::default());
+    };
+    parse_index(&text)
+}
+
+fn parse_index(text: &str) -> io::Result<ProjectsIndex> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("saved projects index is damaged: {error}"),
+        )
+    })?;
+    if !value.is_object() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "saved projects index is damaged: expected a JSON object",
+        ));
+    }
+    Ok(migrate(value))
+}
+
 /// Read a test assertion's snapshot under the same lock as dispatch writers.
-/// Raw `load` can otherwise observe a truncated or partially written index.
+/// Raw unserialized reads can otherwise race a writer's replacement window.
 #[cfg(test)]
 pub(crate) fn load_for_test() -> ProjectsIndex {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
-    load()
+    try_load().expect("load projects index for test")
 }
 
-/// Persist the index (mkdir -p the dotdir; pretty JSON).
-pub fn save(idx: &ProjectsIndex) -> io::Result<()> {
-    let Some(p) = userdata::projects_index_path() else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no HOME/USERPROFILE for ~/.shellx-cut/projects.json",
-        ));
-    };
-    save_at(&p, idx)
-}
-
+#[cfg(test)]
 pub(crate) fn save_at(path: &Path, idx: &ProjectsIndex) -> io::Result<()> {
+    save_before_replace(path, idx, || Ok(()))
+}
+
+fn save_locked(_lock: &IndexLock, path: &Path, idx: &ProjectsIndex) -> io::Result<()> {
     save_before_replace(path, idx, || Ok(()))
 }
 
@@ -265,10 +579,22 @@ fn save_before_replace(
     std::fs::create_dir_all(parent)?;
     let body = serde_json::to_vec_pretty(idx)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    // The kept copy is written first: a save that fails here leaves the index
+    // untouched, and a stop between the two leaves both files readable.
+    write_replacing(parent, &last_good_path(path), &body, || Ok(()))?;
+    write_replacing(parent, path, &body, before_replace)
+}
+
+fn write_replacing(
+    parent: &Path,
+    path: &Path,
+    body: &[u8],
+    before_replace: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let mut file = tempfile::Builder::new()
         .prefix(".projects-index-")
         .tempfile_in(parent)?;
-    file.write_all(&body)?;
+    file.write_all(body)?;
     file.as_file().sync_all()?;
     before_replace()?;
     // tempfile uses a same-directory rename on Unix and MoveFileExW with
@@ -376,10 +702,30 @@ pub fn note_created(name: &str, path: &str) -> io::Result<()> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no HOME/USERPROFILE for ~/.shellx-cut/projects.json",
+        ));
+    };
+    note_created_at(&index_path, name, path)
+}
+
+fn note_created_at(index_path: &Path, name: &str, path: &str) -> io::Result<()> {
+    note_created_at_within(index_path, name, path, LOCK_WAIT_TIMEOUT)
+}
+
+fn note_created_at_within(
+    index_path: &Path,
+    name: &str,
+    path: &str,
+    timeout: Duration,
+) -> io::Result<()> {
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
     let n = now_ms();
-    let mut idx = load();
+    let mut idx = try_load_locked(&lock, index_path)?;
     idx.upsert(make_entry(name, path, n, n, None, None));
-    save(&idx)
+    save_locked(&lock, index_path, &idx)
 }
 
 /// Record a project being opened: touch its `last_opened_ms`, or register it if it
@@ -394,8 +740,43 @@ pub fn note_opened(
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no HOME/USERPROFILE for ~/.shellx-cut/projects.json",
+        ));
+    };
+    note_opened_at(&index_path, name, path, duration_ms, clip_count)
+}
+
+fn note_opened_at(
+    index_path: &Path,
+    name: &str,
+    path: &str,
+    duration_ms: Option<u64>,
+    clip_count: Option<u64>,
+) -> io::Result<()> {
+    note_opened_at_within(
+        index_path,
+        name,
+        path,
+        duration_ms,
+        clip_count,
+        LOCK_WAIT_TIMEOUT,
+    )
+}
+
+fn note_opened_at_within(
+    index_path: &Path,
+    name: &str,
+    path: &str,
+    duration_ms: Option<u64>,
+    clip_count: Option<u64>,
+    timeout: Duration,
+) -> io::Result<()> {
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
     let n = now_ms();
-    let mut idx = load();
+    let mut idx = try_load_locked(&lock, index_path)?;
     let id = id_for(path);
     if idx.touch(&id, n) {
         // refresh metadata on the existing entry
@@ -411,7 +792,7 @@ pub fn note_opened(
     } else {
         idx.upsert(make_entry(name, path, n, n, duration_ms, clip_count));
     }
-    save(&idx)
+    save_locked(&lock, index_path, &idx)
 }
 
 /// Record a rename (display name only; the dir is unchanged so we key by path).
@@ -419,9 +800,26 @@ pub fn note_renamed(path: &str, new_name: &str) -> io::Result<bool> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
-    let mut idx = load();
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Ok(false);
+    };
+    note_renamed_at(&index_path, path, new_name)
+}
+
+fn note_renamed_at(index_path: &Path, path: &str, new_name: &str) -> io::Result<bool> {
+    note_renamed_at_within(index_path, path, new_name, LOCK_WAIT_TIMEOUT)
+}
+
+fn note_renamed_at_within(
+    index_path: &Path,
+    path: &str,
+    new_name: &str,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
+    let mut idx = try_load_locked(&lock, index_path)?;
     if idx.rename_path(path, new_name) {
-        save(&idx)?;
+        save_locked(&lock, index_path, &idx)?;
         return Ok(true);
     }
     Ok(false)
@@ -433,10 +831,36 @@ pub fn list(managed_dir: &Path, sort: &str, q: Option<&str>) -> io::Result<Vec<P
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no HOME/USERPROFILE for ~/.shellx-cut/projects.json",
+        ));
+    };
+    list_at(&index_path, managed_dir, sort, q)
+}
+
+fn list_at(
+    index_path: &Path,
+    managed_dir: &Path,
+    sort: &str,
+    q: Option<&str>,
+) -> io::Result<Vec<ProjectEntry>> {
+    list_at_within(index_path, managed_dir, sort, q, LOCK_WAIT_TIMEOUT)
+}
+
+fn list_at_within(
+    index_path: &Path,
+    managed_dir: &Path,
+    sort: &str,
+    q: Option<&str>,
+    timeout: Duration,
+) -> io::Result<Vec<ProjectEntry>> {
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
     let n = now_ms();
-    let mut idx = load();
+    let mut idx = try_load_locked(&lock, index_path)?;
     reconcile(&mut idx, managed_dir, n);
-    save(&idx)?;
+    save_locked(&lock, index_path, &idx)?;
     Ok(idx.query(sort, q))
 }
 
@@ -445,10 +869,22 @@ pub fn forget(id_or_path: &str) -> io::Result<bool> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
-    let mut idx = load();
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Ok(false);
+    };
+    forget_at(&index_path, id_or_path)
+}
+
+fn forget_at(index_path: &Path, id_or_path: &str) -> io::Result<bool> {
+    forget_at_within(index_path, id_or_path, LOCK_WAIT_TIMEOUT)
+}
+
+fn forget_at_within(index_path: &Path, id_or_path: &str, timeout: Duration) -> io::Result<bool> {
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
+    let mut idx = try_load_locked(&lock, index_path)?;
     let removed = idx.remove(id_or_path);
     if removed {
-        save(&idx)?;
+        save_locked(&lock, index_path, &idx)?;
     }
     Ok(removed)
 }
@@ -464,12 +900,24 @@ pub fn forget_missing() -> io::Result<usize> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
-    let mut idx = load();
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Ok(0);
+    };
+    forget_missing_at(&index_path)
+}
+
+fn forget_missing_at(index_path: &Path) -> io::Result<usize> {
+    forget_missing_at_within(index_path, LOCK_WAIT_TIMEOUT)
+}
+
+fn forget_missing_at_within(index_path: &Path, timeout: Duration) -> io::Result<usize> {
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
+    let mut idx = try_load_locked(&lock, index_path)?;
     let before = idx.entries.len();
     idx.entries.retain(|e| cutproj_exists(&e.path));
     let removed = before - idx.entries.len();
     if removed > 0 {
-        save(&idx)?;
+        save_locked(&lock, index_path, &idx)?;
     }
     Ok(removed)
 }
@@ -484,13 +932,14 @@ pub fn forget_missing() -> io::Result<usize> {
 /// exists on disk — `project.delete` captures these ids BEFORE removing the files,
 /// then forgets them with `forget_ids` afterwards (post-delete the path won't
 /// resolve, so the canonicalize comparison would no longer match).
-pub fn ids_for_dir(canon: &Path) -> Vec<String> {
+pub fn ids_for_dir(canon: &Path) -> io::Result<Vec<String>> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
     let canon_norm = normalize_path(&canon.to_string_lossy());
-    let idx = load();
-    idx.entries
+    let idx = try_load()?;
+    Ok(idx
+        .entries
         .iter()
         .filter(|e| {
             // Best: both paths canonicalize to the same real directory.
@@ -504,7 +953,7 @@ pub fn ids_for_dir(canon: &Path) -> Vec<String> {
             normalize_path(&e.path) == canon_norm
         })
         .map(|e| e.id.clone())
-        .collect()
+        .collect())
 }
 
 /// Drop every entry whose id is in `ids` (used by `project.delete` after the files
@@ -516,12 +965,27 @@ pub fn forget_ids(ids: &[String]) -> io::Result<usize> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
-    let mut idx = load();
+    let Some(index_path) = userdata::projects_index_path() else {
+        return Ok(0);
+    };
+    forget_ids_at(&index_path, ids)
+}
+
+fn forget_ids_at(index_path: &Path, ids: &[String]) -> io::Result<usize> {
+    forget_ids_at_within(index_path, ids, LOCK_WAIT_TIMEOUT)
+}
+
+fn forget_ids_at_within(index_path: &Path, ids: &[String], timeout: Duration) -> io::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let lock = IndexLock::acquire_within(index_path, timeout)?;
+    let mut idx = try_load_locked(&lock, index_path)?;
     let before = idx.entries.len();
     idx.entries.retain(|e| !ids.iter().any(|id| id == &e.id));
     let removed = before - idx.entries.len();
     if removed > 0 {
-        save(&idx)?;
+        save_locked(&lock, index_path, &idx)?;
     }
     Ok(removed)
 }
@@ -529,16 +993,17 @@ pub fn forget_ids(ids: &[String]) -> io::Result<usize> {
 /// Resolve a project's `.cutproj` path from its index id OR a path string (matches
 /// by id, then by normalized path). Returns None when no index entry matches.
 /// Used by `project.delete` to find the directory to remove from an id.
-pub fn path_for(id_or_path: &str) -> Option<String> {
+pub fn path_for(id_or_path: &str) -> io::Result<Option<String>> {
     let _guard = projects_index_io_lock()
         .lock()
         .expect("projects index lock");
-    let idx = load();
+    let idx = try_load()?;
     let key_norm = normalize_path(id_or_path);
-    idx.entries
+    Ok(idx
+        .entries
         .iter()
         .find(|e| e.id == id_or_path || normalize_path(&e.path) == key_norm)
-        .map(|e| e.path.clone())
+        .map(|e| e.path.clone()))
 }
 
 #[cfg(test)]
@@ -777,8 +1242,11 @@ mod tests {
         let reader_a = std::thread::spawn(move || -> Result<usize, String> {
             let mut reads = 0usize;
             while !done_reader_a.load(Ordering::Acquire) {
-                let raw = std::fs::read_to_string(&path_reader_a)
-                    .map_err(|e| format!("read error at iteration {reads}: {e}"))?;
+                // The same bounded read the product uses: a short Windows
+                // replacement gap is retried there, a half-written file is not.
+                let raw = crate::replace_temporary::read_optional_text(&path_reader_a)
+                    .map_err(|e| format!("read error at iteration {reads}: {e}"))?
+                    .ok_or_else(|| format!("index missing at iteration {reads}"))?;
                 let parsed: ProjectsIndex = serde_json::from_str(&raw).map_err(|e| {
                     format!(
                         "partial/empty JSON at iteration {reads} (len={}): {e}",
@@ -822,6 +1290,731 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
         let loaded: ProjectsIndex = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(loaded.entries, before.entries);
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        let mut names: Vec<String> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["projects.json", "projects.last-good.json"]);
+    }
+
+    #[test]
+    fn damaged_index_uses_the_last_good_copy_and_is_never_saved_as_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let managed = temp.path().join("managed");
+        std::fs::create_dir(&managed).unwrap();
+        let kept_entries = || {
+            let mut idx = ProjectsIndex::default();
+            idx.upsert(entry("Keep One", "/p/Keep1.cutproj", 10, 20));
+            idx.upsert(entry("Keep Two", "/p/Keep2.cutproj", 30, 40));
+            idx
+        };
+
+        let damaged = b"{\"version\":1,\"entries\":[{\"id\":";
+        for bad in [b"".as_slice(), damaged.as_slice(), b"null".as_slice()] {
+            save_at(&path, &kept_entries()).unwrap();
+            std::fs::write(&path, bad).unwrap();
+
+            let listed = list_at(&path, &managed, "recent", None)
+                .expect("a damaged list must open with the kept copy");
+            assert_eq!(listed.len(), 2, "{bad:?}: {listed:?}");
+
+            std::fs::write(&path, bad).unwrap();
+            note_created_at(&path, "New", "/p/New.cutproj")
+                .expect("creating a project must not fail on a damaged list");
+            let saved: ProjectsIndex =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let mut names: Vec<&str> = saved.entries.iter().map(|e| e.name.as_str()).collect();
+            names.sort();
+            assert_eq!(names, ["Keep One", "Keep Two", "New"], "{bad:?}");
+        }
+
+        // A read that fails (not damage) still refuses and changes nothing.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(note_created_at(&path, "Other", "/p/Other.cutproj").is_err());
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn damaged_index_without_a_kept_copy_is_set_aside_rebuilt_and_noticed_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let managed = temp.path().join("managed");
+        let found = managed.join("Found.cutproj");
+        std::fs::create_dir_all(&found).unwrap();
+        std::fs::write(found.join("project.json"), r#"{"name":"Found"}"#).unwrap();
+
+        let damaged = b"{\"version\":1,\"entries\":[{\"id\":";
+        let cases: [(&[u8], &str); 3] = [
+            (b"", "projects.damaged.json"),
+            (damaged, "projects.damaged-2.json"),
+            (b"null", "projects.damaged-3.json"),
+        ];
+        for (bad, aside) in cases {
+            let _ = std::fs::remove_file(temp.path().join("projects.last-good.json"));
+            std::fs::write(&path, bad).unwrap();
+            note_created_at(&path, "New", "/p/New.cutproj")
+                .expect("a damaged list without a kept copy must not block creating a project");
+            assert_eq!(std::fs::read(temp.path().join(aside)).unwrap(), bad);
+            let notice = take_rebuilt_notice_at(&path).expect("one notice after the rebuild");
+            assert_eq!(notice.code, "project_list_rebuilt");
+            assert!(notice.message.starts_with("Your project list was damaged"));
+            assert!(
+                take_rebuilt_notice_at(&path).is_none(),
+                "the notice is given once"
+            );
+
+            let listed = list_at(&path, &managed, "recent", None).unwrap();
+            let mut names: Vec<&str> = listed.iter().map(|e| e.name.as_str()).collect();
+            names.sort();
+            assert_eq!(names, ["Found", "New"], "{bad:?}");
+        }
+        assert!(take_rebuilt_notice_at(&path).is_none());
+    }
+
+    #[test]
+    fn agent_project_list_does_not_steal_rebuilt_notice_from_ui_window() {
+        const CHILD_ENV: &str = "CUT_TEST_REBUILT_NOTICE_CHILD";
+        const TEST_NAME: &str =
+            "projects_index::tests::agent_project_list_does_not_steal_rebuilt_notice_from_ui_window";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let temp = tempfile::tempdir().unwrap();
+            let projects_dir = temp.path().join("Projects");
+            std::fs::create_dir_all(&projects_dir).unwrap();
+            std::fs::write(temp.path().join("projects.json"), b"{broken").unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(TEST_NAME)
+                .arg("--nocapture")
+                .env(CHILD_ENV, "1")
+                .env("SHELLX_CUT_HOME", temp.path())
+                .env("SHELLX_CUT_PROJECTS_DIR", &projects_dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let state = crate::state::AppState::new();
+            let agent = cut_core::Actor {
+                kind: cut_core::ActorKind::Agent,
+                name: "mcp".into(),
+                via: "mcp".into(),
+                request: None,
+            };
+            let ui_window = cut_core::Actor {
+                kind: cut_core::ActorKind::Human,
+                name: "ui-0123456789abcdef0123456789abcdef".into(),
+                via: "ui".into(),
+                request: None,
+            };
+
+            let first_agent = crate::dispatch::dispatch(
+                &state,
+                "project.list",
+                serde_json::json!({}),
+                agent.clone(),
+            )
+            .await;
+            assert!(first_agent.ok, "{first_agent:?}");
+            assert!(
+                first_agent
+                    .warnings
+                    .iter()
+                    .flatten()
+                    .any(|w| w.code == "project_list_rebuilt"),
+                "agent receives rebuilt notice once: {first_agent:?}"
+            );
+            let second_agent =
+                crate::dispatch::dispatch(&state, "project.list", serde_json::json!({}), agent)
+                    .await;
+            assert!(second_agent.ok, "{second_agent:?}");
+            assert!(second_agent.warnings.as_deref().unwrap_or(&[]).is_empty());
+
+            let first_ui = crate::dispatch::dispatch(
+                &state,
+                "project.list",
+                serde_json::json!({}),
+                ui_window.clone(),
+            )
+            .await;
+            assert!(first_ui.ok, "{first_ui:?}");
+            assert!(
+                first_ui
+                    .warnings
+                    .iter()
+                    .flatten()
+                    .any(|w| w.code == "project_list_rebuilt"),
+                "UI window must still receive project_list_rebuilt after agent call: {first_ui:?}"
+            );
+            let second_ui = crate::dispatch::dispatch(
+                &state,
+                "project.list",
+                serde_json::json!({}),
+                ui_window.clone(),
+            )
+            .await;
+            assert!(second_ui.ok, "{second_ui:?}");
+            assert!(second_ui.warnings.as_deref().unwrap_or(&[]).is_empty());
+
+            // Verify project.open also carries the rebuilt notice for the UI window when an agent listed first.
+            let projects_dir =
+                std::path::PathBuf::from(std::env::var_os("SHELLX_CUT_PROJECTS_DIR").unwrap());
+            let open_project =
+                cut_core::ProjectStore::create(&projects_dir, "OpenCheck", None).unwrap();
+            let open_path = open_project.dir.clone();
+            drop(open_project);
+            let cut_home = std::path::PathBuf::from(std::env::var_os("SHELLX_CUT_HOME").unwrap());
+            let _ = std::fs::remove_file(cut_home.join("projects.last-good.json"));
+            std::fs::write(cut_home.join("projects.json"), b"{broken-open").unwrap();
+            let agent2 = cut_core::Actor {
+                kind: cut_core::ActorKind::Agent,
+                name: "cli".into(),
+                via: "cli".into(),
+                request: None,
+            };
+            let agent_open_pre = crate::dispatch::dispatch(
+                &state,
+                "project.list",
+                serde_json::json!({}),
+                agent2.clone(),
+            )
+            .await;
+            assert!(
+                agent_open_pre
+                    .warnings
+                    .iter()
+                    .flatten()
+                    .any(|w| w.code == "project_list_rebuilt"),
+                "agent must still see rebuild before project.open: {agent_open_pre:?}"
+            );
+            let ui_open = crate::dispatch::dispatch(
+                &state,
+                "project.open",
+                serde_json::json!({"path": open_path}),
+                ui_window.clone(),
+            )
+            .await;
+            assert!(ui_open.ok, "{ui_open:?}");
+            assert!(
+                ui_open
+                    .warnings
+                    .iter()
+                    .flatten()
+                    .any(|w| w.code == "project_list_rebuilt"),
+                "UI window project.open must still receive project_list_rebuilt: {ui_open:?}"
+            );
+
+            // Verify project.state carries it for the UI window (not agents) when --project opened at start.
+            let _ = std::fs::remove_file(cut_home.join("projects.last-good.json"));
+            std::fs::write(cut_home.join("projects.json"), b"{broken-state").unwrap();
+            let _ = crate::projects_index::list(&projects_dir, "recent", None).unwrap();
+            let agent_state =
+                crate::dispatch::dispatch(&state, "project.state", serde_json::json!({}), agent2)
+                    .await;
+            assert!(agent_state.ok, "{agent_state:?}");
+            assert!(
+                agent_state
+                    .warnings
+                    .iter()
+                    .flatten()
+                    .all(|w| w.code != "project_list_rebuilt"),
+                "agent project.state must not receive/consume project_list_rebuilt: {agent_state:?}"
+            );
+            let ui_state = crate::dispatch::dispatch(
+                &state,
+                "project.state",
+                serde_json::json!({}),
+                ui_window,
+            )
+            .await;
+            assert!(ui_state.ok, "{ui_state:?}");
+            assert!(
+                ui_state
+                    .warnings
+                    .iter()
+                    .flatten()
+                    .any(|w| w.code == "project_list_rebuilt"),
+                "UI window project.state must still receive project_list_rebuilt: {ui_state:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn unreadable_index_refuses_mutations_and_is_left_as_it_is() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let managed = temp.path().join("managed");
+        std::fs::create_dir(&managed).unwrap();
+        save_at(&path, &ProjectsIndex::default()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(note_created_at(&path, "New", "/p/New.cutproj").is_err());
+        assert!(note_opened_at(&path, "New", "/p/New.cutproj", None, None).is_err());
+        assert!(note_renamed_at(&path, "/p/Keep.cutproj", "Renamed").is_err());
+        assert!(list_at(&path, &managed, "recent", None).is_err());
+        assert!(forget_at(&path, "/p/Keep.cutproj").is_err());
+        assert!(forget_missing_at(&path).is_err());
+        assert!(forget_ids_at(&path, &["id1".to_string()]).is_err());
+        assert!(path.is_dir());
+        assert!(take_rebuilt_notice_at(&path).is_none());
+        let refused = refusal(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            refused.message,
+            "Cut could not read or save your project list."
+        );
+        assert!(refused.suggested_action.is_some());
+    }
+
+    #[test]
+    fn windows_transient_index_errors_retry_and_exhausted_refusals_do_not_wipe() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let mut initial = ProjectsIndex::default();
+        initial.upsert(entry("Keep", "/p/Keep.cutproj", 10, 20));
+        save_at(&path, &initial).unwrap();
+        let serialized = std::fs::read_to_string(&path).unwrap();
+
+        for make_err in [
+            || io::Error::new(io::ErrorKind::NotFound, "replacement gap"),
+            || io::Error::from_raw_os_error(5),
+            || io::Error::from_raw_os_error(32),
+        ] {
+            let mut attempts = 0;
+            let loaded = try_load_at_with(&path, |p| {
+                crate::replace_temporary::read_optional_text_with(
+                    p,
+                    true,
+                    |_| {
+                        attempts += 1;
+                        if attempts <= 2 {
+                            Err(make_err())
+                        } else {
+                            Ok(serialized.clone())
+                        }
+                    },
+                    |_| {},
+                )
+            })
+            .unwrap();
+            assert_eq!(loaded.entries, initial.entries);
+            assert_eq!(attempts, 3);
+        }
+
+        let refused = try_load_at_with(&path, |p| {
+            crate::replace_temporary::read_optional_text_with(
+                p,
+                true,
+                |_| Err(io::Error::from_raw_os_error(5)),
+                |_| {},
+            )
+        });
+        assert!(
+            refused.is_err(),
+            "exhausted access refusal must error instead of returning an empty index"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_sharing_violation_retries_without_wiping_projects_index() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let mut initial = ProjectsIndex::default();
+        initial.upsert(entry("Keep One", "/p/Keep1.cutproj", 10, 20));
+        initial.upsert(entry("Keep Two", "/p/Keep2.cutproj", 30, 40));
+        save_at(&path, &initial).unwrap();
+
+        let locked = Arc::new(Barrier::new(2));
+        let holder = {
+            let path = path.clone();
+            let locked = Arc::clone(&locked);
+            std::thread::spawn(move || {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&path)
+                    .unwrap();
+                locked.wait();
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                drop(file);
+            })
+        };
+
+        locked.wait();
+        note_created_at(&path, "New One", "/p/New1.cutproj")
+            .expect("transient sharing violation must retry instead of failing or wiping");
+        holder.join().unwrap();
+
+        let saved: ProjectsIndex = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved.entries.len(),
+            3,
+            "existing entries were wiped: {saved:?}"
+        );
+    }
+
+    struct TestChildGuard(Option<std::process::Child>);
+
+    impl TestChildGuard {
+        fn kill_and_wait(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    impl Drop for TestChildGuard {
+        fn drop(&mut self) {
+            self.kill_and_wait();
+        }
+    }
+
+    fn wait_for_flag_or_child_exit(
+        flag: &Path,
+        children: &mut [std::process::Child],
+        timeout: std::time::Duration,
+    ) {
+        let deadline = std::time::Instant::now() + timeout;
+        while !flag.exists() {
+            for child in children.iter_mut() {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!(
+                        "child exited early with status {status} before creating {}",
+                        flag.display()
+                    );
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {}",
+                flag.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn concurrent_processes_preserve_all_entries() {
+        const WORKER_ENV: &str = "SHELLX_CUT_INDEX_CONCURRENT_WORKER";
+        const BARRIER_ENV: &str = "SHELLX_CUT_INDEX_CONCURRENT_BARRIER";
+        const TEST_NAME: &str = "projects_index::tests::concurrent_processes_preserve_all_entries";
+        const PER_WORKER: u32 = 200;
+
+        if let Some(worker) = std::env::var_os(WORKER_ENV) {
+            let worker = worker.to_string_lossy().into_owned();
+            let barrier = PathBuf::from(
+                std::env::var_os(BARRIER_ENV).expect("barrier dir env must be set for worker"),
+            );
+            std::fs::write(barrier.join(format!("ready-{worker}")), b"1").unwrap();
+            let go = barrier.join("go");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !go.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker {worker} timed out waiting for go signal"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            // Each worker changes the list back to back, so on a disk with slow flushes (macOS full
+            // fsync) the other worker can hold the lock past one bounded wait. The refusal says "try
+            // again": do that, so the test still proves that no entry is ever lost.
+            let mut retries = 0u32;
+            for i in 0..PER_WORKER {
+                let name = format!("Worker {worker} Project {i:03}");
+                let path = format!("/projects/worker-{worker}/p-{i:03}.cutproj");
+                loop {
+                    match note_created(&name, &path) {
+                        Ok(()) => break,
+                        Err(error) if error.kind() == io::ErrorKind::TimedOut && retries < 120 => {
+                            retries += 1;
+                        }
+                        Err(error) => panic!("worker {worker} entry {i}: {error:?}"),
+                    }
+                }
+            }
+            eprintln!("worker {worker}: {retries} bounded waits ran out and were retried");
+            return;
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let barrier = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut children: Vec<std::process::Child> = ["0", "1"]
+            .into_iter()
+            .map(|worker| {
+                std::process::Command::new(&exe)
+                    .args(["--exact", TEST_NAME, "--nocapture"])
+                    .env("SHELLX_CUT_HOME", home.path())
+                    .env(WORKER_ENV, worker)
+                    .env(BARRIER_ENV, barrier.path())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("spawn concurrent projects_index worker")
+            })
+            .collect();
+
+        for worker in ["0", "1"] {
+            wait_for_flag_or_child_exit(
+                &barrier.path().join(format!("ready-{worker}")),
+                &mut children,
+                std::time::Duration::from_secs(15),
+            );
+        }
+        std::fs::write(barrier.path().join("go"), b"go").unwrap();
+
+        for (idx, child) in children.into_iter().enumerate() {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "worker {idx} failed ({:?}):\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let index_path = home.path().join("projects.json");
+        let saved: ProjectsIndex =
+            serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        let expected_total = (PER_WORKER * 2) as usize;
+        assert_eq!(
+            saved.entries.len(),
+            expected_total,
+            "lost {} of {} concurrent entries (got {})",
+            expected_total.saturating_sub(saved.entries.len()),
+            expected_total,
+            saved.entries.len()
+        );
+        for worker in ["0", "1"] {
+            for i in 0..PER_WORKER {
+                let expected_path = format!("/projects/worker-{worker}/p-{i:03}.cutproj");
+                assert!(
+                    saved.entries.iter().any(|e| e.path == expected_path),
+                    "missing entry {expected_path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn locked_index_refuses_change_after_timeout_without_modifying_file() {
+        use fs2::FileExt;
+
+        const HOLDER_DIR_ENV: &str = "SHELLX_CUT_INDEX_LOCK_HOLDER_DIR";
+        const TEST_NAME: &str =
+            "projects_index::tests::locked_index_refuses_change_after_timeout_without_modifying_file";
+        const EXPECTED_MSG: &str =
+            "Cut could not save your project list because another ShellX Cut is saving it. Try again.";
+
+        if let Some(dir) = std::env::var_os(HOLDER_DIR_ENV) {
+            let dir = PathBuf::from(dir);
+            let lock_path = dir.join("projects.json.lock");
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            file.lock_exclusive().unwrap();
+            std::fs::write(dir.join("lock-held"), b"1").unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            let _ = FileExt::unlock(&file);
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let mut initial = ProjectsIndex::default();
+        initial.upsert(entry("Keep", "/p/Keep.cutproj", 10, 20));
+        save_at(&path, &initial).unwrap();
+        let before_bytes = std::fs::read(&path).unwrap();
+        let before_kept_bytes = std::fs::read(last_good_path(&path)).unwrap();
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(HOLDER_DIR_ENV, temp.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn lock holder child");
+        let mut guard = TestChildGuard(Some(child));
+
+        let held_flag = temp.path().join("lock-held");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !held_flag.exists() {
+            if let Some(status) = guard.0.as_mut().unwrap().try_wait().unwrap() {
+                panic!("lock holder exited early with {status}");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for lock-held sentinel"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let started = std::time::Instant::now();
+        let err = note_created_at(&path, "Blocked", "/p/Blocked.cutproj")
+            .expect_err("held lock must refuse the change after bounded wait");
+        let elapsed = started.elapsed();
+        guard.kill_and_wait();
+
+        assert!(
+            elapsed >= std::time::Duration::from_secs(4)
+                && elapsed < std::time::Duration::from_secs(15),
+            "expected ~5s bounded wait, got {elapsed:?}"
+        );
+        assert_eq!(err.to_string(), EXPECTED_MSG);
+        let cut_err = refusal(err);
+        assert_eq!(cut_err.code, cut_core::error_codes::IO);
+        assert_eq!(cut_err.message, EXPECTED_MSG);
+        assert!(cut_err.suggested_action.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        assert_eq!(
+            std::fs::read(last_good_path(&path)).unwrap(),
+            before_kept_bytes
+        );
+    }
+
+    #[test]
+    fn plain_reads_succeed_and_all_mutating_callers_refuse_while_lock_is_held() {
+        use fs2::FileExt;
+
+        const HOLDER_DIR_ENV: &str = "SHELLX_CUT_INDEX_ALL_LOCK_HOLDER_DIR";
+        const TEST_NAME: &str =
+            "projects_index::tests::plain_reads_succeed_and_all_mutating_callers_refuse_while_lock_is_held";
+
+        if let Some(dir) = std::env::var_os(HOLDER_DIR_ENV) {
+            let dir = PathBuf::from(dir);
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(dir.join("projects.json.lock"))
+                .unwrap();
+            file.lock_exclusive().unwrap();
+            std::fs::write(dir.join("lock-held"), b"1").unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            let _ = FileExt::unlock(&file);
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let managed = temp.path().join("managed");
+        std::fs::create_dir(&managed).unwrap();
+        let mut initial = ProjectsIndex::default();
+        let keep = entry("Keep", "/p/Keep.cutproj", 10, 20);
+        let keep_id = keep.id.clone();
+        initial.upsert(keep);
+        save_at(&path, &initial).unwrap();
+        let before_bytes = std::fs::read(&path).unwrap();
+        let before_kept_bytes = std::fs::read(last_good_path(&path)).unwrap();
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(HOLDER_DIR_ENV, temp.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn lock holder child");
+        let mut guard = TestChildGuard(Some(child));
+
+        let held_flag = temp.path().join("lock-held");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !held_flag.exists() {
+            if let Some(status) = guard.0.as_mut().unwrap().try_wait().unwrap() {
+                panic!("lock holder exited early with {status}");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for lock-held sentinel"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        // Plain read succeeds immediately without acquiring the lock.
+        let read_start = std::time::Instant::now();
+        let loaded = try_load_readonly_or_repair(&path).expect("plain read must not block");
+        assert!(read_start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].id, keep_id);
+
+        // Every mutating caller refuses cleanly without touching the files.
+        let short = Duration::from_millis(25);
+        let errors = [
+            note_created_at_within(&path, "Blocked", "/p/Blocked.cutproj", short).unwrap_err(),
+            note_opened_at_within(&path, "Keep", "/p/Keep.cutproj", None, None, short).unwrap_err(),
+            note_renamed_at_within(&path, "/p/Keep.cutproj", "Renamed", short).unwrap_err(),
+            list_at_within(&path, &managed, "recent", None, short).unwrap_err(),
+            forget_at_within(&path, &keep_id, short).unwrap_err(),
+            forget_missing_at_within(&path, short).unwrap_err(),
+            forget_ids_at_within(&path, std::slice::from_ref(&keep_id), short).unwrap_err(),
+        ];
+        guard.kill_and_wait();
+
+        for error in errors {
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(error.to_string(), LOCK_BUSY_MESSAGE);
+            let cut_err = refusal(error);
+            assert_eq!(cut_err.code, cut_core::error_codes::IO);
+            assert_eq!(cut_err.message, LOCK_BUSY_MESSAGE);
+            let recording_reply =
+                crate::screen_record::created_project_rollback::running_take_failure_reply(
+                    cut_err, "cap-lock", None,
+                );
+            let reply_err = recording_reply.error.unwrap();
+            assert_eq!(reply_err.message, LOCK_BUSY_MESSAGE);
+            assert!(reply_err.suggested_action.is_some());
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        assert_eq!(
+            std::fs::read(last_good_path(&path)).unwrap(),
+            before_kept_bytes
+        );
+    }
+
+    #[test]
+    fn non_plain_lock_file_refuses_without_modifying_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("projects.json");
+        let mut initial = ProjectsIndex::default();
+        initial.upsert(entry("Keep", "/p/Keep.cutproj", 10, 20));
+        save_at(&path, &initial).unwrap();
+        let before_bytes = std::fs::read(&path).unwrap();
+
+        let lock_path = lock_path_for(&path);
+        std::fs::create_dir(&lock_path).unwrap();
+        let err = note_created_at(&path, "Blocked", "/p/Blocked.cutproj").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        std::fs::remove_dir(&lock_path).unwrap();
+
+        #[cfg(unix)]
+        {
+            let target = temp.path().join("outside-target.txt");
+            std::fs::write(&target, b"untouched").unwrap();
+            std::os::unix::fs::symlink(&target, &lock_path).unwrap();
+            let err = note_created_at(&path, "Blocked", "/p/Blocked.cutproj").unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+            assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        }
     }
 }

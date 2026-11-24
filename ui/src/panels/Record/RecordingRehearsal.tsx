@@ -1,4 +1,5 @@
 import { engineMediaUrl } from '../../lib/mediaUrl'
+import { releaseMediaElement } from '../../lib/mediaElementRelease'
 import { recordingNotice } from './recordingUiModel'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
@@ -25,6 +26,11 @@ interface RecordingRehearsalProps {
   startError: string | null
   /** Refreshes Doctor after the native take returns or is cleaned up. */
   onRefresh: () => void
+}
+
+const releaseRehearsalVideo = (node: HTMLVideoElement | null) => {
+  if (!node) return
+  return () => releaseMediaElement(node)
 }
 
 /** Every disposable take is bound to this exact current recorder selection. */
@@ -197,6 +203,7 @@ export function RecordingRehearsal({
       {state.kind === 'ready' && (
         <div className="rec-rehearsal__playback" data-cut-rec-rehearsal-playback>
           <video
+            ref={releaseRehearsalVideo}
             data-cut-rec-rehearsal-video
             src={engineMediaUrl(`${API_BASE}${state.take.playback_url}`)}
             controls

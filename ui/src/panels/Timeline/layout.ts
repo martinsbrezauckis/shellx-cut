@@ -5,7 +5,7 @@
 // two-ladder ruler intervals with divisibility repair.
 // Callers: panels/Timeline/index.tsx. Dependencies: lib/client types + source mapping.
 
-import { isIdentityTransform, type Clip, type ClipFade, type ClipGrade, type ClipTransform, type Marker, type MotionClipLink, type Project, type Track, type TrackKind } from '../../lib/client'
+import { isIdentityTransform, type Clip, type ClipFade, type ClipMarker, type ClipGrade, type ClipTransform, type Marker, type MotionClipLink, type Project, type Track, type TrackKind } from '../../lib/client'
 import { sourceAtPlayheadForLayout, sourceFrameMatchForLayout, sourceTimelineOccurrencesForLayout, type SourceAt, type SourceFrameMatch, type SourceTimelineOccurrence } from './sourceMapping'
 export type { SourceAt, SourceFrameMatch, SourceTimelineOccurrence } from './sourceMapping'
 
@@ -166,6 +166,10 @@ export interface LaidItem {
   grade?: ClipGrade | null
   /** Durable ShellX Motion source/render identity projected by project.state. */
   motionLink?: MotionClipLink
+  /** Clip markers in SOURCE ms (all of them, also those outside the trimmed
+   * range); ClipView draws only the visible ones. Not carried for held-frame
+   * or speed-ramped clips, whose source-to-timeline map is not linear. */
+  markers?: ClipMarker[]
 }
 
 type GapClip = Extract<Clip, { kind: 'gap' }>
@@ -304,6 +308,8 @@ export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[]
         // Carry the full grade so the live composite stage can CSS-approximate it.
         grade: clip.grade ?? undefined,
         motionLink: clip.motion_link,
+        markers: clip.markers?.length && !clip.freeze && !('speed_ramp' in clip && clip.speed_ramp)
+          ? clip.markers : undefined,
       })
       cursor = startMs + dur
       edCursor += dur

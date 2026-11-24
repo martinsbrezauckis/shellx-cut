@@ -38,15 +38,15 @@ fn keyframe_inner(
     enforce_bound: bool,
 ) -> Result<Vec<OpEffect>, CutError> {
     use crate::types::KfParam;
-    if enforce_bound && points.len() > crate::keyframe_limit::MAX_KEYFRAME_POINTS {
+    if enforce_bound && points.len() > crate::keyframe_limit::MAX_EDIT_KEYFRAME_POINTS {
         return Err(CutError::new(
             codes::INVALID_ARGS,
             format!(
                 "clip '{clip_id}' has {} keyframe points for {param:?}; the limit is {} per track",
                 points.len(),
-                crate::keyframe_limit::MAX_KEYFRAME_POINTS
+                crate::keyframe_limit::MAX_EDIT_KEYFRAME_POINTS
             ),
-            "FFmpeg cannot safely evaluate a larger keyframe expression",
+            "exports are only checked for keyframe tracks up to this length",
         )
         .with_clip(clip_id)
         .with_suggested_action("remove or combine points in this keyframe track, then try again"));
@@ -185,9 +185,9 @@ mod tests {
             .unwrap()
             .clips
             .push(Clip::Media(super::super::make_media_clip(
-                "c1", "a1", 0, 1_000,
+                "c1", "a1", 0, 20_000,
             )));
-        let points: Vec<crate::KfPoint> = (0..=crate::keyframe_limit::MAX_KEYFRAME_POINTS)
+        let points: Vec<crate::KfPoint> = (0..=crate::keyframe_limit::MAX_EDIT_KEYFRAME_POINTS)
             .map(|t_ms| crate::KfPoint {
                 t_ms: t_ms as u64,
                 value: 0.5,
@@ -203,8 +203,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(project, before);
-        assert!(edit_error.message.contains("65 keyframe points"));
-        assert!(edit_error.message.contains("limit is 64"));
+        assert!(edit_error.message.contains("10001 keyframe points"));
+        assert!(edit_error.message.contains("limit is 10000"));
         assert!(edit_error.suggested_action.is_some());
         let op = OpRecord {
             op_id: "op_legacy_oversized".into(),
@@ -226,7 +226,7 @@ mod tests {
             &mut project,
             "c1",
             crate::KfParam::Opacity,
-            points[..crate::keyframe_limit::MAX_KEYFRAME_POINTS].to_vec(),
+            points[..crate::keyframe_limit::MAX_EDIT_KEYFRAME_POINTS].to_vec(),
             crate::KfInterp::Hold,
         )
         .unwrap();
@@ -235,7 +235,7 @@ mod tests {
         };
         assert_eq!(
             media.keyframes[0].points.len(),
-            crate::keyframe_limit::MAX_KEYFRAME_POINTS
+            crate::keyframe_limit::MAX_EDIT_KEYFRAME_POINTS
         );
     }
 

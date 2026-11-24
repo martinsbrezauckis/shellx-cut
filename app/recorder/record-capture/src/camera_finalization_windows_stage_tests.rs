@@ -94,3 +94,25 @@ fn transition_rejects_foreign_identity_and_unexpected_attributes() {
         }
     ));
 }
+
+#[test]
+fn unfinalized_stage_drop_deletes_reserved_leaf() {
+    let temp = tempfile::tempdir().unwrap();
+    let capture_id = "cap_test_unfinalized_drop";
+    let video = "camera/unfinalized.mp4".to_owned();
+    let (byte_stream, writer_stream, stage) =
+        reserve_windows_no_replace_output(temp.path(), capture_id.to_owned(), video.clone())
+            .unwrap();
+    let leaf_path = temp.path().join(&video);
+    assert!(leaf_path.is_file());
+    let _ = unsafe { byte_stream.Close() };
+    drop(byte_stream);
+    drop(writer_stream);
+    drop(stage);
+    assert!(
+        !leaf_path.exists(),
+        "dropping unfinalized camera stage must delete {}",
+        leaf_path.display()
+    );
+    temp.close().unwrap();
+}

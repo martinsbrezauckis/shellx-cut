@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ShellX Cut",
-  "version": "0.6.121",
+  "version": "0.6.122",
   "identifier": "lv.shellx.cut",
   "build": {
     "frontendDist": "../fallback"
@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' data:; font-src 'self'; worker-src 'none'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -48,6 +48,8 @@
       "../../perception/py/requirements-full.txt": "perception/requirements-full.txt",
       "../../perception/py/safe_numbers.py": "perception/safe_numbers.py",
       "../../perception/py/local_media_io.py": "perception/local_media_io.py",
+      "../../perception/py/attempt_evidence.py": "perception/attempt_evidence.py",
+      "../../perception/py/silence_enhancement.py": "perception/silence_enhancement.py",
       "../../perception/py/native_runtime_models.py": "perception/native_runtime_models.py",
       "../../perception/py/ordinary_speech_models.py": "perception/ordinary_speech_models.py",
       "../../perception/py/translation_models.py": "perception/translation_models.py",

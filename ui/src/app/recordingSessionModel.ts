@@ -99,3 +99,14 @@ export function savingProgressText(saving: unknown, plain: string): string {
   return `Saving the recording: part ${Math.min(done + 1, total)} of ${total}…`
 }
 
+
+/** A finished recording's notice (saved, clip added, input events) belongs to the project
+ *  it was made in: once another project is open, or none, it is no longer true to show. */
+export function recordingNoticeBelongsElsewhere(
+  state: { phase: string; resultProjectIdentity?: { origin_path_sha256?: string } | null },
+  openProject: { origin_path_sha256?: string } | null | undefined,
+): boolean {
+  if (state.phase !== 'done' && state.phase !== 'error') return false
+  if (!state.resultProjectIdentity) return false
+  return !openProject || openProject.origin_path_sha256 !== state.resultProjectIdentity.origin_path_sha256
+}

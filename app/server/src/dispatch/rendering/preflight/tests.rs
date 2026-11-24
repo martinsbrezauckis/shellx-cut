@@ -1,5 +1,115 @@
 use super::*;
 
+async fn other_export_refuses_before_job(verb: &str, args: Value) {
+    use crate::{dispatch::dispatch, state::AppState};
+    let root = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let actor = cut_core::Actor {
+        kind: cut_core::ActorKind::Agent,
+        name: "test".into(),
+        via: "test".into(),
+        request: None,
+    };
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name": "memory", "dir": root.path().join("memory.cutproj")}),
+        actor.clone(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().unwrap();
+        store.project.assets.insert("a1".into(), serde_json::from_value(json!({
+            "path": Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/valid-still.png"), "hash": "h"
+        })).unwrap());
+        store.project.tracks[0].clips.push(
+            serde_json::from_value(json!({
+                "id": "c1", "asset": "a1", "src_in_ms": 0, "src_out_ms": 1000
+            }))
+            .unwrap(),
+        );
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_TOTAL_MB.with(|m| m.set(None));
+        }
+    }
+    let _reset = Reset;
+    TEST_TOTAL_MB.with(|m| m.set(Some(1)));
+    let result = dispatch(&state, verb, args, actor).await;
+    let error = result
+        .error
+        .unwrap_or_else(|| panic!("{verb} must refuse before starting: {:?}", result.result));
+    assert_eq!(error.code, "out_of_memory", "{verb}: {error:?}");
+    assert!(
+        error.message.starts_with("this render needs about "),
+        "{error:?}"
+    );
+    assert!(!error.cause.is_empty());
+    assert!(error
+        .suggested_action
+        .unwrap()
+        .contains("Make the render lighter"));
+    assert!(state
+        .jobs
+        .list()
+        .iter()
+        .all(|j| !["bundle", "reframe", "reframe-direct"].contains(&j.kind.as_str())));
+    assert_eq!(
+        state
+            .project
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .project
+            .assets
+            .len(),
+        1,
+        "a refused export must not import an asset"
+    );
+    let exports = root.path().join("memory.cutproj/exports");
+    if exports.exists() {
+        assert_eq!(
+            std::fs::read_dir(exports).unwrap().count(),
+            0,
+            "a refused export must not start writing a movie or GIF"
+        );
+    }
+}
+
+#[tokio::test]
+async fn range_checks_memory_before_starting() {
+    other_export_refuses_before_job(
+        "export.range",
+        json!({"range_ms": [0, 500], "to_asset": false}),
+    )
+    .await;
+}
+#[tokio::test]
+async fn gif_checks_memory_before_starting() {
+    other_export_refuses_before_job(
+        "export.gif",
+        json!({"range_ms": [0, 500], "to_asset": false}),
+    )
+    .await;
+}
+#[tokio::test]
+async fn direct_checks_memory_before_starting() {
+    other_export_refuses_before_job("render.direct", json!({})).await;
+}
+#[tokio::test]
+async fn reframe_checks_memory_before_starting() {
+    other_export_refuses_before_job("render.reframe", json!({"aspect": "9:16"})).await;
+}
+#[tokio::test]
+async fn bundle_checks_memory_before_starting() {
+    other_export_refuses_before_job("render.bundle", json!({"platforms": ["9:16"]})).await;
+}
+
 fn est(total: u64, threads: Option<u32>) -> MemoryEstimate {
     MemoryEstimate {
         total_mb: total,

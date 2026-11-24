@@ -69,6 +69,8 @@ for file in app/perception/py/instruments.py app/perception/py/requirements.txt 
   app/perception/py/requirements-full.txt \
   app/perception/py/safe_numbers.py \
   app/perception/py/local_media_io.py \
+  app/perception/py/attempt_evidence.py \
+  app/perception/py/silence_enhancement.py \
   app/perception/py/native_runtime_models.py \
   app/perception/py/blaze_face_short_range.tflite app/perception/py/matte_runner.py \
   app/perception/py/matanyone_runner.py app/perception/py/siglip_index.py \

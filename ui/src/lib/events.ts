@@ -13,6 +13,7 @@
 
 import { outputFolderStatusFrom, type OutputFolderStatus } from './outputFolderStatus'
 import type { FixAction, JudgeEnvelope, OpRecord, RenderReceipt } from './client'
+import type { ExportChecks } from './exportChecks'
 import type { ReceiptCheckOutcome } from './receiptModel'
 import type { ColorReport, EncodeReport } from './encodeReport'
 import { acceptDoctorEvent, type DoctorReport } from './doctor'
@@ -44,6 +45,7 @@ export type CutEvent =
   // The environment doctor's capabilities changed (startup scan, refresh,
   // or a completed system.fetch_tool) — the wizard + status-bar chip re-render.
   | { type: 'doctor_updated'; report: DoctorReport }
+  | { type: 'chat_updated'; conversation_id: string; state?: string; turn_id?: string }
 
 export type ConnectionState = 'connecting' | 'open' | 'closed'
 export type UiCommandVerb = Extract<CutEvent, { type: 'ui_command' }>['verb']
@@ -58,7 +60,11 @@ export interface UiCommandResult {
   selector?: string
   /** Exact durable identity echoed only after Preview seeks and begins playback. */
   voiceover_playback?: { request_id: string; request_fingerprint: string; bridge_epoch: number }
-  error?: { code: 'invalid_args' | 'not_found' | 'conflict' | 'no_ui_client'; message: string }
+  error?: {
+    code: 'invalid_args' | 'not_found' | 'conflict' | 'no_ui_client'
+    message: string
+    suggested_action?: string
+  }
 }
 
 type EventListener = (ev: CutEvent) => void
@@ -201,6 +207,25 @@ function opRecordFrom(v: unknown): OpRecord | null {
   return out
 }
 
+function exportChecksFrom(v: unknown): ExportChecks | undefined {
+  const obj = recordFrom(v)
+  if (!obj) return undefined
+  if (obj.schema_version !== 1 || obj.catalog_version !== 1) return undefined
+  const phase = obj.phase === 'before_export' || obj.phase === 'finished_file' ? obj.phase : undefined
+  const atOp = stringField(obj, 'at_op')
+  if (!phase || atOp === undefined || !Array.isArray(obj.entries)) return undefined
+  const renderId = stringField(obj, 'render_id')
+  const entries = recordArrayFrom(obj.entries) as unknown as ExportChecks['entries']
+  return {
+    schema_version: 1,
+    catalog_version: 1,
+    phase,
+    at_op: atOp,
+    ...(renderId !== undefined ? { render_id: renderId } : {}),
+    entries,
+  }
+}
+
 export function renderReceiptFrom(v: unknown): RenderReceipt | null {
   const obj = recordFrom(v)
   if (!obj) return null
@@ -217,6 +242,7 @@ export function renderReceiptFrom(v: unknown): RenderReceipt | null {
   const fixActions = recordArrayFrom(obj.fix_actions).map(fixActionFrom).filter((action) => action !== null)
   const encode = encodeReportFrom(obj.encode)
   const outcome = checkOutcomeFrom(obj.outcome)
+  const exportChecks = exportChecksFrom(obj.export_checks)
   return {
     render_id: renderId,
     ts,
@@ -236,6 +262,7 @@ export function renderReceiptFrom(v: unknown): RenderReceipt | null {
     ...(fixActions.length > 0 ? { fix_actions: fixActions } : {}),
     ...(encode ? { encode } : {}),
     ...(outcome ? { outcome } : {}),
+    ...(exportChecks ? { export_checks: exportChecks } : {}),
   }
 }
 
@@ -284,6 +311,7 @@ function colorReportFrom(v: unknown): ColorReport | undefined {
   const obj = recordFrom(v)
   if (!obj) return undefined
   const output = stringField(obj, 'output')
+  const transfer = stringField(obj, 'transfer')
   const processing = numberField(obj, 'processing_bit_depth')
   const file = numberField(obj, 'file_bit_depth')
   if (!output || processing == null || file == null) return undefined
@@ -292,12 +320,33 @@ function colorReportFrom(v: unknown): ColorReport | undefined {
     const name = stringField(source, 'file')
     const handling = stringField(source, 'handling')
     if (!asset || !name || !handling) return []
-    const transfer = stringField(source, 'transfer')
+    const srcTransfer = stringField(source, 'transfer')
     const bits = numberField(source, 'bit_depth')
-    return [{ asset, file: name, handling, ...(transfer ? { transfer } : {}), ...(bits != null ? { bit_depth: bits } : {}) }]
+    return [{ asset, file: name, handling, ...(srcTransfer ? { transfer: srcTransfer } : {}), ...(bits != null ? { bit_depth: bits } : {}) }]
   })
+  const mdObj = recordFrom(obj.hdr10_metadata)
+  const present = mdObj ? booleanField(mdObj, 'present_in_sources') : undefined
+  const carried = mdObj ? booleanField(mdObj, 'carried') : undefined
+  const masteringDisplay = mdObj ? stringField(mdObj, 'mastering_display') : undefined
+  const maxCll = mdObj ? stringField(mdObj, 'max_cll') : undefined
+  const hdr10Metadata = present != null && carried != null
+    ? {
+        present_in_sources: present,
+        carried,
+        ...(masteringDisplay ? { mastering_display: masteringDisplay } : {}),
+        ...(maxCll ? { max_cll: maxCll } : {}),
+      }
+    : undefined
   const note = stringField(obj, 'note')
-  return { output, processing_bit_depth: processing, file_bit_depth: file, sources, ...(note ? { note } : {}) }
+  return {
+    output,
+    ...(transfer ? { transfer } : {}),
+    processing_bit_depth: processing,
+    file_bit_depth: file,
+    ...(hdr10Metadata ? { hdr10_metadata: hdr10Metadata } : {}),
+    sources,
+    ...(note ? { note } : {}),
+  }
 }
 
 export function doctorReportFrom(v: unknown): DoctorReport | null {
@@ -417,6 +466,18 @@ export function cutEventFrom(v: unknown): CutEvent | null {
     case 'doctor_updated': {
       const report = doctorReportFrom(obj.report)
       return report ? { type: 'doctor_updated', report } : null
+    }
+    case 'chat_updated': {
+      const conversation_id = stringField(obj, 'conversation_id')
+      if (!conversation_id) return null
+      const state = stringField(obj, 'state')
+      const turn_id = stringField(obj, 'turn_id')
+      return {
+        type: 'chat_updated',
+        conversation_id,
+        ...(state ? { state } : {}),
+        ...(turn_id ? { turn_id } : {}),
+      }
     }
     default:
       return null

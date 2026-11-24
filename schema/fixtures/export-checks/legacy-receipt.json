@@ -1,0 +1,11 @@
+{
+  "render_id": "render_001",
+  "ts": "2026-11-22T23:32:00Z",
+  "output_path": "/exports/render_001.mp4",
+  "output_hash": "sha256:fixture",
+  "duration_ms": 20000,
+  "preset": "h264_1080p30",
+  "at_op": "op_000001",
+  "checks": [],
+  "pass": true
+}

@@ -252,6 +252,7 @@ mod tests {
             speaker_turns: vec![],
             diarization: None,
             runtime_context: None,
+            analysis_attempt: None,
         }
     }
 

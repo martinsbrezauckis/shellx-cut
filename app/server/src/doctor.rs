@@ -44,12 +44,19 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 pub(crate) mod cache;
-mod judge_admission;
-mod premium_matte;
-use premium_matte::matte_premium_card;
+#[cfg(test)]
+mod captions_installation_tests;
+pub(crate) mod chosen_ffmpeg;
+#[cfg(test)]
+mod chosen_ffmpeg_tests;
+mod fast_scan;
+#[cfg(test)]
+mod fast_scan_tests;
 mod ffmpeg_version_advice;
 #[cfg(test)]
 mod ffmpeg_version_tests;
+mod judge_admission;
+mod premium_matte;
 mod service_cards;
 
 /// Card schema version (bumped only on a breaking shape change).
@@ -152,7 +159,11 @@ impl DoctorReport {
             return false;
         }
         self.cards.iter().zip(&other.cards).all(|(a, b)| {
-            a.id == b.id && a.status == b.status && a.source == b.source && a.version == b.version
+            a.id == b.id
+                && a.status == b.status
+                && a.source == b.source
+                && a.version == b.version
+                && a.details.get("installation") == b.details.get("installation")
         })
     }
 }
@@ -504,20 +515,33 @@ fn ffmpeg_source(stem: &str, resolved: &str, runnable: bool) -> CardSource {
 
 /// Build the ffmpeg + ffprobe cards from the toolpath resolver + a bounded
 /// `-version` probe. ESSENTIAL: a missing ffmpeg is what surfaces the wizard.
+#[allow(dead_code)]
 fn ffmpeg_cards() -> Vec<Card> {
-    vec![
-        ffmpeg_card_with_selection(),
-        media_tool_card("ffprobe", cut_media::toolpath::ffprobe()),
-    ]
+    let pool = fast_scan::FfmpegScanPool::new(cut_media::toolpath::ffmpeg_candidates(), true);
+    ffmpeg_cards_with_pool(&pool)
+}
+
+fn ffmpeg_cards_with_pool(pool: &fast_scan::FfmpegScanPool) -> Vec<Card> {
+    std::thread::scope(|scope| {
+        let ffmpeg = scope.spawn(|| ffmpeg_card_with_selection_pool(pool));
+        let ffprobe = scope.spawn(|| media_tool_card("ffprobe", cut_media::toolpath::ffprobe()));
+        vec![
+            ffmpeg.join().expect("doctor ffmpeg card panicked"),
+            ffprobe.join().expect("doctor ffprobe card panicked"),
+        ]
+    })
 }
 
 /// One essential media tool's card for the program `prog` resolves to.
 /// The ffmpeg card plus WHY this ffmpeg is the one in use
 /// (`details.selection`: reason, automatic, found, text). Built from the same
 /// choice as `toolpath::ffmpeg()`, so the reason always names the build used.
-fn ffmpeg_card_with_selection() -> Card {
-    let selection = cut_media::toolpath::ffmpeg_selection();
-    let mut card = media_tool_card("ffmpeg", selection.program.clone());
+fn ffmpeg_card_with_selection_pool(pool: &fast_scan::FfmpegScanPool) -> Card {
+    if let Some(chosen) = chosen_ffmpeg::missing_chosen_path() {
+        return chosen_ffmpeg::missing_chosen_card(&chosen, pool.candidates().len());
+    }
+    let selection = pool.selection();
+    let mut card = media_tool_card_for_ffmpeg(selection.program.clone(), pool);
     ffmpeg_version_advice::preserve_choice(&mut card, selection.reason);
     if let Some(details) = card.details.as_object_mut() {
         details.insert("selection".into(), json!(selection));
@@ -525,61 +549,94 @@ fn ffmpeg_card_with_selection() -> Card {
     card
 }
 
+fn media_tool_card_for_ffmpeg(prog: std::ffi::OsString, pool: &fast_scan::FfmpegScanPool) -> Card {
+    let report = pool.probe_one(Path::new(&prog));
+    let (outcome, retried) = match &report.version_outcome {
+        cut_media::hwencode::FfmpegVersionOutcome::Ran { banner_line, .. } => {
+            (ProbeOutcome::Ran(banner_line.clone()), false)
+        }
+        cut_media::hwencode::FfmpegVersionOutcome::NotFound => (ProbeOutcome::NotFound, false),
+        cut_media::hwencode::FfmpegVersionOutcome::Timeout => (
+            probe_exec(&prog, &["-version"], Duration::from_secs(8)),
+            true,
+        ),
+    };
+    let runnable = matches!(outcome, ProbeOutcome::Ran(_));
+    let version = if !retried {
+        match &outcome {
+            ProbeOutcome::Ran(_) => report.caps.version.clone(),
+            _ => None,
+        }
+    } else {
+        match &outcome {
+            ProbeOutcome::Ran(_) => cut_media::hwencode::ffmpeg_version_at(&prog),
+            _ => None,
+        }
+    };
+    let (caps, enc, enc_10bit) = if !runnable {
+        (None, None, None)
+    } else if !retried {
+        (report.filter_caps, report.encoder_caps, report.enc_10bit)
+    } else {
+        let caps = ffmpeg_filter_caps(&prog);
+        let enc = ffmpeg_encoder_caps(&prog);
+        let enc_10bit = enc.map(|e| {
+            (
+                e.0 && cut_media::hwencode::encoder_supports_10bit_at(&prog, "libx265"),
+                e.2 && cut_media::hwencode::encoder_supports_10bit_at(&prog, "libsvtav1"),
+            )
+        });
+        (caps, enc, enc_10bit)
+    };
+    build_media_tool_card("ffmpeg", &prog, outcome, version, caps, enc, enc_10bit)
+}
+
 fn media_tool_card(stem: &str, prog: std::ffi::OsString) -> Card {
+    let outcome = probe_essential_version(&prog);
+    let runnable = matches!(outcome, ProbeOutcome::Ran(_));
+    let version = match &outcome {
+        ProbeOutcome::Ran(_) if stem == "ffmpeg" => cut_media::hwencode::ffmpeg_version_at(&prog),
+        ProbeOutcome::Ran(line) if !line.is_empty() => {
+            let v = line
+                .trim_start_matches("ffmpeg version ")
+                .trim_start_matches("ffprobe version ");
+            Some(v.split_whitespace().next().unwrap_or(v).to_string())
+        }
+        _ => None,
+    };
+    let caps = (stem == "ffmpeg" && runnable)
+        .then(|| ffmpeg_filter_caps(&prog))
+        .flatten();
+    let enc = (stem == "ffmpeg" && runnable)
+        .then(|| ffmpeg_encoder_caps(&prog))
+        .flatten();
+    let enc_10bit = enc.map(|e| {
+        (
+            e.0 && cut_media::hwencode::encoder_supports_10bit_at(&prog, "libx265"),
+            e.2 && cut_media::hwencode::encoder_supports_10bit_at(&prog, "libsvtav1"),
+        )
+    });
+    build_media_tool_card(stem, &prog, outcome, version, caps, enc, enc_10bit)
+}
+
+fn build_media_tool_card(
+    stem: &str,
+    prog: &std::ffi::OsStr,
+    outcome: ProbeOutcome,
+    version: Option<String>,
+    caps: Option<(bool, bool, bool)>,
+    enc: Option<(bool, bool, bool)>,
+    enc_10bit: Option<(bool, bool)>,
+) -> Card {
     {
         let resolved = prog.to_string_lossy().into_owned();
-        // Tri-state probe: `<tool> -version` either ran (present and runnable),
-        // failed to spawn (CONFIRMED missing), or TIMED OUT (unverified — a slow
-        // disk / AV scan / a box pinned by a heavy render can blow the 8s budget
-        // even on a present ffmpeg). `probe_essential_version` retries ONCE on a
-        // timeout so a single transient slow probe never flips this essential tool
-        // to MISSING (which would auto-pop the wizard until a manual re-scan).
-        let outcome = probe_essential_version(&prog);
         let runnable = matches!(outcome, ProbeOutcome::Ran(_));
-        // The path WAS resolved by toolpath; only a CONFIRMED NotFound means "no
-        // rung resolved it". An unverified (Timeout) ffmpeg keeps its location-
-        // derived rung so the UI can still show WHERE the can't-verify binary lives.
         let resolvable = !matches!(outcome, ProbeOutcome::NotFound);
         let source = ffmpeg_source(stem, &resolved, resolvable);
-        // Tidy the banner (present only on a Ran outcome): ffmpeg's first line is
-        // "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) ...". Keep just the version
-        // token (drop the "ffmpeg version " prefix + the trailing Copyright clause)
-        // so the card shows "6.1.1-3ubuntu5".
-        let version = match &outcome {
-            ProbeOutcome::Ran(_) if stem == "ffmpeg" => {
-                cut_media::hwencode::ffmpeg_version_at(&prog)
-            }
-            ProbeOutcome::Ran(line) if !line.is_empty() => {
-                let v = line
-                    .trim_start_matches("ffmpeg version ")
-                    .trim_start_matches("ffprobe version ");
-                Some(v.split_whitespace().next().unwrap_or(v).to_string())
-            }
-            _ => None,
-        };
-        // Only ffmpeg (not ffprobe) carries the optional caption/stabilize
-        // filters. Probe them when it's runnable so a present-but-incapable build
-        // (e.g. Homebrew's plain ffmpeg, post-8.x) surfaces as Degraded with honest
-        // guidance — instead of a silent "No such filter" at caption/stabilize time.
-        let caps = (stem == "ffmpeg" && runnable)
-            .then(|| ffmpeg_filter_caps(&prog))
-            .flatten();
-        // Also probe the optional software encoders the format picker offers
-        // (libx265/libvpx-vp9/libsvtav1) so HEVC/VP9/AV1 export gaps surface upfront.
-        let enc = (stem == "ffmpeg" && runnable)
-            .then(|| ffmpeg_encoder_caps(&prog))
-            .flatten();
         let (status, hint) = match &outcome {
-            // CONFIRMED absent (spawn failed even though toolpath resolved a path)
-            // — the ONLY case that pops the first-run wizard.
             ProbeOutcome::NotFound => (CardStatus::Missing, Some(ffmpeg_missing_hint(stem))),
-            // UNVERIFIED: the probe timed out twice. Honest middle state — NOT
-            // Missing (don't pop the wizard) and NOT Ok (don't claim it works); a
-            // re-scan once the machine settles resolves it.
             ProbeOutcome::Timeout => (CardStatus::Unknown, Some(ffmpeg_unverified_hint(stem))),
             ProbeOutcome::Ran(_) => {
-                // A capability probe that couldn't run ⇒ assume capable (don't
-                // false-alarm); only a CONFIRMED-missing filter degrades.
                 let (libass, libvidstab, zscale) = caps.unwrap_or((true, true, true));
                 let (x265, vp9, av1) = enc.unwrap_or((true, true, true));
                 if !libass || !libvidstab || !zscale || !x265 || !vp9 || !av1 {
@@ -635,9 +692,13 @@ fn media_tool_card(stem: &str, prog: std::ffi::OsString) -> Card {
                 "libx265": enc.map(|e| e.0),
                 "libvpx_vp9": enc.map(|e| e.1),
                 "libsvtav1": enc.map(|e| e.2),
+                "libx265_10bit": enc_10bit.map(|e| e.0),
+                "libsvtav1_10bit": enc_10bit.map(|e| e.1),
                 "can_export_hevc": enc.map(|e| e.0),
                 "can_export_vp9": enc.map(|e| e.1),
                 "can_export_av1": enc.map(|e| e.2),
+                "can_export_hevc_10bit": enc_10bit.map(|e| e.0),
+                "can_export_av1_10bit": enc_10bit.map(|e| e.1),
             }),
         }
     }
@@ -793,7 +854,11 @@ fn missing_perception_card(
     Card {
         id: "perception".into(),
         kind: "perception".into(),
-        status: CardStatus::Missing,
+        status: if python_configured == Some(true) {
+            CardStatus::Degraded
+        } else {
+            CardStatus::Missing
+        },
         source: None,
         version: None,
         hint: Some(hint.into()),
@@ -808,7 +873,12 @@ fn missing_perception_card(
 ///   light deps can still work; word-level transcription cannot).
 /// - full-stt: onnx-asr or whisperX imports — the full AI tier (transcription,
 ///   filler/silence-by-words, captions) is available.
+#[allow(dead_code)]
 fn perception_card() -> Card {
+    perception_card_with_pool(&fast_scan::PythonScanPool::default())
+}
+
+fn perception_card_with_pool(py_pool: &fast_scan::PythonScanPool) -> Card {
     let stt_setting = cut_perception::read_stt_setting();
     let native_context = match cut_perception::native_runtime_context() {
         Ok(context) => context,
@@ -816,14 +886,19 @@ fn perception_card() -> Card {
             let (stt_model, stt_model_default, stt_language) =
                 stt_preference(stt_setting.0, stt_setting.1);
             let hint = format!("Prepared native runtime was rejected: {}", error.message);
-            return missing_perception_card(
+            let mut card = missing_perception_card(
                 json!(null),
-                None,
+                Some(true),
                 &hint,
                 stt_model,
                 stt_model_default,
                 stt_language,
             );
+            card.details["installation"] = json!({
+                "state": "damaged", "installation_id": "prepared-captions-runtime",
+                "python": null, "version": null, "error": error,
+            });
+            return card;
         }
     };
     let (stt_model, stt_model_default, stt_language) = doctor_stt_preference(
@@ -834,30 +909,28 @@ fn perception_card() -> Card {
             .then(cut_perception::effective_stt_selection)
             .unwrap_or_default(),
     );
-    let python = match cut_perception::configured_sidecar_python() {
-        Ok(Some(python)) => python,
-        Ok(None) => {
-            return missing_perception_card(
-                json!(null),
-                Some(false),
-                "Captions and transcription are not installed yet. Core editing and render still work. Choose Install captions when you need transcripts, captions, or word-based cleanup.",
-                stt_model,
-                stt_model_default,
-                stt_language,
-            );
-        }
-        Err(error) => {
-            let hint = format!("Prepared native runtime was rejected: {}", error.message);
-            return missing_perception_card(
-                json!(null),
-                None,
-                &hint,
-                stt_model,
-                stt_model_default,
-                stt_language,
-            );
-        }
-    };
+    let installation = cut_perception::captions_installation::inspect_captions_installation();
+    if installation.state != cut_perception::captions_installation::InstallationState::Ready {
+        let damaged =
+            installation.state == cut_perception::captions_installation::InstallationState::Damaged;
+        let hint = installation.error.as_ref().map(|error| {
+            format!("Captions tools could not run: {}. {} Repair the captions tools in Settings > AI & transcription.", error.message, error.cause)
+        }).unwrap_or_else(|| "Captions and transcription are not installed yet. Core editing and render still work. Choose Install captions when you need transcripts, captions, or word-based cleanup.".into());
+        let mut card = missing_perception_card(
+            json!(installation.python),
+            Some(damaged),
+            &hint,
+            stt_model,
+            stt_model_default,
+            stt_language,
+        );
+        card.details["installation"] = json!(installation);
+        return card;
+    }
+    let python = installation
+        .python
+        .clone()
+        .expect("ready installation has a Python");
     let prepared_stt = native_context.as_ref().map(|context| {
         cut_perception::prepared_stt_model(
             context,
@@ -867,32 +940,23 @@ fn perception_card() -> Card {
         )
     });
     let py_str = python.to_string_lossy().into_owned();
-    // Is the interpreter itself runnable? (bounded)
-    let py_version = version_line(python.as_os_str(), &["--version"], Duration::from_secs(8));
-    if py_version.is_none() {
-        return missing_perception_card(
-            json!(py_str),
-            None,
-            "No Python interpreter for the perception sidecar. \
-             Transcription, word-level silence/filler removal, captions, and \
-             receipt facts need it — optional; core editing + render work \
-             without it. Choose Install captions when you need captions or transcripts.",
-            stt_model,
-            stt_model_default,
-            stt_language,
-        );
-    }
+    // Reuse the bounded version probe and retain its own error in installation.
+    let py_version = installation.version.clone();
     // Python runs — probe the direct base STT closure. Parakeet-TDT is primary;
     // whisperX is only the compatibility fallback. `instruments.py` imports
     // soundfile before it can decode either Parakeet or Canary audio, and imports
     // numpy for its base routes, so checking onnx-asr alone would falsely report
     // a broken base venv as ready. Short import-only checks never load a model or
     // run inference.
-    let onnx_ok = imports_check(
+    let mod_map = py_pool.probe_modules(
         &python,
         &["onnx_asr", "onnxruntime", "numpy", "soundfile"],
+        native_context.is_some(),
         Duration::from_secs(15),
     );
+    let onnx_ok = ["onnx_asr", "onnxruntime", "numpy", "soundfile"]
+        .iter()
+        .all(|m| mod_map.get(*m).copied().unwrap_or(false));
     // Only probe the compatibility fallback when the base route is unavailable.
     // `instrument_words` enters whisperX through `whisperx.load_audio` and does
     // not directly import soundfile on that branch, so preserve its independent
@@ -912,6 +976,7 @@ fn perception_card() -> Card {
         hint: readiness.hint,
         details: json!({
             "tier": readiness.tier,
+            "installation": installation,
             "python": py_str,
             "stt_ready": readiness.ready,
             "stt_engine": readiness.engine,
@@ -1414,23 +1479,20 @@ fn judge_runtime_hint(
     }
 }
 
-/// Build one card per judge rung. Installation and render-judge admission are
-/// deliberately separate: a CLI may remain usable for Agent Chat while its
-/// adapter reports it unready for verify.judge. Binary resolution reuses the
-/// agent CLI ladder; the single adapter detect probe receives the same augmented
-/// PATH a real judge invocation does, including off-PATH installs.
-fn judge_card(
+struct JudgeCliProbeResult {
+    discovered: Option<PathBuf>,
+    context_error: Option<String>,
+    found: bool,
+    resolved: Option<PathBuf>,
+    version: Option<String>,
+    chat: Value,
+}
+
+fn judge_cli_probe(
     provider: &'static str,
     bin: &'static str,
     vflag: &'static str,
-    adapter: Option<&Path>,
-    adapter_python: Option<&Path>,
-    captions_missing: bool,
-    admissions: &judge_admission::JudgeAdmissions,
-) -> Card {
-    let adapter_runtime_ready = adapter.is_some() && adapter_python.is_some();
-    // bin is the binary stem; for grok it equals "grok", which keys the
-    // grok-only ~/.grok/bin rung inside the resolver.
+) -> JudgeCliProbeResult {
     let discovered = crate::gen::resolve_agent(bin);
     let selected_result = crate::chat::provider_child_command(provider);
     let context_error = selected_result.as_ref().err().cloned();
@@ -1438,29 +1500,131 @@ fn judge_card(
         .as_ref()
         .ok()
         .filter(|command| command.available());
-    // In ordinary mode this is the current Cut resolver result.  Under an
-    // admitted Runner context it is the exact selected child, and discovery is
-    // retained only as diagnostic display information below.
     let found = selected.is_some();
+    let resolved = selected
+        .map(|command| command.executable().to_path_buf())
+        .or_else(|| {
+            context_error
+                .is_none()
+                .then_some(discovered.clone())
+                .flatten()
+        });
+    let (version, capability_verified, auth_res) = std::thread::scope(|scope| {
+        let j_ver = scope.spawn(|| {
+            selected.and_then(|command| {
+                provider_version_line(command, &[vflag], Duration::from_secs(2))
+            })
+        });
+        let j_cap = scope.spawn(|| {
+            selected
+                .and_then(|path| {
+                    crate::chat::broker::capability_probe_args(provider, Path::new(".")).and_then(
+                        |arguments| {
+                            successful_provider_command_output(
+                                path,
+                                &arguments,
+                                Duration::from_secs(15),
+                            )
+                        },
+                    )
+                })
+                .map(|output| {
+                    crate::chat::broker::verify_agent_capability_probe(provider, &output).is_ok()
+                })
+                .unwrap_or(false)
+        });
+        let j_auth = scope.spawn(|| {
+            if !crate::chat::CHAT_AGENTS.contains(&provider) {
+                return None;
+            }
+            if let Some(error) = context_error.as_deref() {
+                Some((
+                    "unknown",
+                    format!(
+                        "provider runtime context did not admit {provider}: {error}. Doctor did not run an unadmitted status probe or inspect credential locations."
+                    ),
+                ))
+            } else {
+                Some(
+                    match selected.filter(|command| command.admitted_environment().is_some()) {
+                        Some(command) => admitted_chat_auth_state(provider, command),
+                        None => chat_auth_state(provider, resolved.as_deref()),
+                    },
+                )
+            }
+        });
+        (
+            j_ver.join().unwrap_or(None),
+            j_cap.join().unwrap_or(false),
+            j_auth.join().unwrap_or(None),
+        )
+    });
+    let chat = match auth_res {
+        None => Value::Null,
+        Some((authenticated, auth_detail)) => {
+            let wired = crate::chat::is_wired(provider) && capability_verified;
+            let ready = found && wired && authenticated == "yes";
+            let posture = if found && !capability_verified {
+                Some("disabled: required Agent Chat capability flags are unavailable")
+            } else {
+                crate::chat::security_posture(provider)
+            };
+            json!({
+                "installed": found,
+                "resolved": resolved.as_ref().map(|p| p.display().to_string()),
+                "wired": wired,
+                "authenticated": authenticated,
+                "auth_detail": auth_detail,
+                "ready": ready,
+                "capability_verified": capability_verified,
+                "posture": posture,
+            })
+        }
+    };
+    let _ = chat_agent_block
+        as fn(
+            &str,
+            bool,
+            Option<&Path>,
+            Option<&crate::gen::ProviderChildCommand>,
+            Option<&str>,
+            bool,
+        ) -> Value;
+    JudgeCliProbeResult {
+        discovered,
+        context_error,
+        found,
+        resolved,
+        version,
+        chat,
+    }
+}
+
+/// Build one card per judge rung from the already-parallel CLI and admission probes.
+#[allow(clippy::too_many_arguments)]
+fn finish_judge_card(
+    provider: &'static str,
+    bin: &'static str,
+    adapter: Option<&Path>,
+    adapter_python: Option<&Path>,
+    adapter_runtime_ready: bool,
+    captions_missing: bool,
+    admissions: &judge_admission::JudgeAdmissions,
+    cli: JudgeCliProbeResult,
+) -> Card {
+    let JudgeCliProbeResult {
+        discovered,
+        context_error,
+        found,
+        resolved,
+        version,
+        chat,
+    } = cli;
     let mut admission =
         judge_admission::resolve(provider, found, adapter_runtime_ready, admissions);
     if found && captions_missing {
         admission.availability_reason = Some(JUDGE_CAPTIONS_MISSING_REASON.into());
     }
-    // Version is display-only. Never let an informational banner consume the
-    // capability scan's budget or decide whether the provider is admitted.
-    let version = selected
-        .and_then(|command| provider_version_line(command, &[vflag], Duration::from_secs(2)));
-    let capability_verified = selected
-        .and_then(|path| {
-            crate::chat::broker::capability_probe_args(provider, Path::new(".")).and_then(
-                |arguments| {
-                    successful_provider_command_output(path, &arguments, Duration::from_secs(15))
-                },
-            )
-        })
-        .map(|output| crate::chat::broker::verify_agent_capability_probe(provider, &output).is_ok())
-        .unwrap_or(false);
     let hint = if let Some(error) = context_error.as_deref() {
         Some(format!(
             "{provider} was not admitted by the provider runtime context: {error}. Repair the enrolled provider selection, then re-scan."
@@ -1489,22 +1653,6 @@ fn judge_card(
                 .unwrap_or("Could not check whether this agent can review exports.")
         ))
     };
-    let resolved = selected
-        .map(|command| command.executable().to_path_buf())
-        .or_else(|| {
-            context_error
-                .is_none()
-                .then_some(discovered.clone())
-                .flatten()
-        });
-    let chat = chat_agent_block(
-        provider,
-        found,
-        resolved.as_deref(),
-        selected,
-        context_error.as_deref(),
-        capability_verified,
-    );
     Card {
         id: format!("judge.{provider}"),
         kind: "judge".into(),
@@ -1545,7 +1693,12 @@ fn judge_card(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn judge_cards() -> Vec<Card> {
+    judge_cards_with_pool(&fast_scan::PythonScanPool::default())
+}
+
+fn judge_cards_with_pool(py_pool: &fast_scan::PythonScanPool) -> Vec<Card> {
     let (adapter, adapter_python, native_context, captions_missing) = match resolve_adapter_runtime(
         "judge/adapters/ladder_judge.py",
         crate::dispatch::configured_judge_adapter,
@@ -1556,9 +1709,7 @@ pub(crate) fn judge_cards() -> Vec<Card> {
             native_context,
         }) => (
             script,
-            python.filter(|python| {
-                version_line(python.as_os_str(), &["--version"], Duration::from_secs(8)).is_some()
-            }),
+            python.filter(|python| py_pool.python_runnable(python)),
             native_context,
             false,
         ),
@@ -1571,35 +1722,50 @@ pub(crate) fn judge_cards() -> Vec<Card> {
             cut_perception::is_captions_not_installed(&error),
         ),
     };
-    // The adapter owns provider-specific eligibility; invoke its cheap detect
-    // protocol only once, before the per-card display/chat probes fan out.
+    // Run the single ladder_judge admission probe IN PARALLEL with the 4 CLI
+    // version/capability/auth checks so judge cards finish in max(detect, cli)
+    // instead of serializing detect before the 4 CLI threads.
     let judge_cli_path = crate::dispatch::configured_judge_cli_path();
-    let admissions = match (adapter.as_deref(), adapter_python.as_deref()) {
-        (Some(adapter), Some(python)) => {
-            judge_admission::probe(adapter, python, judge_cli_path.as_deref(), native_context)
-        }
-        _ => judge_admission::JudgeAdmissions::Unverified,
-    };
     std::thread::scope(|scope| {
-        let probes: Vec<_> = JUDGE_RUNGS
+        let admission_handle =
+            scope.spawn(|| match (adapter.as_deref(), adapter_python.as_deref()) {
+                (Some(adapter), Some(python)) => judge_admission::probe(
+                    adapter,
+                    python,
+                    judge_cli_path.as_deref(),
+                    native_context,
+                ),
+                _ => judge_admission::JudgeAdmissions::Unverified,
+            });
+        let adapter_runtime_ready = adapter.is_some() && adapter_python.is_some();
+        let cli_probes: Vec<_> = JUDGE_RUNGS
             .iter()
             .map(|&(provider, bin, vflag)| {
-                scope.spawn(|| {
-                    judge_card(
-                        provider,
-                        bin,
-                        vflag,
-                        adapter.as_deref(),
-                        adapter_python.as_deref(),
-                        captions_missing,
-                        &admissions,
-                    )
-                })
+                scope.spawn(move || judge_cli_probe(provider, bin, vflag))
             })
             .collect();
-        probes
+        let admissions = admission_handle
+            .join()
+            .unwrap_or(judge_admission::JudgeAdmissions::Unverified);
+        let cli_results: Vec<_> = cli_probes
             .into_iter()
-            .map(|probe| probe.join().expect("doctor judge probe panicked"))
+            .map(|h| h.join().expect("doctor judge CLI probe panicked"))
+            .collect();
+        JUDGE_RUNGS
+            .iter()
+            .zip(cli_results)
+            .map(|(&(provider, bin, _vflag), cli)| {
+                finish_judge_card(
+                    provider,
+                    bin,
+                    adapter.as_deref(),
+                    adapter_python.as_deref(),
+                    adapter_runtime_ready,
+                    captions_missing,
+                    &admissions,
+                    cli,
+                )
+            })
             .collect()
     })
 }
@@ -1753,15 +1919,25 @@ fn gpu_encode_status(any_hw: bool) -> CardStatus {
 ///   • the default is already best → no hint.
 /// render.final `hardware:auto` uses what the resolved binary detects; this card
 /// is also how the user/agent learns a better binary is one env-var away.
+#[allow(dead_code)]
 fn gpu_encode_card() -> Card {
-    let candidates: Vec<cut_media::hwencode::FfmpegCaps> = cut_media::toolpath::ffmpeg_candidates()
-        .iter()
-        .map(|p| cut_media::hwencode::probe_ffmpeg_caps(p))
-        .collect();
+    let pool = fast_scan::FfmpegScanPool::new(cut_media::toolpath::ffmpeg_candidates(), true);
+    gpu_encode_card_with_pool(&pool, false).0
+}
+
+fn gpu_encode_card_with_pool(
+    pool: &fast_scan::FfmpegScanPool,
+    defer_slow: bool,
+) -> (
+    Card,
+    Option<(PathBuf, cut_media::hwencode::HwCaps)>,
+    Option<PathBuf>,
+) {
+    let candidates: Vec<cut_media::hwencode::FfmpegCaps> = pool.all_candidate_caps();
 
     // The binary the engine uses TODAY, canonicalized so we can tell it apart
     // from a more-capable one found elsewhere.
-    let resolved_path = std::fs::canonicalize(PathBuf::from(cut_media::toolpath::ffmpeg())).ok();
+    let resolved_path = std::fs::canonicalize(PathBuf::from(&pool.selection().program)).ok();
     let is_resolved = |c: &cut_media::hwencode::FfmpegCaps| -> bool {
         match (std::fs::canonicalize(&c.path).ok(), &resolved_path) {
             (Some(cp), Some(rp)) => &cp == rp,
@@ -1793,6 +1969,35 @@ fn gpu_encode_card() -> Card {
     // No ffmpeg anywhere: nothing renders, in software or hardware.
     let ffmpeg_missing =
         candidates.is_empty() && cut_media::toolpath::locate_media_tool("ffmpeg").is_none();
+
+    let chosen_missing = chosen_ffmpeg::missing_chosen_path();
+    let active_hw = resolved_caps
+        .as_ref()
+        .filter(|c| c.hw.any())
+        .or_else(|| best.as_ref().filter(|c| c.hw.any()));
+    let size_target = (any_hw && !ffmpeg_missing && chosen_missing.is_none())
+        .then(|| active_hw.map(|c| (PathBuf::from(&c.path), c.hw.clone())))
+        .flatten();
+    let (size_limits, size_limits_pending, deferred_size_target, deferred_cuda_target) =
+        match size_target {
+            Some((ffmpeg_path, hw_caps)) if defer_slow => {
+                let cuda_target = (pool.cuda_deferred()
+                    && hw_caps.h264.as_deref() == Some("h264_nvenc"))
+                .then(|| ffmpeg_path.clone());
+                (Vec::new(), true, Some((ffmpeg_path, hw_caps)), cuda_target)
+            }
+            Some((ffmpeg_path, hw_caps)) => (
+                cut_media::hwencode_limits::size_limits_for_cancelable(
+                    &ffmpeg_path,
+                    &hw_caps,
+                    None,
+                ),
+                false,
+                None,
+                None,
+            ),
+            None => (Vec::new(), false, None, None),
+        };
 
     // The ffmpeg the engine really uses explains why there is no hardware tier;
     // fall back to the best candidate when the default is not among the scanned.
@@ -1831,7 +2036,7 @@ fn gpu_encode_card() -> Card {
         None
     };
 
-    Card {
+    let mut card = Card {
         id: "gpu-encode".into(),
         kind: "tool".into(), // grouped with the render tools (ffmpeg) in the UI
         status: gpu_encode_status(any_hw),
@@ -1866,11 +2071,9 @@ fn gpu_encode_card() -> Card {
             // Largest delivery size each working encoder of the ffmpeg renders use
             // accepted (UHD, DCI 4K, 8K, DCI 8K ladder), and the first it refused.
             // A render larger than that uses software and says so in its plan.
-            "size_limits": if any_hw && !ffmpeg_missing {
-                json!(cut_media::hwencode_limits::size_limits())
-            } else {
-                json!([])
-            },
+            "size_limits": size_limits,
+            "size_limits_pending": size_limits_pending,
+            "cuda_filters_pending": deferred_cuda_target.is_some(),
             // Every ffmpeg found + what each can do (the scan, for the UI/agent).
             "candidates": candidates.iter().map(|c| json!({
                 "path": c.path,
@@ -1886,7 +2089,11 @@ fn gpu_encode_card() -> Card {
                 "zscale": c.zscale,
             })).collect::<Vec<_>>(),
         }),
+    };
+    if let Some(chosen) = chosen_missing {
+        chosen_ffmpeg::apply_missing_to_gpu_card(&mut card, &chosen);
     }
+    (card, deferred_size_target, deferred_cuda_target)
 }
 
 /// Walk up from `dir` to the first ancestor that exists (so statvfs/GetDiskFree
@@ -2006,14 +2213,19 @@ fn human_bytes(n: u64) -> String {
 /// downloads the model (one click), or `system.setup_matte{path}` points at an
 /// rvm `.onnx` the user already has. OPTIONAL — core editing + render work
 /// without it.
+#[allow(dead_code)]
 fn matte_card() -> Card {
+    matte_card_with_pool(&fast_scan::PythonScanPool::default())
+}
+
+fn matte_card_with_pool(py_pool: &fast_scan::PythonScanPool) -> Card {
     let native_context = match cut_perception::native_runtime_context() {
         Ok(context) => context,
         Err(error) => return prepared_matte_card_failure(&error.message),
     };
     if native_context.is_some() {
         return match crate::matte::native_runtime::prepared_rvm_runtime() {
-            Ok(Some(runtime)) => prepared_matte_card(&runtime),
+            Ok(Some(runtime)) => prepared_matte_card_with_pool(&runtime, py_pool),
             Ok(None) => prepared_matte_card_failure(
                 "the prepared native-runtime context disappeared while Doctor was checking RVM",
             ),
@@ -2022,15 +2234,20 @@ fn matte_card() -> Card {
     }
 
     let perc_py = cut_perception::configured_sidecar_python().ok().flatten();
-    let ort_ok = perc_py
+    let mods = perc_py
         .as_deref()
-        .is_some_and(|p| import_check(p, "onnxruntime", Duration::from_secs(10)));
-    let numpy_ok = perc_py
-        .as_deref()
-        .is_some_and(|p| import_check(p, "numpy", Duration::from_secs(10)));
-    let pillow_ok = perc_py
-        .as_deref()
-        .is_some_and(|p| import_check(p, "PIL", Duration::from_secs(10)));
+        .map(|p| {
+            py_pool.probe_modules(
+                p,
+                &["onnxruntime", "numpy", "PIL"],
+                false,
+                Duration::from_secs(10),
+            )
+        })
+        .unwrap_or_default();
+    let ort_ok = mods.get("onnxruntime").copied().unwrap_or(false);
+    let numpy_ok = mods.get("numpy").copied().unwrap_or(false);
+    let pillow_ok = mods.get("PIL").copied().unwrap_or(false);
     let model = crate::matte::read_model_setting()
         .or_else(|| crate::matte::appdata_matte_dir().map(|d| d.join("rvm.onnx")));
     let model_present = model.as_ref().map(|p| p.exists()).unwrap_or(false);
@@ -2077,10 +2294,24 @@ fn matte_card() -> Card {
     }
 }
 
+#[allow(dead_code)]
 fn prepared_matte_card(runtime: &crate::matte::native_runtime::PreparedRvmRuntime) -> Card {
-    let ort_ok = import_check(&runtime.python, "onnxruntime", Duration::from_secs(10));
-    let numpy_ok = import_check(&runtime.python, "numpy", Duration::from_secs(10));
-    let pillow_ok = import_check(&runtime.python, "PIL", Duration::from_secs(10));
+    prepared_matte_card_with_pool(runtime, &fast_scan::PythonScanPool::default())
+}
+
+fn prepared_matte_card_with_pool(
+    runtime: &crate::matte::native_runtime::PreparedRvmRuntime,
+    py_pool: &fast_scan::PythonScanPool,
+) -> Card {
+    let mods = py_pool.probe_modules(
+        &runtime.python,
+        &["onnxruntime", "numpy", "PIL"],
+        true,
+        Duration::from_secs(10),
+    );
+    let ort_ok = mods.get("onnxruntime").copied().unwrap_or(false);
+    let numpy_ok = mods.get("numpy").copied().unwrap_or(false);
+    let pillow_ok = mods.get("PIL").copied().unwrap_or(false);
     let ready = ort_ok && numpy_ok && pillow_ok;
     Card {
         id: "matte".into(),
@@ -2137,39 +2368,77 @@ fn prepared_matte_card_failure(reason: &str) -> Card {
 }
 
 pub fn scan(addr: Option<String>) -> DoctorReport {
+    scan_inner(addr, false).0
+}
+
+pub(crate) fn scan_fast(addr: Option<String>) -> (DoctorReport, Option<fast_scan::DeferredWork>) {
+    scan_inner(addr, true)
+}
+
+fn scan_inner(
+    addr: Option<String>,
+    defer_slow: bool,
+) -> (DoctorReport, Option<fast_scan::DeferredWork>) {
     // Notice an ffmpeg installed or chosen since the last scan, so "Check
     // again" picks it up (and re-probes its hardware encoders) without a restart.
     if cut_media::toolpath::refresh_media_tools() {
         tracing::info!("doctor: media tools changed since the last scan");
     }
+    let candidates = cut_media::toolpath::ffmpeg_candidates();
+    let has_env_or_override = std::env::var_os(cut_media::toolpath::ENV_FFMPEG)
+        .is_some_and(|v| !v.is_empty())
+        || cut_media::toolpath::read_override_setting().is_some();
+    let need_cuda_for_ranking = !defer_slow
+        || (candidates.len() > 1
+            && cut_media::toolpath::automatic_pick().is_on()
+            && !has_env_or_override);
+    let ffmpeg_pool = fast_scan::FfmpegScanPool::new(candidates, need_cuda_for_ranking);
+    let python_pool = fast_scan::PythonScanPool::default();
     // Every group is observational and independent. Run them together so one
     // slow optional CLI/model never turns the total Doctor scan into the sum of
     // every individual timeout. Card order remains stable below.
-    let (ffmpeg, gpu, perception, matte, matte_premium, dub, diarize, judges, disk) =
-        std::thread::scope(|scope| {
-            let ffmpeg = scope.spawn(ffmpeg_cards);
-            let gpu = scope.spawn(gpu_encode_card);
-            let perception = scope.spawn(perception_card);
-            let matte = scope.spawn(matte_card);
-            let matte_premium = scope.spawn(matte_premium_card);
-            let dub = scope.spawn(service_cards::dub_card);
-            let diarize = scope.spawn(service_cards::diarize_card);
-            let judges = scope.spawn(judge_cards);
-            let disk = scope.spawn(disk_card);
-            (
-                ffmpeg.join().expect("doctor ffmpeg probe panicked"),
-                gpu.join().expect("doctor GPU probe panicked"),
-                perception.join().expect("doctor perception probe panicked"),
-                matte.join().expect("doctor matte probe panicked"),
-                matte_premium
-                    .join()
-                    .expect("doctor premium matte probe panicked"),
-                dub.join().expect("doctor dub probe panicked"),
-                diarize.join().expect("doctor diarize probe panicked"),
-                judges.join().expect("doctor judge group panicked"),
-                disk.join().expect("doctor disk probe panicked"),
-            )
-        });
+    let (
+        ffmpeg,
+        (gpu, deferred_size_limits, deferred_cuda_filters),
+        perception,
+        matte,
+        matte_premium_scan,
+        dub,
+        diarize,
+        judges,
+        disk,
+    ) = std::thread::scope(|scope| {
+        let ffmpeg = scope.spawn(|| ffmpeg_cards_with_pool(&ffmpeg_pool));
+        let gpu = scope.spawn(|| gpu_encode_card_with_pool(&ffmpeg_pool, defer_slow));
+        let perception = scope.spawn(|| perception_card_with_pool(&python_pool));
+        let matte = scope.spawn(|| matte_card_with_pool(&python_pool));
+        let matte_premium = scope.spawn(|| premium_matte::scan_matte_premium(defer_slow));
+        let dub = scope.spawn(service_cards::dub_card);
+        let diarize = scope.spawn(service_cards::diarize_card);
+        let judges = scope.spawn(|| judge_cards_with_pool(&python_pool));
+        let disk = scope.spawn(disk_card);
+        (
+            ffmpeg.join().expect("doctor ffmpeg probe panicked"),
+            gpu.join().expect("doctor GPU probe panicked"),
+            perception.join().expect("doctor perception probe panicked"),
+            matte.join().expect("doctor matte probe panicked"),
+            matte_premium
+                .join()
+                .expect("doctor premium matte probe panicked"),
+            dub.join().expect("doctor dub probe panicked"),
+            diarize.join().expect("doctor diarize probe panicked"),
+            judges.join().expect("doctor judge group panicked"),
+            disk.join().expect("doctor disk probe panicked"),
+        )
+    });
+    let (matte_premium, deferred_matte_premium) = match matte_premium_scan {
+        premium_matte::MattePremiumScan::Ready(card) => (card, None),
+        premium_matte::MattePremiumScan::Deferred {
+            card,
+            python,
+            native_context,
+        } => (card.clone(), Some((python, native_context, card))),
+    };
     let mut cards = Vec::new();
     cards.extend(ffmpeg);
     // Windows: Microsoft's Visual C++ runtime that captions need (vc_runtime.rs).
@@ -2186,20 +2455,9 @@ pub fn scan(addr: Option<String>) -> DoctorReport {
     cards.extend(judges);
     cards.push(disk);
 
-    // Essential gate: ffmpeg PRESENT ⇒ core editing/render possible, so the first-run
-    // wizard does NOT need to auto-pop. A DEGRADED ffmpeg (Homebrew 8.x without libass/
-    // libvidstab) still edits + renders everything except caption burn-in / stabilize —
-    // those surface their own guidance when actually used. Treating Degraded as "essential
-    // missing" made the wizard auto-open on EVERY launch on a stock Homebrew Mac (the
-    // recurring Python/perception prompt). An UNVERIFIED ffmpeg (Unknown
-    // — its `-version` probe timed out twice on a slow/AV-scanning/render-pinned box) is
-    // ALSO not a blocker — a transient slow probe must NEVER flip a previously-working
-    // essential to "missing" and pop the wizard until a manual re-scan. ONLY a truly
-    // CONFIRMED-missing ffmpeg (spawn failed — the binary genuinely is not there) is the
-    // hard blocker that warrants the auto-wizard. (ffprobe rides with ffmpeg.)
     let essential_ok = essential_ok_for(&cards);
 
-    DoctorReport {
+    let report = DoctorReport {
         schema: DOCTOR_SCHEMA.to_string(),
         scanned_at: chrono::Utc::now().to_rfc3339(),
         os: std::env::consts::OS.to_string(),
@@ -2209,7 +2467,13 @@ pub fn scan(addr: Option<String>) -> DoctorReport {
         addr,
         cards,
         essential_ok,
-    }
+    };
+    let deferred = fast_scan::DeferredWork {
+        size_limits: deferred_size_limits,
+        cuda_filters: deferred_cuda_filters,
+        matte_premium: deferred_matte_premium,
+    };
+    (report, (!deferred.is_empty()).then_some(deferred))
 }
 
 /// A minimal, never-fails report used only if the blocking scan task itself

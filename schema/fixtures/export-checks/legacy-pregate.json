@@ -1,0 +1,8 @@
+{
+  "pass": true,
+  "risks": [],
+  "perception_assets": 0,
+  "uninstrumented_assets": [
+    "a1"
+  ]
+}

@@ -251,7 +251,7 @@ export interface Keyframe {
  * grade (edit.grade): per-clip color grade; serde-skipped when identity. */
 export type Clip =
   | { kind: 'gap'; duration_ms: number }
-  | { id: string; asset: string; src_in_ms: number; src_out_ms: number; effects?: unknown[]; gain_db?: number; transform?: ClipTransform; crop?: ClipCrop | null; fade?: ClipFade; xfade_in_ms?: number; speed?: number; grade?: ClipGrade | null; reverse?: boolean; freeze?: ClipFreeze | null; animation?: ClipAnimation | null; eq?: ClipEq | null; keyframes?: Keyframe[];
+  | { id: string; asset: string; src_in_ms: number; src_out_ms: number; effects?: unknown[]; gain_db?: number; transform?: ClipTransform; crop?: ClipCrop | null; fade?: ClipFade; xfade_in_ms?: number; speed?: number; grade?: ClipGrade | null; reverse?: boolean; freeze?: ClipFreeze | null; animation?: ClipAnimation | null; eq?: ClipEq | null; keyframes?: Keyframe[]; markers?: ClipMarker[];
       /** Non-destructive mute ranges (edit.mute_range / transcript.mute_words),
        *  SOURCE-asset ms [start,end) — engine serde-skips when empty. Drives the
        *  Transcript panel's muted-word styling. */
@@ -283,7 +283,8 @@ export type Clip =
       /** TRANSIENT (project.state): replay-backed Motion source/render identity. */
       motion_link?: MotionClipLink;
       recording?: { take: string; camera?: boolean; stale?: boolean; zoom_count?: number; camera_clip?: string | null;
-        missing_video?: boolean; missing_video_reason?: string | null; next_action?: string | null } }
+        missing_video?: boolean; missing_video_reason?: string | null; next_action?: string | null };
+      old_recording?: boolean }
   | { id: string; text: string; style_ref?: string; range_ms: [number, number] }
 
 /** Duration a constant-speed media clip occupies on the timeline. Mirrors
@@ -333,6 +334,7 @@ export interface Track {
   pan?: number
 }
 
+export type ClipMarker = { id: string; source_ms: number; label: string; note?: string; color?: string } // source-media ms
 export interface Marker {
   id: string
   at_ms: number

@@ -12,11 +12,7 @@ const PASTE_FAILURE_FALLBACK = 'Could not paste the copied clip.'
  * when it is the only recovery guidance (for example, re-import the asset).
  */
 export function clipboardPasteFailureMessage(result: VerbResult): string | null {
-  const message = userVerbFailureMessage(result, PASTE_FAILURE_FALLBACK)
-  if (!message || result.error?.suggested_action?.trim()) return message
-  const cause = result.error?.cause?.trim()
-  if (!cause || message.toLocaleLowerCase().includes(cause.toLocaleLowerCase())) return message
-  return `${message} ${cause}`
+  return userVerbFailureMessage(result, PASTE_FAILURE_FALLBACK)
 }
 
 interface AppClipboardControllerArgs {

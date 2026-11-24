@@ -518,3 +518,184 @@ fn rejects_malformed_out_of_order_overlapping_and_non_monotonic_facts() {
     resume.observed_unix_ms = 499;
     assert!(RecordingSessionJournal::replay(non_monotonic).is_err());
 }
+
+#[test]
+fn active_duration_limit_rejects_excessive_stop_overshoot() {
+    let intent = RecordingSessionIntent::new(
+        "session-limit-excessive",
+        100,
+        100,
+        30.0,
+        Some(30_000),
+        false,
+        "opaque-target-limit",
+        vec![RecordingStream::ScreenVideo],
+    );
+    for (end, accepted) in [(32_000, true), (32_001, false), (35_000, false)] {
+        let mut journal = RecordingSessionJournal::new(intent.clone()).unwrap();
+        journal
+            .append_transition(transition(0, RecordingSessionState::Started, 0, 100))
+            .unwrap();
+        let result = journal.seal_run(sealed_run(
+            0,
+            100,
+            end + 100,
+            0,
+            end,
+            0,
+            0,
+            vec![video(0, 0, 0, end, end, 'a')],
+        ));
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "unexpected validation for end {end}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn active_duration_limit_permits_active_run_stop_overshoot_and_forbids_starting_past_limit() {
+    let limited_intent = RecordingSessionIntent::new(
+        "session-limit",
+        100,
+        100,
+        30.0,
+        Some(30_000),
+        false,
+        "opaque-target-limit",
+        vec![RecordingStream::ScreenVideo],
+    );
+
+    // Real native encoders (SCK/WGC) take a few dozen ms to seal after the 30s limit fires.
+    let mut single_run = RecordingSessionJournal::new(limited_intent.clone()).unwrap();
+    single_run
+        .append_transition(transition(0, RecordingSessionState::Started, 0, 100))
+        .unwrap();
+    single_run
+        .seal_run(sealed_run(
+            0,
+            100,
+            30_200,
+            0,
+            30_100,
+            0,
+            0,
+            vec![video(0, 0, 0, 30_100, 30_100, 'a')],
+        ))
+        .expect("an active run closing slightly past limit on Stop must seal cleanly");
+    single_run
+        .append_transition(transition(
+            1,
+            RecordingSessionState::Stopping,
+            30_100,
+            30_210,
+        ))
+        .unwrap();
+    single_run
+        .seal_terminal(SessionTerminal {
+            disposition: TerminalDisposition::Completed,
+            logical_end_ms: 30_100,
+            observed_unix_ms: 30_220,
+        })
+        .unwrap();
+    assert!(RecordingSessionJournal::replay(single_run.entries()).is_ok());
+
+    // Multi-run paused take resuming before the limit and sealing with slight overshoot on Stop.
+    let mut paused = RecordingSessionJournal::new(limited_intent.clone()).unwrap();
+    paused
+        .append_transition(transition(0, RecordingSessionState::Started, 0, 100))
+        .unwrap();
+    paused
+        .seal_run(sealed_run(
+            0,
+            100,
+            10_120,
+            0,
+            10_000,
+            0,
+            0,
+            vec![video(0, 0, 0, 10_000, 10_000, 'b')],
+        ))
+        .unwrap();
+    paused
+        .append_transition(transition(1, RecordingSessionState::Paused, 10_000, 10_130))
+        .unwrap();
+    paused
+        .append_transition(transition(
+            2,
+            RecordingSessionState::Resumed,
+            10_000,
+            35_100,
+        ))
+        .unwrap();
+    paused
+        .seal_run(sealed_run(
+            1,
+            35_100,
+            55_200,
+            10_000,
+            30_050,
+            1,
+            1,
+            vec![video(1, 0, 0, 20_050, 20_050, 'c')],
+        ))
+        .unwrap();
+    paused
+        .append_transition(transition(
+            3,
+            RecordingSessionState::Stopping,
+            30_050,
+            55_210,
+        ))
+        .unwrap();
+    paused
+        .seal_terminal(SessionTerminal {
+            disposition: TerminalDisposition::Completed,
+            logical_end_ms: 30_050,
+            observed_unix_ms: 55_220,
+        })
+        .unwrap();
+    assert!(RecordingSessionJournal::replay(paused.entries()).is_ok());
+
+    // Starting another run after recorded time already reached/passed the limit stays forbidden.
+    let mut over_start = RecordingSessionJournal::new(limited_intent).unwrap();
+    over_start
+        .append_transition(transition(0, RecordingSessionState::Started, 0, 100))
+        .unwrap();
+    over_start
+        .seal_run(sealed_run(
+            0,
+            100,
+            30_100,
+            0,
+            30_050,
+            0,
+            0,
+            vec![video(0, 0, 0, 30_050, 30_050, 'd')],
+        ))
+        .unwrap();
+    over_start
+        .append_transition(transition(1, RecordingSessionState::Paused, 30_050, 30_110))
+        .unwrap();
+    over_start
+        .append_transition(transition(
+            2,
+            RecordingSessionState::Resumed,
+            30_050,
+            31_000,
+        ))
+        .unwrap();
+    assert!(over_start
+        .seal_run(sealed_run(
+            1,
+            31_000,
+            31_500,
+            30_050,
+            30_550,
+            1,
+            1,
+            vec![video(1, 0, 0, 500, 500, 'e')],
+        ))
+        .is_err());
+}

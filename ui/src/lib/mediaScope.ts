@@ -15,6 +15,15 @@ import type { Project } from './clientModel'
 import { safeMediaPath } from './mediaUrl'
 
 let activeScope = ''
+const scopeChangeListeners = new Set<(next: string, prev: string) => void>()
+
+/** Subscribe to active project media-scope changes (e.g. cache eviction on close/switch). */
+export function onMediaScopeChange(listener: (next: string, prev: string) => void): () => void {
+  scopeChangeListeners.add(listener)
+  return () => {
+    scopeChangeListeners.delete(listener)
+  }
+}
 
 /** Scope token for the open project; '' when none is open (no parameter is added). */
 export function mediaScopeOf(project: Pick<Project, 'project_identity'> | null | undefined, session: number): string {
@@ -27,7 +36,10 @@ export function mediaScopeOf(project: Pick<Project, 'project_identity'> | null |
 
 /** Called by the owner of the open project on every render (idempotent). */
 export function setActiveMediaScope(scope: string): void {
+  if (scope === activeScope) return
+  const prev = activeScope
   activeScope = scope
+  for (const listener of scopeChangeListeners) listener(scope, prev)
 }
 
 export function activeMediaScope(): string {

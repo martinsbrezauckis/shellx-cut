@@ -198,7 +198,7 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
-    use super::super::{ToolResolution, TEST_ENV_LOCK};
+    use super::super::{lock_test_env, ToolResolution};
 
     #[cfg(unix)]
     #[test]
@@ -255,7 +255,7 @@ mod tests {
     fn runtime_context_set_resolves_the_verified_python_and_tool_pair() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let _restore = EnvRestore::capture();
         let temp =
             std::env::temp_dir().join(format!("scut-pinned-tool-bundle-{}", std::process::id()));

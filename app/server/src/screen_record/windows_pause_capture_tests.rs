@@ -128,3 +128,68 @@ fn selected_system_audio_requires_the_product_wav_and_timing_sidecar() {
         MicrophoneCaptureOutcome::NotRequested
     );
 }
+
+#[test]
+fn private_projection_preserves_probed_media_cadence_for_capture_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = CaptureRoot::for_project(temp.path()).unwrap();
+    root.create_capture_dir("cadence-projection").unwrap();
+    let events = EventTrack {
+        duration_ms: 20_500,
+        screen_w: 640,
+        screen_h: 360,
+        monitors: Vec::new(),
+        cursor: Vec::new(),
+        clicks: Vec::new(),
+        scrolls: Vec::new(),
+        keys: Vec::new(),
+        cursor_correlation: CursorCorrelation::default(),
+    };
+    let mut project = RecordingProject::new(
+        "source.mp4",
+        Settings {
+            width: 640,
+            height: 360,
+            fps: 30.0,
+            audio_rate: 48_000,
+        },
+        events,
+    );
+    let expected_probed = record_core::ProbedMediaCadence {
+        avg_frame_rate: Some(record_core::FrameRate::new(30, 1).unwrap()),
+        r_frame_rate: Some(record_core::FrameRate::new(30, 1).unwrap()),
+        decoded_video_frames: Some(615),
+        duration_ms: Some(20_500),
+    };
+    project.capture_cadence = Some(
+        record_core::CaptureCadence::from_server_fps(30.0)
+            .unwrap()
+            .with_probed_media(expected_probed),
+    );
+    std::fs::write(
+        root.capture_file("cadence-projection", "source.mp4")
+            .unwrap(),
+        b"video",
+    )
+    .unwrap();
+    let project_bytes = serde_json::to_vec_pretty(&project).unwrap();
+    std::fs::write(
+        root.capture_file("cadence-projection", "project.json")
+            .unwrap(),
+        &project_bytes,
+    )
+    .unwrap();
+
+    let output = PrivateFrameGridProjection::test_without_completed_audio_receipt(
+        root,
+        "cadence-projection".into(),
+        record_capture::SelectedCaptureStreams::screen_only(),
+    )
+    .capture_output()
+    .unwrap();
+    let re_serialized = serde_json::to_vec_pretty(&output.into_project_with_capture_cadence(
+        record_core::CaptureCadence::from_server_fps(30.0).unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(re_serialized, project_bytes);
+}

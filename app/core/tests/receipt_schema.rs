@@ -121,6 +121,8 @@ fn rust_receipt_types_match_typed_schema_contract() {
                 output: "SDR BT.709".into(),
                 processing_bit_depth: 8,
                 file_bit_depth: 8,
+                transfer: None,
+                hdr10_metadata: None,
                 sources: vec![cut_core::SourceColorReport {
                     asset: "a1".into(),
                     file: "hlg.mp4".into(),
@@ -132,10 +134,56 @@ fn rust_receipt_types_match_typed_schema_contract() {
             }),
         }),
         outcome: None,
+        export_checks: None,
     };
     receipt.compute_pass();
     let rv = serde_json::to_value(&receipt).unwrap();
     assert_has_required(&rv, &s, "RenderReceipt");
+    // Also validate a Keep HDR ColorReport against the schema.
+    let keep_hdr_color = serde_json::to_value(cut_core::ColorReport {
+        output: "HDR 10-bit PQ (BT.2020)".into(),
+        processing_bit_depth: 10,
+        file_bit_depth: 10,
+        transfer: Some("smpte2084".into()),
+        hdr10_metadata: Some(cut_core::Hdr10StaticMetadataReport {
+            present_in_sources: true,
+            carried: true,
+            mastering_display: Some(
+                "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)".into(),
+            ),
+            max_cll: Some("1000,400".into()),
+        }),
+        sources: vec![cut_core::SourceColorReport {
+            asset: "a1".into(),
+            file: "pq.mp4".into(),
+            transfer: Some("smpte2084".into()),
+            bit_depth: Some(10),
+            handling: "kept_hdr".into(),
+        }],
+        note: Some("HDR10 metadata carried".into()),
+    })
+    .unwrap();
+    assert_has_required(&keep_hdr_color, &s, "ColorReport");
+    for key in keep_hdr_color.as_object().unwrap().keys() {
+        assert!(
+            s["$defs"]["ColorReport"]["properties"].get(key).is_some(),
+            "ColorReport serializes '{key}' but the schema does not declare it"
+        );
+    }
+    let md_schema = &s["$defs"]["ColorReport"]["properties"]["hdr10_metadata"];
+    for req in md_schema["required"].as_array().unwrap() {
+        let k = req.as_str().unwrap();
+        assert!(
+            keep_hdr_color["hdr10_metadata"].get(k).is_some(),
+            "hdr10_metadata missing required key '{k}'"
+        );
+    }
+    for key in keep_hdr_color["hdr10_metadata"].as_object().unwrap().keys() {
+        assert!(
+            md_schema["properties"].get(key).is_some(),
+            "hdr10_metadata serializes '{key}' but the schema does not declare it"
+        );
+    }
     // The encoder report conforms to its contract, and every key it serializes is
     // declared (the schema has additionalProperties:false).
     assert_has_required(&rv["encode"], &s, "EncodeReport");

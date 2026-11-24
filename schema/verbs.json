@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.121",
+    "version": "0.6.122",
     "status": "published",
-    "published_version": "0.6.121"
+    "published_version": "0.6.122"
   },
   "mutation_controls": {
     "request_id": {
@@ -212,7 +212,7 @@
     {
       "name": "project.list",
       "domain": "project",
-      "description": "List recent projects from the global index (~/.shellx-cut/projects.json), reconciled against the managed projects dir + the filesystem: projects whose .cutproj vanished are flagged missing:true, and un-indexed .cutproj dirs found in the managed dir are discovered and added. READ-ONLY discovery — reopen a listed project with project.open{path}. The index is updated as a side-effect of project.create/open/rename.",
+      "description": "List recent projects from the global index (~/.shellx-cut/projects.json), reconciled against the managed projects dir + the filesystem: projects whose .cutproj vanished are flagged missing:true, and un-indexed .cutproj dirs found in the managed dir are discovered and added. READ-ONLY discovery — reopen a listed project with project.open{path}. The index is updated as a side-effect of project.create/open/rename. A damaged index is read from the copy kept at the last save (projects.last-good.json); without a usable copy it is moved aside as projects.damaged.json (never deleted), the list starts again from the projects folder, and the first project.list or project.create reply after that carries the warning project_list_rebuilt.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -365,7 +365,7 @@
     {
       "name": "project.state",
       "domain": "project",
-      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Every result carries a transient path-free project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name} derived from the canonical open .cutproj origin; raw project paths are never returned by this projection. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json.",
+      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Every result carries a transient path-free project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name} derived from the canonical open .cutproj origin; raw project paths are never returned by this projection. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json. Media clips may carry markers:[{id,source_ms,label,note?,color?}]: clip markers (like Premiere/Resolve clip markers) in the clip's SOURCE media time, made from the markers flagged during a recording take when that take is added to the timeline. They travel with the clip on move, stay in the data through trims (the timeline draws only markers whose source_ms is inside [src_in_ms,src_out_ms)), go to both halves of a split, are copied with new ids by edit.duplicate, are mapped through speed and reverse, and come back with undo/redo; edit.replace with a different asset clears them. No verb edits clip markers in this release; render, export and interchange output ignore them.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -1460,7 +1460,7 @@
     {
       "name": "project.set_output_dir",
       "domain": "project",
-      "description": "Choose the FOLDER where exports + renders are written when a verb isn't given an explicit `path` (the UI 'Choose folder…' / agent control over the destination). The folder must already exist and accept files, and on Linux and macOS it must not be writable by EVERYONE on the computer unless it has the sticky bit set (a folder only the group can write to is fine; the render stages exports there and refuses an everyone-writable folder, so it is refused now with `export folder can be written by anyone on this computer`); it is canonicalized and becomes an allowed output-fence root. Empty/omitted `dir` clears the choice (back to <project>/exports). `only_if_empty:true` is for one-time carry-over of an older UI choice: with a nonempty `dir`, set only when the engine has no folder; otherwise return the current status without changing it. It is an APP-WIDE remembered preference held by the engine, not per project: it stays in force for every project opened afterwards until cleared, the status bar and the Export menu show it, and each change publishes the `output_folder_changed` event. If the chosen folder is later deleted or becomes unwritable, an export that would use it is refused BEFORE it starts, with the folder named and the way forward (choose another folder, or clear it). NOT a timeline op, never replayed.",
+      "description": "Choose the FOLDER where exports + renders are written when a verb isn't given an explicit `path` (the UI 'Choose folder…' / agent control over the destination). The folder must already exist and accept files, and on Linux and macOS it must not be writable by EVERYONE on the computer unless it has the sticky bit set (a folder only the group can write to is fine; the render stages exports privately first before moving them in and still refuses an everyone-writable folder, so it is refused now with `export folder can be written by anyone on this computer`); it is canonicalized and becomes an allowed output-fence root. Empty/omitted `dir` clears the choice (back to <project>/exports). `only_if_empty:true` is for one-time carry-over of an older UI choice: with a nonempty `dir`, set only when the engine has no folder; otherwise return the current status without changing it. It is an APP-WIDE remembered preference held by the engine, not per project: it stays in force for every project opened afterwards until cleared, the status bar and the Export menu show it, and each change publishes the `output_folder_changed` event. If the chosen folder is later deleted or becomes unwritable, an export that would use it is refused BEFORE it starts, with the folder named and the way forward (choose another folder, or clear it). NOT a timeline op, never replayed.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -2524,7 +2524,7 @@
     {
       "name": "media.import",
       "domain": "media",
-      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job; when the captions runtime is not installed the enrich job finishes done, not failed or warned, with result.skipped=\"captions_not_installed\", the reason and a suggested_action naming Install captions / system.setup_perception). Still images are decoded once without looping under a ten-second limit before registration; a damaged picture is refused with unreadable_media, its filename, cause and suggested_action. Video/audio keep their asynchronous import chain. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job; when the captions runtime is not installed the enrich job finishes done, not failed or warned, with result.skipped=\"captions_not_installed\", the reason and a suggested_action naming Install captions / system.setup_perception). Still images are decoded once without looping under a ten-second limit before registration; a damaged picture is refused with unreadable_media, its filename, cause and suggested_action. Video/audio keep their asynchronous import chain. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported. When the first import is auto-placed and it is a screen-recording take, its video clip receives the take's markers as clip markers.",
       "args": {
         "type": "object",
         "required": [
@@ -4132,7 +4132,7 @@
     {
       "name": "edit.insert",
       "domain": "edit",
-      "description": "Insert an asset as a new clip on a track at a timeline position; later clips on that track shift right. src_range_ms selects a sub-range of the asset (defaults to full duration). STILL IMAGES (probe kind=image) have no intrinsic duration: pass duration_ms instead (REQUIRED for images; video tracks only) — the render loops the still for the clip duration, conformed to project geometry. RIPPLE MATRIX (default chosen by TARGET track; explicit `ripple` always wins): BASE track target (the first video track with clips — the renderer's base-canvas rule — or the first audio track with clips; positional first of the kind when all are empty) → default ripple=TRUE: a gap of the inserted duration is spliced into every OTHER video/audio track at at_ms (razor-across-tracks; tracks ending at/before at_ms are untouched), caption ranges + duck gain-windows remap edge-wise, markers at/after at_ms shift right by the inserted duration — AV sync and overlay/caption/marker alignment preserved (mirror of ripple_delete's all-tracks form). OVERLAY/EXTRA track target (any later video track = PiP overlay; any later audio track = music/SFX bed) → default ripple=FALSE: overlays float above the base, nothing else moves. ripple=false on a base track is the deliberate overlay/replace opt-out (siblings + markers stay put, consistent with single-track ripple_delete). In BOTH modes the target track's own duck windows follow its shifted content. The RESOLVED ripple value is recorded explicitly on the op (ops are self-contained; ops logged before this flag replay as ripple=false). EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Insert an asset as a new clip on a track at a timeline position; later clips on that track shift right. src_range_ms selects a sub-range of the asset (defaults to full duration). STILL IMAGES (probe kind=image) have no intrinsic duration: pass duration_ms instead (REQUIRED for images; video tracks only) — the render loops the still for the clip duration, conformed to project geometry. RIPPLE MATRIX (default chosen by TARGET track; explicit `ripple` always wins): BASE track target (the first video track with clips — the renderer's base-canvas rule — or the first audio track with clips; positional first of the kind when all are empty) → default ripple=TRUE: a gap of the inserted duration is spliced into every OTHER video/audio track at at_ms (razor-across-tracks; tracks ending at/before at_ms are untouched), caption ranges + duck gain-windows remap edge-wise, markers at/after at_ms shift right by the inserted duration — AV sync and overlay/caption/marker alignment preserved (mirror of ripple_delete's all-tracks form). OVERLAY/EXTRA track target (any later video track = PiP overlay; any later audio track = music/SFX bed) → default ripple=FALSE: overlays float above the base, nothing else moves. ripple=false on a base track is the deliberate overlay/replace opt-out (siblings + markers stay put, consistent with single-track ripple_delete). In BOTH modes the target track's own duck windows follow its shifted content. The RESOLVED ripple value is recorded explicitly on the op (ops are self-contained; ops logged before this flag replay as ripple=false). EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips. When the asset is a screen-recording take (its screen file, a raw recording linked to its take, or a polished/recovered take), the new video clip receives the take's markers as clip markers (markers on the clip in project.state) in the same op.",
       "args": {
         "type": "object",
         "required": [
@@ -4208,7 +4208,7 @@
     {
       "name": "edit.overwrite",
       "domain": "edit",
-      "description": "Overwrite without shifting later timeline time. TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both (or destinations requested with create_video_track/create_audio_track, created atomically in the same undo step), WITHOUT shifting downstream timeline time; at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Overwrite without shifting later timeline time. TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both (or destinations requested with create_video_track/create_audio_track, created atomically in the same undo step), WITHOUT shifting downstream timeline time; at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips. A screen-recording take's markers are attached to the new video clip as clip markers in the same op (see project.state markers).",
       "args": {
         "type": "object",
         "required": [
@@ -4412,7 +4412,7 @@
     {
       "name": "edit.duplicate",
       "domain": "edit",
-      "description": "Duplicate a clip (the universal NLE Ctrl+D / 'Duplicate'): copy a clip and place the copy IMMEDIATELY AFTER it on the SAME track, rippling the rest like a normal insert. The copy carries the SAME asset + source range AND ALL per-clip attributes -- effects, gain_db, transform, crop, fade, speed, speed_ramp, grade, matte, mask (redact), reverse, freeze, animation, keyframes, eq, stabilize -- i.e. the whole clip minus its id (a TRUE copy, unlike edit.paste which makes a pristine clip). The clone's crossfade-IN is reset to a hard cut (a crossfade is a property of the ORIGINAL left-neighbour boundary, not the clip's content -- the same rule split's right half uses). LINKED AUDIO: when the source is a muxed VIDEO clip whose audio rides a sibling AUDIO clip (same asset + same timeline start -- the auto-place / linked-insert signature), that sibling is duplicated too so the A/V pair stays aligned; both halves go ripple:false (the aligned-pair pattern) and share one undo group. A LONE clip resolves its ripple from the host track like edit.insert (base track -> sibling AV-sync gap, overlay/extra -> float). Each half lowers to ONE replay-safe edit.duplicate core op (a clone-by-reference whose new id is pinned). Works on a retimed/ramped clip (the whole clip is copied at a boundary -- no timeline->source split). v1 copies the whole clip (no sub-range, no overwrite). ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Duplicate a clip (the universal NLE Ctrl+D / 'Duplicate'): copy a clip and place the copy IMMEDIATELY AFTER it on the SAME track, rippling the rest like a normal insert. The copy carries the SAME asset + source range AND ALL per-clip attributes -- effects, gain_db, transform, crop, fade, speed, speed_ramp, grade, matte, mask (redact), reverse, freeze, animation, keyframes, eq, stabilize -- i.e. the whole clip minus its id (a TRUE copy, unlike edit.paste which makes a pristine clip). The clone's crossfade-IN is reset to a hard cut (a crossfade is a property of the ORIGINAL left-neighbour boundary, not the clip's content -- the same rule split's right half uses). LINKED AUDIO: when the source is a muxed VIDEO clip whose audio rides a sibling AUDIO clip (same asset + same timeline start -- the auto-place / linked-insert signature), that sibling is duplicated too so the A/V pair stays aligned; both halves go ripple:false (the aligned-pair pattern) and share one undo group. A LONE clip resolves its ripple from the host track like edit.insert (base track -> sibling AV-sync gap, overlay/extra -> float). Each half lowers to ONE replay-safe edit.duplicate core op (a clone-by-reference whose new id is pinned). Works on a retimed/ramped clip (the whole clip is copied at a boundary -- no timeline->source split). v1 copies the whole clip (no sub-range, no overwrite). ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips. Clip markers (project.state markers) are copied to the new clip with new ids; the effect lists them as added_clip_markers.",
       "args": {
         "type": "object",
         "required": [
@@ -4568,7 +4568,7 @@
     {
       "name": "edit.replace",
       "domain": "edit",
-      "description": "The 3-point REPLACE EDIT: swap the clip at `target_clip`'s timeline slot with new source footage while PRESERVING the target's id, timeline position, and slot duration. The source is given as either an imported `asset` or an existing `source_clip` (its asset + default source window); `source_in_ms`/`source_out_ms` set/override the source in/out. The replacement keeps the target clip's LOOK (effects, grade, transform, crop, fade, gain, eq, mask, matte, stabilize, reverse, transitions, keyframes, animation) and plays at NORMAL speed (1.0); the three source-timing fields tied to the OLD footage -- constant speed, speed_ramp, freeze -- are RESET (use edit.fit_to_fill to speed-match a slot instead). SLOT FILL + CLAMP: at normal speed the replacement uses [source_in, source_in+slot) of source, so it fills the slot exactly; if the chosen source window is SHORTER than the slot (insufficient media), the replacement is clamped and the REMAINDER of the slot is left as a gap (black/silence) -- a clamp-and-pad, NOT a ripple -- so the slot's duration and ALL downstream timing are preserved exactly (gap_ms in the receipt reports the pad). LINKED AUDIO (link_audio, default true): when the target is a muxed VIDEO clip whose audio rides a sibling AUDIO clip (same asset + same timeline start), that sibling is replaced too (same new asset + source offset) so the A/V pair stays in sync; both halves are in-place equal-duration swaps so NEITHER track ripples (the linked-paste C-1 double-ripple trap cannot arise) and the two ops share one undo group. The core op allocates NO new clip id (the target keeps its id), so it is trivially replay-safe. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "The 3-point REPLACE EDIT: swap the clip at `target_clip`'s timeline slot with new source footage while PRESERVING the target's id, timeline position, and slot duration. The source is given as either an imported `asset` or an existing `source_clip` (its asset + default source window); `source_in_ms`/`source_out_ms` set/override the source in/out. The replacement keeps the target clip's LOOK (effects, grade, transform, crop, fade, gain, eq, mask, matte, stabilize, reverse, transitions, keyframes, animation) and plays at NORMAL speed (1.0); the three source-timing fields tied to the OLD footage -- constant speed, speed_ramp, freeze -- are RESET (use edit.fit_to_fill to speed-match a slot instead). SLOT FILL + CLAMP: at normal speed the replacement uses [source_in, source_in+slot) of source, so it fills the slot exactly; if the chosen source window is SHORTER than the slot (insufficient media), the replacement is clamped and the REMAINDER of the slot is left as a gap (black/silence) -- a clamp-and-pad, NOT a ripple -- so the slot's duration and ALL downstream timing are preserved exactly (gap_ms in the receipt reports the pad). LINKED AUDIO (link_audio, default true): when the target is a muxed VIDEO clip whose audio rides a sibling AUDIO clip (same asset + same timeline start), that sibling is replaced too (same new asset + source offset) so the A/V pair stays in sync; both halves are in-place equal-duration swaps so NEITHER track ripples (the linked-paste C-1 double-ripple trap cannot arise) and the two ops share one undo group. The core op allocates NO new clip id (the target keeps its id), so it is trivially replay-safe. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips. Replacing with a different asset clears the clip's markers (they belonged to the old source).",
       "args": {
         "type": "object",
         "required": [
@@ -5184,7 +5184,7 @@
     {
       "name": "edit.transform",
       "domain": "edit",
-      "description": "Set (or clear) geometry + opacity on a video clip. Normalized values are validated at the verb/core boundary: x/y = top-left corner as a fraction of frame width/height (0..1), scale = clip width as a fraction of frame width (0..1]; out-of-range values are rejected instead of clamped. Height scales proportionally (the clip is the full conformed frame, scaled). opacity = 0..1 alpha (1 = opaque). Identity (0,0,1,1) clears. LAYER CONTRACT: the first non-empty video track is the stable base canvas and every later video track composites above it in track order; empty tracks do not claim the base slot. Overlay transforms produce picture-in-picture over the lower composite. A base transform places/scales the picture over black, and base opacity (static or keyframed) blends against black. A hidden or gapped base remains black rather than promoting a higher layer. The same final transform/opacity stage applies after a base mask or power-window composite. The renderer only even-rounds/clamps already-valid pixel geometry to legal frame coordinates.",
+      "description": "Set (or clear) geometry + opacity on a video clip. Normalized values are validated at the verb/core boundary: x/y = top-left corner as a fraction of frame width/height (0..1), scale = clip width as a fraction of frame width (0..1]; out-of-range values are rejected instead of clamped. Rectangle overlays keep their source aspect ratio: scale keeps the saved width and height follows the source, without internal bars or cropping. Circle/rounded overlays remain square cover-cropped bubbles. Base clips still use the conformed frame. opacity = 0..1 alpha (1 = opaque). Identity (0,0,1,1) clears. LAYER CONTRACT: the first non-empty video track is the stable base canvas and every later video track composites above it in track order; empty tracks do not claim the base slot. Overlay transforms produce picture-in-picture over the lower composite. A base transform places/scales the picture over black, and base opacity (static or keyframed) blends against black. A hidden or gapped base remains black rather than promoting a higher layer. The same final transform/opacity stage applies after a base mask or power-window composite. The renderer only even-rounds/clamps already-valid pixel geometry to legal frame coordinates.",
       "args": {
         "type": "object",
         "required": [
@@ -5229,7 +5229,7 @@
               "rounded"
             ],
             "default": "rect",
-            "description": "Overlay shape. Circle/rounded are square, centre cover-cropped bubbles: x/y is top-left and scale is width/frame width. Rect preserves full conformed-frame geometry."
+            "description": "Overlay shape. Circle/rounded are square, centre cover-cropped bubbles: x/y is top-left and scale is width/frame width. Rect keeps the source aspect ratio, without bars or cropping; saved scale remains width/frame width."
           },
           "radius": {
             "type": "number",
@@ -7059,10 +7059,17 @@
           "timeout_ms": {
             "type": "integer",
             "description": "Turn timeout (default 180000; clamped 10000–600000)."
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Optional existing project conversation ID to continue. Omit to start a new conversation."
           }
         }
       },
-      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, target?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,target?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment and target fields echo the validated request snapshot; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
+      "result": "{ok, conversation_id?, origin?, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, target?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,target?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment and target fields echo the validated request snapshot; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -7079,6 +7086,201 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_list",
+      "domain": "agent",
+      "summary": "List conversations stored in the open project, including live running state and unreadable format reasons.",
+      "description": "List persisted and active conversations stored under the open project's chat folder, including origin ('agent' or 'human'), live running state, and a short plain reason for any unreadable, oversized, or unsupported-version file. Replies are bounded to 2 MiB and include a short note when additional conversations are not shown.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{conversations:[{id, title, origin, readable, unreadable_reason?, running, turn_count, created_at?, updated_at?, last_preview?}], truncated?: boolean, not_shown?: integer, note?: string}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_list",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_get",
+      "domain": "agent",
+      "summary": "Read one project conversation including live running turn actions or an unreadable reason.",
+      "description": "Read the full turn history for one project conversation, overlaying any currently running turn and its live actions or returning the short plain reason why an unrecognized record cannot be opened.",
+      "args": {
+        "type": "object",
+        "required": [
+          "conversation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Conversation ID within the open project."
+          }
+        }
+      },
+      "result": "{conversation:{id, title, origin, readable, unreadable_reason?, running, created_at?, updated_at?, turns:[]}}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_get",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_migrate",
+      "domain": "agent",
+      "summary": "Migrate legacy browser-local Chat conversations into the open project's engine conversation store idempotently.",
+      "description": "Idempotently import previously browser-local Chat tab conversations into the open project's engine conversation store with secret redaction applied.",
+      "args": {
+        "type": "object",
+        "required": [
+          "legacy_key",
+          "conversations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "legacy_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Client identity key whose localStorage chat log is being migrated."
+          },
+          "conversations": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "human",
+                    "agent"
+                  ]
+                },
+                "turns": {
+                  "type": "array",
+                  "maxItems": 200
+                }
+              }
+            }
+          }
+        }
+      },
+      "result": "{migrated: integer, conversation_ids: [string]}",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_migrate",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "agent.chat_patch",
+      "domain": "agent",
+      "summary": "Update metadata, reverted turn state, or delete one persisted project conversation file.",
+      "description": "Update mutable UI state on one readable engine-kept conversation (mark a turn reverted or rename title), or delete an idle conversation, removing its conversation file from the project's chat folder.",
+      "args": {
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "op"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "mark_reverted",
+              "set_title",
+              "delete"
+            ]
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        }
+      },
+      "result": "{updated: boolean, already_reverted?: true (mark_reverted of a turn that was already reverted)}",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "agent_chat_patch",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
         "facets": []
       }
     },
@@ -7850,7 +8052,7 @@
     {
       "name": "edit.keyframe",
       "domain": "edit",
-      "description": "Animate ONE parameter of a media clip over time with keyframes (the primitive every pro editor builds animation on). SET semantics: points REPLACES that param's keyframe track; an empty/omitted points list CLEARS it. A keyframed parameter OVERRIDES its static counterpart. param: 'opacity' (video alpha 0..1 — animated fade in/out; the base blends against black and overlays blend over lower layers), 'volume' (linear gain multiplier, 1=unity — audio swells/manual ducking; AUDIO-track clips), 'pos_x'/'pos_y' (overlay PiP position as a fraction of frame width/height — animated PiP motion / slide-in/out; VIDEO-track overlays; NOT clamped, so values <0 or >1 slide the overlay off-screen), or 'scale' (VIDEO-clip animated ZOOM — multiplier 1=native, clamped [1,10]; the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan; mutually exclusive with edit.animate on a clip). interp may be 'linear'/'hold' OR any ease_* Penner curve (quad/cubic/expo/back/elastic/bounce × in/out/in_out) — eased motion reads professional, not mechanical. points = control points {t_ms (clip-local), value}; the renderer interpolates between them (linear, stepped for interp:'hold', or eased), clamping to the first/last value outside the range. Times are clip-local ms (0 = clip start). Rendered as an ffmpeg time-expression (opacity → a per-frame alpha/luma expression; volume → `volume='…':eval=frame`; pos_x/pos_y → an `overlay=x:y` time-expression onto a per-segment transparent canvas — the static `pad` placement is kept byte-identical for un-animated overlays; scale → a `zoompan` z-expression); CPU-only, so a keyframed clip renders on the software path. Exception: on circle/rounded overlays, scale multiplies the static bubble diameter (positive values below 1 shrink it), including its mask; it does not zoom the interior image. Media clips only.",
+      "description": "Animate ONE parameter of a media clip over time with keyframes (the primitive every pro editor builds animation on). SET semantics: points REPLACES that param's keyframe track; an empty/omitted points list CLEARS it. A keyframed parameter OVERRIDES its static counterpart. param: 'opacity' (video alpha 0..1 — animated fade in/out; the base blends against black and overlays blend over lower layers), 'volume' (linear gain multiplier, 1=unity — audio swells/manual ducking; AUDIO-track clips), 'pos_x'/'pos_y' (overlay PiP position as a fraction of frame width/height — animated PiP motion / slide-in/out; VIDEO-track overlays; NOT clamped, so values <0 or >1 slide the overlay off-screen), or 'scale' (VIDEO-clip animated ZOOM — multiplier 1=native, clamped [1,10]; the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan; mutually exclusive with edit.animate on a clip). interp may be 'linear'/'hold' OR any ease_* Penner curve (quad/cubic/expo/back/elastic/bounce × in/out/in_out) — eased motion reads professional, not mechanical. points = control points {t_ms (clip-local), value}; the renderer interpolates between them (linear, stepped for interp:'hold', or eased), clamping to the first/last value outside the range. Times are clip-local ms (0 = clip start). Rendering: a curve of up to 64 points keeps its original ffmpeg time-expression for pos_x/pos_y (an `overlay=x:y` time-expression onto a per-segment transparent canvas — the static `pad` placement is kept byte-identical for un-animated overlays), volume (`volume='…':eval=frame`) and scale (a centred `zoompan`, or the overlay box size); opacity and every longer curve are read from a per-frame command file sampled at each output frame (opacity → the alpha/colour channel mixer; pos_x/pos_y → the overlay position; scale → a centred crop scaled back to frame size, or the overlay box size; volume → the volume filter). At most 10000 points per track; a longer track is refused with the reason and what to do. CPU-only, so a keyframed clip renders on the software path. On every overlay shape, scale multiplies the saved box width and proportional height (positive values below 1 shrink it), including any mask; it does not crop or zoom the interior image. Rectangle boxes keep the source aspect. Base clips retain centred zoompan. Old saved overlay keys are unchanged; their export follows the live preview. Media clips only.",
       "args": {
         "type": "object",
         "required": [
@@ -7872,7 +8074,7 @@
               "pos_y",
               "scale"
             ],
-            "description": "Which parameter to animate (opacity → video clip alpha, with base opacity blending against black; volume → audio clip; pos_x/pos_y → overlay PiP position as a fraction of frame width/height, NOT clamped so the overlay can slide off-screen; scale → video-clip animated ZOOM, multiplier 1=native, clamped [1,10] — the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan, mutually exclusive with edit.animate on a clip)"
+            "description": "Which parameter to animate (opacity → video clip alpha, with base opacity blending against black; volume → audio clip; pos_x/pos_y → overlay PiP position as a fraction of frame width/height, NOT clamped so the overlay can slide off-screen; scale → overlay box size multiplier, preserving source aspect for rectangles and square masks for circle/rounded; on a base clip it remains centred ZOOM, multiplier 1=native, clamped [1,10]; mutually exclusive with edit.animate on a clip)"
           },
           "points": {
             "type": "array",
@@ -12246,7 +12448,7 @@
     {
       "name": "render.reframe",
       "domain": "render",
-      "description": "Subject-aware auto-reframe (job, returns {reframe_id, job_id}). Renders the timeline to a temp at project geometry (the finished edit), runs the `subject` perception instrument (local CV: detect+track+saliency -> a normalized, aspect-independent subject track), then a subject-tracked moving-crop POST-PASS to the target aspect. The HONEST replacement for render.final{aspect,fit:cover} (which is a naive STATIC centre-crop that ignores the subject): this FOLLOWS the subject with a smoothed pan, original render untouched. Output default <project>/exports/<reframe_id>.mp4; an explicit fenced path must also end in .mp4. The receipt records subject-in-frame %, the device it analyzed on, and that reframe is a LOSSY crop (not a lossless conversion).",
+      "description": "Make a subject-tracked moving crop to the requested aspect, leaving the original unchanged. This lossy export returns a job with an output and framing receipt. Checks both stages' memory before starting using render.final's out_of_memory refusal and memory_short warning. See resources.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12285,7 +12487,7 @@
           }
         }
       },
-      "result": "{reframe_id, job_id, aspect} — the output path + honesty receipt (subject_in_frame_pct, analyzed_on device, directed_scenes, reframe-is-lossy note) arrive in the job result; the receipt also carries encode:{encoder, hardware_requested:false, hardware_used:false} because the crop pass always encodes in software; render_done event on completion",
+      "result": "{reframe_id, job_id, aspect, resources} — resources reports both stages' memory admission; the output path + honesty receipt (subject_in_frame_pct, analyzed_on device, directed_scenes, reframe-is-lossy note) arrive in the job result; the receipt also carries encode:{encoder, hardware_requested:false, hardware_used:false} because the crop pass always encodes in software; render_done event on completion",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -12308,7 +12510,7 @@
     {
       "name": "render.direct",
       "domain": "render",
-      "description": "DIRECTOR pass for subject-aware reframe (job): renders the finished edit to a temp and builds a SPARSE per-scene CONTACT SHEET — one annotated keyframe per scene with the candidate subjects labeled A/B/C left->right — for a foundation model to direct the whole clip in one look. The local CV finds and tracks subjects; the model decides which subject each shot is about. Flow: call render.direct -> read the returned contact_sheet image + scenes[].candidates -> decide per scene -> call render.reframe{aspect, direction:{<scene>:{cx}|{mode:'widen'}}}. Omitting the director falls back to the pure CV ranker.",
+      "description": "Build a contact sheet of the finished edit for reframing. Read contact_sheet and scenes[].candidates, then call render.reframe{aspect,direction} to choose subjects. Checks memory before starting the job using render.final's out_of_memory refusal and memory_short warning. See resources.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12332,7 +12534,7 @@
           }
         }
       },
-      "result": "{job_id, direct_id} — the job result carries {contact_sheet (image path to read), scene_count, scenes:[{scene, t_ms, candidates:[{label, cls, cx, cy, box, has_face}]}]}; feed your per-scene pick into render.reframe{direction}",
+      "result": "{job_id, direct_id, resources} — resources reports memory admission; the job result carries {contact_sheet (image path to read), scene_count, scenes:[{scene, t_ms, candidates:[{label, cls, cx, cy, box, has_face}]}]}; feed your per-scene pick into render.reframe{direction}",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -12408,7 +12610,7 @@
     {
       "name": "render.final",
       "domain": "render",
-      "description": "An older project with an odd frame size (e.g. 641x361) is refused up front with code odd_project_size when the render is at the project size (no aspect/width/height/match_source): video needs even sides; suggested_action is the exact project.format call (e.g. {\"width\":640,\"height\":360}). The same refusal applies to render.queue entries, render.direct, render.reframe, render.preview, export.range, export.gif and autopilot.run. Full render (job, returns {job_id}). A software render (hardware:off) repeats byte for byte on the same machine with the same encoder thread count; a hardware encoder, or a thread count adapted to free memory, can change the bytes. Default path: the export folder set with project.set_output_dir, else <project>/exports/<render_id>.<ext>; an explicit FENCED path must match the chosen container: .mp4 for h264/hevc/av1, .webm for vp9, or .mov for prores. On completion AUTO-runs the output-only RenderChecks battery → RenderReceipt; receipt_ready is always emitted after render_done. The async job result reports verified plus verification_status complete|unmeasured. Optional post-render instrumentation failures preserve verification_error, mark affected receipt rows details.status=unmeasured/details.measured=false with a plain details.reason (\"not measured, because ...\", also in result.verification_reason, with the next step in suggested_action), and never create content fix_actions. When the cause is a missing captions runtime (no Python of Cut's own yet), the reason is \"captions and transcription are not installed\" and the action is Install captions or system.setup_perception; the render itself is fine: the job finishes plainly done, result.pass is null (no verdict) and result.setup_needed names the missing piece and system.setup_perception. A timeline with an overlay track that is longer than one adaptive window (2 to 60 s, shorter at higher resolution and with more overlays), or any timeline longer than 10 minutes, or one with more than 4 GB of reversed video, renders in windows that are joined afterwards, so peak memory stays bounded regardless of duration; the result has exactly the frame count of a whole-graph render and every output frame shows the same source frame (each clip gets exactly round(out*fps) - round(in*fps) frames, and a clip whose source ends early holds its last frame); only the bytes differ, because the parts are encoded separately. A render whose ffmpeg writes nothing and does almost no work for 120 s fails with render_stalled, naming the timeline range, the clip and what to change. On Linux with a systemd user session each render's ffmpeg also runs in its own cgroup scope: MemoryHigh (75% of RAM by default) slows it and pushes memory to swap, and MemoryMax (RAM minus 1 GB) is a hard stop that ends only the render, which then fails with out_of_memory and the way out; macOS and Windows have no such limit. Tune segmentation/footprint via the SHELLX_CUT_RENDER_* env knobs (see SKILL.md Runtime knobs). An HDR source (HLG or PQ) is tone-mapped to SDR, which needs FFmpeg's zscale: without it render.final refuses up front with tool_missing naming the clip; encode.color in the plan, job result and receipt says what was done to each source. Before starting, a render whose project needs a filter no installed FFmpeg has (vid.stab for stabilized clips, libass for caption clips burned in, zimg for color management) is refused up front with code tool_missing, the feature, and how to get it or what to remove; the same check applies to render.queue, render.bundle, export.publish, export.range and autopilot.run.",
+      "description": "Full render (job, returns {job_id}). An older project with an odd frame size (e.g. 641x361) is refused up front with code odd_project_size when the render is at the project size (no aspect/width/height/match_source): video needs even sides; suggested_action is the exact project.format call (e.g. {\"width\":640,\"height\":360}). The same refusal applies to render.queue entries, render.direct, render.reframe, render.preview, export.range, export.gif and autopilot.run. A software render (hardware:off) repeats byte for byte on the same machine with the same encoder thread count; a hardware encoder, or a thread count adapted to free memory, can change the bytes. Default path: the export folder set with project.set_output_dir, else <project>/exports/<render_id>.<ext>; an explicit FENCED path must match the chosen container: .mp4 for h264/hevc/av1, .webm for vp9, or .mov for prores. On completion AUTO-runs the output-only RenderChecks battery → RenderReceipt; receipt_ready is always emitted after render_done. The async job result reports verified plus verification_status complete|unmeasured. Optional post-render instrumentation failures preserve verification_error, mark affected receipt rows details.status=unmeasured/details.measured=false with a plain details.reason (\"not measured, because ...\", also in result.verification_reason, with the next step in suggested_action), and never create content fix_actions. When the cause is a missing captions runtime (no Python of Cut's own yet), the reason is \"captions and transcription are not installed\" and the action is Install captions or system.setup_perception; the render itself is fine: the job finishes plainly done, result.pass is null (no verdict) and result.setup_needed names the missing piece and system.setup_perception. A timeline with an overlay track that is longer than one adaptive window (2 to 60 s, shorter at higher resolution and with more overlays), or any timeline longer than 10 minutes, or one with more than 4 GB of reversed video, renders in windows that are joined afterwards, so peak memory stays bounded regardless of duration; the result has exactly the frame count of a whole-graph render and every output frame shows the same source frame (each clip gets exactly round(out*fps) - round(in*fps) frames, and a clip whose source ends early holds its last frame); only the bytes differ, because the parts are encoded separately. A render whose ffmpeg writes nothing and does almost no work for 120 s fails with render_stalled, naming the timeline range, the clip and what to change. On Linux with a systemd user session each render's ffmpeg also runs in its own cgroup scope: MemoryHigh (75% of RAM by default) slows it and pushes memory to swap, and MemoryMax (RAM minus 1 GB) is a hard stop that ends only the render, which then fails with out_of_memory and the way out; macOS and Windows have no such limit. Tune segmentation/footprint via the SHELLX_CUT_RENDER_* env knobs (see SKILL.md Runtime knobs). An HDR source (HLG or PQ) is tone-mapped to SDR, which needs FFmpeg's zscale: without it render.final refuses up front with tool_missing naming the clip; encode.color in the plan, job result and receipt says what was done to each source. Before starting, a render whose project needs a filter no installed FFmpeg has (vid.stab for stabilized clips, libass for caption clips burned in, zimg for color management) is refused up front with code tool_missing, the feature, and how to get it or what to remove; the same check applies to render.queue, render.bundle, export.publish, export.range and autopilot.run.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -12484,7 +12686,7 @@
               "cover"
             ],
             "default": "contain",
-            "description": "Framing fit for sources whose aspect differs from the output frame. contain (DEFAULT, unchanged behavior) = letterbox/pillarbox (scale to fit inside, pad black, no pixels lost). cover = crop-to-fill (scale to cover the frame, centre-crop the overflow). Independent of the quality preset. Omitting it replays byte-identical."
+            "description": "Framing fit for sources whose aspect differs from the output frame. contain (DEFAULT, including explicit width and height) = letterbox/pillarbox (scale to fit inside, pad black, no pixels lost), matching preview. cover = crop-to-fill (scale to cover the frame, centre-crop the overflow). Independent of the quality preset. Rectangle camera overlays keep their source aspect and saved width without internal bars or crop."
           },
           "resolution": {
             "type": "string",
@@ -12497,11 +12699,11 @@
           },
           "aspect": {
             "type": "string",
-            "description": "Reframe to this aspect for THIS render only (multi-format publish; project untouched): 9:16, 16:9, 1:1, 4:5, etc. Maps to 1080-baseline dims; defaults fit to cover. Mutually exclusive with resolution and width/height."
+            "description": "Reframe to this aspect for THIS render only (multi-format publish; project untouched): 9:16, 16:9, 1:1, 4:5, etc. Maps to 1080-baseline dims; defaults fit to contain (whole picture, matching preview); pass fit:cover to crop. Mutually exclusive with resolution and width/height."
           },
           "width": {
             "type": "integer",
-            "description": "Explicit output width px (with height). The frame is 16 to 8192 px on each side and at most 8192x4320 pixels in total; odd values are rounded down to even. Overrides resolution; defaults fit to cover. Mutually exclusive with aspect/resolution."
+            "description": "Explicit output width px (with height). The frame is 16 to 8192 px on each side and at most 8192x4320 pixels in total; odd values are rounded down to even. Overrides resolution; defaults fit to contain (whole picture, matching preview); pass fit:cover to crop. Mutually exclusive with aspect/resolution."
           },
           "height": {
             "type": "integer",
@@ -12515,6 +12717,15 @@
             "minimum": -40,
             "maximum": -5,
             "description": "Optional target integrated loudness in LUFS. Omitted = no normalization (byte-identical replay). When set, the lufs check also measures against this target, and single-pass ffmpeg loudnorm brings the mixed audio to this target (TP -1.5 dBTP before encoding, LRA 11); the encoded output must still meet -1 dBTP. Standard targets: -16 (long-form), -14 (social), -23 (EBU R128)."
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "sdr",
+              "keep_hdr"
+            ],
+            "default": "sdr",
+            "description": "Color output dynamic range. 'sdr' (default, unchanged behavior) exports 8-bit SDR BT.709 (tone-mapping any HDR clips). 'keep_hdr' exports 10-bit (yuv420p10le) BT.2020 HLG (arib-std-b67) or PQ (smpte2084) matching the first HDR clip on the timeline (converting other HDR clips with zscale, placing SDR clips at 203 nits per ITU-R BT.2408, carrying HDR10 static metadata when present). Defaults format to 'hevc' (Main 10) if omitted; 'av1' (10-bit) is also supported. Refuses up front for H.264/VP9/ProRes, without HDR clips on the timeline, without zscale, or without a 10-bit encoder."
           },
           "allow_stale_recordings": {
             "type": "boolean",
@@ -12565,7 +12776,7 @@
     {
       "name": "verify.checks",
       "domain": "verify",
-      "description": "Run (or fetch) the deterministic check battery for a render: cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any content type for quality checks), silence_at_edges, duration_matches_edl (measured on the container AND on each stream: video duration and frame count, each audio stream; reported unmeasured without stream data), plus sources_decodable when a source on the timeline was decode-checked (fails naming a cut-off or damaged source). Each → {name, pass, details, evidence}. A check with nothing to check on this export is NOT APPLICABLE (details.status:\"not_applicable\", details.applies_when, details.reason; pass stays true, never a failure or warning): caption_presence without visible caption clips, cut_on_word without a transcript, lufs without sound or without a loudness target (normalize_loudness) or explicit profile, silence_at_edges without sound or explicit profile, black_or_frozen_frames and uniform_border without picture; frozen frames do not apply to an all-still timeline. Different from details.status:\"unmeasured\" (applies, but could not be measured here, with its reason).",
+      "description": "Run (or fetch) the deterministic check battery for a render (the receipt also carries export_checks: every check Cut knows with its state for the finished file, same shape as verify.pregate's export_checks with phase finished_file, render_id and at_op naming the export): cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any content type for quality checks), silence_at_edges, duration_matches_edl (measured on the container AND on each stream: video duration and frame count, each audio stream; reported unmeasured without stream data), plus sources_decodable when a source on the timeline was decode-checked (fails naming a cut-off or damaged source). Each → {name, pass, details, evidence}. A check with nothing to check on this export is NOT APPLICABLE (details.status:\"not_applicable\", details.applies_when, details.reason; pass stays true, never a failure or warning): caption_presence without visible caption clips, cut_on_word without a transcript, lufs without sound or without a loudness target (normalize_loudness) or explicit profile, silence_at_edges without sound or explicit profile, black_or_frozen_frames and uniform_border without picture; frozen frames do not apply to an all-still timeline. Different from details.status:\"unmeasured\" (applies, but could not be measured here, with its reason).",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -13010,13 +13221,13 @@
     {
       "name": "verify.pregate",
       "domain": "verify",
-      "description": "PRE-RENDER PREDICTIVE QUALITY GATE (a 'pre-render gate + refuse-to-present', made rigorous on our op-log). Reasons over the OPEN project's CURRENT EDL + whatever per-asset perception reports are ALREADY CACHED — NO render spent, no model — and PREDICTS the render problems with a known structural signature so the agent can refuse to 'present' a likely-broken render BEFORE paying for it. Risk kinds: empty_tail (HIGH — the timeline runs past the last VIDEO clip ⇒ plays into BLACK; a real shipped-bug class), black_or_frozen (HIGH — a clip's source overlaps a detected black/frozen span ⇒ dead footage in the cut), slideshow_risk (MED — too few cuts over a long timeline ⇒ the 'slideshow'), silent_output (MED — no audio-bearing clip, or audio that is mostly silence per facts), tiny_or_zero_clips (MED — a media clip shorter than one frame never renders a visible frame), uniform_border (LOW — a clip's asset carries a baked-in letterbox/pillarbox). pass=false IFF any HIGH risk. HONEST: these are PREDICTIONS over structure + cached facts, NOT guarantees — a clean pregate means 'no KNOWN structural problem' (it can't see what the facts don't carry), and a flagged risk is a strong predictor not a certainty (an INTENTIONAL black outro trips empty_tail; a single long take trips slideshow_risk). Missing perception is never an error: assets with no cached report are skipped and listed in uninstrumented_assets (a clean pass over un-analyzed footage is weaker — and visibly so). Read-only: no op, no render, no model.",
+      "description": "PRE-RENDER PREDICTIVE QUALITY GATE (a 'pre-render gate + refuse-to-present', made rigorous on our op-log). Reasons over the OPEN project's CURRENT EDL + whatever per-asset perception reports are ALREADY CACHED — NO render spent, no model — and PREDICTS the render problems with a known structural signature so the agent can refuse to 'present' a likely-broken render BEFORE paying for it. Risk kinds: empty_tail (HIGH — the timeline runs past the last VIDEO clip ⇒ plays into BLACK; a real shipped-bug class), black_or_frozen (HIGH — a clip's source overlaps a detected black/frozen span ⇒ dead footage in the cut), slideshow_risk (MED — too few cuts over a long timeline ⇒ the 'slideshow'), silent_output (MED — no audio-bearing clip, or audio that is mostly silence per facts), tiny_or_zero_clips (MED — a media clip shorter than one frame never renders a visible frame), uniform_border (LOW — a clip's asset carries a baked-in letterbox/pillarbox). pass=false IFF any HIGH risk. HONEST: these are PREDICTIONS over structure + cached facts, NOT guarantees — a clean pregate means 'no KNOWN structural problem' (it can't see what the facts don't carry), and a flagged risk is a strong predictor not a certainty (an INTENTIONAL black outro trips empty_tail; a single long take trips slideshow_risk). Missing perception is never an error: assets with no cached report are skipped and listed in uninstrumented_assets (a clean pass over un-analyzed footage is weaker — and visibly so). Alongside, export_checks lists EVERY check Cut knows (schema/export-checks.schema.json; catalog in schema/export-checks.catalog.json) with its state: checked, found (the risks above), not_checked (optional captions tools not installed: reason_code optional_tool_missing with an open_tools action; or no analysis requested yet: not_run_yet with a Check now command, e.g. media.perception for the first file), error (a check or tool failed: reason_code check_failed, the raw error, and a copy_details action with text to report it), or not_applicable. A check that was not made never changes pass or risks and never blocks an export; the person always chooses. Read-only: no op, no render, no model.",
       "args": {
         "type": "object",
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{pass, risks:[{kind, severity:high|med|low, detail, suggested_action, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...]} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict, a suggested_action in editor words with available commands (trim the ending, shorten the sound or add picture for empty_tail), and a timeline range_ms when one applies",
+      "result": "{pass, risks:[{kind, severity:high|med|low, detail, suggested_action, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...], export_checks:{phase:before_export, at_op, entries:[{id, name, state, reason_code, result, reason, suggested_action, action?, findings, coverage, providers, report_details?}]}} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict, a suggested_action in editor words with available commands (trim the ending, shorten the sound or add picture for empty_tail), and a timeline range_ms when one applies",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -13085,7 +13296,7 @@
     {
       "name": "export.range",
       "domain": "export",
-      "description": "Save a PART OF THE TIMELINE as a reusable clip: render the composed timeline over [range_ms[0], range_ms[1]) (all effects baked) to exports/range_<in>_<out>.mp4 and, by default (to_asset), import it as a NEW asset. The saved clip lands in the Assets tray (draggable / insertable) AND on disk (importable into another project). NON-DESTRUCTIVE — the timeline is unchanged. The UI passes the selected clip's span (or in/out points).",
+      "description": "Save a timeline range as an MP4 with all effects included; import it as a reusable asset by default. The timeline is unchanged. Checks memory before starting using render.final's out_of_memory refusal and memory_short warning. See resources for the estimate and thread choice.",
       "args": {
         "type": "object",
         "required": [
@@ -13117,7 +13328,7 @@
           }
         }
       },
-      "result": "{path, asset_id?, job_id?} — the saved mp4; asset_id/job_id present when to_asset",
+      "result": "{path, resources, asset_id?, job_id?} — the saved mp4; asset_id/job_id present when to_asset; resources.memory reports the admission estimate and encoder-thread choice",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -13290,7 +13501,7 @@
     {
       "name": "export.gif",
       "domain": "export",
-      "description": "Export a SHORT timeline window as a looping animated GIF (the social/reaction-clip export). Renders the window (all effects baked, like export.range) then converts via the high-quality ffmpeg palettegen/paletteuse path (per-clip optimised 256-colour palette + dithering — far better than a naive GIF). Default range = the first 15s; HARD-CAPPED at 30s (GIFs balloon). fps (default 12) and width (default 480px, height auto) are the file-size levers. Output exports/gif_<in>_<out>.gif (FENCED); imports as an asset by default (to_asset).",
+      "description": "Save a short timeline range as a looping GIF; import it as an asset by default. Defaults: first 15 s, 12 fps, 480 px wide; maximum 30 s. Checks both stages' memory before starting using render.final's out_of_memory refusal and memory_short warning. See resources.",
       "args": {
         "type": "object",
         "required": [],
@@ -13339,7 +13550,7 @@
           }
         }
       },
-      "result": "{path, fps, width, range_ms, asset_id?, job_id?} — the GIF in exports/ (downloadable via /api/export)",
+      "result": "{path, fps, width, range_ms, resources, asset_id?, job_id?} — the GIF in exports/ (downloadable via /api/export); resources reports source-render memory and post_pass GIF memory",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -13843,7 +14054,7 @@
     {
       "name": "render.bundle",
       "domain": "render",
-      "description": "Export ONE timeline window into a local export package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, quality checks, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
+      "description": "Export a local video/captions/thumbnail/receipt package per platform, bound by a manifest and brand checks. Defaults: 9:16, 1:1, 16:9 and -14 LUFS. Checks every delivery's memory before starting the job using render.final's out_of_memory refusal and memory_short warning. See resources.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -13948,7 +14159,7 @@
           }
         }
       },
-      "result": "{job_id, bundle_id} — package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Each platform receipt carries encode:{encoder, hardware_requested:false, hardware_used:false} because render.bundle always encodes in software. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
+      "result": "{job_id, bundle_id, resources} — resources lists each delivery's memory admission; package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Each platform receipt carries encode:{encoder, hardware_requested:false, hardware_used:false} because render.bundle always encodes in software. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
       "result_schema": {
         "type": "object",
         "required": [
@@ -14089,6 +14300,13 @@
                   "type": "integer",
                   "minimum": -40,
                   "maximum": -5
+                },
+                "color": {
+                  "type": "string",
+                  "enum": [
+                    "sdr",
+                    "keep_hdr"
+                  ]
                 }
               }
             }
@@ -15749,7 +15967,7 @@
           }
         }
       },
-      "result": "{capture_id, out_dir, status:\"recording\", duration_ms, open_ended, cadence, scenes:{enabled,saved:true,scene_id,preset_revision,catalog_revision,logical_media_time_ms:0,timer_started:false,timer,scene}|null, pause:{enabled}, studio_events, recovery_scan:{state:\"running\"|\"none\", job_id|null, recovered:[], deferred:[], failed_closed:[]}, note} — scenes.saved acknowledges only the durable frozen journal header/config before the native CaptureClock/timer or camera has started; it is not a live timer/camera claim. pause.enabled only acknowledges opt-in admission; use screen_record.pause or screen_record.resume and their saved durable state acknowledgement before changing the UI. capture_id names a dir under <project>/cache/screen_record/; duration_ms is null + open_ended true for an open-ended capture; cadence is CaptureCadence@1 {schema, requested:{num,den}, backend_requested:{num,den}, probed_media?}, where requested is the exact reduced decimal request and backend_requested is the current v1 nearest-integer 1..240 backend request; start has no measured media facts. studio_events points at the capture's timed composition metadata; earlier interrupted captures are prepared by the background job recovery_scan.job_id (kind recording_recovery; its result lists recovered/deferred/failed_closed), so Start never waits for that work; query screen_record.recovery_status for durable per-capture receipts; the note flags the one-time XDG ScreenCast consent dialog on the first capture. no_project if no project is open; conflict if expected_project_identity names a different open project; invalid_args if a Windows project path exceeds the WGC checkpoint limit; not_found if required recorder dependencies are unavailable; a passive microphone readiness refusal with its stable reason in error.cause and its existing message and suggested_action when `audio:true`; conflict if another capture still owns the recording devices.",
+      "result": "{capture_id, out_dir, status:\"recording\", duration_ms, open_ended, cadence, scenes:{enabled,saved:true,scene_id,preset_revision,catalog_revision,logical_media_time_ms:0,timer_started:false,timer,scene}|null, pause:{enabled}, studio_events, recovery_scan:{state:\"running\"|\"none\", job_id|null, recovered:[], deferred:[], failed_closed:[]}, created_project?, project_identity?, note} — when no project is open and expected_project_identity is omitted, Start itself creates and opens one fallback Recording project if capture admits (returning created_project:true); a refused Start never leaves an empty fallback project behind unless the folder was altered from what Start created (returning created_project_outcome, created_project_discarded, and created_project_kept on failure). scenes.saved acknowledges only the durable frozen journal header/config before the native CaptureClock/timer or camera has started; it is not a live timer/camera claim. pause.enabled only acknowledges opt-in admission; use screen_record.pause or screen_record.resume and their saved durable state acknowledgement before changing the UI. capture_id names a dir under <project>/cache/screen_record/; duration_ms is null + open_ended true for an open-ended capture; cadence is CaptureCadence@1 {schema, requested:{num,den}, backend_requested:{num,den}, probed_media?}, where requested is the exact reduced decimal request and backend_requested is the current v1 nearest-integer 1..240 backend request; start has no measured media facts. studio_events points at the capture's timed composition metadata; earlier interrupted captures are prepared by the background job recovery_scan.job_id (kind recording_recovery; its result lists recovered/deferred/failed_closed), so Start never waits for that work; query screen_record.recovery_status for durable per-capture receipts; the note flags the one-time XDG ScreenCast consent dialog on the first capture. no_project if expected_project_identity is supplied with no project open; conflict if expected_project_identity names a different open project; invalid_args if a Windows project path exceeds the WGC checkpoint limit; not_found if required recorder dependencies are unavailable; a passive microphone readiness refusal with its stable reason in error.cause and its existing message and suggested_action when `audio:true`; conflict if another capture still owns the recording devices.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -15759,7 +15977,7 @@
           "ui": false
         },
         "dispatch": "screen_record_start",
-        "project_state": "required",
+        "project_state": "optional",
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
@@ -15808,7 +16026,7 @@
           }
         }
       },
-      "result": "{capture_id,status:\"finalizing\",job_id} while an ordinary live Windows take is saving; poll jobs.status and read its completed result as the full Stop VerbResult envelope before using file paths. Otherwise: {capture_id, notes, held_last_frame_ms, project, source, audio, webcam, camera_artifact, cadence, quality, events, studio_events, scene_receipt, raw_streams, plan, clicks, cursor_samples, cursor_correlation, input_hook} — notes lists, in words for the person, what is wrong with a take that was saved anyway (for example a part of the screen that could not be read back and shows the picture before it, or a duration that does not match the recording); it is empty for an exact take, and the same sentences come as warnings with code recording_saved_with_problem. A check never discards a take. held_last_frame_ms is the measured duration filled by holding the last verified screen frame when WGC delivered zero new frames for a final checkpoint (0 for an ordinary checkpoint capture, null for unavailable legacy journal); these are generated frames, not newly captured screen pixels. project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the legacy-compatible optional camera path; camera_artifact = CameraArtifact@1 when a validated synchronized camera artifact exists ({schema, capture_id, artifact_id, video: relative capture leaf, clock:{first_frame_offset_ms,end_frame_offset_ms}, media:{width,height,fps_num,fps_den,frame_count,duration_ms,sha256}, terminal_state}), else null; cadence is the optional persisted CaptureCadence@1. Its optional probed_media records only successful final FFprobe facts: avg_frame_rate and r_frame_rate are exact reduced rationals, and decoded_video_frames/duration_ms are independently measured. `quality` is CaptureQualityResolution@1 {schema,requested:{output_size,profile},width,height,encoder} only when a supporting backend accepted the request and the same final verification measured an H.264 source; it is null for unsupported or legacy capture paths. Invalid 0/0 rates, failed probes, and legacy projects return cadence null or omit probed_media; no value is inferred from settings.fps. events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; scene_receipt is recording-scene.receipt.json when this take has a validated public RecordingSceneProjection@1, otherwise null; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|held|approximate|unavailable, exact_clicks, held_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh preceding PipeWire cursor metadata with complete movement-free evdev observation (exact), or a prior valid same-segment position held through that same observation without a hidden or outside cursor signal (held); X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS Window clicks map only a fresh native button payload through admitted same-owner accepted frame geometry. Missing, stale, changed, minimized, closed or unmatched frames remain unavailable. These captures retain one native cursor without a duplicate synthetic cursor track; synthetic cursor styling remains unavailable. Exact click mapping does not establish full resized-window output coverage or arbitrary move/DPI correctness. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. capture \"nothing was recorded\" if Stop came before the first screen frame (nothing is left to recover and the next recording can start at once); a failure after part of the recording was saved says so in cause and the saved part can be added with screen_record.recover. When the raw copy cannot be written (for example an output folder that cannot be written), the error names the folder and the recording itself stays saved in the project. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system. input_hook is the capture-owned startup observation {state:unobserved|registered|unavailable, backend:unknown|rdevin_windows|rdevin_macos|rdevin_x11|wayland_evdev, capture_keys:boolean, reason:startup_failed only for unavailable}. registered means native registration acknowledgment only, not delivered input or continuing health; X11 acknowledges before entering its RECORD loop. unavailable reports observed optional rdevin startup failure and does not block saved video. Missing, legacy, private prepublished and uninterpretable observations return unobserved; Wayland evdev is explicitly unobserved. Native baked cursor pixels may remain even when mouse effects are missing. First-screen readiness, required/AlreadyActive/teardown failures and coordinate provenance are unchanged.",
+      "result": "{capture_id,status:\"finalizing\",job_id} while an ordinary live Windows take is saving; poll jobs.status and read its completed result as the full Stop VerbResult envelope before using file paths. Otherwise: {capture_id, notes, held_last_frame_ms, project, source, audio, webcam, camera_artifact, cadence, quality, events, studio_events, scene_receipt, raw_streams, plan, clicks, cursor_samples, cursor_correlation, input_hook} — notes lists, in words for the person, what is wrong with a take that was saved anyway (for example a part of the screen that could not be read back and shows the picture before it, or a duration that does not match the recording); it is empty for an exact take, and the same sentences come as warnings with code recording_saved_with_problem. A check never discards a take. held_last_frame_ms is the measured duration filled by holding the last verified screen frame when WGC delivered zero new frames for a final checkpoint (0 for an ordinary checkpoint capture, null for unavailable legacy journal); these are generated frames, not newly captured screen pixels. project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the legacy-compatible optional camera path; camera_artifact = CameraArtifact@1 when a validated synchronized camera artifact exists ({schema, capture_id, artifact_id, video: relative capture leaf, clock:{first_frame_offset_ms,end_frame_offset_ms}, media:{width,height,fps_num,fps_den,frame_count,duration_ms,sha256}, terminal_state}), else null; cadence is the optional persisted CaptureCadence@1. Its optional probed_media records only successful final FFprobe facts: avg_frame_rate and r_frame_rate are exact reduced rationals, and decoded_video_frames/duration_ms are independently measured. `quality` is CaptureQualityResolution@1 {schema,requested:{output_size,profile},width,height,encoder} only when a supporting backend accepted the request and the same final verification measured an H.264 source; it is null for unsupported or legacy capture paths. Invalid 0/0 rates, failed probes, and legacy projects return cadence null or omit probed_media; no value is inferred from settings.fps. events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; scene_receipt is recording-scene.receipt.json when this take has a validated public RecordingSceneProjection@1, otherwise null; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|held|approximate|unavailable, exact_clicks, held_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh preceding PipeWire cursor metadata with complete movement-free evdev observation (exact), or a prior valid same-segment position held through that same observation without a hidden or outside cursor signal (held); X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS Window clicks map only a fresh native button payload through admitted same-owner accepted frame geometry. Missing, stale, changed, minimized, closed or unmatched frames remain unavailable. These captures retain one native cursor without a duplicate synthetic cursor track; synthetic cursor styling remains unavailable. Exact click mapping does not establish full resized-window output coverage or arbitrary move/DPI correctness. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. capture \"nothing was recorded\" if Stop came before the first screen frame (nothing is left to recover and the next recording can start at once); a failure after part of the recording was saved says so in cause and the saved part can be added with screen_record.recover. When the raw copy cannot be written (for example an output folder that cannot be written), the error names the folder and the recording itself stays saved in the project. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system. input_hook is the capture-owned startup observation {state:unobserved|registered|unavailable, backend:unknown|rdevin_windows|rdevin_macos|rdevin_x11|wayland_evdev, capture_keys:boolean, reason:startup_failed only for unavailable}. registered means native registration acknowledgment only, not delivered input or continuing health; X11 acknowledges before entering its RECORD loop. unavailable reports observed optional rdevin startup failure and does not block saved video. Missing, legacy, private prepublished and uninterpretable observations return unobserved; Wayland evdev is explicitly unobserved. Native baked cursor pixels may remain even when mouse effects are missing. First-screen readiness, required/AlreadyActive/teardown failures and coordinate provenance are unchanged. With mux_raw:true the raw recording is linked to its take, so adding it to the timeline gives its clip the take's markers; when that link cannot be written, notes says so.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -16054,7 +16272,7 @@
           }
         }
       },
-      "result": "{placed, job_id, clip_id, asset_id, camera_look?, camera_note?, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — camera_note warns when a recorded shape change cannot be keyed (separate keeps its first shape). baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. job_id = the screen_record_polish job that baked and placed it (finished when the verb answers). placed:false (clip_id null, waiting_in_project {name, path}, message) when the recording's project was no longer open: nothing was added, and the recording waits in its own project. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
+      "result": "{placed, job_id, clip_id, asset_id, camera_look?, camera_note?, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — camera_note warns when a recorded shape change cannot be keyed (separate keeps its first shape). baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. job_id = the screen_record_polish job that baked and placed it (finished when the verb answers). placed:false (clip_id null, waiting_in_project {name, path}, message) when the recording's project was no longer open: nothing was added, and the recording waits in its own project. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.; clip_markers_added (number of take markers given to the polished clip as clip markers) and clip_markers_notice (null, or the sentence saying which markers were not added and why; also returned as warning clip_markers_skipped). The polish keeps recorded time 1:1, so markers keep their times when the polished length matches the recording; otherwise none are added and the notice says so.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -16347,7 +16565,7 @@
           }
         }
       },
-      "result": "{capture_id, clip_ids, take_path, video_recovered, microphone_recovered, system_audio_recovered, recovered_ms, recorded_ms_at_least, lost_tail_lower_bound_ms, recorded_longer_unknown, sound_after_picture, files_folder, message}",
+      "result": "{capture_id, clip_ids, take_path, video_recovered, microphone_recovered, system_audio_recovered, recovered_ms, recorded_ms_at_least, lost_tail_lower_bound_ms, recorded_longer_unknown, sound_after_picture, files_folder, message}; clip_markers_added (take markers given to the recovered clips as clip markers) and clip_markers_notice (null, or the sentence naming markers after the end of what was saved, which could not be added; also appended to message).",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -16812,7 +17030,7 @@
     {
       "name": "system.doctor",
       "domain": "system",
-      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, Settings, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, a platform-specific hint when missing, and details.setup = {route: builtin_download|homebrew|package_manager, fetch_available, steps[], commands[{label, command}], help_url, custom_build, download?: {publisher, publisher_url, version, size_bytes, size_is_exact, license, license_url, source_url, limitation, consent}} (steps/commands are the other way when a download exists, e.g. Homebrew on Apple silicon): the same setup guide the engine's tool_missing refusals point to; a refresh notices an ffmpeg installed or chosen since the last scan without restarting Cut); gpu-encode (details.ffmpeg_missing:true when no ffmpeg exists at all: nothing can export yet); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. For Codex direct-frame review, the image/schema and tool-free capability check must pass before details.judge_ready can be true; Antigravity remains unready for render judging. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}. The ffmpeg card also has details.version_advice: null, or {in_use, tested_versions: [string], message, upgrade} when its readable major version is below 7; this is optional upgrade advice, leaves status and essential_ok unchanged, and preserves a manually chosen FFmpeg.",
+      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, Settings, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, a platform-specific hint when missing, and details.setup = {route: builtin_download|homebrew|package_manager, fetch_available, steps[], commands[{label, command}], help_url, custom_build, download?: {publisher, publisher_url, version, size_bytes, size_is_exact, license, license_url, source_url, limitation, consent}} (steps/commands are the other way when a download exists, e.g. Homebrew on Apple silicon): the same setup guide the engine's tool_missing refusals point to; a refresh notices an ffmpeg installed or chosen since the last scan without restarting Cut); gpu-encode (details.ffmpeg_missing:true when no ffmpeg exists at all: nothing can export yet); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout; details.installation records state:not_installed|ready|damaged, installation_id, python, version and the original probe error; a configured or previously recorded installation that cannot run is degraded with a repair reason, not a missing optional install); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. For Codex direct-frame review, the image/schema and tool-free capability check must pass before details.judge_ready can be true; Antigravity remains unready for render judging. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}. The ffmpeg card also has details.version_advice: null, or {in_use, tested_versions: [string], message, upgrade} when its readable major version is below 7; this is optional upgrade advice, leaves status and essential_ok unchanged, and preserves a manually chosen FFmpeg.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -17026,7 +17244,7 @@
           }
         }
       },
-      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, managed_python, python_version, uv_version, package_versions, onnx_asr_ready, model_warmed, model_warm_error, full_perception_ready, extras_note, perception_ok_after}; failed model preparation completes with warnings while preserving installed dependencies; doctor_updated fires on completion",
+      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, managed_python, python_version, uv_version, package_versions, onnx_asr_ready, model_warmed, model_warm_error, installation_record_error, full_perception_ready, extras_note, perception_ok_after}; failed model preparation or installation-record persistence completes with warnings while preserving installed dependencies; installation_record_error retains the supplemental metadata error and never invalidates the installed tools; doctor_updated fires on completion",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -19181,7 +19399,7 @@
     {
       "name": "edit.insert_linked",
       "domain": "edit",
-      "description": "Atomically insert a probed muxed-video source range as one video-track clip and one audio-track clip at the same EDITORIAL at_ms. This is the only linked A/V insert surface: it validates the source, both destination strategies, source range, track kinds, and the second insertion before a cloned Project is committed once. The two tracks must be stated independently: each leg names one existing typed destination OR asks to create one new typed destination, never both and never neither. If either leg cannot be applied, no clips, tracks, operation id, or op_applied event escape. A rendered/playhead coordinate must be converted through both target crossfade layouts first; if an existing target and a new identity-clock target disagree, the caller must refuse instead of choosing one. ripple shifts the video target and any non-linked timeline material exactly once; the paired audio insertion remains aligned without opening a second gap. The durable result is one replayable/undoable edit.insert_linked operation with lowered edit.add_track/edit.insert steps. EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips.",
+      "description": "Atomically insert a probed muxed-video source range as one video-track clip and one audio-track clip at the same EDITORIAL at_ms. This is the only linked A/V insert surface: it validates the source, both destination strategies, source range, track kinds, and the second insertion before a cloned Project is committed once. The two tracks must be stated independently: each leg names one existing typed destination OR asks to create one new typed destination, never both and never neither. If either leg cannot be applied, no clips, tracks, operation id, or op_applied event escape. A rendered/playhead coordinate must be converted through both target crossfade layouts first; if an existing target and a new identity-clock target disagree, the caller must refuse instead of choosing one. ripple shifts the video target and any non-linked timeline material exactly once; the paired audio insertion remains aligned without opening a second gap. The durable result is one replayable/undoable edit.insert_linked operation with lowered edit.add_track/edit.insert steps. EDIT POINT ON THE FRAME GRID: an at_ms less than one project frame from an edge on the target track (a clip's or gap's start or end, or the track's end) moves to that edge, so no piece shorter than a frame is left; the op records the moved point and the result carries snapped {from, to, why}. ONE FRAME MINIMUM: an edit that would leave a media clip shorter than one project frame (a new clip, or one shrunk below a frame) is refused with the reason and the nearest valid value (e.g. 'a clip must be at least one frame: 33.3 ms at 30 fps'); clips already shorter than a frame are left as they are and listed in project.state subframe_clips. A screen-recording take's markers are attached to the video clip as clip markers in the same op (see project.state markers).",
       "args": {
         "type": "object",
         "required": [
@@ -19341,6 +19559,75 @@
         "ui_exposure": "human",
         "agent_chat": "edit",
         "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.render_cache_preview",
+      "domain": "screen_record",
+      "description": "List old recording renders and their size. Only independently owned, unchanged renders unused by this project's clips and inputs are removable; legacy renders stay kept.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{files:[{name,bytes,size_is_recorded?,reason,removable}],bytes,plan_id,removable_files,legacy:{files,bytes,reveal_asset,reason}} — names are relative to the project, never absolute paths; a render recorded for another project at the same folder is kept. Review the list before render_cache_remove.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_render_cache_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.render_cache_remove",
+      "domain": "screen_record",
+      "description": "Remove only the independently owned recording renders in an unchanged preview. Rechecks all clips and original inputs; changed files and unproven ownership are kept. Undo can rebuild removed renders with Update video.",
+      "args": {
+        "type": "object",
+        "required": [
+          "plan_id",
+          "confirm"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          },
+          "confirm": {
+            "const": true
+          }
+        }
+      },
+      "result": "{results:[{status,bytes?,reason?,message}]} — each removed or kept render is reported; preview again after a refusal.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_render_cache_remove",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
         "facets": []
       }
     },
@@ -19782,9 +20069,48 @@
       }
     },
     {
+      "name": "screen_record.make_editable",
+      "domain": "screen_record",
+      "description": "Turn an earlier polished screen recording (0.6.116-0.6.118) into an editable take when its capture files still exist; keeps the original video and reverts in one Undo.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, take, stale, segments, camera_clip, camera_asset} — refuses in plain words with reason and suggested action when files are gone or the recording is too old.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_make_editable",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
       "name": "screen_record.take_refresh",
       "domain": "screen_record",
-      "description": "Queue Update video; poll jobs.status. Swaps every take clip preserving edits. Refuses duration mismatch over one frame or concurrent edits; keeps two bakes. Rebuilds missing/pruned files and repairs assets. Duration reference: stored probe, old file, then plan/source.",
+      "description": "Queue Update video; poll jobs.status. Swaps every take clip preserving edits. Refuses duration mismatch over one frame or concurrent edits. After verified completion the previous render and its asset are KEPT, so project.undo right after Update video brings the earlier picture back at once (redo gives the new one); the reply's earlier_render says status kept and where older recording videos are removed (Settings > Old recording renders, screen_record.render_cache_preview / render_cache_remove with confirm). Rebuilds missing/pruned files and repairs assets. Duration reference: stored probe, old file, then plan/source.",
       "args": {
         "type": "object",
         "required": [
@@ -19797,7 +20123,7 @@
           }
         }
       },
-      "result": "{job_id, clip, asset, baked, cached, applied_plan} — final asset and applied_plan are reported on job completion. A failed bake leaves the take stale and clips unchanged; Update video first before export.",
+      "result": "{job_id, clip, asset, baked, cached, applied_plan, earlier_render?:{status,bytes?,reason?,message}} — earlier_render reports status kept with the message \"Earlier video kept so Undo brings it back at once. To remove older recording videos, open Settings > Old recording renders.\" on completion; final asset and applied_plan are reported on job completion. A failed bake leaves the take stale and clips unchanged; Update video first before export.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -19828,7 +20154,8 @@
       "project_changed",
       "ui_state",
       "doctor_updated",
-      "output_folder_changed"
+      "output_folder_changed",
+      "chat_updated"
     ]
   },
   "behavior_contract": {

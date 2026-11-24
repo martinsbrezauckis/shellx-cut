@@ -5,16 +5,10 @@ use tokio::process::{Child, Command};
 pub(super) fn configure(command: &mut Command) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    // This runs between fork and exec, so the worker pid is also its new
-    // process-group id and every later descendant belongs to that group.
-    unsafe {
-        command.as_std_mut().pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // Claim the process group via posix_spawn attributes rather than
+    // pre_exec/fork, so the worker pid is its own group without running atfork
+    // handlers in a multi-threaded macOS process.
+    command.as_std_mut().process_group(0);
     Ok(())
 }
 

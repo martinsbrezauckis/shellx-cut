@@ -121,28 +121,65 @@ fn cached_probe() -> &'static (HwCaps, HwDiagnosis) {
 
 /// Probe every candidate encoder of one ffmpeg binary: the working ones, plus
 /// the reason each failing one failed (best-first per codec; the first working
-/// candidate of a codec ends that codec's scan).
+/// candidate of a codec ends that codec's scan). Each codec family (`h264`,
+/// `hevc`, `av1`) is independent and probed concurrently.
 fn probe_at(ffmpeg: &OsStr) -> (HwCaps, HwDiagnosis) {
+    probe_at_with_encoders(ffmpeg, None)
+}
+
+fn probe_at_with_encoders(
+    ffmpeg: &OsStr,
+    compiled_encoders: Option<&std::collections::HashSet<String>>,
+) -> (HwCaps, HwDiagnosis) {
+    let results: [(&str, Option<String>, Vec<EncoderFailure>); 3] = std::thread::scope(|scope| {
+        let handles: Vec<_> = CANDIDATES
+            .iter()
+            .map(|&(codec, names)| {
+                scope.spawn(move || {
+                    let mut chosen = None;
+                    let mut failures = Vec::new();
+                    for &name in names {
+                        if compiled_encoders.is_some_and(|set| !set.contains(name)) {
+                            failures.push(EncoderFailure {
+                                encoder: name.to_string(),
+                                kind: EncoderFailureKind::NotInBuild,
+                                detail: None,
+                            });
+                            continue;
+                        }
+                        match probe_encoder_at_size(ffmpeg, name, 256, 256, HW_SIZE_PROBE_TIMEOUT) {
+                            Ok(()) => {
+                                chosen = Some(name.to_string());
+                                break; // best-first: first working candidate wins
+                            }
+                            Err(Some(failure)) => failures.push(failure),
+                            // ffmpeg itself did not run: nothing to learn about the encoder.
+                            Err(None) => {}
+                        }
+                    }
+                    (codec, chosen, failures)
+                })
+            })
+            .collect();
+        let mut iter = handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| ("", None, Vec::new())));
+        [
+            iter.next().unwrap(),
+            iter.next().unwrap(),
+            iter.next().unwrap(),
+        ]
+    });
     let mut caps = HwCaps::default();
     let mut diagnosis = HwDiagnosis::default();
-    for (codec, names) in CANDIDATES {
-        for name in *names {
-            match probe_encoder_at_size(ffmpeg, name, 256, 256, HW_SIZE_PROBE_TIMEOUT) {
-                Ok(()) => {
-                    let slot = match *codec {
-                        "h264" => &mut caps.h264,
-                        "hevc" => &mut caps.hevc,
-                        "av1" => &mut caps.av1,
-                        _ => continue,
-                    };
-                    *slot = Some((*name).to_string());
-                    break; // best-first: first working candidate wins
-                }
-                Err(Some(failure)) => diagnosis.failures.push(failure),
-                // ffmpeg itself did not run: nothing to learn about the encoder.
-                Err(None) => {}
-            }
+    for (codec, chosen, failures) in results {
+        match codec {
+            "h264" => caps.h264 = chosen,
+            "hevc" => caps.hevc = chosen,
+            "av1" => caps.av1 = chosen,
+            _ => {}
         }
+        diagnosis.failures.extend(failures);
     }
     (caps, diagnosis)
 }
@@ -464,7 +501,56 @@ pub(crate) fn size_fallback_message(
 /// table that would be wrong somewhere: the machine answers for itself, and a
 /// future driver that lifts a ceiling is picked up with no code change.
 fn encoder_works_at_size(ffmpeg: &OsStr, encoder: &str, w: u32, h: u32) -> bool {
-    probe_encoder_at_size(ffmpeg, encoder, w, h, HW_SIZE_PROBE_TIMEOUT).is_ok()
+    probe_encoder_at_size_with_cancel(ffmpeg, encoder, w, h, HW_SIZE_PROBE_TIMEOUT, None).is_ok()
+}
+
+/// Bounded resolution probe with caller cancellation support (used by deferred
+/// Doctor enrichment so invalidation/shutdown kills in-flight 4K/8K test encodes).
+pub fn encoder_works_at_size_cancelable(
+    ffmpeg: &OsStr,
+    encoder: &str,
+    w: u32,
+    h: u32,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> bool {
+    // Same memo as `encoder_supports_size`, but keyed on the explicit binary the
+    // Doctor scanned, so an explicit re-scan of an unchanged ffmpeg does not
+    // repeat the 4K/8K test encodes. An answer from a probe that was cancelled
+    // (before or while it ran) says nothing about the encoder and is never kept.
+    static SCAN_CACHE: OnceLock<Mutex<HashMap<(u64, std::ffi::OsString, String, u32, u32), bool>>> =
+        OnceLock::new();
+    let cache = SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let was_cancelled = |flag: &Option<std::sync::Arc<std::sync::atomic::AtomicBool>>| {
+        flag.as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
+    };
+    let key = (
+        crate::toolpath::tools_generation(),
+        ffmpeg.to_os_string(),
+        encoder.to_string(),
+        w,
+        h,
+    );
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(&key) {
+            return *hit;
+        }
+    }
+    let ok = probe_encoder_at_size_with_cancel(
+        ffmpeg,
+        encoder,
+        w,
+        h,
+        HW_SIZE_PROBE_TIMEOUT,
+        cancel.clone(),
+    )
+    .is_ok();
+    if !was_cancelled(&cancel) {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(key, ok);
+        }
+    }
+    ok
 }
 
 /// Run one test encode and say why it failed. `Err(None)` means ffmpeg itself
@@ -476,13 +562,24 @@ fn probe_encoder_at_size(
     h: u32,
     timeout: Duration,
 ) -> Result<(), Option<EncoderFailure>> {
+    probe_encoder_at_size_with_cancel(ffmpeg, encoder, w, h, timeout, None)
+}
+
+fn probe_encoder_at_size_with_cancel(
+    ffmpeg: &OsStr,
+    encoder: &str,
+    w: u32,
+    h: u32,
+    timeout: Duration,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(), Option<EncoderFailure>> {
     let size_input = format!("testsrc=duration=0.1:size={w}x{h}:rate=30");
     // The test picture must have the pixel format a render sends. testsrc is
     // RGB, and without `-pix_fmt` ffmpeg hands the encoder a 4:4:4 RGB format
     // it lists; NVIDIA's AV1 engine refuses 4:4:4 ("No capable devices found")
     // although it encodes every 4:2:0 render, so the probe reported no AV1
     // encoder on a GPU that has one.
-    let output = command_output_with_timeout(
+    let output = command_output_with_cancel(
         ffmpeg,
         &[
             "-hide_banner",
@@ -501,6 +598,7 @@ fn probe_encoder_at_size(
             "-",
         ],
         timeout,
+        cancel,
     )
     .ok_or(None)?;
     if output.status.success() {
@@ -536,6 +634,56 @@ pub fn zscale_available() -> bool {
         *guard = Some((generation, ok));
     }
     ok
+}
+
+/// True when `encoder` (`libx265` or `libsvtav1`) exists in the resolved ffmpeg
+/// AND actually encodes a 1-frame 10-bit (`yuv420p10le`, plus `-profile:v main10`
+/// for libx265) null test without failing. Memoized per `(tools_generation, ffmpeg, encoder)`.
+pub fn encoder_supports_10bit(encoder: &str) -> bool {
+    let bin = crate::toolpath::ffmpeg_for(&[crate::toolpath::FfmpegFeature::Zscale]);
+    encoder_supports_10bit_at(&bin, encoder)
+}
+
+/// Same 10-bit encoder capability probe against an explicit `ffmpeg` binary path.
+pub fn encoder_supports_10bit_at(ffmpeg: &std::ffi::OsStr, encoder: &str) -> bool {
+    static CACHE: OnceLock<Mutex<HashMap<(u64, std::ffi::OsString, String), bool>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let generation = crate::toolpath::tools_generation();
+    let key = (generation, ffmpeg.to_os_string(), encoder.to_string());
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(&key) {
+            return *hit;
+        }
+    }
+    let ok = probe_10bit_encoder(ffmpeg, encoder);
+    if let Ok(mut map) = cache.lock() {
+        map.insert(key, ok);
+    }
+    ok
+}
+
+fn probe_10bit_encoder(ffmpeg: &std::ffi::OsStr, encoder: &str) -> bool {
+    let mut args = vec![
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=64x64:d=0.04",
+        "-frames:v",
+        "1",
+        "-c:v",
+        encoder,
+        "-pix_fmt",
+        "yuv420p10le",
+    ];
+    if encoder == "libx265" {
+        args.extend(["-profile:v", "main10"]);
+    }
+    args.extend(["-f", "null", "-"]);
+    command_status_with_timeout(ffmpeg, &args, Duration::from_secs(8))
 }
 
 /// The pixel format a render hands this encoder (see `hwencode_args::args_for`):
@@ -651,7 +799,23 @@ fn gpu_filter_chain_works() -> bool {
 /// the doctor's candidate scan to learn whether the FULL fast-track (not just
 /// nvenc encode) runs on each discovered ffmpeg.
 fn gpu_filter_chain_works_at(ffmpeg: &OsStr) -> bool {
-    command_status_with_timeout(
+    gpu_filter_chain_works_at_cancelable(ffmpeg, None)
+}
+
+/// Probe whether `ffmpeg`'s CUDA filter chain (`hwupload` -> `scale_cuda` ->
+/// `overlay_cuda` -> `h264_nvenc`) works, supporting cooperative cancellation.
+pub fn gpu_filters_work_cancelable(
+    ffmpeg: &Path,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> bool {
+    gpu_filter_chain_works_at_cancelable(ffmpeg.as_os_str(), cancel)
+}
+
+fn gpu_filter_chain_works_at_cancelable(
+    ffmpeg: &OsStr,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> bool {
+    command_output_with_cancel(
         ffmpeg,
         &[
             "-hide_banner",
@@ -685,7 +849,9 @@ fn gpu_filter_chain_works_at(ffmpeg: &OsStr) -> bool {
             "-",
         ],
         CUDA_PROBE_TIMEOUT,
+        cancel,
     )
+    .is_some_and(|output| output.status.success())
 }
 
 fn command_status_with_timeout(prog: &OsStr, args: &[&str], timeout: Duration) -> bool {
@@ -695,9 +861,22 @@ fn command_status_with_timeout(prog: &OsStr, args: &[&str], timeout: Duration) -
 /// Hardware capability probes are foreground work, but still own their whole
 /// process tree: a hung driver helper must not outlive the timed probe.
 fn command_output_with_timeout(prog: &OsStr, args: &[&str], timeout: Duration) -> Option<Output> {
+    command_output_with_cancel(prog, args, timeout, None)
+}
+
+fn command_output_with_cancel(
+    prog: &OsStr,
+    args: &[&str],
+    timeout: Duration,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Option<Output> {
     let mut command = Command::new(prog);
     command.args(args);
-    let control = OwnedProcessControl::bounded(timeout, || false);
+    let control = OwnedProcessControl::bounded(timeout, move || {
+        cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+    });
     run_owned_command(&mut command, &control, "hardware encoder probe").ok()
 }
 
@@ -866,16 +1045,83 @@ pub fn ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
         .clone()
 }
 
+/// Version outcome from `<ffmpeg> -version` so Doctor's essential card and
+/// capability scan reuse one spawn instead of executing `ffmpeg -version` 2-3x.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FfmpegVersionOutcome {
+    Ran {
+        banner_line: String,
+        version: Option<String>,
+    },
+    NotFound,
+    Timeout,
+}
+
+/// Complete single-binary probe output shared across Doctor's `ffmpeg` and
+/// `gpu-encode` cards (and `ffmpeg_selection`), avoiding duplicate subprocesses.
+#[derive(Debug, Clone)]
+pub struct FfmpegScanReport {
+    pub caps: FfmpegCaps,
+    pub version_outcome: FfmpegVersionOutcome,
+    /// `(libass, vidstabtransform || vidstabdetect, zscale)` for `ffmpeg` card.
+    pub filter_caps: Option<(bool, bool, bool)>,
+    /// `(libx265, libvpx-vp9, libsvtav1)` from `ffmpeg -encoders`.
+    pub encoder_caps: Option<(bool, bool, bool)>,
+    /// `(libx265_10bit, libsvtav1_10bit)`.
+    pub enc_10bit: Option<(bool, bool)>,
+}
+
 fn read_ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
-    let out = command_output_with_timeout(ffmpeg, &["-hide_banner", "-version"], HW_PROBE_TIMEOUT)?;
-    if !out.status.success() {
-        return None;
+    match read_ffmpeg_version_outcome(ffmpeg, HW_PROBE_TIMEOUT) {
+        FfmpegVersionOutcome::Ran { version, .. } => version,
+        _ => None,
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(2))
-        .map(|v| v.to_string())
+}
+
+fn looks_like_missing_error(error: &cut_core::CutError) -> bool {
+    if error.code == cut_core::error_codes::TOOL_MISSING {
+        return true;
+    }
+    let cause = error.cause.to_ascii_lowercase();
+    cause.contains("no such file") || cause.contains("not found") || cause.contains("os error 2")
+}
+
+fn read_ffmpeg_version_outcome(ffmpeg: &OsStr, timeout: Duration) -> FfmpegVersionOutcome {
+    let mut command = Command::new(ffmpeg);
+    command.args(["-hide_banner", "-version"]);
+    let control = OwnedProcessControl::bounded(timeout, || false);
+    match run_owned_command(&mut command, &control, "ffmpeg version probe") {
+        Ok(out) => {
+            let text = if !out.stdout.is_empty() {
+                String::from_utf8_lossy(&out.stdout).into_owned()
+            } else {
+                String::from_utf8_lossy(&out.stderr).into_owned()
+            };
+            let banner_line = text
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("")
+                .to_string();
+            let version = out
+                .status
+                .success()
+                .then(|| {
+                    String::from_utf8_lossy(&out.stdout)
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(2))
+                        .map(|v| v.to_string())
+                })
+                .flatten();
+            FfmpegVersionOutcome::Ran {
+                banner_line,
+                version,
+            }
+        }
+        Err(ref err) if looks_like_missing_error(err) => FfmpegVersionOutcome::NotFound,
+        Err(_) => FfmpegVersionOutcome::Timeout,
+    }
 }
 
 /// Which feature-filters this ffmpeg has, learned from `ffmpeg -filters`. A filter
@@ -886,20 +1132,79 @@ fn read_ffmpeg_version_at(ffmpeg: &OsStr) -> Option<String> {
 /// color-managed render). Returns `(libass, vidstab, zscale)`; `(false,false,false)`
 /// if the binary does not run. One cheap spawn (no encode).
 pub(crate) fn feature_filters_at(ffmpeg: &OsStr) -> (bool, bool, bool) {
-    match command_output_with_timeout(ffmpeg, &["-hide_banner", "-filters"], HW_PROBE_TIMEOUT) {
-        Some(o) if o.status.success() => {
-            let t = String::from_utf8_lossy(&o.stdout);
-            // The `subtitles` (and `ass`) filters exist only with --enable-libass;
-            // `vidstabtransform` only with --enable-libvidstab; `zscale` only with
-            // --enable-libzimg. Match the filter-name column exactly so similarly
-            // named custom filters do not produce false capability bits.
-            let libass = filter_listing_has(&t, "subtitles") || filter_listing_has(&t, "ass");
-            let vidstab = filter_listing_has(&t, "vidstabtransform");
-            let zscale = filter_listing_has(&t, "zscale");
-            (libass, vidstab, zscale)
-        }
-        _ => (false, false, false),
+    let raw = read_filters_raw(ffmpeg);
+    raw.map(|r| (r.libass, r.vidstab_transform, r.zscale))
+        .unwrap_or((false, false, false))
+}
+
+struct RawFilters {
+    libass: bool,
+    vidstab_transform: bool,
+    vidstab_any: bool,
+    zscale: bool,
+    has_filters_header: bool,
+    has_cuda_filters: bool,
+}
+
+fn read_filters_raw(ffmpeg: &OsStr) -> Option<RawFilters> {
+    let o = command_output_with_timeout(ffmpeg, &["-hide_banner", "-filters"], HW_PROBE_TIMEOUT)?;
+    if !o.status.success() {
+        return None;
     }
+    let t = String::from_utf8_lossy(&o.stdout);
+    let libass = filter_listing_has(&t, "subtitles") || filter_listing_has(&t, "ass");
+    let vidstab_transform = filter_listing_has(&t, "vidstabtransform");
+    let vidstab_any = vidstab_transform || filter_listing_has(&t, "vidstabdetect");
+    let zscale = filter_listing_has(&t, "zscale");
+    let has_filters_header = t.contains("Filters:");
+    let has_cuda_filters = filter_listing_has(&t, "hwupload")
+        && filter_listing_has(&t, "scale_cuda")
+        && filter_listing_has(&t, "overlay_cuda");
+    Some(RawFilters {
+        libass,
+        vidstab_transform,
+        vidstab_any,
+        zscale,
+        has_filters_header,
+        has_cuda_filters,
+    })
+}
+
+struct RawEncoders {
+    x265: bool,
+    vp9: bool,
+    svtav1: bool,
+    compiled_set: Option<std::collections::HashSet<String>>,
+}
+
+fn read_encoders_raw(ffmpeg: &OsStr) -> Option<RawEncoders> {
+    let out =
+        command_output_with_timeout(ffmpeg, &["-hide_banner", "-encoders"], HW_PROBE_TIMEOUT)?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut names = std::collections::HashSet::new();
+    for line in text.lines() {
+        let mut cols = line.split_whitespace();
+        let Some(flags) = cols.next() else {
+            continue;
+        };
+        let Some(name) = cols.next() else {
+            continue;
+        };
+        if flags.len() >= 2 && flags.chars().all(|c| c == '.' || c.is_ascii_alphabetic()) {
+            names.insert(name.to_string());
+        }
+    }
+    let x265 = names.contains("libx265");
+    let vp9 = names.contains("libvpx-vp9");
+    let svtav1 = names.contains("libsvtav1");
+    let compiled_set =
+        (out.status.success() && text.contains("Encoders:") && !names.is_empty()).then_some(names);
+    Some(RawEncoders {
+        x265,
+        vp9,
+        svtav1,
+        compiled_set,
+    })
 }
 
 /// Whether an `ffmpeg -filters` listing names `target` in its filter column.
@@ -931,42 +1236,117 @@ pub fn filter_listing_has(listing: &str, target: &str) -> bool {
 /// the software tier — so it stays honest with [`hw_caps`]. Unlike `hw_caps`/
 /// `gpu_filters_available` this is NOT cached: the doctor scan controls when it runs.
 pub fn probe_ffmpeg_caps(ffmpeg: &Path) -> FfmpegCaps {
+    probe_ffmpeg_internal(ffmpeg, false, true).caps
+}
+
+/// Complete per-binary probe for the Doctor scan: collects version outcome,
+/// filter caps, software encoder capabilities, 10-bit checks, HW encoders, and
+/// CUDA filter chain in two parallel waves instead of repeating commands per card.
+pub fn probe_ffmpeg_detailed(ffmpeg: &Path, probe_cuda: bool) -> FfmpegScanReport {
+    probe_ffmpeg_internal(ffmpeg, true, probe_cuda)
+}
+
+fn probe_ffmpeg_internal(ffmpeg: &Path, include_10bit: bool, probe_cuda: bool) -> FfmpegScanReport {
     let osff = ffmpeg.as_os_str();
-    let version = ffmpeg_version_at(osff);
-    let no_hw = std::env::var_os("SHELLX_CUT_NO_HWENC").is_some();
-    // libass/vidstab/zscale are independent of the HW tier (they gate caption/
-    // stabilize/color-managed renders, not encode speed), so probe them whenever the
-    // binary runs — even under no_hw.
-    let (libass, vidstab, zscale) = if version.is_some() {
-        feature_filters_at(osff)
-    } else {
-        (false, false, false)
+    let version_outcome = read_ffmpeg_version_outcome(osff, Duration::from_secs(8));
+    let runnable = matches!(version_outcome, FfmpegVersionOutcome::Ran { .. });
+    let version = match &version_outcome {
+        FfmpegVersionOutcome::Ran { version, .. } => version.clone(),
+        _ => None,
     };
-    let (hw, cuda_filters, diagnosis) = if version.is_none() {
-        (HwCaps::default(), false, HwDiagnosis::default())
-    } else if no_hw {
-        (
-            HwCaps::default(),
-            false,
-            HwDiagnosis {
-                disabled_by_setting: true,
-                failures: Vec::new(),
+    if !runnable {
+        return FfmpegScanReport {
+            caps: FfmpegCaps {
+                path: ffmpeg.display().to_string(),
+                version,
+                hw: HwCaps::default(),
+                cuda_filters: false,
+                libass: false,
+                vidstab: false,
+                zscale: false,
+                diagnosis: HwDiagnosis::default(),
             },
+            version_outcome,
+            filter_caps: None,
+            encoder_caps: None,
+            enc_10bit: None,
+        };
+    }
+
+    let (raw_filters, raw_encoders) = std::thread::scope(|scope| {
+        let filters = scope.spawn(|| read_filters_raw(osff));
+        let encoders = scope.spawn(|| read_encoders_raw(osff));
+        (
+            filters.join().unwrap_or(None),
+            encoders.join().unwrap_or(None),
         )
-    } else {
-        let (caps, diagnosis) = probe_at(osff);
-        let cuda = gpu_filter_chain_works_at(osff);
-        (caps, cuda, diagnosis)
-    };
-    FfmpegCaps {
-        path: ffmpeg.display().to_string(),
-        version,
-        hw,
-        cuda_filters,
-        libass,
-        vidstab,
-        zscale,
-        diagnosis,
+    });
+
+    let no_hw = std::env::var_os("SHELLX_CUT_NO_HWENC").is_some();
+    let (libass, vidstab, zscale) = raw_filters
+        .as_ref()
+        .map(|f| (f.libass, f.vidstab_transform, f.zscale))
+        .unwrap_or((false, false, false));
+    let filter_caps = raw_filters
+        .as_ref()
+        .map(|f| (f.libass, f.vidstab_any, f.zscale));
+    let encoder_caps = raw_encoders.as_ref().map(|e| (e.x265, e.vp9, e.svtav1));
+    let compiled_set = raw_encoders.as_ref().and_then(|e| e.compiled_set.as_ref());
+
+    let can_probe_hw = version.is_some();
+    let need_cuda_probe = probe_cuda
+        && can_probe_hw
+        && !no_hw
+        && compiled_set.is_none_or(|s| s.contains("h264_nvenc"))
+        && raw_filters
+            .as_ref()
+            .is_none_or(|f| !f.has_filters_header || f.has_cuda_filters);
+
+    let (x265_10, svtav1_10, (hw, diagnosis), cuda_filters) = std::thread::scope(|scope| {
+        let j_x265 = (include_10bit && raw_encoders.as_ref().is_some_and(|e| e.x265))
+            .then(|| scope.spawn(|| encoder_supports_10bit_at(osff, "libx265")));
+        let j_svt = (include_10bit && raw_encoders.as_ref().is_some_and(|e| e.svtav1))
+            .then(|| scope.spawn(|| encoder_supports_10bit_at(osff, "libsvtav1")));
+        let j_hw = (can_probe_hw && !no_hw)
+            .then(|| scope.spawn(|| probe_at_with_encoders(osff, compiled_set)));
+        let j_cuda = need_cuda_probe.then(|| scope.spawn(|| gpu_filter_chain_works_at(osff)));
+
+        let x265_10 = j_x265.map(|h| h.join().unwrap_or(false)).unwrap_or(false);
+        let svt_10 = j_svt.map(|h| h.join().unwrap_or(false)).unwrap_or(false);
+        let hw_res = if !can_probe_hw {
+            (HwCaps::default(), HwDiagnosis::default())
+        } else if no_hw {
+            (
+                HwCaps::default(),
+                HwDiagnosis {
+                    disabled_by_setting: true,
+                    failures: Vec::new(),
+                },
+            )
+        } else {
+            j_hw.map(|h| h.join().unwrap_or_default())
+                .unwrap_or_default()
+        };
+        let cuda = j_cuda.map(|h| h.join().unwrap_or(false)).unwrap_or(false);
+        (x265_10, svt_10, hw_res, cuda)
+    });
+
+    let enc_10bit = encoder_caps.map(|_| (x265_10, svtav1_10));
+    FfmpegScanReport {
+        caps: FfmpegCaps {
+            path: ffmpeg.display().to_string(),
+            version,
+            hw,
+            cuda_filters,
+            libass,
+            vidstab,
+            zscale,
+            diagnosis,
+        },
+        version_outcome,
+        filter_caps,
+        encoder_caps,
+        enc_10bit,
     }
 }
 

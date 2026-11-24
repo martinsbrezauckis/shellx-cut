@@ -3,7 +3,7 @@ use cut_core::{Edl, Project};
 use sha2::{Digest, Sha256};
 
 pub(super) fn update(hash: &mut Sha256, project: &Project, edl: &Edl) {
-    hash.update(b"clip-records-v3-window-time-published-rect");
+    hash.update(b"clip-records-v4-source-rect");
     let mut ids: Vec<_> = edl
         .segments
         .iter()

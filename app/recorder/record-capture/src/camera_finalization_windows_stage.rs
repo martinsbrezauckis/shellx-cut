@@ -9,11 +9,11 @@ use record_core::Result;
 use windows::Win32::Media::MediaFoundation::{IMFByteStream, MFCreateMFByteStreamOnStream};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_READ, OPEN_EXISTING,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW, DELETE,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_NAME_NORMALIZED,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, OPEN_EXISTING,
 };
 use windows::Win32::System::Com::IStream;
 
@@ -215,7 +215,7 @@ fn open_new_leaf(path: &Path) -> Result<windows::Win32::Foundation::HANDLE> {
     unsafe {
         CreateFileW(
             &windows::core::HSTRING::from(path.as_os_str().to_string_lossy().as_ref()),
-            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0,
             FILE_SHARE_READ,
             None,
             CREATE_NEW,

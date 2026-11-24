@@ -66,7 +66,7 @@ fn default_projects_dir_for(
     Ok(directory)
 }
 
-pub(super) fn default_projects_dir() -> Result<PathBuf, CutError> {
+pub(crate) fn default_projects_dir() -> Result<PathBuf, CutError> {
     default_projects_dir_for(
         std::env::var_os("SHELLX_CUT_PROJECTS_DIR"),
         std::env::var_os("SHELLX_CUT_HOME"),

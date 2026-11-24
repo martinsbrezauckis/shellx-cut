@@ -2,6 +2,12 @@ use super::*;
 use crate::jobs::JobState;
 use std::os::unix::fs::PermissionsExt;
 
+/// A setup read probes every ffmpeg on the machine, not only the chosen one, so
+/// on a Mac that has Homebrew's ffmpeg a read can take longer than 15 seconds
+/// (its VideoToolbox probes run to their own bound inside a virtual machine).
+/// The wait is for the refresh to arrive, not for it to be quick.
+const REFRESH_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+
 #[tokio::test]
 async fn a_removed_tool_fails_the_proxy_job_and_refreshes_setup() {
     const CHILD: &str = "SHELLX_CUT_PROXY_MISSING_TEST_CHILD";
@@ -73,7 +79,7 @@ async fn a_removed_tool_fails_the_proxy_job_and_refreshes_setup() {
         "video".into(),
         Some(1000),
     );
-    let record = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let record = tokio::time::timeout(REFRESH_WAIT, async {
         loop {
             let record = state.jobs.get(&job_id).unwrap();
             if matches!(record.state, JobState::Done | JobState::Failed) {
@@ -93,7 +99,7 @@ async fn a_removed_tool_fails_the_proxy_job_and_refreshes_setup() {
     assert!(tag.name.is_some());
     assert_eq!(tag.get.unwrap()["verb"], "system.fetch_tool");
     assert!(!proxies.join("a1.mp4").exists());
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(REFRESH_WAIT, async {
         loop {
             if let crate::events::Event::DoctorUpdated { report } = events.recv().await.unwrap() {
                 assert!(!report.essential_ok);

@@ -61,7 +61,8 @@
           "description": "One entry per recognised FAILING check — the autopilot self-fix substrate. Empty when every check passed."
         },
         "encode": { "$ref": "#/$defs/EncodeReport", "description": "Which encoder produced the output and whether hardware was asked for and used. Absent on receipts written before this field." },
-        "outcome": { "$ref": "#/$defs/CheckOutcome", "description": "The checks' verdict in one line, each failing check in plain words, and the way forward. Absent on receipts written before this field." }
+        "outcome": { "$ref": "#/$defs/CheckOutcome", "description": "The checks' verdict in one line, each failing check in plain words, and the way forward. Absent on receipts written before this field." },
+        "export_checks": { "type": "object", "description": "Every export check with its state for the finished file (checked, found, not checked because an optional tool is missing or the check was not run yet, or an error with its reason). Shape: schema/export-checks.schema.json. Information only: never changes pass, checks or outcome. Absent on receipts written before this field." }
       },
       "additionalProperties": false
     },
@@ -112,12 +113,25 @@
     },
     "ColorReport": {
       "type": "object",
-      "description": "The colour handling of a render: every export is SDR BT.709 processed in 8 bits; an HDR (HLG/PQ) source is tone-mapped to SDR. Keeping HDR in the export is not available yet.",
+      "description": "The colour handling of a render: default exports are SDR BT.709 processed in 8 bits (HDR sources are tone-mapped to SDR); render.final with color:'keep_hdr' writes 10-bit BT.2020 HLG or PQ.",
       "required": ["output", "processing_bit_depth", "file_bit_depth", "sources"],
       "properties": {
-        "output": { "type": "string", "description": "The delivered picture, e.g. SDR BT.709." },
-        "processing_bit_depth": { "type": "integer", "description": "Bits per sample the picture is processed in (8)." },
-        "file_bit_depth": { "type": "integer", "description": "Bits per sample of the encoded file (10 for ProRes, else 8)." },
+        "output": { "type": "string", "description": "The delivered picture, e.g. SDR BT.709 or HDR 10-bit HLG (BT.2020)." },
+        "processing_bit_depth": { "type": "integer", "description": "Bits per sample the picture is processed in (8 for SDR, 10 for Keep HDR)." },
+        "file_bit_depth": { "type": "integer", "description": "Bits per sample of the encoded file (10 for ProRes or Keep HDR, else 8)." },
+        "transfer": { "type": "string", "description": "Output transfer function for Keep HDR renders (arib-std-b67 = HLG, smpte2084 = PQ). Absent for SDR." },
+        "hdr10_metadata": {
+          "type": "object",
+          "description": "HDR10 static metadata status (mastering display + MaxCLL/MaxFALL) for Keep HDR renders.",
+          "required": ["present_in_sources", "carried"],
+          "properties": {
+            "present_in_sources": { "type": "boolean" },
+            "carried": { "type": "boolean" },
+            "mastering_display": { "type": "string" },
+            "max_cll": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
         "sources": {
           "type": "array",
           "items": {
@@ -128,12 +142,12 @@
               "file": { "type": "string" },
               "transfer": { "type": "string", "description": "Source transfer as ffprobe names it (arib-std-b67 = HLG, smpte2084 = PQ)." },
               "bit_depth": { "type": "integer" },
-              "handling": { "type": "string", "enum": ["sdr", "tone_mapped_to_sdr", "hdr_tagged_not_converted", "converted_bt601_to_bt709"] }
+              "handling": { "type": "string", "enum": ["sdr", "tone_mapped_to_sdr", "hdr_tagged_not_converted", "converted_bt601_to_bt709", "kept_hdr", "converted_hdr_transfer", "sdr_to_hdr", "hdr_graded_in_sdr"] }
             },
             "additionalProperties": false
           }
         },
-        "note": { "type": "string", "description": "Plain sentences when a source was converted, reduced in bit depth, or not converted." }
+        "note": { "type": "string", "description": "Plain sentences when a source was converted, reduced in bit depth, graded in SDR, or not converted." }
       },
       "additionalProperties": false
     },

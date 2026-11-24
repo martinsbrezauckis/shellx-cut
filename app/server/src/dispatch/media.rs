@@ -1865,7 +1865,14 @@ pub(super) fn spawn_import_chain(
                     "src_range_ms": src_range, "ripple": false,
                     "rationale": "auto-place: first import becomes the timeline",
                 });
-                if let Err(e) = commit_core(&state, "edit.insert", args, Actor::system()).await {
+                if let Err(e) = crate::screen_record::clip_markers::commit_insert_dispatch(
+                    &state,
+                    args,
+                    Actor::system(),
+                    None,
+                )
+                .await
+                {
                     return state.jobs.fail(
                         &jid,
                         e.with_suggested_action(format!(
@@ -1980,9 +1987,9 @@ pub(super) fn spawn_import_chain(
         // and must NEVER block editing: a large file must not leave the import
         // pill FROZEN at 55% (the blocking transcribe step, no sub-progress). So
         // finish the import job HERE and run transcribe+perception as a separate
-        // background ENRICH job, NON-FATAL (a missing/slow/failed sidecar degrades
-        // to a warning on THAT job — "core editing works without it" — never a
-        // failed import; this also closes the cold-install hard-fail gap).
+        // background ENRICH job, NON-FATAL (an absent captions runtime is skipped
+        // cleanly with no warning, and a slow/failed sidecar degrades to a warning
+        // on THAT job — "core editing works without it" — never a failed import).
         let enrich_job = spawn_enrich_chain(
             state.clone(),
             asset_id.clone(),
@@ -2149,22 +2156,26 @@ fn spawn_proxy_chain(
                             Err(e) => {
                                 warnings
                                     .push(format!("proxy write-back: {} ({})", e.message, e.cause));
+                                decode_check::record_proxy_error(&state, &asset_id, &e).await;
                                 false
                             }
                         }
                     }
                     Err(e) => {
                         warnings.push(format!("proxy ownership: {} ({})", e.message, e.cause));
+                        decode_check::record_proxy_error(&state, &asset_id, &e).await;
                         false
                     }
                 }
             }
             Err(e) if e.code == cut_core::error_codes::TOOL_MISSING => {
+                decode_check::record_proxy_error(&state, &asset_id, &e).await;
                 state.jobs.fail(&jid, e);
                 return;
             }
             Err(e) => {
                 warnings.push(format!("proxy: {} ({})", e.message, e.cause));
+                decode_check::record_proxy_error(&state, &asset_id, &e).await;
                 false
             }
         };
@@ -2174,7 +2185,7 @@ fn spawn_proxy_chain(
         let mut decode_check: Option<Value> = None;
         if proxy_ok && kind == "video" {
             let proxy_path = proxies.join(format!("{asset_id}.mp4"));
-            match decode_check::record_decode_check(&state, &asset_id, &proxy_path).await {
+            match decode_check::record_decode_check_or_error(&state, &asset_id, &proxy_path).await {
                 Ok(warning) => {
                     if let Some(w) = warning {
                         warnings.push(w);
@@ -2263,8 +2274,9 @@ fn spawn_proxy_chain(
 /// Background ENRICH job: transcribe (word timestamps) + the perception battery.
 /// Split OUT of the import chain so heavy/slow analysis NEVER blocks
 /// editing — the clip is already auto-placed + proxied when this starts. Each
-/// step is NON-FATAL: a missing, slow, or failed sidecar degrades to a warning on
-/// THIS job, never a failed import (the "core editing works without the sidecar"
+/// step is NON-FATAL: an absent captions runtime is skipped cleanly with no
+/// warning, and a slow or failed sidecar degrades to a warning on THIS job,
+/// never a failed import (the "core editing works without the sidecar"
 /// contract, preventing a long import from appearing frozen). Transcript-
 /// dependent verbs (captions / cut_words / remove_fillers) wait on this
 /// job's id, returned in the import result as `enrich_job`.
@@ -2460,18 +2472,11 @@ fn spawn_enrich_chain(
     job_id
 }
 
-/// Why `media.import` cannot take `path`: say the true reason (a folder, access
-/// denied, or really missing), never "not found" for something that exists.
+/// Why `media.import` cannot take a non-directory `path`: say the true reason
+/// (not a regular file, access denied, or really missing), never "not found"
+/// for something that exists. Folders are refused before this helper runs.
 fn media_path_error(path: &Path) -> CutError {
     match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => CutError::new(
-            error_codes::INVALID_ARGS,
-            format!("{} is a folder, not a media file", path.display()),
-            "media.import takes one media file per call; folders are not imported",
-        )
-        .with_suggested_action(
-            "list the folder and call media.import for each media file inside it",
-        ),
         Ok(_) => CutError::new(
             error_codes::INVALID_ARGS,
             format!("{} is not a regular media file", path.display()),
@@ -2893,17 +2898,37 @@ async fn wait_for_media_import_admission_gate(source: &Path) {
 mod media_path_error_tests {
     use super::*;
 
-    #[test]
-    fn a_folder_is_named_as_a_folder_not_as_missing() {
+    #[tokio::test]
+    async fn a_folder_is_named_as_a_folder_not_as_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let error = media_path_error(dir.path());
+        let state = AppState::new();
+        let created = crate::dispatch::dispatch(
+            &state,
+            "project.create",
+            json!({"name": "folder-import", "dir": dir.path().join("folder-import.cutproj")}),
+            cut_core::Actor::system(),
+        )
+        .await;
+        assert!(created.ok, "{:?}", created.error);
+
+        let import_dir = dir.path().join("clips");
+        std::fs::create_dir(&import_dir).unwrap();
+        let imported = crate::dispatch::dispatch(
+            &state,
+            "media.import",
+            json!({"path": import_dir}),
+            cut_core::Actor::system(),
+        )
+        .await;
+        let error = imported.error.expect("a folder import must be refused");
         assert_eq!(error.code, error_codes::INVALID_ARGS);
         assert!(error.message.contains("is a folder, not a media file"));
         assert!(!error.message.contains("not found"));
         assert!(error
             .suggested_action
             .unwrap()
-            .contains("media.import for each media file"));
+            .contains("inside the folder one by one"));
+
         let missing = media_path_error(&dir.path().join("absent.mp4"));
         assert_eq!(missing.code, error_codes::NOT_FOUND);
     }

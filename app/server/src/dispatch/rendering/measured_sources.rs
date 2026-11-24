@@ -13,31 +13,55 @@ use cut_perception::{MeasuredSources, SourceFacts};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// Probe every distinct source placed on a picture or program-audio track.
-pub(super) fn measure_placed_sources(dir: &Path, project: &Project, edl: &Edl) -> MeasuredSources {
+/// Measured source properties alongside per-asset probe failures so callers
+/// never drop unreadable or missing sources silently.
+pub(super) struct MeasuredPlacedSources {
+    pub sources: MeasuredSources,
+    pub errors: std::collections::BTreeMap<String, cut_core::CutError>,
+}
+
+/// Probe every distinct source placed on a picture or program-audio track,
+/// retaining probe failures by asset id alongside the measured facts.
+pub(super) fn measure_placed_sources_detailed(
+    dir: &Path,
+    project: &Project,
+    edl: &Edl,
+) -> MeasuredPlacedSources {
     let placed: BTreeSet<&str> = edl
         .segments
         .iter()
         .filter(|s| s.track_kind == TrackKind::Video || edl.is_audio_bearing_track(&s.track))
         .filter_map(|s| s.asset.as_deref())
         .collect();
-    let mut measured = MeasuredSources::new();
+    let mut sources = MeasuredSources::new();
+    let mut errors = std::collections::BTreeMap::new();
     for id in placed {
         let Some(asset) = project.assets.get(id) else {
             continue;
         };
         let path = crate::dispatch::media::asset_source_path(dir, asset);
-        if let Ok(probe) = cut_media::probe(&path) {
-            measured.insert(
-                id.to_string(),
-                SourceFacts {
-                    has_audio: probe.has_audio,
-                    still: is_single_picture(&path, &probe),
-                },
-            );
+        match cut_media::probe(&path) {
+            Ok(probe) => {
+                sources.insert(
+                    id.to_string(),
+                    SourceFacts {
+                        has_audio: probe.has_audio,
+                        still: is_single_picture(&path, &probe),
+                    },
+                );
+            }
+            Err(error) => {
+                errors.insert(id.to_string(), error);
+            }
         }
     }
-    measured
+    MeasuredPlacedSources { sources, errors }
+}
+
+/// Probe every distinct source placed on a picture or program-audio track.
+#[cfg(test)]
+pub(super) fn measure_placed_sources(dir: &Path, project: &Project, edl: &Edl) -> MeasuredSources {
+    measure_placed_sources_detailed(dir, project, edl).sources
 }
 
 /// A still is a source measured to hold exactly ONE picture: an image-kind
@@ -160,5 +184,11 @@ mod tests {
             Some(false),
             "{measured:?}"
         );
+
+        let missing = dir.path().join("missing.mp4");
+        let (p, edl) = placed(&missing);
+        let detailed = measure_placed_sources_detailed(dir.path(), &p, &edl);
+        assert!(detailed.sources.is_empty());
+        assert!(detailed.errors.contains_key("a1"), "{:?}", detailed.errors);
     }
 }

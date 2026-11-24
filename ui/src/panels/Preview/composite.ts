@@ -43,6 +43,7 @@ export interface OverlayLayer {
   /** Proxy URL when built, else the streamed source. */
   src: string
   kind: 'proxy' | 'source'
+  sourceAspect?: number
   assetId: string
   /** Timeline placement of the overlay clip (for master-clock sync). */
   startMs: number
@@ -144,7 +145,12 @@ function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAsse
   if (!it.asset || !asset) return null
   // Prefer the proxy; fall back to streaming the source (also when the
   // media-address guard refuses the proxy address and gives '').
-  const proxied = asset.proxy ? scopeMediaUrl(asset.proxy) : ''
+  const probe = asset.probe as { width?: number; height?: number } | undefined
+  const sourceAspect = probe?.width && probe?.height ? probe.width / probe.height : undefined
+  // Editing proxies have a fixed 16:9 canvas. Its baked-in bars are not
+  // camera content: stream the source when the aspect differs.
+  const proxySafe = sourceAspect === undefined || Math.abs(sourceAspect - 16 / 9) < 0.01
+  const proxied = asset.proxy && proxySafe ? scopeMediaUrl(asset.proxy) : ''
   const src = proxied || sourceUrl(it.asset)
   const kind: 'proxy' | 'source' = proxied ? 'proxy' : 'source'
   const clip = project.tracks.find(t => t.id === trackId)?.clips.find(c => 'id' in c && c.id === it.id)
@@ -155,6 +161,7 @@ function overlayLayer(project: Project, trackId: string, it: LaidItem, imageAsse
     trackId,
     src,
     kind,
+    sourceAspect,
     assetId: it.asset,
     startMs: it.startMs,
     srcInMs: it.srcInMs ?? 0,
@@ -321,17 +328,18 @@ export function gradeFilter(grade: ClipGrade | null | undefined): string {
   return parts.join(' ')
 }
 
-/** Inline style box for an overlay clip from its normalized transform. The
- * stage carries the project aspect, so normalized maps 1:1: left=x, top=y,
- * width=scale, height=scale (the overlay is the conformed full frame scaled —
- * same aspect as the stage). opacity from the transform. */
-export function overlayBoxStyle(t: (ClipTransform & { opacity: number })): CSSProperties {
+/** Width and top-left placement are saved normalized values. Rectangle height
+ * follows the source, not the stage; unknown probes retain the canvas fallback. */
+export function overlayBoxStyle(t: (ClipTransform & { opacity: number }), sourceAspect?: number): CSSProperties {
   return {
     left: `${(t.x * 100).toFixed(4)}%`,
     top: `${(t.y * 100).toFixed(4)}%`,
     width: `${(t.scale * 100).toFixed(4)}%`,
     height: `${(t.scale * 100).toFixed(4)}%`,
     opacity: t.opacity,
+    ...((!t.shape || t.shape === 'rect') && sourceAspect ? {
+      height: 'auto', aspectRatio: String(sourceAspect),
+    } : {}),
     ...(t.shape && t.shape !== 'rect' ? {
       height: 'auto',
       aspectRatio: '1',

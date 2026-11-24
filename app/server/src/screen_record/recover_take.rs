@@ -28,7 +28,7 @@ use crate::dispatch::{dispatch, parse_args, snapshot};
 use crate::state::AppState;
 use cut_core::store::{plain_file_state, PlainFileState};
 
-const TAKE_FILE: &str = "recovered-take.mp4";
+pub(crate) const TAKE_FILE: &str = "recovered-take.mp4";
 /// Written after a recovered take reached the timeline, so the capture is no
 /// longer offered for recovery.
 pub(crate) const ADDED_MARKER: &str = "recovered-to-timeline.json";
@@ -255,6 +255,7 @@ async fn place_at(
     kind: &str,
     at_ms: u64,
     src_range_ms: Option<[u64; 2]>,
+    explicit_markers: Option<Vec<super::clip_markers::MarkerSeed>>,
 ) -> Result<Option<String>, CutError> {
     let (placed, track_exists) = {
         let guard = state.project.read().await;
@@ -308,7 +309,12 @@ async fn place_at(
     if let Some(range) = src_range_ms {
         insert["src_range_ms"] = json!(range);
     }
-    let inserted = Box::pin(dispatch(state, "edit.insert", insert, actor.clone())).await;
+    let inserted = if explicit_markers.is_some() {
+        super::clip_markers::commit_insert_dispatch(state, insert, actor.clone(), explicit_markers)
+            .await?
+    } else {
+        Box::pin(dispatch(state, "edit.insert", insert, actor.clone())).await
+    };
     if let Some(error) = inserted.error {
         return Err(error);
     }
@@ -501,12 +507,58 @@ pub(crate) async fn recover_handler(
     let mut clips = Vec::new();
     let start_ms = timeline_end(state).await;
     let mut sound_placed = false;
+    let all_markers = super::clip_markers::read_capture_markers(&capture_dir);
+    let mut attached_markers = 0usize;
+    let mut remaining_markers = all_markers;
     if media.video.is_some() {
+        let take_dur = cut_media::probe(&take).ok().and_then(|p| p.duration_ms);
+        let (video_markers, after_video): (Vec<_>, Vec<_>) = remaining_markers
+            .into_iter()
+            .partition(|m| take_dur.is_some_and(|d| m.source_ms < d));
+        attached_markers += video_markers.len();
+        let _ = super::clip_markers::write_file_sidecar(&take, video_markers.clone(), None);
         let asset = import_and_wait(state, &actor, &take).await?;
-        clips.push(place_at(state, &actor, &asset, "v1", "video", start_ms, None).await?);
+        clips.push(
+            place_at(
+                state,
+                &actor,
+                &asset,
+                "v1",
+                "video",
+                start_ms,
+                None,
+                Some(video_markers),
+            )
+            .await?,
+        );
+        remaining_markers = after_video;
         if let Some(picture) = asset_duration_ms(state, &asset).await {
+            let system_offset = super::system_audio::read_timing(&capture_dir)
+                .ok()
+                .flatten()
+                .and_then(|timing| timing.first_packet_offset_ms)
+                .unwrap_or(0);
             let tails = sound_tails(&capture_dir, &media, picture);
             for (path, track, at, range) in tails {
+                let starts_at = if track == RECOVERED_SYSTEM_TRACK {
+                    system_offset
+                } else {
+                    0
+                };
+                let mut for_tail = Vec::new();
+                let mut next_remaining = Vec::new();
+                for mut m in remaining_markers {
+                    if let Some(rel) = m.source_ms.checked_sub(starts_at) {
+                        if rel >= range[0] && rel < range[1] {
+                            m.source_ms = rel;
+                            for_tail.push(m);
+                            continue;
+                        }
+                    }
+                    next_remaining.push(m);
+                }
+                remaining_markers = next_remaining;
+                attached_markers += for_tail.len();
                 let sound = import_and_wait(state, &actor, &path).await?;
                 clips.push(
                     place_at(
@@ -517,6 +569,7 @@ pub(crate) async fn recover_handler(
                         "audio",
                         start_ms + at,
                         Some(range),
+                        Some(for_tail),
                     )
                     .await?,
                 );
@@ -524,9 +577,47 @@ pub(crate) async fn recover_handler(
             }
         }
     } else {
+        let system_offset = super::system_audio::read_timing(&capture_dir)
+            .ok()
+            .flatten()
+            .and_then(|timing| timing.first_packet_offset_ms)
+            .unwrap_or(0);
         for (path, track) in &sound_only {
+            let starts_at = if *track == RECOVERED_SYSTEM_TRACK {
+                system_offset
+            } else {
+                0
+            };
+            let audio_dur = cut_media::probe(path).ok().and_then(|p| p.duration_ms);
+            let mut for_audio = Vec::new();
+            let mut next_remaining = Vec::new();
+            for mut m in remaining_markers {
+                if let Some(rel) = m.source_ms.checked_sub(starts_at) {
+                    if audio_dur.is_some_and(|d| rel < d) {
+                        m.source_ms = rel;
+                        for_audio.push(m);
+                        continue;
+                    }
+                }
+                next_remaining.push(m);
+            }
+            remaining_markers = next_remaining;
+            attached_markers += for_audio.len();
+            let _ = super::clip_markers::write_file_sidecar(path, for_audio.clone(), None);
             let asset = import_and_wait(state, &actor, path).await?;
-            clips.push(place_at(state, &actor, &asset, track, "audio", start_ms, None).await?);
+            clips.push(
+                place_at(
+                    state,
+                    &actor,
+                    &asset,
+                    track,
+                    "audio",
+                    start_ms,
+                    None,
+                    Some(for_audio),
+                )
+                .await?,
+            );
         }
     }
     super::pending_recordings::remove(&args.capture_id);
@@ -560,6 +651,11 @@ pub(crate) async fn recover_handler(
             " System sound was recorded but could not be recovered: none of it had been saved to disk when the recording was interrupted.",
         );
     }
+    let clip_markers_notice = super::clip_markers::recover_unplaced_notice(&remaining_markers);
+    if let Some(ref notice) = clip_markers_notice {
+        message.push(' ');
+        message.push_str(notice);
+    }
     Ok(VerbResult::ok(json!({
         "capture_id": args.capture_id,
         "clip_ids": clips.into_iter().flatten().collect::<Vec<_>>(),
@@ -575,6 +671,8 @@ pub(crate) async fn recover_handler(
         "files_folder": folder,
         "skipped_files": media.skipped,
         "message": message,
+        "clip_markers_added": attached_markers,
+        "clip_markers_notice": clip_markers_notice,
     })))
 }
 

@@ -1,5 +1,8 @@
 import type { PregateReport, PregateRisk } from '../lib/client'
 import { openCutManual } from '../lib/manual'
+import { ExportCheckWarningBody } from '../components/exportChecks'
+import type { ExportCheckActionHandler } from '../components/exportChecks/ExportCheckList'
+import { PREGATE_RISK_KINDS } from './videoPreflight'
 
 interface PreflightWarningProps {
   report: PregateReport
@@ -7,6 +10,8 @@ interface PreflightWarningProps {
   onCancel: () => void
   onContinue: () => void
   overModal?: boolean
+  /** Buttons of the check list rows (go to place, install tools, Check now). */
+  onAction?: ExportCheckActionHandler
 }
 
 const severityLabel = (severity: PregateRisk['severity']) => {
@@ -93,9 +98,10 @@ const formatRange = (risk: PregateRisk) => {
   return ` (${start}s-${end}s)`
 }
 
-export default function PreflightWarning({ report, actionLabel, onCancel, onContinue, overModal = false }: PreflightWarningProps) {
-  const risks = report.risks ?? []
-  const uninstrumented = report.uninstrumented_assets ?? []
+export default function PreflightWarning({ report, actionLabel, onCancel, onContinue, overModal = false, onAction }: PreflightWarningProps) {
+  const checks = report.export_checks
+  const risks = (report.risks ?? []).filter((risk) => !checks || !PREGATE_RISK_KINDS.has(risk.kind))
+  const uninstrumented = checks ? [] : report.uninstrumented_assets ?? []
   const continueLabel = actionLabel === 'rendering queued deliveries' ? 'Queue anyway' : 'Export anyway'
   const guideFeature = risks.map((risk) => riskCopyFor(risk).guide).find(Boolean) ?? 'cut.export.preflight'
   // Pregate predicts quality; actual tool, media, and output failures remain
@@ -116,7 +122,7 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
         <button type="button" className="tb-pregate-close" data-cut-pregate-close onClick={onCancel} aria-label="Close export checks">x</button>
       </div>
       <h2>Review before export</h2>
-      <p>{summary}</p>
+      {checks ? <ExportCheckWarningBody checks={checks} onAction={onAction} /> : <p>{summary}</p>}
       {(risks.length > 0 || uninstrumented.length > 0) && (
         <ul className="tb-pregate-risks">
           {risks.map((risk, index) => (
@@ -146,7 +152,7 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
           </div>
           <div>
             <dt>Files not checked</dt>
-            <dd>{uninstrumented.length}</dd>
+            <dd>{(report.uninstrumented_assets ?? []).length}</dd>
           </div>
           {risks.length > 0 && (
             <div>

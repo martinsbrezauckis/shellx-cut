@@ -130,7 +130,7 @@ async fn project_open_and_state_reject_oversized_overlay_metadata() {
     let path = store.dir.clone();
 
     let state = AppState::new();
-    let open_error = project_open(&state, json!({"path": path}))
+    let open_error = project_open(&state, json!({"path": path}), Actor::system())
         .await
         .expect_err("project.open must reject oversized imported overlay metadata");
     assert_eq!(open_error.code, error_codes::INVALID_ARGS);
@@ -144,7 +144,7 @@ async fn project_open_and_state_reject_oversized_overlay_metadata() {
     );
 
     *state.project.write().await = Some(store);
-    let state_error = project_state(&state, json!({}))
+    let state_error = project_state(&state, json!({}), Actor::system())
         .await
         .expect_err("project.state must reject oversized overlay metadata");
     assert_eq!(state_error.code, error_codes::INVALID_ARGS);
@@ -190,7 +190,7 @@ async fn refused_project_activation_preserves_recent_entries() {
         )
         .unwrap();
         ProjectStore::open(&path).expect("project loads before job-store activation");
-        let error = project_open(&state, json!({"path": path}))
+        let error = project_open(&state, json!({"path": path}), Actor::system())
             .await
             .unwrap_err();
         assert!(
@@ -209,10 +209,158 @@ async fn refused_project_activation_preserves_recent_entries() {
             "refused open must neither register nor refresh recents"
         );
         std::fs::remove_file(path.join("jobs/job_001.json")).unwrap();
-        project_open(&state, json!({"path": path})).await.unwrap();
+        project_open(&state, json!({"path": path}), Actor::system())
+            .await
+            .unwrap();
         let opened = entry().expect("an accepted open registers the project");
         assert_eq!(opened.name, "refused");
         assert_eq!(opened.clip_count, Some(0));
         assert_eq!(opened.duration_ms, Some(0));
     }
+}
+
+#[tokio::test]
+async fn open_with_ordinary_file_at_screen_record_refuses_without_switching_project_or_event() {
+    let cases: Vec<(&str, bool)> = if cfg!(unix) {
+        vec![("file", false), ("symlink", true)]
+    } else {
+        vec![("file", false)]
+    };
+    for (label, as_symlink) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let previous = ProjectStore::create(root.path(), "previous", None).unwrap();
+        let previous_dir = previous.dir.clone();
+        activate_project_locked(&state, previous).await.unwrap();
+        let mut events = state.events.subscribe();
+
+        let crafted = ProjectStore::create(root.path(), "crafted", None).unwrap();
+        let crafted_dir = crafted.dir.clone();
+        drop(crafted);
+
+        let before = crate::projects_index::load_for_test()
+            .entries
+            .into_iter()
+            .find(|entry| {
+                entry.path == crate::projects_index::normalize_path(&crafted_dir.to_string_lossy())
+            });
+
+        let cache_dir = crafted_dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let screen_record_path = cache_dir.join("screen_record");
+        if as_symlink {
+            #[cfg(unix)]
+            {
+                let outside = root.path().join("outside-screen-record");
+                std::fs::create_dir(&outside).unwrap();
+                std::os::unix::fs::symlink(&outside, &screen_record_path).unwrap();
+            }
+        } else {
+            std::fs::write(&screen_record_path, b"not-a-dir").unwrap();
+        }
+
+        let err = project_open(&state, json!({"path": crafted_dir}), Actor::system())
+            .await
+            .expect_err(&format!(
+                "case {label}: project.open must refuse bad cache/screen_record before switching"
+            ));
+        assert_eq!(err.code, error_codes::INVALID_ARGS, "case {label}: {err:?}");
+
+        let active = state.project.read().await;
+        let active_store = active.as_ref().expect("previous project must remain open");
+        assert_eq!(
+            active_store.dir, previous_dir,
+            "case {label}: active project changed despite failed project.open"
+        );
+        assert_eq!(active_store.project.name, "previous");
+
+        while let Ok(ev) = events.try_recv() {
+            assert!(
+                !matches!(ev, Event::ProjectChanged { .. }),
+                "case {label}: refused project.open must not emit ProjectChanged: {ev:?}"
+            );
+        }
+
+        if !as_symlink {
+            assert_eq!(std::fs::read(&screen_record_path).unwrap(), b"not-a-dir");
+        }
+        let after = crate::projects_index::load_for_test()
+            .entries
+            .into_iter()
+            .find(|entry| {
+                entry.path == crate::projects_index::normalize_path(&crafted_dir.to_string_lossy())
+            });
+        assert_eq!(
+            after, before,
+            "case {label}: refused open must not update recent projects"
+        );
+    }
+}
+
+#[tokio::test]
+async fn open_after_activation_completes_with_warning_if_recent_index_save_fails() {
+    const CHILD_ENV: &str = "SHELLX_CUT_TEST_OPEN_INDEX_FAIL_CHILD";
+    const TEST_NAME: &str =
+        "dispatch::project_workspace::tests::open_after_activation_completes_with_warning_if_recent_index_save_fails";
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let previous = ProjectStore::create(root.path(), "previous", None).unwrap();
+        activate_project_locked(&state, previous).await.unwrap();
+        let next = ProjectStore::create(root.path(), "next", None).unwrap();
+        let next_dir = next.dir.clone();
+        drop(next);
+        let mut events = state.events.subscribe();
+
+        let result = match project_open(&state, json!({"path": next_dir}), Actor::system()).await {
+            Ok(res) => res,
+            Err(err) => {
+                let active_after = state.project.read().await.as_ref().map(|s| s.dir.clone());
+                panic!(
+                    "post-activation project.open returned Err after switching active project to {active_after:?}: {err:?}"
+                );
+            }
+        };
+        assert!(result.ok, "open reply must be ok: {result:?}");
+        assert!(
+            !result.warnings.as_deref().unwrap_or(&[]).is_empty(),
+            "recent-index failure must surface as a plain warning on the open reply"
+        );
+        let active_dir = state
+            .project
+            .read()
+            .await
+            .as_ref()
+            .expect("new project active")
+            .dir
+            .clone();
+        assert_eq!(active_dir, next_dir);
+        let mut saw_change = false;
+        while let Ok(ev) = events.try_recv() {
+            if matches!(ev, Event::ProjectChanged { open: true, .. }) {
+                saw_change = true;
+            }
+        }
+        assert!(saw_change, "successful open must emit ProjectChanged");
+        return;
+    }
+
+    let broken_home = tempfile::tempdir().unwrap();
+    // Putting a directory where `projects.json` lives makes index updates fail
+    // deterministically on Linux, macOS, and Windows without process-wide env races.
+    std::fs::create_dir(broken_home.path().join("projects.json")).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST_NAME, "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .env("SHELLX_CUT_HOME", broken_home.path())
+        .output()
+        .expect("spawn child test for recent-index warning path");
+    assert!(
+        output.status.success(),
+        "child failed ({:?}):\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

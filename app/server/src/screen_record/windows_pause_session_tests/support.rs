@@ -34,6 +34,14 @@ impl MemoryJournal {
         log: &Rc<RefCell<Vec<&'static str>>>,
         streams: &SelectedCaptureStreams,
     ) -> Self {
+        Self::with_active_duration_limit(log, streams, None)
+    }
+
+    pub(super) fn with_active_duration_limit(
+        log: &Rc<RefCell<Vec<&'static str>>>,
+        streams: &SelectedCaptureStreams,
+        active_duration_limit_ms: Option<u64>,
+    ) -> Self {
         log.borrow_mut().push("intent");
         Self {
             journal: RecordingSessionJournal::new(RecordingSessionIntent::new(
@@ -41,7 +49,7 @@ impl MemoryJournal {
                 1_000,
                 100,
                 30.0,
-                None,
+                active_duration_limit_ms,
                 false,
                 "shellx-monitor-v1:windows:exact",
                 streams.streams().to_vec(),
@@ -122,6 +130,7 @@ pub(super) struct Factory {
     starts: Vec<Option<u64>>,
     next: u64,
     audio: Vec<record_capture::windows_pause_pilot::WindowsSealedAudioRun>,
+    timings: Vec<(u64, u64, u64, u64)>,
 }
 
 impl WindowsPauseEvidenceFactory for Factory {
@@ -154,12 +163,15 @@ impl WindowsPauseEvidenceFactory for Factory {
     ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
         let sequence = self.next;
         self.next += 1;
-        let (observed_start_ms, observed_end_ms, logical_start_ms, logical_end_ms) =
-            if sequence == 0 {
+        let (observed_start_ms, observed_end_ms, logical_start_ms, logical_end_ms) = self
+            .timings
+            .get(sequence as usize)
+            .copied()
+            .unwrap_or(if sequence == 0 {
                 (0, 120, 0, 120)
             } else {
                 (200, 300, 120, 220)
-            };
+            });
         let settings = settings();
         let events = EventTrack {
             duration_ms: logical_end_ms - logical_start_ms,
@@ -361,9 +373,42 @@ pub(super) fn session_with_streams(
     WindowsPausePilotEventSender,
     Rc<RefCell<Vec<&'static str>>>,
 ) {
+    session_with_options(origin, streams, None, Vec::new())
+}
+
+pub(super) fn session_with_active_duration_limit(
+    origin: Instant,
+    active_duration_limit_ms: u64,
+    timings: Vec<(u64, u64, u64, u64)>,
+) -> (
+    WindowsPauseSession<MemoryJournal, Factory, Lifecycle>,
+    record_capture::windows_pause_pilot::WindowsPausePilotCommandReceiver,
+    WindowsPausePilotEventSender,
+    Rc<RefCell<Vec<&'static str>>>,
+) {
+    session_with_options(
+        origin,
+        SelectedCaptureStreams::screen_only(),
+        Some(active_duration_limit_ms),
+        timings,
+    )
+}
+
+fn session_with_options(
+    origin: Instant,
+    streams: SelectedCaptureStreams,
+    active_duration_limit_ms: Option<u64>,
+    timings: Vec<(u64, u64, u64, u64)>,
+) -> (
+    WindowsPauseSession<MemoryJournal, Factory, Lifecycle>,
+    record_capture::windows_pause_pilot::WindowsPausePilotCommandReceiver,
+    WindowsPausePilotEventSender,
+    Rc<RefCell<Vec<&'static str>>>,
+) {
     let (commands, command_rx, event_tx, event_rx) = channel();
     let log = Rc::new(RefCell::new(Vec::new()));
-    let journal = MemoryJournal::new(&log, &streams);
+    let journal =
+        MemoryJournal::with_active_duration_limit(&log, &streams, active_duration_limit_ms);
     event_tx
         .send(WindowsPausePilotEvent::Started {
             started: started(origin, 0),
@@ -382,7 +427,10 @@ pub(super) fn session_with_streams(
         )
         .unwrap(),
         Lifecycle::new(commands, event_rx, log.clone()),
-        Factory::default(),
+        Factory {
+            timings,
+            ..Factory::default()
+        },
     )
     .unwrap();
     (session, command_rx, event_tx, log)
