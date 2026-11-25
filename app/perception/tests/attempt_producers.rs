@@ -274,11 +274,23 @@ fn every_packager_carries_the_required_analysis_helpers() {
         &std::fs::read(root.join("app/desktop/src-tauri/tauri.conf.json")).unwrap(),
     )
     .unwrap();
+    // The published source tree carries only the Linux packager; the macOS and Windows packagers are not
+    // published yet. The full source tree (it has docs/private) must carry all three, so a lost packager
+    // there still fails here; the published tree checks the Linux one and says which ones it could not see.
+    let full_source_tree = root.join("docs/private").is_dir();
     for name in ["attempt_evidence.py", "silence_enhancement.py"] {
         for platform in ["linux", "macos", "windows"] {
-            let script =
-                std::fs::read_to_string(root.join(format!("scripts/build-{platform}.sh"))).unwrap();
-            assert!(script.contains(&format!("app/perception/py/{name}")));
+            let path = root.join(format!("scripts/build-{platform}.sh"));
+            if platform != "linux" && !full_source_tree && !path.exists() {
+                eprintln!("not in this source tree, not checked: scripts/build-{platform}.sh");
+                continue;
+            }
+            let script = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(
+                script.contains(&format!("app/perception/py/{name}")),
+                "scripts/build-{platform}.sh does not package app/perception/py/{name}"
+            );
         }
         assert_eq!(
             conf["bundle"]["resources"][format!("../../perception/py/{name}")],
