@@ -1,5 +1,12 @@
 use super::*;
 
+mod pending_retry {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dispatch/tests/pending_retry.rs"
+    ));
+}
+
 #[test]
 fn deterministic_outputs_replace_plain_files_and_failed_stages_preserve_them() {
     let project = tempfile::tempdir().unwrap();
@@ -225,7 +232,15 @@ async fn managed_cancellation_cleans_stage_and_preserves_previous_wav() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(marker.exists(), "owned stub did not start");
-    assert!(jobs.abort(&job.job_id).await.unwrap());
+    assert!(pending_retry::retry_pending(
+        || jobs.abort(&job.job_id),
+        |result| result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code == "job_cancel_pending"),
+    )
+    .await
+    .unwrap());
     let (stage_path, result) = receiver.await.unwrap();
     assert_eq!(result.unwrap_err().code, "job_cancelled");
     assert!(!stage_path.exists());

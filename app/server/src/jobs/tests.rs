@@ -1,5 +1,12 @@
 use super::*;
 
+mod pending_retry {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dispatch/tests/pending_retry.rs"
+    ));
+}
+
 /// Reopening a project must advance the job sequence past the highest
 /// persisted id, so a fresh server (next_seq=0) never re-mints — and thereby
 /// overwrites — an existing job_NNN.json. Regression gate for the
@@ -119,7 +126,17 @@ async fn detach_project_cancels_old_jobs_and_isolates_the_next_project() {
     });
     waiting.await;
 
-    mgr.detach_project().await.unwrap();
+    pending_retry::retry_pending(
+        || mgr.detach_project(),
+        |result| {
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.code == "job_cancel_pending")
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(mgr.active_task_count_for_tests(), 0);
     assert!(mgr.list().is_empty());
     assert!(
@@ -388,7 +405,15 @@ async fn spawn_tracks_handle_and_abort_removes_it() {
     });
     assert_eq!(mgr.active_task_count_for_tests(), 1);
 
-    assert!(mgr.abort(&job.job_id).await.unwrap());
+    assert!(pending_retry::retry_pending(
+        || mgr.abort(&job.job_id),
+        |result| result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code == "job_cancel_pending"),
+    )
+    .await
+    .unwrap());
     assert_eq!(mgr.active_task_count_for_tests(), 0);
     let record = mgr.get(&job.job_id).unwrap();
     assert_eq!(record.state, JobState::Failed);

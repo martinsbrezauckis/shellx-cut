@@ -2,7 +2,7 @@
 //! probe, strip pointer or proxy pointer, and its folders any file at a
 //! derived name. After an open, none of those is taken as this engine's work.
 
-use super::test_actor;
+use super::{dispatch_retry_pending, test_actor};
 use crate::dispatch::dispatch;
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -19,7 +19,7 @@ fn ffmpeg(args: &[&str]) -> bool {
 
 async fn create(state: &AppState, root: &Path, name: &str) -> PathBuf {
     let dir = root.join(format!("{name}.cutproj"));
-    let made = dispatch(
+    let made = dispatch_retry_pending(
         state,
         "project.create",
         json!({"name": name, "dir": dir, "cancel_running_jobs": true}),
@@ -42,7 +42,7 @@ async fn reopen(state: &AppState, root: &Path, dir: &Path, change: impl Fn(&mut 
         serde_json::to_vec_pretty(&cache).unwrap(),
     )
     .unwrap();
-    let opened = dispatch(
+    let opened = dispatch_retry_pending(
         state,
         "project.open",
         json!({"path": dir, "cancel_running_jobs": true}),

@@ -1,4 +1,4 @@
-use super::test_actor;
+use super::{dispatch_retry_pending, test_actor};
 use crate::dispatch::{dispatch, parse_args, publish_render_final_args, update_asset, PublishArgs};
 use crate::state::AppState;
 use cut_core::error_codes;
@@ -410,7 +410,7 @@ async fn jobs_cancel_aborts_active_job_through_dispatch() {
         std::future::pending::<()>().await;
     });
 
-    let r = dispatch(
+    let r = dispatch_retry_pending(
         &state,
         "jobs.cancel",
         json!({"job_id": job_id}),
@@ -475,7 +475,7 @@ async fn jobs_cancel_render_queue_cancels_waiting_child_before_next_delivery() {
     });
     parent_waiting.notified().await;
 
-    let cancelled = dispatch(
+    let cancelled = dispatch_retry_pending(
         &state,
         "jobs.cancel",
         json!({"job_id": queue.job_id}),
@@ -567,7 +567,7 @@ async fn jobs_cancel_render_queue_uses_child_after_parent_drain() {
         std::future::pending::<()>().await;
     });
 
-    let cancelled = dispatch(
+    let cancelled = dispatch_retry_pending(
         &state,
         "jobs.cancel",
         json!({"job_id": queue.job_id}),

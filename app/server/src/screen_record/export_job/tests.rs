@@ -8,6 +8,13 @@ use crate::output_paths::{fence_output_path, OutputPath, OutputPathPolicy};
 use crate::state::AppState;
 use cut_core::{error_codes, CutError};
 
+mod pending_retry {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dispatch/tests/pending_retry.rs"
+    ));
+}
+
 async fn wait_terminal(state: &AppState, job_id: &str) -> crate::jobs::JobRecord {
     for _ in 0..200 {
         let record = state.jobs.get(job_id).expect("export job record");
@@ -199,7 +206,15 @@ fn export_output_lease_releases_after_cancel_and_timeout() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(
-            state.jobs.abort(&cancel).await.unwrap(),
+            pending_retry::retry_pending(
+                || state.jobs.abort(&cancel),
+                |result| result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.code == "job_cancel_pending"),
+            )
+            .await
+            .unwrap(),
             "cancel should drain worker"
         );
         reclaim(&project, &path).await;

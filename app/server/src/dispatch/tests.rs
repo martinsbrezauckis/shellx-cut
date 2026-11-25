@@ -44,6 +44,40 @@ fn test_actor() -> Actor {
     }
 }
 
+mod pending_retry;
+
+/// Follow the API's pending reply without masking any other error.
+async fn dispatch_retry_pending(
+    state: &AppState,
+    name: &str,
+    args: Value,
+    actor: Actor,
+) -> VerbResult {
+    pending_retry::retry_pending(
+        || dispatch(state, name, args.clone(), actor.clone()),
+        |reply| reply.error.as_ref().map(|error| error.code.as_str()) == Some("job_cancel_pending"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn pending_retry_retries_only_pending_results() {
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let result = pending_retry::retry_pending(
+        || async {
+            if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                "job_cancel_pending"
+            } else {
+                "other_error"
+            }
+        },
+        |result| *result == "job_cancel_pending",
+    )
+    .await;
+    assert_eq!(result, "other_error");
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 mod add_music;
 mod applicability_trust;
 mod assemble_apply;
@@ -8069,7 +8103,7 @@ async fn assets_generate_reserves_replaces_and_retains_pending_timeline_slots() 
         };
         PathBuf::from(&store.project.assets[&clip.asset].path)
     };
-    let cancelled_result = dispatch(
+    let cancelled_result = dispatch_retry_pending(
         &state,
         "jobs.cancel",
         json!({"job_id":cancelled_job}),
@@ -8147,7 +8181,7 @@ async fn assets_generate_queues_and_cancels_provider_work() {
         crate::jobs::JobState::Queued
     );
 
-    let cancel_second = dispatch(
+    let cancel_second = dispatch_retry_pending(
         &state,
         "jobs.cancel",
         json!({"job_id": second_id}),

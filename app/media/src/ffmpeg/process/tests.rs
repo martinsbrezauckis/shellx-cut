@@ -472,7 +472,9 @@ fn multi_threaded_render_spawns_never_call_fork() {
         for _ in 0..THREADS {
             scope.spawn(|| {
                 barrier.wait();
-                let control = RenderProcessControl::bounded(Duration::from_secs(10), || false);
+                // This limit only bounds a hang (a slow, loaded CI Mac needed more than 10 s);
+                // the test proves that no spawn calls fork().
+                let control = RenderProcessControl::bounded(Duration::from_secs(60), || false);
                 let mut sleeper = Command::new("sleep");
                 sleeper.arg("30");
                 let mut active = ManagedChild::spawn(&mut sleeper, control.clone(), "pgid probe")

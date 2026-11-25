@@ -83,7 +83,7 @@ async fn running_render_is_not_cancelled_by_a_refused_project_open() {
 #[tokio::test]
 async fn confirmed_project_open_cancels_the_render_and_names_it() {
     let (state, _dir, b, job_id) = project_with_job("render").await;
-    let opened = dispatch(
+    let opened = dispatch_retry_pending(
         &state,
         "project.open",
         json!({"path": b, "cancel_running_jobs": true}),
@@ -100,7 +100,8 @@ async fn confirmed_project_open_cancels_the_render_and_names_it() {
 #[tokio::test]
 async fn other_running_jobs_are_cancelled_and_listed_not_hidden() {
     let (state, _dir, b, job_id) = project_with_job("proxy").await;
-    let opened = dispatch(&state, "project.open", json!({"path": b}), test_actor()).await;
+    let opened =
+        dispatch_retry_pending(&state, "project.open", json!({"path": b}), test_actor()).await;
     assert!(opened.ok, "{:?}", opened.error);
     let cancelled = &opened.result.unwrap()["cancelled_jobs"];
     assert_eq!(cancelled[0]["job_id"], job_id);

@@ -7,6 +7,13 @@ use crate::dispatch::dispatch;
 use cut_core::Actor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod pending_retry {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dispatch/tests/pending_retry.rs"
+    ));
+}
+
 async fn two_projects() -> (tempfile::TempDir, PathBuf, PathBuf, AppState) {
     let temp = tempfile::tempdir().unwrap();
     let state = AppState::new();
@@ -131,11 +138,21 @@ async fn a_forced_project_change_stops_the_bake_and_says_where_the_recording_sta
     while polish_job(&state).await.is_none() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let forced = dispatch(
-        &state,
-        "project.open",
-        json!({"path": second, "cancel_running_jobs": true}),
-        Actor::system(),
+    let forced = pending_retry::retry_pending(
+        || {
+            dispatch(
+                &state,
+                "project.open",
+                json!({"path": second, "cancel_running_jobs": true}),
+                Actor::system(),
+            )
+        },
+        |reply| {
+            reply
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "job_cancel_pending")
+        },
     )
     .await;
     assert!(forced.ok, "{:?}", forced.error);

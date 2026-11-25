@@ -1,6 +1,13 @@
 use super::*;
 use crate::events::EventBus;
 
+mod pending_retry {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dispatch/tests/pending_retry.rs"
+    ));
+}
+
 #[test]
 fn poisoned_lock_recovers_status_without_changing_queued_state() {
     let manager = JobManager::new(EventBus::new());
@@ -37,7 +44,15 @@ async fn poisoned_lock_recovers_cancel_and_keeps_its_terminal_outcome() {
     manager.spawn(&job.job_id, std::future::pending());
     manager.poison_lock_for_tests();
 
-    assert!(manager.abort(&job.job_id).await.expect("cancel recovers"));
+    assert!(pending_retry::retry_pending(
+        || manager.abort(&job.job_id),
+        |result| result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code == "job_cancel_pending"),
+    )
+    .await
+    .expect("cancel recovers"));
 
     let record = manager
         .get(&job.job_id)

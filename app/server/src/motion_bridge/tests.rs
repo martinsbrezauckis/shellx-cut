@@ -1,4 +1,11 @@
 use super::*;
+
+mod pending_retry {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/dispatch/tests/pending_retry.rs"
+    ));
+}
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
@@ -1546,11 +1553,21 @@ async fn dispatch_apply_import_background_cancel_commits_nothing() {
         .as_str()
         .unwrap()
         .to_string();
-    let cancelled = crate::dispatch::dispatch(
-        &state,
-        "jobs.cancel",
-        json!({"job_id":job_id}),
-        Actor::system(),
+    let cancelled = pending_retry::retry_pending(
+        || {
+            crate::dispatch::dispatch(
+                &state,
+                "jobs.cancel",
+                json!({"job_id":job_id}),
+                Actor::system(),
+            )
+        },
+        |reply| {
+            reply
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "job_cancel_pending")
+        },
     )
     .await;
     assert!(

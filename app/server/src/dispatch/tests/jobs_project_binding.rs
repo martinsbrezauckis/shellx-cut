@@ -138,7 +138,7 @@ async fn scoped_cancel_refuses_active_foreign_job_and_unscoped_cancel_still_work
     .await;
     assert!(renamed.ok, "{:?}", renamed.error);
     assert_eq!(digest(&b).await, b_digest);
-    let cancelled = dispatch(
+    let cancelled = dispatch_retry_pending(
         &b,
         "jobs.cancel",
         json!({"job_id":job.job_id,"expected_origin_path_sha256":b_digest}),
@@ -150,7 +150,7 @@ async fn scoped_cancel_refuses_active_foreign_job_and_unscoped_cancel_still_work
 
     let legacy_job = b.jobs.create("screen_record_copy_raw");
     b.jobs.spawn(&legacy_job.job_id, std::future::pending());
-    let legacy = dispatch(
+    let legacy = dispatch_retry_pending(
         &b,
         "jobs.cancel",
         json!({"job_id":legacy_job.job_id}),

@@ -2,7 +2,7 @@
 //! a proxy (F8); a missing title movie named an internal asset id (F10); an
 //! import cancelled by a project switch left its clip without a proxy for good.
 
-use super::{test_actor, wait_job};
+use super::{dispatch_retry_pending, test_actor, wait_job};
 use crate::dispatch::dispatch;
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -18,7 +18,7 @@ fn has_ffmpeg() -> bool {
 
 async fn create(state: &AppState, root: &Path, name: &str) -> PathBuf {
     let dir = root.join(format!("{name}.cutproj"));
-    let made = dispatch(
+    let made = dispatch_retry_pending(
         state,
         "project.create",
         json!({"name": name, "dir": dir, "cancel_running_jobs": true}),
@@ -30,7 +30,7 @@ async fn create(state: &AppState, root: &Path, name: &str) -> PathBuf {
 }
 
 async fn open(state: &AppState, dir: &Path) {
-    let opened = dispatch(
+    let opened = dispatch_retry_pending(
         state,
         "project.open",
         json!({"path": dir, "cancel_running_jobs": true}),

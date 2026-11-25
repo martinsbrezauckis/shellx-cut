@@ -498,7 +498,7 @@ fn multi_threaded_record_render_spawns_never_call_fork() {
                 sleeper.arg("30");
                 let mut active = ManagedChild::spawn(
                     &mut sleeper,
-                    ProcessControl::bounded(Duration::from_secs(10), || false),
+                    ProcessControl::bounded(Duration::from_secs(60), || false),
                     "pgid probe",
                 )
                 .expect("spawn sleep probe");
@@ -506,11 +506,13 @@ fn multi_threaded_record_render_spawns_never_call_fork() {
                 assert_eq!(unsafe { libc::getpgid(pid) }, pid);
                 active.stop_and_reap().expect("reap sleep probe");
 
+                // These limits only bound a hang (a slow, loaded CI Mac needed more than 10 s);
+                // the test proves that no spawn calls fork().
                 for _ in 0..SPAWNS_PER_THREAD {
                     let mut command = Command::new("true");
                     let mut child = ManagedChild::spawn(
                         &mut command,
-                        ProcessControl::bounded(Duration::from_secs(10), || false),
+                        ProcessControl::bounded(Duration::from_secs(60), || false),
                         "fork probe",
                     )
                     .expect("spawn bounded helper");

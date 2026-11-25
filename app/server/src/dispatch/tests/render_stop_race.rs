@@ -8,7 +8,7 @@
 //! - a stop that lands after the file is published does not undo it: the
 //!   receipt is written, the job reads done, and nothing is called interrupted.
 
-use super::{test_actor, wait_job};
+use super::{dispatch_retry_pending, test_actor, wait_job};
 use crate::dispatch::dispatch;
 use crate::jobs::JobState;
 use crate::state::AppState;
@@ -110,7 +110,7 @@ async fn a_stop_before_the_file_is_complete_leaves_nothing_that_looks_complete()
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let cancelled = dispatch(
+    let cancelled = dispatch_retry_pending(
         &state,
         "jobs.cancel",
         json!({"job_id": job_id}),
