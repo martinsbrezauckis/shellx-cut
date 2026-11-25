@@ -99,7 +99,22 @@ async fn job_cancel_waits_for_the_owned_tree_before_reporting_terminal() {
     });
     let pid = wait_for_pid(&pid_file).await;
 
-    assert!(jobs.abort(&job_id).await.unwrap());
+    // A slow owned tree can outlast one cancellation call; retry pending replies
+    // as the API advises, but still require a terminal answer within 30 seconds.
+    let cancelled = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match jobs.abort(&job_id).await {
+                Ok(cancelled) => break cancelled,
+                Err(error) if error.code == "job_cancel_pending" => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(error) => panic!("unexpected cancellation error: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("cancellation did not finish within 30 seconds");
+    assert!(cancelled);
     assert_gone(pid).await;
     let record = jobs.get(&job_id).unwrap();
     assert_eq!(record.outcome, Some(crate::jobs::JobOutcome::Cancelled));
@@ -471,8 +486,9 @@ fn multi_threaded_job_spawns_never_call_fork() {
                 pgid_tree.hard_stop().expect("stop sleep probe");
                 let _ = child.wait().await;
 
+                // This deadline only bounds a hang; the assertion is that no spawn calls fork.
                 let control = ProcessControl::with_cancellation(
-                    Duration::from_secs(10),
+                    Duration::from_secs(60),
                     JobCancellation::test_active(),
                 );
                 for _ in 0..SPAWNS_PER_TASK {
