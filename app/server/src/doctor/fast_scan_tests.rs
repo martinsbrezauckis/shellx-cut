@@ -180,6 +180,15 @@ esac
         }
     }
 
+    // These tests run in isolated subprocesses. Do not let the machine's
+    // Homebrew/system ffmpeg builds compete with the deliberately deferred
+    // fixture work inside the phase-one deadline.
+    cut_media::toolpath::set_test_ffmpeg_candidates(vec![ffmpeg.clone()]);
+    assert_eq!(
+        cut_media::toolpath::ffmpeg_candidates(),
+        vec![ffmpeg.clone()]
+    );
+
     std::env::set_var("PATH", &bin);
     std::env::set_var("XDG_DATA_HOME", &data);
     std::env::set_var("HOME", &home);

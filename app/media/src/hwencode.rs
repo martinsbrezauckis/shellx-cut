@@ -573,6 +573,16 @@ fn probe_encoder_at_size_with_cancel(
     timeout: Duration,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), Option<EncoderFailure>> {
+    // GitHub's virtual Mac hangs on concurrent VideoToolbox test encodes;
+    // even killed processes cannot finish exiting there. All probe callers
+    // share this gate, but other backends retain their concurrency. Acquire it
+    // outside cache locks and codec joins, and release it after this encode.
+    static VIDEOTOOLBOX_PROBE: Mutex<()> = Mutex::new(());
+    let videotoolbox_guard = encoder.ends_with("_videotoolbox").then(|| {
+        VIDEOTOOLBOX_PROBE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
     let size_input = format!("testsrc=duration=0.1:size={w}x{h}:rate=30");
     // The test picture must have the pixel format a render sends. testsrc is
     // RGB, and without `-pix_fmt` ffmpeg hands the encoder a 4:4:4 RGB format
@@ -601,6 +611,7 @@ fn probe_encoder_at_size_with_cancel(
         cancel,
     )
     .ok_or(None)?;
+    drop(videotoolbox_guard);
     if output.status.success() {
         return Ok(());
     }
@@ -1352,6 +1363,76 @@ fn probe_ffmpeg_internal(ffmpeg: &Path, include_10bit: bool, probe_cuda: bool) -
 
 #[cfg(test)]
 mod tests {
+    /// Independent callers and codec families must share the same VT gate.
+    #[cfg(unix)]
+    #[test]
+    fn videotoolbox_test_encodes_are_serialized_process_wide() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("events");
+        let ffmpeg = dir.path().join("ffmpeg");
+        std::fs::write(
+            &ffmpeg,
+            format!(
+                r#"#!/bin/sh
+enc=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-c:v" ]; then shift; enc="$1"; break; fi
+  shift
+done
+printf 'start %s %s\n' "$enc" "$(/bin/date +%s)" >> '{log}'
+/bin/sleep 0.2
+printf 'end %s %s\n' "$enc" "$(/bin/date +%s)" >> '{log}'
+"#,
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let encoders: std::collections::HashSet<String> =
+            ["h264_videotoolbox", "hevc_videotoolbox", "av1_videotoolbox"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let (caps, _) = probe_at_with_encoders(ffmpeg.as_os_str(), Some(&encoders));
+                        assert_eq!(caps.h264.as_deref(), Some("h264_videotoolbox"));
+                        assert_eq!(caps.hevc.as_deref(), Some("hevc_videotoolbox"));
+                        assert_eq!(caps.av1.as_deref(), Some("av1_videotoolbox"));
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        let events = std::fs::read_to_string(log).unwrap();
+        let mut active = None;
+        let mut completed = 0;
+        for line in events.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            assert_eq!(fields.len(), 3, "{events}");
+            match fields[0] {
+                "start" => {
+                    assert!(active.is_none(), "overlapping encodes:\n{events}");
+                    active = Some(fields[1]);
+                }
+                "end" => {
+                    assert_eq!(active.take(), Some(fields[1]), "{events}");
+                    completed += 1;
+                }
+                _ => panic!("unexpected event: {line}"),
+            }
+        }
+        assert!(active.is_none());
+        assert_eq!(completed, 6, "{events}");
+    }
+
     #[test]
     fn reported_cuda_generation_fixture_is_not_a_card_name_table() {
         assert_eq!(super::parse_compute_capability("7.0\n"), Some((7, 0)));

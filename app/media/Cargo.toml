@@ -12,6 +12,10 @@ description = "ShellX Cut media engine: probe/proxy/render via ffmpeg subprocess
 name = "cut_media"
 path = "src/lib.rs"
 
+[features]
+# Explicit fixture-only candidate injection for isolated downstream unit tests.
+test-toolpath = []
+
 [dependencies]
 cut-core = { path = "../core" }
 serde = { workspace = true }

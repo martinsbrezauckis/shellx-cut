@@ -610,6 +610,21 @@ pub fn resolved_startup_ffmpeg_dir() -> Option<PathBuf> {
     }
 }
 
+#[cfg(feature = "test-toolpath")]
+static TEST_FFMPEG_CANDIDATES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+
+/// Restrict candidate discovery in an isolated test process to its fake tools.
+/// Absent from normal builds; call before any tool resolution/cache access.
+#[cfg(feature = "test-toolpath")]
+pub fn set_test_ffmpeg_candidates(candidates: Vec<PathBuf>) {
+    assert!(candidates
+        .iter()
+        .all(|path| path.is_absolute() && path.is_file()));
+    TEST_FFMPEG_CANDIDATES
+        .set(candidates)
+        .expect("test candidates must be set once in an isolated process");
+}
+
 /// EVERY ffmpeg binary discoverable on this machine, RESOLVED-FIRST then deduped
 /// by canonical path (existing files only). This is the "find any installed
 /// ffmpeg" the doctor probes: the search-ladder binary, plus a full PATH walk,
@@ -619,6 +634,10 @@ pub fn resolved_startup_ffmpeg_dir() -> Option<PathBuf> {
 /// none is accelerated. Order is significant: the resolved (default) binary is
 /// first so the caller can tell "best" apart from "what we use today".
 pub fn ffmpeg_candidates() -> Vec<PathBuf> {
+    #[cfg(feature = "test-toolpath")]
+    if let Some(candidates) = TEST_FFMPEG_CANDIDATES.get() {
+        return candidates.clone();
+    }
     let want = exe_name("ffmpeg");
     // Collect in priority order, then dedup by canonical path below.
     let mut raw: Vec<PathBuf> = Vec::new();
