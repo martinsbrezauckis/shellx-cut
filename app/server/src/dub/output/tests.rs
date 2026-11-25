@@ -1,5 +1,7 @@
 use super::*;
 
+// Its only caller (managed cancellation) is Unix-only; Windows clippy -D warnings rejects an unused copy.
+#[cfg(unix)]
 mod pending_retry {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
